@@ -389,6 +389,15 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// The Model Pack in force — the newest version of the promoted set,
+    /// naming its predecessor and delta (MODEL-037). Rebuilt from the same
+    /// log records as `model_promotions` and advanced only beside it.
+    pub(crate) model_pack: Option<crate::model_serving::ModelPack>,
+    /// Who moves the production alias in this process: the model desk named
+    /// through `Platform::name_model_desk` (MODEL-057). `None` until one is
+    /// named, and a promotion or rollback is refused while it is, because a
+    /// move nobody can be asked about is not a record of who moved it.
+    pub(crate) model_desk: Option<String>,
     /// §22.1's fallback series: the daily bars the platform has observed,
     /// per instrument, under three stated bounds — insurance against a
     /// source withdrawing its archive, and what the research campaign falls
@@ -937,6 +946,15 @@ pub struct Platform {
     aggregates: RiskAggregates,
     /// Opportunities found and not yet worked through.
     queue: Vec<Opportunity>,
+    /// The queued opportunities the REASON stage has taken up, by id.
+    ///
+    /// REASON works the head of the queue and nothing leaves the queue
+    /// except by lapsing, so when an opportunity lapses this is the only
+    /// record of whether anything ever looked at it. One that was never
+    /// here expired unworked, and is captured as an outcome of its own
+    /// (MODEL-013). Bounded by the queue: an id is added only for an
+    /// opportunity in it and removed when that opportunity leaves.
+    worked_opportunities: BTreeSet<String>,
     /// Recent proposals, most recent last, capped at [`PROPOSAL_HISTORY`].
     ///
     /// A working window, not the record: the record is the event log, which is
@@ -4475,6 +4493,8 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            model_pack: crate::model_serving::resume_model_pack(&event_log)?,
+            model_desk: None,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             fallback_refused: BTreeSet::new(),
             source_leads: qip_data_finder::freshness::LeadLedger::new(),
@@ -4613,6 +4633,7 @@ impl Platform {
             capital: TrackedCapital::new(initial_equity, now),
             aggregates: RiskAggregates::new(initial_equity, initial_equity)?,
             queue: Vec::new(),
+            worked_opportunities: BTreeSet::new(),
             proposals: Vec::new(),
             equity_history: Vec::new(),
             proposals_made: 0,
@@ -10543,9 +10564,11 @@ impl Platform {
         self.queue.extend(found);
         // The queue is worked newest-highest-value first, and anything that
         // expired while waiting is dropped rather than silently worked late.
-        let before = self.queue.len();
-        self.queue.retain(|opportunity| opportunity.is_live(now));
-        let expired = before - self.queue.len();
+        let (live, lapsed): (Vec<Opportunity>, Vec<Opportunity>) = std::mem::take(&mut self.queue)
+            .into_iter()
+            .partition(|opportunity| opportunity.is_live(now));
+        self.queue = live;
+        let expired = self.capture_unworked(lapsed, now);
 
         let mut outcome = StageOutcome::ran(
             Stage::Discover,
@@ -10958,10 +10981,74 @@ impl Platform {
             .collect()
     }
 
+    /// Put every opportunity that lapsed without REASON ever taking it up on
+    /// the outcome capture, and return how many there were (MODEL-013).
+    ///
+    /// Until this the queue's `retain` dropped them and the stage reported a
+    /// count: the evaluation input held every fill and every refused order
+    /// and nothing at all for an opportunity the platform saw and never got
+    /// to, which is the path a queue that only works its head produces most
+    /// of. Each gets a decision id of its own, the opportunity's id, the
+    /// instant it was first seen and how long it waited. It is deliberately
+    /// not priced — see [`Action::ExpiredOpportunity`].
+    ///
+    /// An opportunity REASON did take up is not captured here, whatever
+    /// REASON concluded: its record is the routing REASON wrote, and filing
+    /// it as unworked as well would count one opportunity as two outcomes.
+    ///
+    /// The subject of the record is the instrument the opportunity names,
+    /// or, for one that names none, the series its anomaly was detected on —
+    /// what was observed, in either case, and never a placeholder.
+    fn capture_unworked(&mut self, lapsed: Vec<Opportunity>, now: Timestamp) -> usize {
+        let mut unworked = 0;
+        for opportunity in lapsed {
+            let id = opportunity.opportunity_id.as_str().to_string();
+            if self.worked_opportunities.remove(&id) {
+                continue;
+            }
+            unworked += 1;
+            let Some(subject) = opportunity.affected_objects.first().cloned().or_else(|| {
+                opportunity
+                    .affected_entities
+                    .first()
+                    .map(|entity| ObjectId::from_string(entity.clone()))
+            }) else {
+                self.capture_problems.push(format!(
+                    "opportunity {id} expired unworked and names no instrument or series, so \
+                     it could not be captured as an outcome"
+                ));
+                continue;
+            };
+            let correlation = self
+                .context
+                .ids()
+                .generate::<qip_core::lineage::CorrelationKind>(now);
+            self.capture(
+                now,
+                &correlation,
+                subject.clone(),
+                Action::ExpiredOpportunity {
+                    opportunity: opportunity.opportunity_id.clone(),
+                    object_id: subject,
+                    seen_at: opportunity.detected_at,
+                    age: now.since(opportunity.detected_at),
+                },
+                RealisedOutcome::nothing_happened(now),
+                "it lapsed in the queue before the REASON stage took it up",
+            );
+        }
+        unworked
+    }
+
     fn reason_about_the_queue(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
         let Some(opportunity) = self.queue.first().cloned() else {
             return StageOutcome::ran(Stage::Reason, 0, "nothing in the queue to reason about");
         };
+        // Taken up, whatever follows: a refusal to convene the panel is a
+        // decision about this opportunity, and one that later lapses must
+        // not then be filed as never having been looked at.
+        self.worked_opportunities
+            .insert(opportunity.opportunity_id.as_str().to_string());
 
         // Where this decision belongs on the intelligence ladder, asked before
         // anything is spent reaching it. Convening the organisation is the most
@@ -15789,6 +15876,43 @@ impl Platform {
                 fill.at,
             );
             self.aggregate_fill(object_id.as_str(), moved);
+        }
+
+        // The part of the order the venue did not fill (MODEL-039). The
+        // slices above are what traded; what did not trade was recorded
+        // nowhere, so an order filled in part and one filled whole left the
+        // same records and the shortfall — the path not taken inside a taken
+        // order — never reached evaluation. Read from the order manager's
+        // own book after it applied the fills, so the remainder is the
+        // ledger's and not the difference of two numbers handed to this
+        // method: the requested quantity may have been resized by risk
+        // before it reached the venue. Nothing is realised on this record:
+        // the money is on the fill records above, and a second outcome
+        // carrying it would count the cost twice.
+        let shortfall = self.orders.order(&result.order_id).and_then(|order| {
+            let filled = order.filled_quantity();
+            let remaining = order.remaining_quantity();
+            (filled.is_positive() && remaining.is_positive()).then_some((filled, remaining))
+        });
+        if let Some((filled, remaining)) = shortfall
+            && let Some(price) = weighted_fill_price(&result.fills)
+                .or_else(|| result.fills.last().map(|fill| fill.price))
+        {
+            self.capture_after(
+                placed.as_ref(),
+                now,
+                &correlation,
+                object_id.clone(),
+                Action::PartiallyFilled {
+                    order_id: result.order_id.clone(),
+                    venue: venue.clone(),
+                    filled,
+                    remaining,
+                    price,
+                },
+                RealisedOutcome::nothing_happened(now),
+                format!("{filled} filled and {remaining} left unfilled at the venue"),
+            );
         }
 
         // Kept for the twin, as a declined path is. The placement above is

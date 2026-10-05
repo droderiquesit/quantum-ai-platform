@@ -599,3 +599,133 @@ fn a_settled_order_s_redelivered_drop_copy_is_recognised_and_a_new_fill_on_it_is
     );
     Ok(())
 }
+
+// --- drift adapts nothing at the cell (MODEL-015) ---------------------------
+
+#[test]
+fn sustained_slippage_drift_changes_no_deployed_package_no_parameter_and_no_size_until_a_new_package_is_deployed()
+-> Result<()> {
+    // The blueprint forbids fill and slippage error from adjusting
+    // money-moving logic directly: whatever they motivate must arrive as a
+    // new, promoted package. Nothing tested it at a cell — the one cited
+    // test was about registry eligibility. So this feeds one cell a run of
+    // fills that get worse and slower every pass and asserts, pass by pass,
+    // that what it runs, what the plan computes and what it sends are what
+    // they were before the first fill.
+    let (mut cell, _metrics) = trading_cell(&[("alpha", SignalKind::Enter, "10")])?;
+    let mut gateway = ReportingGateway::default();
+    let package = cell
+        .deployment_digest("alpha")?
+        .ok_or_else(|| Error::not_found("the digest of a deployed strategy"))?;
+    let pricing = cell.pricing_of("alpha");
+    assert_eq!(
+        cell.deployment_digest("nobody")?,
+        None,
+        "a strategy that is not deployed has no package to name"
+    );
+
+    const PASSES: i64 = 12;
+    let mid = d("100");
+    let mut slippage = Vec::new();
+    let mut sizes = Vec::new();
+    for pass in 0..PASSES {
+        let at = t(50 + pass * 10);
+        gateway.placed.clear();
+        let report = cell.work(at, &mut gateway)?;
+        // Asked before anything else about the pass: a package that changed
+        // is the finding, and whatever the changed package then did or
+        // refused is only its consequence.
+        assert_eq!(
+            cell.deployment_digest("alpha")?.as_ref(),
+            Some(&package),
+            "the deployed package changed during pass {pass} with no deployment"
+        );
+        assert!(
+            report.refusals.is_empty(),
+            "premise: pass {pass} refuses nothing, so the cell is trading through the drift: {:?}",
+            report.refusals
+        );
+        let signal = report
+            .signals
+            .first()
+            .ok_or_else(|| Error::not_found("a signal from the deployed plan"))?;
+        // The plan's own parameters, as it evaluates them this pass.
+        assert_eq!(signal.desired_quantity, d("10"));
+        assert_eq!(signal.kind, SignalKind::Enter);
+        let order = report
+            .orders
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::not_found("an order from a cell that signalled"))?;
+        sizes.push(order.quantity);
+
+        // The venue fills it worse than the last one, and later: 20 cents
+        // further from the price the order was sent at on every pass, a
+        // second slower on every pass.
+        let filled_at = order.price + d("0.2") * Decimal::from_int(pass);
+        let reported = at.saturating_add(Duration::from_secs(1 + pass));
+        gateway.report(&order.order_id, order.quantity, filled_at, reported);
+        let confirmed = cell.confirm_execution_reports(&mut gateway, reported);
+        assert_eq!(confirmed.len(), 1, "pass {pass}'s fill was not confirmed");
+        slippage.push(confirmed[0].price - mid);
+        assert!(
+            !cell.is_halted(),
+            "premise: the drift did not halt the cell on pass {pass}, so every later pass is \
+             evidence about a cell that kept trading"
+        );
+
+        // What the cell runs is what it was given.
+        assert_eq!(
+            cell.deployment_digest("alpha")?.as_ref(),
+            Some(&package),
+            "the deployed package changed on confirming pass {pass}'s fill with no deployment"
+        );
+        assert_eq!(cell.pricing_of("alpha"), pricing);
+        assert_eq!(cell.deployed_strategies(), vec!["alpha"]);
+    }
+    // Premise: the drift was real, sustained and large — every fill further
+    // from the mid than the one before, the last more than three times as
+    // far as the first.
+    assert!(
+        slippage.windows(2).all(|pair| pair[1] > pair[0]),
+        "the fills did not get steadily worse: {slippage:?}"
+    );
+    assert!(slippage[0].is_positive());
+    assert!(slippage[slippage.len() - 1] > slippage[0] * dec!("3"));
+    // Sizing: every order the size of the first.
+    assert!(sizes[0].is_positive(), "premise: the cell sent size");
+    assert!(
+        sizes.iter().all(|size| *size == sizes[0]),
+        "order size moved under drift with no new package: {sizes:?}"
+    );
+
+    // Only a new package changes any of it — which also proves the digest
+    // and the size above could have moved, and did not.
+    let after = t(50 + PASSES * 10);
+    assert!(
+        cell.open_orders()
+            .iter()
+            .all(|order| order.closed.is_some()),
+        "premise: every order filled, so the strategy can be withdrawn"
+    );
+    let envelope = cell.withdraw("alpha", after)?;
+    assert_eq!(cell.deployment_digest("alpha")?, None);
+    let (compiled, program) = firing_strategy("alpha", SignalKind::Enter, "20")?;
+    cell.deploy_with_pricing(compiled, program, envelope, PricingPolicy::Marketable)?;
+    let replaced = cell
+        .deployment_digest("alpha")?
+        .ok_or_else(|| Error::not_found("the digest of the new package"))?;
+    assert_ne!(replaced, package, "a new package carries the old digest");
+    gateway.placed.clear();
+    let report = cell.work(after.saturating_add(Duration::from_secs(5)), &mut gateway)?;
+    let resized = report
+        .orders
+        .first()
+        .ok_or_else(|| Error::not_found("an order under the new package"))?;
+    assert_eq!(
+        resized.quantity,
+        sizes[0] * dec!("2"),
+        "the new package's size did not take effect"
+    );
+    Ok(())
+}

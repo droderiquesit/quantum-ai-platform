@@ -130,7 +130,7 @@
     "work_item": "E03",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: upgraded MISSING -> PARTIAL. The assessor searched qip-events for Activation types and consumer offsets and missed the policy payload's ModelManifest/PlanDigest, which carry models and plans by digest only on the existing centre->cell channel, are shipped from qip-api's composition root, and are tested. Not deployable: no cell exists to receive them (execution_nodes = {}). | An in-tree broker/journal is permitted (E03 is explicitly in-tree); only the Tokio/QUIC/prost/gRPC stack is refused (C2)."
+    "notes": "verify: upgraded MISSING -> PARTIAL. The assessor searched qip-events for Activation types and consumer offsets and missed the policy payload's ModelManifest/PlanDigest, which carry models and plans by digest only on the existing centre->cell channel, are shipped from qip-api's composition root, and are tested. Not deployable: no cell exists to receive them (execution_nodes = {}). | An in-tree broker/journal is permitted (E03 is explicitly in-tree); only the Tokio/QUIC/prost/gRPC stack is refused (C2). | 2026-10-05: 'No Fabric yet' is stale — qip-fabricd and the event_fabric catalogue exist. Remaining and not built here: package availability and activation message types and a registry rejection test; adding a topic touches the committed catalogue and schema lock."
   },
   {
     "id": "MODEL-054",
@@ -202,19 +202,22 @@
     "work_item": "E10",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags kept. Added the deep brain's campaign manifest, which pins the learning window in the log, and the finding that the model card does not link to it -- so 'every trained model records the identities of the snapshots it was trained on' still fails for the local-model path, and nothing refuses a job pointed at a live series. | Extend the same content-hash discipline to qip_training::dataset::TrainingDataset to close the gap for local-model training specifically."
+    "notes": "verify: status and flags kept. Added the deep brain's campaign manifest, which pins the learning window in the log, and the finding that the model card does not link to it -- so 'every trained model records the identities of the snapshots it was trained on' still fails for the local-model path, and nothing refuses a job pointed at a live series. | Extend the same content-hash discipline to qip_training::dataset::TrainingDataset to close the gap for local-model training specifically. | 2026-10-05: stale in part — every registered card now records feature_source_digest, the content hash of its source window (qip-deepbrain features.rs), and the window is assembled through a hash-checked campaign. Remaining: a training-set digest on the card, a retrain-from-snapshot path, and a refusal for bars that did not come through a campaign (LearningDesk::learn_window takes a bare slice); store-level snapshots stay C4-blocked."
   },
   {
     "id": "MODEL-057",
-    "status": "PARTIAL",
-    "current": "qip_ai::registry::ModelRegistry (backend/crates/libs/qip-ai/src/registry.rs) holds ModelCard{version, evaluations: Vec<EvaluationRecord>, training_datasets, features, stage, artifact_digest}. ModelRegistry::production_version(name) acts as a single 'production' alias per model name. promote()/promote_artifact() record deployment time and, for promote_artifact, the artifact digest, refusing promotion without a passing evaluation and refusing a digest change under the same reference. Tested: a_model_needs_a_passing_evaluation_before_promotion, a_stale_evaluation_expires (model_infrastructure.rs:523,583), a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference (:895).",
+    "status": "COMPLETE",
+    "current": "qip_ai::registry::ModelRegistry holds, per ModelCard, the version, the evaluation results, the lineage (training_datasets, features, parameters, rollback_parent), the artifact digest and — new — alias_moves: every move of the production alias on to or off the version, with who moved it and on what evidence. ModelRegistry::aliases(reference) returns the aliases a version holds now; the production alias follows ModelStage::Production, so the alias and the stage cannot disagree. On the production path a move cannot be anonymous: Platform::promote_model_from and Platform::rollback_model refuse until the composition root has named the process's model desk (Platform::name_model_desk refuses a blank name and a second, different one), and then write the desk and the evidence — the promoted card's own latest evaluation read off the registry, with the degraded model's drift reading beside it for a rollback — on the registry card (ModelRegistry::record_alias_move, which reads which way the alias went off the card's stage) and on the journalled ModelPromotion (moved_by, evidence), inside the same scratch-then-journal-then-adopt act as the move. qip-deepbrain's LearningDesk names itself MODEL_DESK before every promotion and rollback.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:56-96,220-338",
-      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:523,583,895",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:66-110 (ModelPromotion journalled to the event log: reference, artifact_digest, distilled digest, displaced; no operator)",
-      "backend/crates/runtime/qip-kernel/tests/serving.rs:171 a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distillate_by_the_digest_a_cell_checks"
+      "backend/crates/libs/qip-ai/src/registry.rs (AliasMove, PRODUCTION_ALIAS, ALIAS_MOVES_RETAINED, ModelCard::alias_moves, ModelRegistry::aliases, ModelRegistry::record_alias_move)",
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs (Platform::name_model_desk / model_desk / require_model_desk, evaluation_evidence, ModelPromotion::moved_by and evidence; promote_model_from and rollback_model record both)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs (MODEL_DESK; promote_candidate and roll_back_degraded name the desk)",
+      "test: moving_the_production_alias_records_the_desk_that_moved_it_and_the_evidence_in_the_registry_and_the_log (backend/crates/runtime/qip-kernel/tests/serving.rs) -- a first promotion, a displacement, a rollback and an unnamed desk; mutations, each failed and was restored byte-for-byte: promotion stops recording the move on the card; unnamed desk no longer refused -> 'a platform with no named desk promoted a model'; journalled record drops the mover -> left None, right Some(\"serving-tests/model-desk\"); rollback drops the drift reading; second desk name accepted; move always recorded as an assignment; every card of a name holds the alias; displaced model's removal not recorded",
+      "test: an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newest_moves (backend/crates/libs/qip-ai/tests/model_infrastructure.rs) -- mutations: blank mover accepted, blank evidence accepted, retention bound not applied (left 34, right 16); each failed and was restored",
+      "test: a_skilled_candidate_is_promoted_against_no_incumbent_and_an_equal_successor_is_not (qip-deepbrain learning.rs) now asserts the desk named itself and the record and the card agree -- mutations: desk no longer names itself -> 'no model desk is named in this process'; desk names itself otherwise -> left Some(\"somebody-else\"); each restored",
+      "cargo test -p qip-kernel --test serving: 'test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'; cargo test -p qip-ai --test model_infrastructure: 'test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'"
     ],
-    "gap": "promote()/promote_artifact() take no operator identity, so 'moving an alias records who moved it' is unimplemented — nothing on ModelCard captures who promoted it beyond the evaluation record already attached. Only one alias slot exists (ModelStage::Production per name), not a general multi-alias system.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -222,11 +225,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ai --test model_infrastructure a_model_needs_a_passing_evaluation_before_promotion",
+    "verification": "backend/crates/runtime/qip-kernel/tests/serving.rs::moving_the_production_alias_records_the_desk_that_moved_it_and_the_evidence_in_the_registry_and_the_log; backend/crates/libs/qip-ai/tests/model_infrastructure.rs::an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newest_moves",
     "work_item": "E10",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status and flags kept. Added that promotion evidence is journalled as a ModelPromotion record in the event log rather than held beside the version in the registry, and that it carries no operator identity either, which confirms the 'who moved it' gap."
+    "notes": "verify: status and flags kept. Added that promotion evidence is journalled as a ModelPromotion record in the event log rather than held beside the version in the registry, and that it carries no operator identity either, which confirms the 'who moved it' gap. | 2026-10-05: closed. One alias exists (production); aliases() returns a list so a second alias is an addition and not a redesign. 'Who' is the automated desk, by name: no person is in this loop, and the independence of the evaluator from the producer is MODEL-040's row. The guarantee is held at Platform, the only path a composition root uses: qip-ai's own promote and retire remain callable without a mover by a caller that bypasses the platform, because ModelCard's fields are public. A card keeps its newest 16 moves; the journalled ModelPromotion is the full record. Callers that promote on a Platform they built themselves must call name_model_desk first — an unnamed promotion is refused with that sentence."
   },
   {
     "id": "MODEL-058",
@@ -410,7 +413,7 @@
     "work_item": "E10",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status and flags kept. Added the concrete promotion-event link, the ModelPromotion record journalled in the event log with its test. Confirmed rg for source_commit|git_commit|commit_sha|activation_epoch|activated_at across backend returns nothing, so the source-commit and activation-epoch links are absent and the signature link is the ADR 0043 gap. | The signature half of this gap is architectural (ADR 0043), not simply unbuilt; source-commit and activation-epoch tracking are unbuilt and cheaper to close. | Blocked 2026-10-04 (not built): two of the five links (source commit, asymmetric signature) cannot exist without external build provenance and a managed signer (ADR 0043); the activation-epoch link depends on MODEL-051's package distribution."
+    "notes": "verify: status and flags kept. Added the concrete promotion-event link, the ModelPromotion record journalled in the event log with its test. Confirmed rg for source_commit|git_commit|commit_sha|activation_epoch|activated_at across backend returns nothing, so the source-commit and activation-epoch links are absent and the signature link is the ADR 0043 gap. | The signature half of this gap is architectural (ADR 0043), not simply unbuilt; source-commit and activation-epoch tracking are unbuilt and cheaper to close. | Blocked 2026-10-04 (not built): two of the five links (source commit, asymmetric signature) cannot exist without external build provenance and a managed signer (ADR 0043); the activation-epoch link depends on MODEL-051's package distribution. | 2026-10-05: the promotion event now names who moved the alias and on what evidence (MODEL-057) and each promotion belongs to a pack version with a predecessor (MODEL-037). Source commit, asymmetric signature and activation epoch are unchanged."
   },
   {
     "id": "MODEL-065",
@@ -434,7 +437,7 @@
     "work_item": "E10",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags kept. Corrected the evidence: qip_optimization_engine's ComputeRouter baseline is a sizing-time computation reached from PortfolioConstructor, not a promotion check, so it does not support the 'benchmark' item; the promotion-time benchmark is the deep brain's baseline class and incumbent comparison on the model path. Safety and risk-envelope compatibility checks and the per-check refusal tests remain missing."
+    "notes": "verify: status and flags kept. Corrected the evidence: qip_optimization_engine's ComputeRouter baseline is a sizing-time computation reached from PortfolioConstructor, not a promotion check, so it does not support the 'benchmark' item; the promotion-time benchmark is the deep brain's baseline class and incumbent comparison on the model path. Safety and risk-envelope compatibility checks and the per-check refusal tests remain missing. | 2026-10-05 not built: three of the seven checks (robustness, safety, risk-envelope compatibility) have no agreed definition for a model here, and choosing their thresholds is a policy decision that wants an ADR. 'Authority' has a first piece: a promotion is refused until a model desk is named (MODEL-057)."
   },
   {
     "id": "MODEL-066",

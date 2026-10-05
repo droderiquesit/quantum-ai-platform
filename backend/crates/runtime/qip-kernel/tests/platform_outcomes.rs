@@ -873,3 +873,320 @@ fn learn_scores_the_retained_plan_against_the_demand_inside_its_window_and_not_b
     assert_eq!(plans_retained(&platform).len(), 2);
     Ok(())
 }
+
+// --- every path reaches the evaluation input under an id (MODEL-013) --------
+
+/// Daily bars ending at `start()` with a 9% jump two thirds of the way in, so
+/// the detectors have something real to find on `symbol`.
+fn jump_bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            SensedRecord::Bar(Box::new(Bar {
+                object_id: object(symbol),
+                venue: "XNYS".to_string(),
+                interval: Interval::Day,
+                open_time: at,
+                open: Decimal::from_f64(open).unwrap(),
+                high: Decimal::from_f64(open.max(price) * 1.002).unwrap(),
+                low: Decimal::from_f64(open.min(price) * 0.998).unwrap(),
+                close: Decimal::from_f64(price).unwrap(),
+                volume: dec!("1000000"),
+                trade_count: 5_000,
+                vwap: Decimal::from_f64((open + price) / 2.0),
+                quality: DataQuality::default(),
+            }))
+        })
+        .collect()
+}
+
+#[test]
+fn a_fill_a_refused_order_and_an_opportunity_that_lapsed_unworked_each_reach_the_evaluation_input_under_their_own_decision_id()
+-> Result<()> {
+    // The evaluation input held every fill and every refused order and
+    // nothing for an opportunity the platform saw and never got to: the
+    // queue's `retain` dropped it and the stage reported a count. REASON
+    // works only the head of the queue, so that is the path most
+    // opportunities take, and it was the one path with no record.
+    use std::collections::BTreeSet;
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(jump_bars("AAA", 120));
+    platform.observe(jump_bars("BBB", 120));
+
+    let filled_order = fill_one(&mut platform, start())?;
+    let untraceable = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-2",
+        Vec::new(),
+        start(),
+    );
+    let refused_order = untraceable.order_id.clone();
+    assert!(platform.submit_order(untraceable, start()).is_err());
+
+    platform.run_cycle(start());
+    // Premise: DISCOVER queued more than REASON could take up in one pass,
+    // so something is left waiting behind the head.
+    let queued: Vec<_> = platform.queue().to_vec();
+    assert!(
+        queued.len() >= 2,
+        "premise: at least two opportunities are queued, found {}",
+        queued.len()
+    );
+    let head = queued[0].opportunity_id.clone();
+    let waiting: BTreeSet<String> = queued[1..]
+        .iter()
+        .map(|opportunity| opportunity.opportunity_id.as_str().to_string())
+        .collect();
+    assert_eq!(waiting.len(), queued.len() - 1, "premise: distinct ids");
+    let lapsed_in = |platform: &Platform| -> Vec<qip_twin::capture::CapturedOutcome> {
+        platform
+            .outcomes()
+            .entries()
+            .iter()
+            .filter(|entry| matches!(entry.decision.action, Action::ExpiredOpportunity { .. }))
+            .cloned()
+            .collect()
+    };
+    assert!(
+        lapsed_in(&platform).is_empty(),
+        "premise: nothing has lapsed yet, so every lapse read below happened below"
+    );
+
+    // Six days on, past every queued opportunity's time to live.
+    let later = start().saturating_add(Duration::from_days(6));
+    assert!(
+        queued.iter().all(|opportunity| !opportunity.is_live(later)),
+        "premise: every queued opportunity has lapsed by the second cycle"
+    );
+    platform.run_cycle(later);
+    platform.outcomes().verify()?;
+
+    // One record for each opportunity that waited and none for the head
+    // REASON took up, each naming the opportunity, when it was seen and how
+    // long it waited, with nothing realised.
+    let lapsed = lapsed_in(&platform);
+    let mut named = BTreeSet::new();
+    for entry in &lapsed {
+        let Action::ExpiredOpportunity {
+            opportunity,
+            object_id,
+            seen_at,
+            age,
+        } = &entry.decision.action
+        else {
+            unreachable!("filtered above")
+        };
+        assert!(
+            named.insert(opportunity.as_str().to_string()),
+            "{opportunity} was captured twice"
+        );
+        let source = queued
+            .iter()
+            .find(|queued| &queued.opportunity_id == opportunity)
+            .expect("a lapse names an opportunity that was queued");
+        assert_eq!(*seen_at, source.detected_at);
+        assert_eq!(*age, later.since(source.detected_at));
+        assert_eq!(
+            Some(object_id),
+            source.affected_objects.first(),
+            "the record is about the instrument the opportunity named"
+        );
+        assert_eq!(&entry.decision.object_id, object_id);
+        assert_eq!(entry.decision.at, later);
+        assert_eq!(entry.outcome.realised_pnl(), Decimal::ZERO);
+        assert_eq!(entry.outcome.filled_quantity(), Decimal::ZERO);
+        assert!(
+            entry.decision.action.is_refusal() && entry.decision.action.forgone().is_none(),
+            "a lapse is declined, and is not priced"
+        );
+    }
+    assert_eq!(
+        named, waiting,
+        "the lapses captured are not exactly the opportunities that waited unworked"
+    );
+    assert!(
+        !named.contains(head.as_str()),
+        "the opportunity REASON took up was filed as never looked at"
+    );
+    // Counted under a kind of its own, so the tally an operator reads does
+    // not fold a lapse into a priced miss.
+    assert_eq!(
+        platform.outcomes().tally().get("expired_opportunity"),
+        Some(&waiting.len())
+    );
+    assert_eq!(platform.outcomes().tally().get("missed_opportunity"), None);
+
+    // The fill and the refusal are on the same chain, each under the order
+    // the ledger booked it against.
+    let capture = platform.outcomes();
+    let placed = capture
+        .entries()
+        .iter()
+        .find(|entry| {
+            matches!(&entry.decision.action,
+                Action::OrderPlaced { order_id, .. } if order_id == &filled_order)
+        })
+        .expect("the placement of the filled order");
+    let fill = capture
+        .entries()
+        .iter()
+        .find(|entry| {
+            matches!(&entry.decision.action,
+                Action::Filled { order_id, .. } if order_id == &filled_order)
+        })
+        .expect("the fill of the order the ledger booked");
+    assert_eq!(
+        fill.decision
+            .caused_by
+            .as_ref()
+            .map(|cause| cause.0.as_str()),
+        Some(placed.decision.decision_id.as_str()),
+        "the fill does not trace to the decision that placed it"
+    );
+    assert!(fill.outcome.filled_quantity().is_positive());
+    // And it is the fill the order manager booked — the same quantity at the
+    // same price — rather than a second account of it.
+    let booked = platform
+        .orders()
+        .fills()
+        .into_iter()
+        .find(|booked| booked.order_id == filled_order)
+        .expect("the fill the order manager booked");
+    let Action::Filled {
+        quantity, price, ..
+    } = &fill.decision.action
+    else {
+        unreachable!("filtered above")
+    };
+    assert_eq!(
+        (quantity, price),
+        (&booked.quantity, &booked.price),
+        "the captured fill is not the fill the ledger booked"
+    );
+    assert!(
+        capture.entries().iter().any(|entry| {
+            matches!(&entry.decision.action,
+                Action::Rejected { order_id, .. } if order_id == &refused_order)
+        }),
+        "the refused order is not on the chain: {:?}",
+        capture.tally()
+    );
+
+    // No record reaches the input without a decision behind it: every entry
+    // carries an id, and no two share one.
+    let ids: BTreeSet<&str> = capture
+        .entries()
+        .iter()
+        .map(|entry| entry.decision.decision_id.as_str())
+        .collect();
+    assert!(ids.iter().all(|id| !id.trim().is_empty()));
+    assert_eq!(ids.len(), capture.len(), "two records share a decision id");
+    Ok(())
+}
+
+// --- the part of an order that did not fill (MODEL-039) ---------------------
+
+#[test]
+fn an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_realises_nothing_twice()
+-> Result<()> {
+    // The desk's venue fills part of an order immediately and leaves the
+    // rest. The slices that filled were captured; the remainder was captured
+    // nowhere, so an order filled in part and one filled whole left the same
+    // records and the shortfall never reached evaluation.
+    let mut platform = platform(PlatformConfig::default())?;
+    let order_id = fill_one(&mut platform, start())?;
+    let (filled, remaining) = {
+        let order = platform
+            .orders()
+            .order(&order_id)
+            .expect("the order the manager booked");
+        (order.filled_quantity(), order.remaining_quantity())
+    };
+    assert!(
+        filled.is_positive() && remaining.is_positive(),
+        "premise: the venue filled part of the order and left part, so there is a shortfall \
+         to record ({filled} filled, {remaining} remaining)"
+    );
+
+    let capture = platform.outcomes();
+    capture.verify()?;
+    let of_this_order = |entry: &&qip_twin::capture::CapturedOutcome| match &entry.decision.action {
+        Action::OrderPlaced { order_id: id, .. }
+        | Action::Filled { order_id: id, .. }
+        | Action::PartiallyFilled { order_id: id, .. } => id == &order_id,
+        _ => false,
+    };
+    let records: Vec<_> = capture.entries().iter().filter(of_this_order).collect();
+    let placed = records
+        .iter()
+        .find(|entry| matches!(entry.decision.action, Action::OrderPlaced { .. }))
+        .expect("the placement");
+    let partial: Vec<_> = records
+        .iter()
+        .filter(|entry| matches!(entry.decision.action, Action::PartiallyFilled { .. }))
+        .collect();
+    assert_eq!(
+        partial.len(),
+        1,
+        "one record of the shortfall, found {}: {:?}",
+        partial.len(),
+        capture.tally()
+    );
+    let Action::PartiallyFilled {
+        filled: recorded_filled,
+        remaining: recorded_remaining,
+        price,
+        ..
+    } = &partial[0].decision.action
+    else {
+        unreachable!("filtered above")
+    };
+    // The ledger's own two numbers, not a recomputation of them.
+    assert_eq!(*recorded_filled, filled);
+    assert_eq!(*recorded_remaining, remaining);
+    let booked = platform
+        .orders()
+        .fills()
+        .into_iter()
+        .find(|booked| booked.order_id == order_id)
+        .expect("the fill the order manager booked");
+    assert_eq!(*price, booked.price);
+    assert_eq!(
+        partial[0]
+            .decision
+            .caused_by
+            .as_ref()
+            .map(|cause| cause.0.as_str()),
+        Some(placed.decision.decision_id.as_str()),
+        "the shortfall does not trace to the decision that placed the order"
+    );
+
+    // Nothing is realised twice: across every record of this order the
+    // quantity and the cost are what the ledger booked, once.
+    let quantity = records
+        .iter()
+        .map(|entry| entry.outcome.filled_quantity())
+        .fold(Decimal::ZERO, |a, b| a + b);
+    let costs = records
+        .iter()
+        .map(|entry| entry.outcome.costs())
+        .fold(Decimal::ZERO, |a, b| a + b);
+    assert_eq!(
+        quantity, filled,
+        "the filled quantity is on the chain twice"
+    );
+    assert_eq!(costs, booked.costs, "the fill's cost is on the chain twice");
+    assert!(
+        booked.costs.is_positive(),
+        "premise: the fill cost something"
+    );
+    Ok(())
+}

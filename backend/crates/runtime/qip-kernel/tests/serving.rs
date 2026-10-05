@@ -34,7 +34,18 @@ fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
 
+/// The model desk every promoting platform here is named for (MODEL-057).
+const DESK: &str = "serving-tests/model-desk";
+
 fn platform_serving(config: PlatformConfig) -> Result<Platform> {
+    let mut platform = platform_serving_with_no_desk_named(config)?;
+    platform.name_model_desk(DESK)?;
+    Ok(platform)
+}
+
+/// A serving platform whose composition root named no model desk: it can
+/// serve, and may promote nothing.
+fn platform_serving_with_no_desk_named(config: PlatformConfig) -> Result<Platform> {
     let (context, _clock) = Context::deterministic(start(), config.seed);
     Platform::new_serving(
         config,
@@ -741,5 +752,414 @@ fn a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_at
             .map(|record| record.producer.clone()),
         Some(informed())
     );
+    Ok(())
+}
+
+// --- Model Pack lineage (MODEL-037) -----------------------------------------
+
+#[test]
+fn every_accepted_model_makes_a_pack_naming_its_predecessor_and_delta_and_walking_the_lineage_rebuilds_each_membership()
+-> Result<()> {
+    // The promoted set had deltas in the log and no version identity: nobody
+    // could say which pack a cell had been told about, what it superseded, or
+    // rebuild an earlier pack without replaying records by hand. A pack that
+    // named its delta wrongly would pass any test that only read the newest
+    // membership, so every pack here is checked against the membership the
+    // test itself built from what it promoted.
+    use qip_kernel::model_serving::pack_membership;
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-pack-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let minute = |n: i64| start().saturating_add(qip_core::Duration::from_mins(n));
+
+    let first = teacher_with_ridge("pack-a", "0.1.0", 1e-6)?;
+    let second = teacher_with_ridge("pack-a", "0.2.0", 1.0)?;
+    let other = teacher("pack-b", "0.1.0")?;
+    let unaccepted = teacher("pack-c", "0.1.0")?;
+    let first_artifact = InTreeProvider::pack(&first)?;
+    let second_artifact = InTreeProvider::pack(&second)?;
+    let other_artifact = InTreeProvider::pack(&other)?;
+    assert_ne!(
+        first_artifact.digest, second_artifact.digest,
+        "premise: the two versions are different bytes"
+    );
+    let student = DistilledModel::linear("pack-a", 0.1, vec![0.5, -0.25])?;
+    let next_student = DistilledModel::linear("pack-a", 0.1, vec![0.4, -0.2])?;
+
+    let mut registry = ModelRegistry::new();
+    let first_reference = registered(&mut registry, &first)?;
+    let second_reference = registered(&mut registry, &second)?;
+    let other_reference = registered(&mut registry, &other)?;
+    // The unaccepted model: a real fit held to a bar no fit clears, so its
+    // card carries an evaluation that did not pass — no acceptance record.
+    let impossible = SkillPolicy {
+        minimum_holdout_r2: 2.0,
+        ..SkillPolicy::default()
+    };
+    let rejected = register_fit(
+        &mut registry,
+        &unaccepted,
+        &impossible,
+        "serving-tests",
+        start(),
+    )?;
+    assert!(
+        !rejected.passed,
+        "premise: the fit did not clear its bar, so its card holds no acceptance"
+    );
+
+    let member = |entries: &[(&String, &String)]| -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(reference, digest)| ((*reference).clone(), (*digest).clone()))
+            .collect()
+    };
+    let names = |entries: &[&String]| -> std::collections::BTreeSet<String> {
+        entries.iter().map(|entry| (*entry).clone()).collect()
+    };
+    // What the promoted set holds after each change, written from what this
+    // test promoted and not read back from the platform.
+    let expected = [
+        member(&[(&first_reference, &first_artifact.digest)]),
+        member(&[
+            (&first_reference, &first_artifact.digest),
+            (&other_reference, &other_artifact.digest),
+        ]),
+        member(&[
+            (&second_reference, &second_artifact.digest),
+            (&other_reference, &other_artifact.digest),
+        ]),
+        member(&[
+            (&first_reference, &first_artifact.digest),
+            (&other_reference, &other_artifact.digest),
+        ]),
+    ];
+
+    let lineage;
+    {
+        let mut platform = platform_serving(PlatformConfig::default().with_event_log_file(&path))?;
+        // Premise: no pack exists before a promotion, so every pack below
+        // was made by one.
+        assert!(platform.model_pack().is_none());
+        assert!(platform.model_pack_lineage()?.is_empty());
+
+        platform.promote_model(
+            &mut registry,
+            &first_artifact,
+            Some(&student),
+            &[],
+            minute(0),
+        )?;
+        platform.promote_model(&mut registry, &other_artifact, None, &[], minute(1))?;
+        platform.promote_model(
+            &mut registry,
+            &second_artifact,
+            Some(&next_student),
+            std::slice::from_ref(&first_reference),
+            minute(2),
+        )?;
+
+        // A model with no acceptance record is refused and makes no pack.
+        let before = platform.model_pack().cloned();
+        let refused = platform
+            .promote_model(
+                &mut registry,
+                &InTreeProvider::pack(&unaccepted)?,
+                None,
+                &[],
+                minute(3),
+            )
+            .expect_err("a model with no passing evaluation joined a pack");
+        assert!(
+            refused.message().contains("without a passing evaluation"),
+            "{refused}"
+        );
+        assert_eq!(platform.model_pack().cloned(), before);
+        assert_eq!(platform.model_pack_lineage()?.len(), 3);
+
+        // A rollback changes the set too, so it is a pack like any other.
+        platform.rollback_model(&mut registry, &second_reference, minute(4))?;
+
+        lineage = platform.model_pack_lineage()?;
+        assert_eq!(lineage.len(), 4, "one pack per record that changed the set");
+
+        // Each pack names the one before it, and the first names none.
+        assert_eq!(lineage[0].predecessor, None);
+        for pair in lineage.windows(2) {
+            assert_eq!(pair[1].predecessor.as_ref(), Some(&pair[0].id));
+        }
+        // The second and fourth packs hold the same members and are
+        // different packs: an id names a membership *and* its history.
+        assert_eq!(expected[1], expected[3]);
+        assert_ne!(lineage[1].id, lineage[3].id);
+
+        // The delta of each, exactly.
+        assert_eq!(
+            lineage[0].added,
+            member(&[(&first_reference, &first_artifact.digest)])
+        );
+        assert!(lineage[0].kept.is_empty() && lineage[0].removed.is_empty());
+
+        assert_eq!(
+            lineage[1].added,
+            member(&[(&other_reference, &other_artifact.digest)])
+        );
+        assert_eq!(lineage[1].kept, names(&[&first_reference]));
+        assert!(lineage[1].removed.is_empty());
+
+        assert_eq!(
+            lineage[2].added,
+            member(&[(&second_reference, &second_artifact.digest)])
+        );
+        assert_eq!(lineage[2].kept, names(&[&other_reference]));
+        assert_eq!(lineage[2].removed, names(&[&first_reference]));
+
+        assert_eq!(
+            lineage[3].added,
+            member(&[(&first_reference, &first_artifact.digest)])
+        );
+        assert_eq!(lineage[3].kept, names(&[&other_reference]));
+        assert_eq!(lineage[3].removed, names(&[&second_reference]));
+
+        // Walking the lineage rebuilds every pack's membership.
+        for (pack, members) in lineage.iter().zip(&expected) {
+            assert_eq!(&pack_membership(&lineage, &pack.id)?, members);
+        }
+
+        // The pack in force is the lineage's newest, it is the promoted set
+        // the platform ships from, and the shipping line names it.
+        let head = platform
+            .model_pack()
+            .cloned()
+            .ok_or_else(|| Error::not_found("the pack in force"))?;
+        assert_eq!(Some(&head), lineage.last());
+        let held: BTreeMap<String, String> = platform
+            .model_promotions()
+            .iter()
+            .map(|(reference, record)| (reference.clone(), record.artifact_digest.clone()))
+            .collect();
+        assert_eq!(pack_membership(&lineage, &head.id)?, held);
+        let issue = platform.model_manifest()?;
+        assert_eq!(issue.pack(), Some(&head));
+        let line = issue.describe();
+        assert!(
+            line.contains(&format!(
+                "model pack {} supersedes {} (+1 added, 1 kept, -1 removed)",
+                &head.id[..12],
+                &lineage[2].id[..12]
+            )),
+            "the shipping line does not name the pack and its predecessor: {line}"
+        );
+    }
+
+    // The lineage is a projection of the log: a restart holds the same pack
+    // and reads the same lineage, having promoted nothing itself.
+    let mut restart_config = PlatformConfig::default().with_event_log_file(&path);
+    restart_config.seed ^= 1;
+    let restarted = platform_serving(restart_config)?;
+    assert_eq!(restarted.model_pack(), lineage.last());
+    assert_eq!(restarted.model_pack_lineage()?, lineage);
+
+    // A lineage changed after the fact is refused rather than walked. Three
+    // edits, each caught by a different check.
+    let newest = &lineage[3].id;
+    // (1) A member's bytes swapped: the deltas still line up, the id does not.
+    let mut swapped = lineage.clone();
+    swapped[1]
+        .added
+        .insert(other_reference.clone(), second_artifact.digest.clone());
+    let error = pack_membership(&swapped, newest).expect_err("a swapped digest was walked");
+    assert!(
+        error.message().contains("does not digest to its own id"),
+        "{error}"
+    );
+    // (2) A pack claiming to keep a version its predecessor never held.
+    let mut padded = lineage.clone();
+    padded[2].kept.insert("pack-z@9.9.9".to_string());
+    let error = pack_membership(&padded, newest).expect_err("a padded delta was walked");
+    assert!(error.message().contains("says it keeps"), "{error}");
+    // (3) A pack missing from the middle: the pointer leads nowhere.
+    let mut gapped = lineage.clone();
+    gapped.remove(1);
+    let error = pack_membership(&gapped, newest).expect_err("a gapped lineage was walked");
+    assert!(error.message().contains("holds no model pack"), "{error}");
+
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+// --- who moved the production alias, and on what evidence (MODEL-057) -------
+
+#[test]
+fn moving_the_production_alias_records_the_desk_that_moved_it_and_the_evidence_in_the_registry_and_the_log()
+-> Result<()> {
+    // A promoted card said when it was deployed and nothing about who
+    // decided or what they were looking at, and the promotion record named
+    // no mover either: an alias found on the wrong version could be traced
+    // to nobody. Every move below — a first promotion, a displacement, a
+    // rollback — must name the desk and the evidence, on the card and on the
+    // journalled record alike.
+    use qip_ai::registry::PRODUCTION_ALIAS;
+    let mut platform = platform_serving(PlatformConfig::default())?;
+    assert_eq!(platform.model_desk(), Some(DESK));
+    let mut registry = ModelRegistry::new();
+    let old = teacher_with_ridge("alias-a", "0.1.0", 1e-6)?;
+    let new = teacher_with_ridge("alias-a", "0.2.0", 1.0)?;
+    let old_reference = registered(&mut registry, &old)?;
+    let new_reference = registered(&mut registry, &new)?;
+    let card = |registry: &ModelRegistry, reference: &str| -> Result<ModelCard> {
+        registry
+            .get(reference)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the card"))
+    };
+    let last_move = |registry: &ModelRegistry, reference: &str| {
+        card(registry, reference)?
+            .alias_moves
+            .last()
+            .cloned()
+            .ok_or_else(|| Error::not_found("an alias move on the card"))
+    };
+
+    // Premise: nothing holds the alias and no move is on record, so every
+    // move read below was written by the act the test performs.
+    assert!(registry.aliases(&old_reference)?.is_empty());
+    assert!(card(&registry, &old_reference)?.alias_moves.is_empty());
+    assert!(card(&registry, &new_reference)?.alias_moves.is_empty());
+
+    // --- the first promotion -------------------------------------------------
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&old)?,
+        None,
+        &[],
+        start(),
+    )?;
+    // For a promoted model the registry returns its version, its evaluation
+    // results, its lineage, its current aliases and the gate's verdict.
+    let promoted = card(&registry, &old_reference)?;
+    assert_eq!(promoted.version, "0.1.0");
+    let evaluation = promoted
+        .latest_evaluation()
+        .ok_or_else(|| Error::not_found("the evaluation"))?;
+    assert!(evaluation.passed, "the gate's verdict");
+    assert!(evaluation.metrics.contains_key("holdout_r2"));
+    assert_eq!(promoted.training_datasets, vec!["alias-a-data".to_string()]);
+    assert_eq!(registry.aliases(&old_reference)?, vec![PRODUCTION_ALIAS]);
+    // And the move itself: who, on what evidence, when.
+    let moved = last_move(&registry, &old_reference)?;
+    assert_eq!(moved.alias, PRODUCTION_ALIAS);
+    assert!(moved.assigned);
+    assert_eq!(moved.moved_by, DESK);
+    assert_eq!(moved.at, start());
+    assert!(
+        moved.evidence.contains("alias-a-data")
+            && moved.evidence.contains("passed")
+            && moved.evidence.contains("holdout_r2="),
+        "the evidence does not name the evaluation the move rested on: {}",
+        moved.evidence
+    );
+    let record = platform
+        .model_promotions()
+        .get(&old_reference)
+        .cloned()
+        .ok_or_else(|| Error::not_found("the promotion record"))?;
+    assert_eq!(record.moved_by.as_deref(), Some(DESK));
+    assert_eq!(record.evidence.as_deref(), Some(moved.evidence.as_str()));
+
+    // --- the alias moves to a successor --------------------------------------
+    let later = start().saturating_add(qip_core::Duration::from_mins(1));
+    platform.promote_model(
+        &mut registry,
+        &InTreeProvider::pack(&new)?,
+        None,
+        std::slice::from_ref(&old_reference),
+        later,
+    )?;
+    assert!(registry.aliases(&old_reference)?.is_empty());
+    assert_eq!(registry.aliases(&new_reference)?, vec![PRODUCTION_ALIAS]);
+    assert_eq!(
+        card(&registry, &new_reference)?.rollback_parent.as_ref(),
+        Some(&old_reference),
+        "the successor's lineage names what it displaced"
+    );
+    let taken = last_move(&registry, &old_reference)?;
+    assert!(!taken.assigned, "the alias left the displaced version");
+    assert_eq!(taken.moved_by, DESK);
+    assert_eq!(taken.at, later);
+    assert!(
+        taken.evidence.contains(&new_reference),
+        "the removal does not say what displaced it: {}",
+        taken.evidence
+    );
+    assert_eq!(
+        card(&registry, &old_reference)?.alias_moves.len(),
+        2,
+        "on and off"
+    );
+    let given = last_move(&registry, &new_reference)?;
+    assert!(given.assigned && given.moved_by == DESK && given.at == later);
+
+    // --- a rollback moves it back, and says what reading it acted on ---------
+    registry.record_drift(&new_reference, 0.9)?;
+    let degraded = card(&registry, &new_reference)?;
+    assert!(
+        degraded.drift_score > degraded.drift_threshold,
+        "premise: the successor has drifted past its threshold"
+    );
+    let rolled_at = later.saturating_add(qip_core::Duration::from_mins(1));
+    platform.rollback_model(&mut registry, &new_reference, rolled_at)?;
+    assert_eq!(registry.aliases(&old_reference)?, vec![PRODUCTION_ALIAS]);
+    assert!(registry.aliases(&new_reference)?.is_empty());
+    let returned = last_move(&registry, &old_reference)?;
+    assert!(returned.assigned && returned.moved_by == DESK && returned.at == rolled_at);
+    assert!(
+        returned.evidence.contains("drift 0.900") && returned.evidence.contains("alias-a-data"),
+        "the rollback does not name the drift reading and the evaluation it returned to: {}",
+        returned.evidence
+    );
+    let retired = last_move(&registry, &new_reference)?;
+    assert!(!retired.assigned && retired.moved_by == DESK && retired.at == rolled_at);
+    let record = platform
+        .model_promotions()
+        .get(&old_reference)
+        .cloned()
+        .ok_or_else(|| Error::not_found("the rollback record"))?;
+    assert_eq!(record.moved_by.as_deref(), Some(DESK));
+    assert_eq!(record.evidence.as_deref(), Some(returned.evidence.as_str()));
+
+    // --- a desk nobody named moves nothing ------------------------------------
+    let mut unnamed = platform_serving_with_no_desk_named(PlatformConfig::default())?;
+    assert_eq!(unnamed.model_desk(), None, "premise: no desk is named");
+    let mut elsewhere = ModelRegistry::new();
+    let orphan = teacher("alias-b", "0.1.0")?;
+    let orphan_reference = registered(&mut elsewhere, &orphan)?;
+    let artifact = InTreeProvider::pack(&orphan)?;
+    let refused = unnamed
+        .promote_model(&mut elsewhere, &artifact, None, &[], start())
+        .expect_err("a platform with no named desk promoted a model");
+    assert!(
+        refused.message().contains("name_model_desk"),
+        "the refusal does not say what to do: {refused}"
+    );
+    let untouched = card(&elsewhere, &orphan_reference)?;
+    assert_eq!(untouched.stage, ModelStage::Development);
+    assert!(untouched.alias_moves.is_empty());
+    assert_eq!(promotion_records(&unnamed), 0, "a refusal reached the log");
+    // A blank name is no name, and a second name is refused once one stands.
+    assert!(unnamed.name_model_desk("  ").is_err());
+    assert_eq!(unnamed.model_desk(), None);
+    unnamed.name_model_desk(DESK)?;
+    unnamed.name_model_desk(DESK)?;
+    assert!(unnamed.name_model_desk("another-desk").is_err());
+    assert_eq!(unnamed.model_desk(), Some(DESK));
+    // Named, the very same promotion goes through — the refusal above was
+    // about the missing name and nothing else.
+    unnamed.promote_model(&mut elsewhere, &artifact, None, &[], start())?;
+    assert_eq!(last_move(&elsewhere, &orphan_reference)?.moved_by, DESK);
     Ok(())
 }
