@@ -513,6 +513,20 @@ resource "google_compute_router" "egress" {
   network = var.network_id
 }
 
+# A fixed outbound address, because a counterparty that allow-lists us can only
+# allow-list an address that stays put. AUTO_ONLY lets Google pick and replace
+# addresses as the gateway scales, so a venue or data vendor that pinned one
+# would silently lose us (SEC-013). MANUAL_ONLY with reserved addresses is the
+# only allocation that makes the egress address a fact the desk can hand over.
+resource "google_compute_address" "nat" {
+  count = length(local.egress_zones) > 0 ? 1 : 0
+
+  project      = var.project_id
+  name         = "qip-${var.environment}-tz-nat-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+}
+
 resource "google_compute_router_nat" "egress" {
   count = length(local.egress_zones) > 0 ? 1 : 0
 
@@ -521,7 +535,8 @@ resource "google_compute_router_nat" "egress" {
   router  = google_compute_router.egress[0].name
   region  = var.region
 
-  nat_ip_allocate_option = "AUTO_ONLY"
+  nat_ip_allocate_option = "MANUAL_ONLY"
+  nat_ips                = [google_compute_address.nat[0].self_link]
 
   # Never ALL_SUBNETWORKS_ALL_IP_RANGES. That option is how a zone created
   # later acquires internet egress by existing, and the zone created later is

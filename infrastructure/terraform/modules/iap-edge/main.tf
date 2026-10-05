@@ -138,6 +138,33 @@ resource "google_compute_security_policy" "edge" {
     }
   }
 
+  # SEC-048. IAP decides who may pass, but an admitted caller is still a
+  # source of injection payloads, and a session token stolen from one is
+  # exactly that caller. Preconfigured OWASP sets run before the rate limit, as
+  # in `modules/public-edge`, and block at sensitivity 1: a WAF in preview
+  # reads as protection and refuses nothing.
+  rule {
+    action   = "deny(403)"
+    priority = 1500
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('sqli-v33-stable', {'sensitivity': 1})"
+      }
+    }
+    description = "Refuse SQL injection patterns."
+  }
+
+  rule {
+    action   = "deny(403)"
+    priority = 1600
+    match {
+      expr {
+        expression = "evaluatePreconfiguredWaf('xss-v33-stable', {'sensitivity': 1})"
+      }
+    }
+    description = "Refuse cross-site scripting patterns."
+  }
+
   rule {
     action   = "rate_based_ban"
     priority = 2000

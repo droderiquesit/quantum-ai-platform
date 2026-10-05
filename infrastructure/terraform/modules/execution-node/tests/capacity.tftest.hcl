@@ -108,3 +108,32 @@ run "a_group_larger_than_the_one_machine_per_region_ceiling_is_refused" {
 
   expect_failures = [var.node_count]
 }
+
+# SEC-013: the venue egress address must be one a venue can allow-list.
+run "a_node_that_owns_its_egress_nat_reserves_the_address_it_translates_to" {
+  command = plan
+
+  variables {
+    node_count        = 1
+    create_egress_nat = true
+  }
+
+  assert {
+    condition     = google_compute_router_nat.egress[0].nat_ip_allocate_option == "MANUAL_ONLY" && length(google_compute_address.nat) == 1
+    error_message = "the node NAT draws ephemeral addresses, so a venue cannot allow-list this node"
+  }
+}
+
+run "a_node_without_its_own_nat_reserves_no_address" {
+  command = plan
+
+  variables {
+    node_count        = 1
+    create_egress_nat = false
+  }
+
+  assert {
+    condition     = length(google_compute_address.nat) == 0 && length(google_compute_router_nat.egress) == 0
+    error_message = "an address was reserved although the module creates no NAT"
+  }
+}
