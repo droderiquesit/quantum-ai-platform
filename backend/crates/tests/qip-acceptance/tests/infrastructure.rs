@@ -3545,6 +3545,190 @@ fn no_firewall_allow_rule_permits_the_whole_internet() {
     );
 }
 
+/// Whether one port token of a firewall `ports` list (`"22"` or `"20-30"`)
+/// covers `port`.
+fn port_token_covers(token: &str, port: u32) -> bool {
+    match token.split_once('-') {
+        Some((low, high)) => matches!(
+            (low.parse::<u32>(), high.parse::<u32>()),
+            (Ok(low), Ok(high)) if low <= port && port <= high
+        ),
+        None => token.parse::<u32>() == Ok(port),
+    }
+}
+
+#[test]
+fn no_firewall_allow_rule_opens_remote_administration_except_from_iap() {
+    // SEC-019. `no_firewall_allow_rule_permits_the_whole_internet` refuses only
+    // `0.0.0.0/0`, so an allow on port 22 from a narrower public range, or an
+    // allow with no `ports` at all (which is every port), would have passed it
+    // while giving an internet host a shell prompt. The one source that may
+    // reach 22 or 3389 is Identity-Aware Proxy's tunnel range, because that is
+    // the path OS Login and IAM gate.
+    const IAP: &str = "35.235.240.0/20";
+    // Google's own health-check probers: not an internet host, and the only
+    // other ingress source the tree allows on a computed port.
+    const PROBERS: [&str; 2] = ["35.191.0.0/16", "130.211.0.0/22"];
+    let mut ingress_allows = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for (name, body) in terraform_resources(&content, "google_compute_firewall") {
+            if body.contains("direction = \"EGRESS\"") || body.contains("direction  = \"EGRESS\"") {
+                continue;
+            }
+            for allow in body.split("allow {").skip(1) {
+                let allow = allow.split('}').next().unwrap_or(allow);
+                let protocol = allow
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("protocol"))
+                    .unwrap_or("");
+                if protocol.contains("icmp") {
+                    continue;
+                }
+                ingress_allows += 1;
+                let ports: Vec<String> = allow
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("ports"))
+                    .map(|l| {
+                        l.split('"')
+                            .skip(1)
+                            .step_by(2)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // No `ports` means every port of the protocol.
+                let admin = ports.is_empty()
+                    || ports
+                        .iter()
+                        .any(|t| port_token_covers(t, 22) || port_token_covers(t, 3389));
+                if !admin {
+                    continue;
+                }
+                let source_line = body
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("source_ranges"));
+                // A zone-to-zone path takes its source from the VPC's own
+                // zone ranges, never from a literal: internal by construction.
+                // `load_balancer_ranges` is Google's prober list, a literal
+                // pair of Google-owned ranges declared once in that module.
+                if source_line.is_some_and(|l| {
+                    l.contains("local.zone_cidr") || l.contains("local.load_balancer_ranges")
+                }) {
+                    continue;
+                }
+                let sources: Vec<&str> = source_line
+                    .map(|l| l.split('"').skip(1).step_by(2).collect())
+                    .unwrap_or_default();
+                assert!(
+                    !sources.is_empty() && sources.iter().all(|s| *s == IAP || PROBERS.contains(s)),
+                    "{}: the allow rule `{name}` opens TCP 22 or 3389 (ports {ports:?}) to {sources:?}; \
+                     only IAP's {IAP} (or Google's health-check probers) may reach remote administration",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        ingress_allows >= 3,
+        "only {ingress_allows} non-ICMP allow rules were read; the walk is not reaching the modules"
+    );
+}
+
+#[test]
+fn no_virtual_machine_the_repository_defines_carries_an_external_address() {
+    // SEC-019. The execution-node test reads one module, and no environment
+    // enables it. Walk every VM definition instead: a Terraform instance or
+    // template with an `access_config` block has an external address, and the
+    // image builder is created by a workflow rather than Terraform, so its
+    // `--no-address` is read from the command itself.
+    let mut vms = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for kind in [
+            "google_compute_instance",
+            "google_compute_instance_template",
+            "google_compute_region_instance_template",
+        ] {
+            for (name, body) in terraform_resources(&content, kind) {
+                vms += 1;
+                assert!(
+                    !body.contains("access_config"),
+                    "{}: `{kind}.{name}` carries an access_config, an external address",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        vms >= 1,
+        "no VM definition was read; the walk is not reaching the modules"
+    );
+
+    let workflow = read(IMAGE_WORKFLOW);
+    let creates: Vec<&str> = workflow
+        .split("gcloud compute instances create")
+        .skip(1)
+        .collect();
+    assert!(
+        !creates.is_empty(),
+        "{IMAGE_WORKFLOW} no longer creates an instance; this check is reading the wrong workflow"
+    );
+    for create in creates {
+        // The command ends at the first line that does not continue with a backslash.
+        let command: String = create
+            .lines()
+            .scan(true, |go, l| {
+                let keep = *go;
+                *go = l.trim_end().ends_with('\\');
+                keep.then_some(l)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            command.split_whitespace().any(|w| w == "--no-address"),
+            "{IMAGE_WORKFLOW} creates a builder VM without --no-address"
+        );
+    }
+}
+
+#[test]
+fn the_execution_node_module_declares_no_load_balancer_or_mesh_hop_on_the_venue_path() {
+    // SEC-011. A Reflex node's only hop to a venue is the venue connection
+    // itself; a forwarding rule, backend service or mesh attachment in the
+    // module would put a proxy on that path whose latency and failure nobody
+    // measured. The existing test reads for an external address; this reads
+    // for the other half of the constraint, by resource type so a comment or
+    // a variable description naming one cannot satisfy or trip it.
+    let module = without_comments(&read(NODE_MODULE));
+    let declared: Vec<String> = module
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("resource \""))
+        .filter_map(|l| l.split('"').next())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        declared
+            .iter()
+            .any(|t| t == "google_compute_instance_template")
+            && declared.iter().any(|t| t == "google_compute_firewall"),
+        "the walk found {declared:?}; it is not reading the execution-node module"
+    );
+    for kind in &declared {
+        let hop = kind.contains("forwarding_rule")
+            || kind.contains("backend_service")
+            || kind.contains("url_map")
+            || kind.contains("_proxy")
+            || kind.contains("service_attachment")
+            || kind.starts_with("google_network_services")
+            || kind.contains("mesh");
+        assert!(
+            !hop,
+            "the execution node module declares `{kind}`, a load-balancer or mesh hop on the venue path"
+        );
+    }
+}
+
 #[test]
 fn every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access() {
     // GCP-033: a subnet without Private Google Access sends a workload to

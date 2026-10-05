@@ -534,26 +534,26 @@
   },
   {
     "id": "SEC-048",
-    "status": "MISSING",
-    "current": "modules/public-edge and modules/iap-edge each declare a Cloud Armor security policy with adaptive DDoS protection and a per-client rate limit, but neither sets any preconfigured WAF rule.",
+    "status": "COMPLETE",
+    "current": "Both Cloud Armor policies now carry blocking preconfigured WAF rules: modules/public-edge (sqli-v33-stable 1500, xss-v33-stable 1600, deny(403), sensitivity 1; GCP-054) and modules/iap-edge (the same two, added here, ordered before the rate limit at 2000). The public edge's static-shell backend bucket uses an edge-type policy, which Google does not allow to carry WAF rules; it serves static files only.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:59 google_compute_security_policy.edge",
-      "infrastructure/terraform/modules/iap-edge/main.tf:130 google_compute_security_policy.edge",
-      "grep -in waf infrastructure/terraform/modules/public-edge/main.tf infrastructure/terraform/modules/iap-edge/main.tf — no match"
+      "infrastructure/terraform/modules/iap-edge/main.tf (rules at priority 1500 and 1600)",
+      "iap-edge tests/iap-edge.tftest.hcl::the_portal_policy_blocks_sql_injection_and_cross_site_scripting_before_the_rate_limit (15 passed; mutations: xss deny(403)->allow, and xss priority 1600->2100, each failed it, restored)",
+      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs::the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy"
     ],
-    "gap": "No rule in either policy references a preconfigured WAF expression set (e.g. evaluatePreconfiguredExpr('xss-stable') or similar); only rate-limiting and geographic restriction are enforced.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. A rule block using preconfigured_waf_config (or an evaluatePreconfiguredExpr match) in deny mode, plus a plan-time test asserting its presence, would close the gap.",
+    "verification": "terraform -chdir=infrastructure/terraform/modules/iap-edge test; cargo test -p qip-acceptance --test terraform_plan the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy",
     "work_item": "E13",
     "tier": "T2",
     "size": "M",
-    "notes": "API-003 and GCP-054 hold the same row from other domains. verify: status MISSING kept (grep -i 'waf|preconfigured|sqli|xss' on both edge modules finds nothing). Added for planning: the project's Cloud Armor quota is zero. infra.yml run 71 failed with \"Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally\" (modules/iap-edge/README.md:25-29), so any WAF rule needs a quota grant before it can be applied."
+    "notes": "API-003 and GCP-054 hold the same row from other domains. verify: status MISSING kept (grep -i 'waf|preconfigured|sqli|xss' on both edge modules finds nothing). Added for planning: the project's Cloud Armor quota is zero. infra.yml run 71 failed with \"Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally\" (modules/iap-edge/README.md:25-29), so any WAF rule needs a quota grant before it can be applied. | Closed 2026-10-04 as an infra-plan requirement. Neither edge is enabled in any environment and the project's Cloud Armor rule quota is zero (infra.yml run 71), so nothing is applied; the evaluatePreconfiguredWaf set names were validated by terraform's schema, not the live API. integrated and deployable stay false."
   },
   {
     "id": "SEC-049",

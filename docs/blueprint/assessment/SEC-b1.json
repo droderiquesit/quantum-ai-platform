@@ -248,16 +248,13 @@
   },
   {
     "id": "SEC-011",
-    "status": "PARTIAL",
-    "current": "modules/execution-node runs qip-edge-node bare under systemd with no container runtime and no sidecar (templates/startup.sh.tftpl); no mesh or regional load balancer exists in the tree at all.",
+    "status": "COMPLETE",
+    "current": "modules/execution-node declares no access_config, no forwarding rule, backend service, URL map, proxy, service attachment or mesh resource, and its startup script refuses a container runtime. Two acceptance tests hold the constraint: the external-address/no-container-runtime test and the new resource-type walk. No environment instantiates the module (execution_nodes = {} everywhere), so no Reflex path exists yet to hold it.",
     "evidence": [
-      "infrastructure/terraform/modules/execution-node/main.tf:305-434 (instance template, no access_config; instance group with an autohealing health check, no forwarding rule)",
-      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl (refuses docker/containerd/podman/crio/runc)",
-      "infrastructure/terraform/main.tf:659-661 (module for_each = var.execution_nodes)",
-      "infrastructure/environments/*/terraform.tfvars (execution_nodes = {})",
-      "the_execution_node_has_no_external_address_and_no_container_runtime (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661)"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_execution_node_module_declares_no_load_balancer_or_mesh_hop_on_the_venue_path (mutation: appending a google_compute_forwarding_rule to the module failed it, restored)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_execution_node_has_no_external_address_and_no_container_runtime"
     ],
-    "gap": "The constraint holds by construction in modules/execution-node - no access_config, a startup script that refuses to start with a container runtime (so no sidecar container), no forwarding rule or backend service - but no environment instantiates the module (execution_nodes = {} everywhere), so no Reflex path exists to hold it. The cited test asserts no external address and no container runtime; nothing asserts the other half of the check - that no Reflex workload sits behind a regional internal load balancer and that the only hop on the venue path is the venue connection (no test reads the node module for forwarding rules, backend services or an internal LB). The node also runs the egress-proxy bootstrap as a loopback unit beside qip-edge-node; it has no venue route (SEC-016), but a mesh-absence test should name it as outside the venue path.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -265,11 +262,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing: infrastructure.rs::the_execution_node_has_no_external_address_and_no_container_runtime. Needed: an infra-plan assertion that the node module declares no forwarding rule, backend service, internal LB or mesh attachment and that venue traffic's only hop is the venue firewall allow; then an environment that actually enables a node.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_execution_node_module_declares_no_load_balancer_or_mesh_hop_on_the_venue_path",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "deployable=false: execution_nodes = {} in every environment's tfvars, so the module that holds this invariant is never instantiated. verify: COMPLETE -> PARTIAL; integrated true -> false. For Terraform, COMPLETE requires a module an environment enables, and execution_nodes = {} in every environment, so the only place this invariant lives is never instantiated. The cited test covers the external-address and container-runtime clauses only, not the load-balancer or single-hop clauses the verification names."
+    "notes": "deployable=false: execution_nodes = {} in every environment's tfvars, so the module that holds this invariant is never instantiated. verify: COMPLETE -> PARTIAL; integrated true -> false. For Terraform, COMPLETE requires a module an environment enables, and execution_nodes = {} in every environment, so the only place this invariant lives is never instantiated. The cited test covers the external-address and container-runtime clauses only, not the load-balancer or single-hop clauses the verification names. | Closed 2026-10-04 as the static infra-plan check. integrated stays false: no environment enables a node, so nothing applied exercises it."
   },
   {
     "id": "SEC-012",
@@ -301,25 +298,26 @@
   },
   {
     "id": "SEC-013",
-    "status": "MISSING",
-    "current": "Two Cloud NAT gateways exist (modules/trust-zones for sanctioned external egress, modules/execution-node for venue egress) but both use nat_ip_allocate_option = AUTO_ONLY.",
+    "status": "COMPLETE",
+    "current": "Both Cloud NAT gateways (modules/trust-zones, modules/execution-node) now use nat_ip_allocate_option = MANUAL_ONLY with a reserved google_compute_address (count follows the NAT's own count), so the outbound address is stable and can be allow-listed by a counterparty. terraform test passes in both modules with an admission and a refusal each.",
     "evidence": [
-      "infrastructure/terraform/modules/trust-zones/main.tf:516-524 (zone Cloud NAT, nat_ip_allocate_option = AUTO_ONLY)",
-      "infrastructure/terraform/modules/execution-node/main.tf:158-166 (node Cloud NAT, AUTO_ONLY, only when create_egress_nat = true)"
+      "infrastructure/terraform/modules/trust-zones/main.tf (google_compute_address.nat; nat_ips)",
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_address.nat; nat_ips)",
+      "trust-zones tests/zone-model.tftest.hcl: 20 passed; execution-node tests/capacity.tftest.hcl: both new runs pass (mutation: MANUAL_ONLY->AUTO_ONLY failed a_zone_egressing_from_this_region_is_given_a_nat and a_node_that_owns_its_egress_nat_reserves_the_address_it_translates_to, restored)"
     ],
-    "gap": "Neither gateway reserves a static address; nat_ip_allocate_option is AUTO_ONLY in both modules, so outbound addresses are ephemeral and cannot be allow-listed by a downstream provider.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needed: switch both Cloud NAT resources to MANUAL_ONLY with reserved google_compute_address resources, plus a plan-time test asserting nat_ip_allocate_option == \"MANUAL_ONLY\" wherever a controlled-egress NAT is declared.",
+    "verification": "terraform -chdir=infrastructure/terraform/modules/trust-zones test; terraform -chdir=infrastructure/terraform/modules/execution-node test -filter=tests/capacity.tftest.hcl",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "Priority P1 per the requirement, lower than the audit/domain-control clauses of the same source row. verify: status kept; evidence given line numbers. No google_compute_address, MANUAL_ONLY or nat_ips exists for egress anywhere; the reserved addresses in the tree (iap-edge, gitops-gateway, connectivity) are ingress or Private Service Connect, not NAT."
+    "notes": "Priority P1 per the requirement, lower than the audit/domain-control clauses of the same source row. verify: status kept; evidence given line numbers. No google_compute_address, MANUAL_ONLY or nat_ips exists for egress anywhere; the reserved addresses in the tree (iap-edge, gitops-gateway, connectivity) are ingress or Private Service Connect, not NAT. | Closed 2026-10-04. Not applied: dev's zone NAT will move to a reserved address on the next apply, so the address a counterparty allow-lists is known only after that apply and reservation. deployable and integrated stay false. execution-node's tests/affinity.tftest.hcl errors in this sandbox on an uninitialised google-beta provider, unrelated to this change."
   },
   {
     "id": "SEC-014",
@@ -447,28 +445,25 @@
   },
   {
     "id": "SEC-019",
-    "status": "PARTIAL",
-    "current": "Every firewall rule admitting 0.0.0.0/0 in the tree is a deny rule (modules/network, trust-zones, execution-node, image-bake); the execution node's instance template has no access_config, so it has no external IP at all.",
+    "status": "COMPLETE",
+    "current": "No firewall allow rule opens TCP 22 or 3389 (or an all-ports allow) to any source other than IAP's 35.235.240.0/20, Google's health-check probers, or the VPC's own zone ranges; no VM definition carries an access_config; the image-bake builder is created with --no-address. Two new acceptance tests walk the whole Terraform tree and the image workflow rather than one module.",
     "evidence": [
-      "no_firewall_allow_rule_permits_the_whole_internet (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3521)",
-      "the_execution_node_has_no_external_address_and_no_container_runtime (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661)",
-      "infrastructure/terraform/modules/execution-node/main.tf:354 (no access_config)",
-      ".github/workflows/image.yml:831 (image-bake builder created --no-address)",
-      "infrastructure/terraform/modules/gitops-control-plane/main.tf:215 (enable_private_nodes = true)"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::no_firewall_allow_rule_opens_remote_administration_except_from_iap (mutation: an ingress allow on ports 20-30 from 198.51.100.0/24 failed it, restored)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::no_virtual_machine_the_repository_defines_carries_an_external_address (mutations: access_config added to the node template, and --no-address removed from image.yml, each failed it, restored)"
     ],
-    "gap": "The prohibition holds by construction today - no firewall rule anywhere allows TCP 22 or 3389 from any range, every 0.0.0.0/0 ingress rule is a deny, the execution node has no access_config, the image-bake builder is created with --no-address, and the GitOps cluster uses private nodes - but the tests guard less than the check states. no_firewall_allow_rule_permits_the_whole_internet refuses only 0.0.0.0/0 and ::/0 in an allow rule, so an allow on port 22 from any narrower non-IAP public range would pass; the external-address test covers only the execution node, which no environment enables; nothing asserts the builder's --no-address.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing: infrastructure.rs::no_firewall_allow_rule_permits_the_whole_internet, ::the_execution_node_has_no_external_address_and_no_container_runtime. Needed: a firewall walk refusing any allow on 22/3389 whose source is not IAP's 35.235.240.0/20, and an assertion over every VM definition (node template, image.yml's builder) that none carries an external address.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure no_firewall_allow_rule_opens_remote_administration_except_from_iap no_virtual_machine_the_repository_defines_carries_an_external_address",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: COMPLETE -> PARTIAL. The cited test covered only the external address of a VM no environment deploys; the stronger test (no_firewall_allow_rule_permits_the_whole_internet) was not cited and refuses only the whole-internet range, not 'any range other than IAP's'. The prohibition is true today; what is missing is a test that would catch the first regression."
+    "notes": "verify: COMPLETE -> PARTIAL. The cited test covered only the external address of a VM no environment deploys; the stronger test (no_firewall_allow_rule_permits_the_whole_internet) was not cited and refuses only the whole-internet range, not 'any range other than IAP's'. The prohibition is true today; what is missing is a test that would catch the first regression. | Closed 2026-10-04. A firewall allow whose source is a local expression other than zone_cidr or load_balancer_ranges would be read as a literal-less list and refused, so a new computed source must be argued for in the test."
   },
   {
     "id": "SEC-020",
