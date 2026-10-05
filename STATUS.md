@@ -14,9 +14,15 @@ Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 - clippy 0 warnings, fmt clean, dependency policy and secret scan pass (docs/ops/hermes-baseline-2026-10-04.md).
 - Cost: billing is disabled on `algorik-dev`; spend is 0 by construction.
 
+## Agent fleet in GCP (ADR 0102)
+- Applied 2026-10-04 in `algorik-platform-dev`: Artifact Registry repository `fleet`, bucket `algorik-platform-dev-fleet`, service account `fleet-worker` with `aiplatform.user` and object access on its own bucket only (`Apply complete! Resources: 5 added, 0 changed, 0 destroyed`).
+- Not yet: the Cloud Run Job (needs the worker image, being built), so **no fleet agent has run a packet**.
+- Models admitted by real calls: `google/gemini-2.5-flash-lite`, `qwen/qwen3-coder-480b-a35b-instruct-maas`, `qwen/qwen3-235b-a22b-instruct-2507-maas`. No free tier exists on Vertex AI.
+- Cap is 40 concurrent single-packet tasks; 25 USD/day ceiling; nothing under risk, execution, capital, compliance or edge may be sent (policy gate 6).
+
 ## Blocked
 - SMS: no Twilio credentials, no mail agent. See DECISIONS.md.
-- Cloud: new project `algorik-platform-dev` has billing enabled and a 750 USD/month budget (DECISIONS.md). tfvars still name `algorik-dev`; repoint next.
+- Platform dev deployment: not applied. `scripts/bootstrap-deploy.sh dev` is refused by the session's permission classifier; David must run it locally from this worktree (DECISIONS.md).
 - SMS: `scripts/send-sms.py` built; needs HERMES_SMTP_USER and a password file.
 
 ## Next three actions
