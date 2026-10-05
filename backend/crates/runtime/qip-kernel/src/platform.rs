@@ -465,6 +465,8 @@ pub struct Platform {
     /// Fed by [`Platform::learn_from`]; read by the REASON stage through the
     /// per-origin factors it hands the reasoning engine (blueprint §13.1).
     self_model: SelfModel,
+    /// Failure clusters raised as research prompts (MODEL-046).
+    research: qip_learning_engine::research::ResearchLedger,
     /// What the LEARN stage calibrated this cycle, for the journal. Cleared
     /// as each cycle's LEARN begins so a cycle that scored nothing journals
     /// nothing rather than the previous cycle's figure.
@@ -4479,6 +4481,7 @@ impl Platform {
             evaluations: Vec::new(),
             last_calibration: None,
             self_model: SelfModel::new(),
+            research: qip_learning_engine::research::ResearchLedger::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
             declined: Vec::new(),
@@ -8504,6 +8507,12 @@ impl Platform {
         }
         self.reasoning
             .set_origin_factors(self.self_model.origin_factors());
+        // A cluster of failed theses of one class becomes a research prompt.
+        // A refusal (ledger full) is a problem line, not an abort, for the
+        // same reason a mischarged component is.
+        if let Err(error) = self.research.observe(&evaluations, now) {
+            problems.push(error.message().to_string());
+        }
 
         let informative = self
             .evaluations
@@ -8573,6 +8582,22 @@ impl Platform {
             })
             .collect();
         self.episodes.experience(known.iter(), now)
+    }
+
+    /// The research prompts raised from failure clusters, and which are
+    /// answered.
+    pub fn research(&self) -> &qip_learning_engine::research::ResearchLedger {
+        &self.research
+    }
+
+    /// Record the research task that answered a prompt.
+    pub fn close_research_prompt(
+        &mut self,
+        prompt: &str,
+        task: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.research.close(prompt, task, now)
     }
 
     pub fn self_model(&self) -> &SelfModel {

@@ -93,6 +93,67 @@ fn limits() -> LimitSet {
         )
 }
 
+// --- failure clusters become research prompts (MODEL-046) -------------------
+
+#[test]
+fn a_cluster_of_failed_theses_raises_one_research_prompt_that_closes_onto_a_named_task()
+-> Result<()> {
+    // The failure this guards: the same hypothesis class was wrong again and
+    // again and every miss was charged to a track record and forgotten, so
+    // the research side was never asked why. `learn_from` is the call the
+    // LEARN stage makes; the prompt must come out of it, not out of a helper
+    // the stage never calls.
+    use qip_learning_engine::{Outcome, ThesisClaim};
+    let mut platform = platform()?;
+    let claim = |id: &str, class: &str| ThesisClaim {
+        hypothesis_id: id.to_string(),
+        class: class.to_string(),
+        subject: "AAA".to_string(),
+        formed_at: start(),
+        resolves_at: Timestamp::from_secs(1_760_000_000 + 60),
+        direction: 1.0,
+        expected_move_bps: 100.0,
+        confidence: 0.8,
+        falsifiers: vec![],
+        contributors: vec![],
+    };
+    let outcome = |id: &str| Outcome {
+        hypothesis_id: id.to_string(),
+        observed_at: Timestamp::from_secs(1_760_000_000 + 61),
+        realised_move_bps: -100.0,
+        realised_pnl: -1.0,
+        falsifiers_triggered: vec![],
+        mechanism_confirmed: None,
+    };
+    let now = Timestamp::from_secs(1_760_000_000 + 120);
+
+    // Premise: nothing has been prompted yet.
+    assert_eq!(platform.research().prompts().count(), 0);
+
+    // Two failures of one class, and one of another, are not a cluster.
+    let claims = [
+        claim("h1", "momentum"),
+        claim("h2", "momentum"),
+        claim("h9", "carry"),
+    ];
+    let outcomes = [outcome("h1"), outcome("h2"), outcome("h9")];
+    platform.learn_from(&claims, &outcomes, now)?;
+    assert_eq!(platform.research().prompts().count(), 0);
+
+    // The third failure of the class completes the cluster.
+    platform.learn_from(&[claim("h3", "momentum")], &[outcome("h3")], now)?;
+    let prompts: Vec<_> = platform.research().prompts().cloned().collect();
+    assert_eq!(prompts.len(), 1, "exactly one prompt for one cluster");
+    assert_eq!(prompts[0].class, "momentum");
+    assert_eq!(prompts[0].episodes, vec!["h1", "h2", "h3"]);
+    assert!(prompts[0].is_open());
+
+    platform.close_research_prompt(&prompts[0].id, "task-42", now)?;
+    let closed = platform.research().prompt(&prompts[0].id).cloned().unwrap();
+    assert_eq!(closed.answered_by.as_deref(), Some("task-42"));
+    Ok(())
+}
+
 fn platform() -> Result<Platform> {
     let config = PlatformConfig::default();
     let (context, _clock) = Context::deterministic(start(), config.seed);

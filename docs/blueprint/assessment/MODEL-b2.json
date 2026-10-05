@@ -549,27 +549,28 @@
   },
   {
     "id": "MODEL-046",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "PARTIAL",
+    "current": "qip_learning_engine::research::ResearchLedger (backend/crates/services/qip-learning-engine/src/research.rs) turns MINIMUM_CLUSTER (3) failed theses (Wrong or Falsified) of one class into exactly one ResearchPrompt naming the episodes, and close() records the answering research task once. Platform::learn_from (the call the LEARN stage makes) feeds it.",
     "evidence": [
-      "rg -ni 'research.prompt|research_prompt|closed.loop' backend --type rust -> no hits",
-      "rg -ni 'curriculum' backend --type rust -> only a label string in crates/apps/qip-cli/src/blueprint.rs:77 ('Intelligence expansion engine, registries, curriculum')"
+      "backend/crates/services/qip-learning-engine/src/research.rs; backend/crates/runtime/qip-kernel/src/platform.rs (learn_from -> research.observe; Platform::research, close_research_prompt)",
+      "test: a_cluster_of_failed_theses_raises_one_research_prompt_that_closes_onto_a_named_task (backend/crates/runtime/qip-kernel/tests/learning.rs) -- mutation: observe fed an empty slice -> failed (0 prompts); restored",
+      "test: three_failures_of_one_class_raise_one_prompt_naming_all_three_and_two_do_not (research.rs) -- mutation: MINIMUM_CLUSTER 3 -> 2 -> failed; restored"
     ],
-    "gap": "No mechanism turns a failure cluster or unexplained residual into a research prompt, and nothing tracks a prompt to the research task that answered it.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "The failure-cluster half and the close-to-task tracking are closed and mutation-verified. Remaining: 'unexplained residuals' as a second prompt source -- nothing yet defines a model residual as unexplained -- and nothing starts a research task from a prompt; close() is called by a caller who names the task.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "MODEL-047"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Would need a test injecting a cluster of similar failures and asserting one prompt referencing the cluster's episodes.",
+    "verification": "backend/crates/runtime/qip-kernel/tests/learning.rs::a_cluster_of_failed_theses_raises_one_research_prompt_that_closes_onto_a_named_task; backend/crates/services/qip-learning-engine/src/research.rs::tests",
     "work_item": "E08-research-prompts",
     "tier": "T3",
     "size": "L",
-    "notes": "P2 (self-directed research campaigns are master Phase 8, per the requirement's own note); no scaffold of any kind exists yet."
+    "notes": "P2 (self-directed research campaigns are master Phase 8, per the requirement's own note); no scaffold of any kind exists yet. | 2026-10-04: failure-cluster prompts wired into learn_from; left PARTIAL for the residual source."
   },
   {
     "id": "MODEL-047",
