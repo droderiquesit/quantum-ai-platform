@@ -156,9 +156,31 @@ pub fn assemble(
     if let Some(mirror) = &mirror {
         config.venue_regions = mirror.venue_regions().clone();
     }
+    // EXEC-020: the node enables only the two modes its paper path actually
+    // performs, order taking and routing, and only at the venues the cell may
+    // trade. The other six modes (quoting, liquidity provision, derivatives,
+    // event contracts, decentralised venues, physical marketplaces) stay
+    // refused at `Cell::send` until someone records legal and operational
+    // support for them. "Paper" is the recorded jurisdiction because the
+    // simulated venues are the only ones a node can reach (ADR 0003).
+    let mut mode_gate = qip_execution_engine::modes::ModeGate::new();
+    let paper = qip_execution_engine::modes::ModeSupport {
+        jurisdiction: "paper".to_string(),
+        legally_permitted: true,
+        operationally_supported: true,
+    };
+    for venue in &config.venues {
+        for mode in [
+            qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            qip_execution_engine::modes::ExecutionMode::Routing,
+        ] {
+            mode_gate.enable(venue.as_str(), mode, &paper)?;
+        }
+    }
     let telemetry = Telemetry::new("qip-edge-node", clock);
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
     let mut cell = Cell::new(config, features)?
+        .with_mode_gate(mode_gate)
         .with_metrics(Arc::clone(&metrics))
         .with_unfunded_region(allocation.amount())?;
     if let Some(mirror) = mirror {

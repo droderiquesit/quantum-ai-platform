@@ -69,6 +69,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 /// the same fact. `qip_edge_refusals_total{gate="live_venue"}` is the series.
 pub const GATE_LIVE_VENUE: &str = "live_venue";
 
+/// The gate `Cell::send` refuses under when the installed
+/// [`qip_execution_engine::modes::ModeGate`] has not enabled the order's
+/// execution mode at its venue (EXEC-020). A constant, like its neighbours,
+/// so the label set stays bounded by source text.
+pub const GATE_MODE_DISABLED: &str = "mode_disabled";
+
 /// The gate a cell refuses a found cycle under when blueprint §30.2's path
 /// router assigns it no execution path (ADR 0068).
 ///
@@ -1195,6 +1201,10 @@ pub struct Cell {
     /// registry nobody reads, which is what every test in the tree does. See
     /// [`crate::telemetry`] for why nothing here can block or fail the pass.
     metrics: CellMetrics,
+    /// Per-venue execution-mode enablement (EXEC-020). `None` is a cell built
+    /// without one, which behaves as it always did; once installed, every
+    /// order must be admitted in its mode before a sequence number is spent.
+    mode_gate: Option<qip_execution_engine::modes::ModeGate>,
     /// The §31.1 cross-region mirrors this cell takes part in, if an
     /// operator installed any.
     ///
@@ -1325,6 +1335,7 @@ impl Cell {
             pass: 0,
             crossing_history: BTreeMap::new(),
             metrics: CellMetrics::silent(),
+            mode_gate: None,
             mirror: None,
             region_allocation: None,
             budget,
@@ -1363,6 +1374,23 @@ impl Cell {
         self.record_dark_regions();
         self.record_awaiting_reconciliation();
         self
+    }
+
+    /// Require every order to be admitted by `gate` in its execution mode
+    /// (EXEC-020): a netted strategy order is `OrderTaking`, an arbitrage leg
+    /// is `Routing`. A builder, so a cell without one is unchanged; with one,
+    /// a mode nobody recorded legal and operational support for is refused at
+    /// `Cell::send` before an order number is spent.
+    #[must_use]
+    pub fn with_mode_gate(mut self, gate: qip_execution_engine::modes::ModeGate) -> Self {
+        self.mode_gate = Some(gate);
+        self
+    }
+
+    /// The installed mode gate, if any, so a composition root's wiring can be
+    /// asserted rather than trusted.
+    pub fn mode_gate(&self) -> Option<&qip_execution_engine::modes::ModeGate> {
+        self.mode_gate.as_ref()
     }
 
     /// Bound everything this cell commits by one amount.
@@ -4108,6 +4136,7 @@ impl Cell {
             price,
             now,
             release_at,
+            qip_execution_engine::modes::ExecutionMode::OrderTaking,
             gateway,
         )?;
 
@@ -4227,6 +4256,7 @@ impl Cell {
         price: Decimal,
         now: Timestamp,
         release_at: Timestamp,
+        mode: qip_execution_engine::modes::ExecutionMode,
         gateway: &mut dyn Placer,
     ) -> Result<(String, bool)> {
         let simulated = gateway.is_simulated();
@@ -4249,6 +4279,19 @@ impl Cell {
                 now,
             );
             return Err(Error::denied(reason));
+        }
+        if let Some(gate) = &self.mode_gate
+            && let Err(error) = gate.admit(venue.as_str(), mode)
+        {
+            self.metrics.refusal(GATE_MODE_DISABLED);
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_MODE_DISABLED.to_string(),
+                    reason: error.to_string(),
+                },
+                now,
+            );
+            return Err(error);
         }
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
@@ -7001,6 +7044,7 @@ impl Cell {
             price,
             now,
             release_at,
+            qip_execution_engine::modes::ExecutionMode::Routing,
             gateway,
         );
         let (order_id, simulated) = match sent {

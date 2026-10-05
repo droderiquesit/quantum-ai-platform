@@ -1435,3 +1435,52 @@ fn slot_twelves_posture_for_a_configured_venue_reaches_the_cells_exposition_one_
     assert_eq!(posture_gauge(&metrics, "unmeasured"), Some(0.0));
     Ok(())
 }
+
+// --- EXEC-020: execution-mode enablement --------------------------------------
+
+fn mode_support() -> qip_execution_engine::modes::ModeSupport {
+    qip_execution_engine::modes::ModeSupport {
+        jurisdiction: "US".to_string(),
+        legally_permitted: true,
+        operationally_supported: true,
+    }
+}
+
+#[test]
+fn an_order_in_a_mode_not_enabled_at_its_venue_is_refused_before_an_order_number_is_spent()
+-> Result<()> {
+    use qip_execution_engine::modes::{ExecutionMode, ModeGate};
+
+    // Premise: the same strategy on a cell with no gate does place an order, so
+    // the refusal below is the gate's and not a cell that could never trade.
+    let (mut ungated, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    assert_eq!(work(&mut ungated, t(50))?.orders.len(), 1);
+
+    // A gate with nothing enabled refuses the order and says so on its own gate.
+    let (cell, metrics) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let mut cell = cell.with_mode_gate(ModeGate::new());
+    assert!(work(&mut cell, t(50)).is_err());
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(names::EDGE_REFUSALS, &by("gate", "mode_disabled")),
+        1
+    );
+    assert_eq!(
+        snapshot.counter(names::EDGE_ORDERS_PLACED, &by("venue", VENUE)),
+        0
+    );
+
+    // Enabling the wrong mode at the venue still refuses; the right one admits.
+    let mut wrong = ModeGate::new();
+    wrong.enable(VENUE, ExecutionMode::Derivatives, &mode_support())?;
+    let (cell, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let mut cell = cell.with_mode_gate(wrong);
+    assert!(work(&mut cell, t(50)).is_err());
+
+    let mut right = ModeGate::new();
+    right.enable(VENUE, ExecutionMode::OrderTaking, &mode_support())?;
+    let (cell, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let mut cell = cell.with_mode_gate(right);
+    assert_eq!(work(&mut cell, t(50))?.orders.len(), 1);
+    Ok(())
+}
