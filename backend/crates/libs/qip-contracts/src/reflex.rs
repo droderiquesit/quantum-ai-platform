@@ -408,6 +408,22 @@ pub enum Decision {
         held: String,
         signed_size: String,
     },
+    /// A newer payload replaced the cell's copy of long-horizon knowledge
+    /// whose value had diverged from the centre's (ARCH-009).
+    ///
+    /// Global state is the authority, so the resolution is always the same
+    /// one — the centre's version, by the swap `PolicyApplied` records — and
+    /// what this adds is the fact that the two had disagreed and about what.
+    /// `sequence` is the payload that resolved it, `replaced` the payload
+    /// whose copy the cell had been serving, and `items` the knowledge slots
+    /// whose value differed, in §41.5's order. Without it a cell that sized
+    /// on a belief the centre had already abandoned leaves a journal that
+    /// reads as two unremarkable policy applications.
+    KnowledgeReconciled {
+        sequence: u64,
+        replaced: u64,
+        items: Vec<String>,
+    },
 }
 
 impl Decision {
@@ -441,6 +457,7 @@ impl Decision {
             Self::VenueReconciled { .. } => "venue_reconciled",
             Self::VenueChosen { .. } => "venue_chosen",
             Self::DispositionIntent { .. } => "disposition_intent",
+            Self::KnowledgeReconciled { .. } => "knowledge_reconciled",
         }
     }
 }

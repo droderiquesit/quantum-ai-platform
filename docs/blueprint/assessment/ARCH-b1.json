@@ -209,29 +209,32 @@
   },
   {
     "id": "ARCH-009",
-    "status": "PARTIAL",
-    "current": "A single qip_world_model::WorldModel instance is held only by the centre (Upstream<WorldModel>, backend/crates/runtime/qip-kernel/src/platform.rs:4241), so there is exactly one authoritative long-horizon store by construction — no second copy exists to diverge from it. Regional cells (qip-edge::Cell) hold only Lane-0 reflex state (books, features, models, risk state per ARCH-010), not a copy of long-horizon knowledge.",
+    "status": "COMPLETE",
+    "current": "Global state is the authority and a cell's copy is resolved to it at one seam. The three long-horizon knowledge slots a cell holds (belief priors, episodic digest, causal digest) arrive in the signed policy payload; qip_edge::Cell::apply_policy replaces the copy whole with the centre's version, and since this change it first asks PolicyPayload::knowledge_divergence which of the three differ in value from the copy it serves and journals a Decision::KnowledgeReconciled naming the resolving sequence, the replaced sequence and the diverged items. The comparison is on the value and never on produced_at, so the same knowledge re-published later records nothing. The centre still holds the single WorldModel (qip-kernel platform.rs, Upstream<WorldModel>).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4241 let world = Upstream::new(WorldModel::new())",
-      "docs/architecture/current-state/services-data-world.json (‘a single live Upstream<WorldModel> instance’)"
+      "backend/crates/libs/qip-contracts/src/policy.rs PolicyPayload::knowledge_divergence",
+      "backend/crates/libs/qip-contracts/src/reflex.rs Decision::KnowledgeReconciled",
+      "backend/crates/edge/qip-edge/src/cell.rs Cell::apply_policy and Cell::knowledge_divergence_from",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs and control.rs (the two production callers of Cell::apply_policy)",
+      "backend/crates/edge/qip-edge/tests/policy_rollback.rs a_regional_copy_that_diverged_from_global_knowledge_is_resolved_to_the_global_version_and_the_divergence_is_journaled"
     ],
-    "gap": "Cells do hold centre-issued copies of long-horizon knowledge — the causal digest, belief priors and episodic digest ride the signed policy payload (qip-api/src/mesh.rs:947,954,964) — and a newer payload replaces a cell's copy whole, which resolves to the global version by construction. But nothing detects or records a divergence between a regional copy and global state, and no test exercises the reconciliation scenario the verification names.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No reconciliation test exists because no divergence path exists to test.",
+    "verification": "cargo test -p qip-edge --test policy_rollback (3 passed; mutation 1: never journaling the record failed the new test with an empty reconciliation list; mutation 2: comparing the whole slot, produced_at included, failed its premise by naming episodic_digest as diverged; both restored, 3 passed)",
     "work_item": "E08",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL / tested=false confirmed (platform.rs:4241 verified). Corrected the gap: regions are not copy-free — three knowledge slots are shipped to cells — so the missing piece is divergence detection and recording, not an impossible scenario."
+    "notes": "Mutation-verified. 'Divergence' is read as the cell's served copy differing in value from the centre's payload at the moment of reconciliation, which is the only way a regional copy can differ here: a cell has no mutator for a policy slot, and a rollback (REFLEX-065) is the one path that deliberately returns it to an older copy, which the test also covers. The record is the cell's hash-chained journal; no metric was added. deployable is false because qip-edge-node, the only binary that applies a payload, is deployed nowhere (execution_nodes = {}, C8)."
   },
   {
     "id": "ARCH-010",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_edge::cell::Cell (backend/crates/edge/qip-edge/src/cell.rs) holds order books, features, compiled strategies (StrategyDna) and risk/reservation state entirely in-process; qip-edge-node's main.rs module doc states books/features/watermarks are deliberately NOT persisted and are rebuilt from the feed on restart, and the cell has no service-mesh or database dependency (workspace dependency policy: only serde/serde_json).",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs (module doc: books/features are not restored from disk; rebuilt from the feed)",
@@ -239,21 +242,21 @@
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1307 a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1485 no_crate_declares_a_third_party_dependency_beyond_the_two_permitted (no DB/mesh client possible)",
       "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
-      "backend/crates/apps/qip-edge-node/src/main.rs:848-857 (journal ship failure is reported and the node keeps serving — untested)"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns"
     ],
-    "gap": "The chaos check is 'with every remote store unreachable'. The centre-unreachable arm is tested (region_table.rs:1118; qip-edge-node/tests/mesh.rs:375). The other remote dependency a cell has — the journal store it ships to (qip-edge-node main.rs:848-857, which reports a failed flush and keeps serving) — has no test: no test drives Cell::work after a failing Mirror/flush, and the chaos suite's Fault set (chaos.rs:144-155) has no store-unreachable or centre-partition fault. Not deployable (execution_nodes = {}, C8).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "C8",
-    "verification": "Existing: cargo test -p qip-edge --test region_table --test cross_region; cargo test -p qip-edge-node --test mesh. Needed: a test (qip-edge or chaos.rs) that fails the journal Mirror and asserts the cell keeps its books/features/risk state and keeps deciding, with entries held pending.",
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test pass a_cell_whose (mutation 1: marking entries shipped before the mirror accepted them failed it, 6 pending of 20; mutation 2: halting the cell on a failed flush failed it at the first pass; both restored, passed). Also cargo test -p qip-edge --test region_table --test cross_region; cargo test -p qip-edge-node --test mesh.",
     "work_item": "E04",
     "tier": "T0",
     "size": "S",
-    "notes": "deployable=false only because qip-edge-node is provisioned in no environment (execution_nodes = {}); the property itself is proven at the crate level. verify: COMPLETE -> PARTIAL. In-process state is real (main.rs:30-38 module doc, dependency policy), but the requirement's chaos verification covers every remote store and only the centre-partition arm is tested; the journal-store-unreachable path in qip-edge-node main.rs:848-857 is exercised by no test (rg 'could not be shipped' hits only main.rs)."
+    "notes": "deployable=false only because qip-edge-node is provisioned in no environment (execution_nodes = {}); the property itself is proven at the crate level. verify: COMPLETE -> PARTIAL. In-process state is real (main.rs:30-38 module doc, dependency policy), but the requirement's chaos verification covers every remote store and only the centre-partition arm is tested; the journal-store-unreachable path in qip-edge-node main.rs:848-857 is exercised by no test (rg 'could not be shipped' hits only main.rs). Round 3: the journal-store arm is now tested. The node's real StoreMirror over an engine store that refuses every call, and a centre that refuses every connection, are both cut for three passes; the orders and refusals of each pass equal those of an undisturbed control node, nothing ships, every decision stays pending in the chained journal, and the whole record ships and verifies from genesis when the store returns. The test re-enacts main.rs's flush, exchange, pass order through the same functions; the serve loop itself is not unit-testable. deployable stays false: no node is deployed (execution_nodes = {}, C8), which is a deployment fact and not a gap in the property."
   },
   {
     "id": "ARCH-011",
@@ -353,7 +356,7 @@
     "work_item": "E04",
     "tier": "T1",
     "size": "M",
-    "notes": "criterion itself would need an ADR under the two-dependency policy (C2); an in-tree Instant-based measurement does not. verify: MISSING -> PARTIAL; blocked_by C2 -> none. The assessor missed qip-acceptance performance.rs and docs/performance/budgets.md, which measure and publish every Lane-0 stage in-tree; what is missing is the composed tick-to-order p99. C2 was wrong by the assessor's own note: an Instant harness needs no crate. tested=false because no test measures the stated property."
+    "notes": "criterion itself would need an ADR under the two-dependency policy (C2); an in-tree Instant-based measurement does not. verify: MISSING -> PARTIAL; blocked_by C2 -> none. The assessor missed qip-acceptance performance.rs and docs/performance/budgets.md, which measure and publish every Lane-0 stage in-tree; what is missing is the composed tick-to-order p99. C2 was wrong by the assessor's own note: an Instant harness needs no crate. tested=false because no test measures the stated property. Round 3: not closed. An in-process tick-to-order figure is refused by this repository's own guards (performance.rs the_execution_measurements_document_names_only_tests_this_file_holds_and_says_what_a_number_is_not forbids the phrase, and budgets.md must say no end-to-end latency has been measured); the measurement needs a deployed node (C8)."
   },
   {
     "id": "ARCH-015",
@@ -475,7 +478,7 @@
     "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: e2e true -> false (e2e.rs:471 demonstrates neither declared horizons nor the no-synchronous-await property). Named the actual deepbrain test for 'no ceiling'. Recorded that qip-fastbrain runs cognitive stages synchronously in its 50 ms cycle, contradicting the row's 'structurally true' claim."
+    "notes": "verify: e2e true -> false (e2e.rs:471 demonstrates neither declared horizons nor the no-synchronous-await property). Named the actual deepbrain test for 'no ceiling'. Recorded that qip-fastbrain runs cognitive stages synchronously in its 50 ms cycle, contradicting the row's 'structurally true' claim. Round 3: not closed. Declaring a minutes-to-days band means raising the deep brain's cycle floor from one second, which is accepted by design today (config.rs MINIMUM_CYCLE_INTERVAL; main.rs handles sub-minute bars) — an owner decision, not a small gap."
   },
   {
     "id": "ARCH-020",

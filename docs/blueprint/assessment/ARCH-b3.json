@@ -165,7 +165,7 @@
     "work_item": "E07-cache-authority-chaos-test",
     "tier": "T1",
     "size": "S",
-    "notes": "v2.1's own anti-pattern (Redis as position/capital truth or a required risk-gate dependency) has no instance to check against yet because Memorystore ships in GCP Phase 6 (ARCH-066). verify: NEEDS-VALIDATION -> PARTIAL. The assessor's premise 'Redis can never be selected by any composition root' is false: only Terraform refuses it; StorageSettings::from_env and all four state-holding roots admit memorystore and would put the mesh spool, cell journal and trial book on Redis alone. The invariant is therefore not implemented as a runtime control, only as a plan-time one. Round 2: composition-root refusal added; status stays PARTIAL because the chaos half is unbuilt."
+    "notes": "v2.1's own anti-pattern (Redis as position/capital truth or a required risk-gate dependency) has no instance to check against yet because Memorystore ships in GCP Phase 6 (ARCH-066). verify: NEEDS-VALIDATION -> PARTIAL. The assessor's premise 'Redis can never be selected by any composition root' is false: only Terraform refuses it; StorageSettings::from_env and all four state-holding roots admit memorystore and would put the mesh spool, cell journal and trial book on Redis alone. The invariant is therefore not implemented as a runtime control, only as a plan-time one. Round 2: composition-root refusal added; status stays PARTIAL because the chaos half is unbuilt. Round 3: not closed. No composition root holds a flushable cache: Memorystore is refused as a store and provisioned nowhere, and the in-process derived sets have no flush seam; adding one for a test would be a control surface nothing in production uses."
   },
   {
     "id": "ARCH-055",
@@ -557,27 +557,27 @@
   },
   {
     "id": "ARCH-070",
-    "status": "PARTIAL",
-    "current": "A machine-readable per-workload register exists for the Cloud Run plane, without two of the four required attributes. infrastructure/terraform/catalogue.tf is 'one entry per workload, and one place': each entry names the binary, plane, trust zone, whose traffic it carries (ingress posture, invokers), the variables and secrets it reads, and its instance floor and ceiling (e.g. :241-255), and the acceptance suite holds every rendered manifest to its entry (manifest_wiring.rs, gitops.rs). It records no state owner (only prose comments such as 'Holds per-process state') and no degraded mode, and it deliberately excludes qip-edge-node, which modules/execution-node owns. A capability-level degradation table exists separately (qip-contracts/src/degradation.rs, the §6.2 table), but it is keyed by capability, not by workload.",
+    "status": "COMPLETE",
+    "current": "infrastructure/workload-register.json is the machine-readable workload register: one entry per workload the infrastructure declares — the three Cloud Run catalogue entries, the portal and OpenObserve (RunService manifests with no catalogue entry), the execution node, the GitOps control-plane cluster and the disabled Vertex AI module — each stating its state owner, its upstream and downstream peers with their protocol, its scaling model and its degraded mode, every statement naming the file it was read from. qip-acceptance derives the workload set from the tree (catalogue entries, RunService manifests in every environment, and any Terraform module declaring a service, machine, cluster or serving endpoint) and fails when the register and the tree disagree in either direction, when an entry leaves an attribute empty, or when a scaling model contradicts the instance bounds a manifest carries. Instance counts stay in the catalogue and the manifests and are not repeated.",
     "evidence": [
-      "infrastructure/terraform/catalogue.tf:1-40 (register purpose and exclusions), :241-255 (plane, trust_zone, min_instances/max_instances)",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs:138 (catalogue_workloads), :2211 a_workloads_rendered_manifest_mounts_exactly_the_secrets_its_catalogue_entry_declares",
-      "backend/crates/libs/qip-contracts/src/degradation.rs (capability degradation order, not per workload)",
-      "grep -rln 'state_owner|degraded_mode|workload_register|WorkloadRegister' backend infrastructure docs -> only unrelated hits (2026-09-25)"
+      "infrastructure/workload-register.json",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs every_workload_the_infrastructure_declares_has_a_complete_entry_in_the_workload_register",
+      "infrastructure/terraform/catalogue.tf (the Cloud Run entries the walk reads)",
+      "infrastructure/CLAUDE.md (layout row for the register)"
     ],
-    "gap": "No state-owner or degraded-mode field in any entry, no upstream/downstream protocol field beyond ingress/invokers, the execution node is outside the register, and no acceptance test fails when a Terraform-declared workload lacks a complete entry on these four attributes.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "no test covers the four attributes; the existing parity checks run with cargo test -p qip-acceptance --test manifest_wiring",
+    "verification": "cargo test -p qip-acceptance --test manifest_wiring every_workload (mutations, each failing for its own reason and each restored: renaming the ai entry left modules/ai unregistered; blanking a degraded_mode; calling the fast brain request-scaled against a manifest that runs exactly one; adding a scratch module declaring a google_container_cluster)",
     "work_item": "E12-workload-register",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: MISSING -> PARTIAL, implemented/integrated true. catalogue.tf is a machine-readable per-workload register (scaling and ingress/invokers present, parity-tested against manifests) that the assessor's grep for 'state_owner|degraded_mode' could not find; it lacks state owner and degraded mode, so tested stays false."
+    "notes": "Mutation-verified. The register documents what the configuration says and is not evidence that anything runs: every central workload's state owner is its own memory because storage_target defaults to memory in every environment, and the entry says so. Prose attributes cannot be checked for truth by a test; what the test holds is existence, completeness, and the one attribute the tree can contradict (scaling model against instance bounds). A workload of a runtime kind not in WORKLOAD_RESOURCES (five resource types, each already present in the tree) is added to that list in the change that introduces it."
   },
   {
     "id": "ARCH-071",

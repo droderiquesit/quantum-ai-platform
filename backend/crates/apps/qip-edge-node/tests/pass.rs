@@ -2318,3 +2318,186 @@ fn an_assembled_node_enables_order_taking_and_routing_at_its_venue_and_nothing_e
     }
     Ok(())
 }
+
+// --- ARCH-010: every remote store unreachable --------------------------------
+
+/// A journal store that can be cut off and restored: every call fails while
+/// `severed` is set, which is what an unreachable disk or bucket looks like
+/// to the mirror. It wraps the engine store the node really opens, so what
+/// ships after the outage is read back through the operator's own path.
+#[derive(Debug)]
+struct SeverableStore {
+    inner: Arc<dyn qip_storage::kv::KeyValueStore>,
+    severed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SeverableStore {
+    fn reachable(&self) -> Result<()> {
+        if self.severed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(qip_core::error::Error::io(
+                "the journal store is unreachable",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl qip_storage::kv::KeyValueStore for SeverableStore {
+    fn get(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        self.reachable()?;
+        self.inner.get(key)
+    }
+    fn put(&self, key: &str, value: serde_json::Value) -> Result<()> {
+        self.reachable()?;
+        self.inner.put(key, value)
+    }
+    fn delete(&self, key: &str) -> Result<bool> {
+        self.reachable()?;
+        self.inner.delete(key)
+    }
+    fn keys_with_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.reachable()?;
+        self.inner.keys_with_prefix(prefix)
+    }
+    fn len(&self) -> Result<usize> {
+        self.reachable()?;
+        self.inner.len()
+    }
+}
+
+/// What a pass decided, in the two forms a difference would show in.
+type Decided = (Vec<PlacedOrder>, Vec<(String, String)>);
+
+/// A funded node with a two-sided touch at its venue, and three passes of
+/// it. `before` runs ahead of each pass, where `main.rs`'s loop flushes the
+/// journal and exchanges with the centre.
+fn three_passes(
+    mut before: impl FnMut(&mut NodeAssembly, &WorkReport, Timestamp),
+) -> Result<(NodeAssembly, Vec<Decided>)> {
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let mut stats = PassStats::default();
+    let mut last_report = WorkReport::default();
+    let mut decided = Vec::new();
+    for second in 10..13 {
+        before(&mut node, &last_report, t(second));
+        let outcome = run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            None,
+            &mut stats,
+            t(second),
+        )?;
+        let PassOutcome::Ran { report, .. } = outcome else {
+            panic!("the pass at {second} did not run: {outcome:?}");
+        };
+        decided.push((report.orders.clone(), report.refusals.clone()));
+        last_report = *report;
+    }
+    Ok((node, decided))
+}
+
+#[test]
+fn a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns()
+-> Result<()> {
+    use qip_edge_node::mirror::{StoreMirror, batches};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // The failure this prevents: a storage or network outage becoming a
+    // trading outage, or — worse — a cell that keeps trading through one and
+    // loses the record of what it did. `main.rs` reports a failed flush and
+    // keeps serving; until this test nothing drove a pass after one.
+
+    // The control: the same node, the same venue, nothing remote at all.
+    let (_, undisturbed) = three_passes(|_, _, _| {})?;
+    assert!(
+        undisturbed.iter().any(|(orders, _)| !orders.is_empty()),
+        "the premise is a cell that decides something; three passes placed nothing"
+    );
+
+    let root = std::env::temp_dir().join(format!("qip-edge-pass-outage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root)
+        .map_err(|error| qip_core::error::Error::io(error.to_string()))?;
+    let severed = Arc::new(AtomicBool::new(false));
+    let store: Arc<dyn qip_storage::kv::KeyValueStore> = Arc::new(SeverableStore {
+        inner: qip_storage::settings::StorageSettings::from_values(Some("engine"), root.to_str())?
+            .key_value("cell-journal")?,
+        severed: Arc::clone(&severed),
+    });
+    let mut mirror = StoreMirror::open(Arc::clone(&store), CELL, t(0))?;
+    let mut link = qip_edge_node::mesh::MeshLink::connect_with(
+        &qip_edge_node::mesh::MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: severed_centre()?,
+            seed: 3,
+        },
+        b"pass-test-mesh-key",
+        Arc::new(qip_core::ManualClock::new(t(0))),
+        Arc::new(qip_transport::RecordingSleeper::new()),
+    )?;
+
+    // Both remote dependencies are cut before the first pass and stay cut
+    // for all three: the store the journal ships to, and the centre.
+    severed.store(true, Ordering::SeqCst);
+    let mut failed_flushes = 0;
+    let mut failed_exchanges = 0;
+    let (mut node, cut_off) = three_passes(|node, last_report, now| {
+        if node.cell.flush(&mut mirror, now).is_err() {
+            failed_flushes += 1;
+        }
+        if link
+            .exchange(&mut node.cell, last_report, now)
+            .poll_error
+            .is_some()
+        {
+            failed_exchanges += 1;
+        }
+    })?;
+    assert_eq!(
+        (failed_flushes, failed_exchanges),
+        (3, 3),
+        "the premise is that neither the store nor the centre could be reached"
+    );
+
+    assert_eq!(
+        cut_off, undisturbed,
+        "losing the journal store and the centre changed what the cell decided"
+    );
+    assert!(!node.cell.is_halted(), "the outage halted the cell");
+    assert_eq!(
+        mirror.shipped_entries(),
+        0,
+        "something shipped to a store nothing could reach"
+    );
+    let held = node.cell.journal().unshipped().len();
+    assert_eq!(
+        held,
+        node.cell.journal().len(),
+        "an entry left the pending set although no flush succeeded"
+    );
+    assert!(held > 0);
+
+    // The store returns. Everything held ships, in one chained record a
+    // reader of the store can verify from its start.
+    severed.store(false, Ordering::SeqCst);
+    assert_eq!(node.cell.flush(&mut mirror, t(13))?, held);
+    assert!(node.cell.journal().unshipped().is_empty());
+    let shipped = batches(store.as_ref())?;
+    let mut tail = qip_edge::journal::Journal::GENESIS.to_string();
+    let mut entries = 0;
+    for batch in &shipped {
+        batch.verify_against(&tail)?;
+        tail = batch.tail_digest();
+        entries += batch.entries.len();
+    }
+    assert_eq!(
+        entries, held,
+        "the store does not hold every decision made during the outage"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    Ok(())
+}

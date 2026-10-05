@@ -23,25 +23,30 @@
   },
   {
     "id": "ARCH-074",
-    "status": "MISSING",
-    "current": "Nothing in-tree implements this as stated.",
+    "status": "COMPLETE",
+    "current": "docs/blueprint/v12-completeness-targets.json lists the ten COMPLETE TARGET items of v12.0 section 31.1 in the blueprint's own words, each citing the requirement ids that carry it; `qip blueprint render` renders docs/blueprint/v12-completeness-targets.md from that list and the assessment, quoting every cited id with its status. A target has no status field: qip_cli::blueprint::target_score reads COMPLETE only when every cited requirement is COMPLETE and tested, so none is scored on text alone. The loader refuses a target citing nothing or an id the catalogue does not hold. Today all ten read OPEN. The ninth target's veto is pinned to the Risk Gate reading by citing RISK-020.",
     "evidence": [
-      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
-      "docs/adr/0101 (adoption terms and conflict register)"
+      "docs/blueprint/v12-completeness-targets.json",
+      "docs/blueprint/v12-completeness-targets.md (rendered)",
+      "backend/crates/apps/qip-cli/src/blueprint.rs target_score, render_completeness, load",
+      "backend/crates/apps/qip-cli/tests/blueprint.rs a_completeness_target_is_scored_complete_only_when_every_requirement_it_cites_is_complete_and_tested",
+      "backend/crates/apps/qip-cli/tests/blueprint.rs a_completeness_target_that_cites_nothing_or_a_requirement_nobody_holds_is_refused_rather_than_rendered",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs the_ten_v12_completeness_targets_are_the_blueprints_own_words_and_each_is_scored_from_requirements_it_cites",
+      "backend/crates/tests/qip-acceptance/tests/documentation.rs (the committed views, this one included, are refused when stale)"
     ],
-    "gap": "The ten items map to the entries above, none of which is built; the veto language conflicts with RISK-020 unless it is a Gate limit.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Each of the ten items cites a requirement ID and the status of that ID.",
+    "verification": "cargo test -p qip-cli --test blueprint (7 passed; mutation: counting an untested COMPLETE row failed the scoring test, COMPLETE against OPEN (1 of 2 complete)); cargo test -p qip-acceptance --test blueprint_arch (4 passed; mutations: dropping RISK-020 from the veto target, and paraphrasing one target away from the source text, each failed it; all restored)",
     "work_item": "",
     "tier": "T4",
     "size": "L",
-    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+    "notes": "Mutation-verified. COMPLETE means the scoring discipline exists and is held by tests, not that any target is met: all ten are OPEN, and the substance of each stays with the rows it cites (WORLD-067, WORLD-069, MODEL-072/073, WORLD-070/021 and TICK-023/051, AMBIENT-029, EVID-032, AMBIENT-031, REASON-041, CAPITAL-035 with RISK-035/036/037/020, QUANT-038 with ARCH-037/075). The mapping of a target to its rows is a judgement recorded in the JSON; the delta document's own mapping was followed where it gave one. v12.0 adoption is still pending ADR 0101."
   },
   {
     "id": "ARCH-075",
