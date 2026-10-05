@@ -78,14 +78,14 @@
   },
   {
     "id": "CICD-072",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_events::ConsumerInventory::retire refuses a (topic, version) that has any listed consumer, and one that was never surveyed, naming the consumers; it admits only a surveyed empty inventory.",
     "evidence": [
       "grep -rn 'consumer.?invent|retir' backend/crates/libs/qip-events (case-insensitive) has no hit"
     ],
-    "gap": "No consumer-inventory type and no retirement-refusal path exist anywhere in qip-events or its callers.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No composition root populates the inventory from real consumers yet; a version's retirement is not yet driven from it. The row's check (refused while the inventory lists any consumer) is met.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -93,7 +93,7 @@
       "CICD-069"
     ],
     "blocked_by": "",
-    "verification": "none exists",
+    "verification": "cargo test -p qip-events --test schema_retirement (retirement_is_refused_while_any_consumer_is_listed_and_admitted_once_none_is, a_version_nobody_surveyed_is_refused_because_silence_is_not_proof; mutation-verified)",
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
