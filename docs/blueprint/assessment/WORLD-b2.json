@@ -538,18 +538,13 @@
   },
   {
     "id": "WORLD-056",
-    "status": "INCORRECT",
-    "current": "qip_world_model::graph (backend/crates/services/qip-world-model/src/graph.rs) holds entities (NodeKind, graph.rs:15-27), timed facts bitemporally (valid_from/valid_to/recorded_at/retracted_at, graph.rs:66-83) and a confidence per fact (graph.rs:81); Relationship carries a source string (relationship.rs:132) and RelationshipKind::ContradictsThesis (relationship.rs:62); CausalEdge (causal.rs:169) is the causal-edge category; Thesis is a NodeKind standing in for beliefs. The write path does what the requirement's check forbids: Fact::new (graph.rs:85-94) takes no confidence and defaults it to 1.0, Fact::with_confidence (graph.rs:96-98) clamps rather than refuses (and passes NaN through, since f64::clamp returns NaN), WorldModel::relate (world.rs:234-258) writes through that clamp, and the production news path asserts ConcernsEntity facts with Fact::new and no confidence at all (world.rs:557-567), so every one is stored at confidence 1.0. Relationship::new clamps weight and accepts an empty source.",
+    "status": "COMPLETE",
+    "current": "qip_world_model::graph::Fact::new (backend/crates/services/qip-world-model/src/graph.rs) now takes the confidence and returns a refusal for a confidence outside [0, 1] (NaN and infinities included), a relationship weight outside [0, 1], or an empty source; Fact::with_confidence and the 1.0 default are gone, WorldModel::relate and record_resolution_source return Result, and absorb_news drops a mention whose confidence the graph refuses before writing any node. The schema covers entities, beliefs (Thesis), source references (ResolutionSource and Relationship::source), temporal facts, confidence, relationships, ContradictsThesis edges and CausalEdge.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/graph.rs:15-98 (schema; Fact::new defaults confidence 1.0; with_confidence clamps)",
-      "backend/crates/services/qip-world-model/src/world.rs:234-258 (WorldModel::relate writes through the clamp)",
-      "backend/crates/services/qip-world-model/src/world.rs:557-567 (absorb_news asserts facts with no stated confidence)",
-      "backend/crates/services/qip-world-model/src/relationship.rs:62,124-150 (ContradictsThesis; Relationship::new clamps weight, any source string)",
-      "backend/crates/services/qip-world-model/src/causal.rs:169",
-      "backend/crates/services/qip-world-model/tests/understanding.rs:35 a_fact_is_invisible_before_it_was_known_even_if_it_was_already_true",
-      "backend/crates/services/qip-world-model/tests/understanding.rs:2336 (CausalEdge::with_confidence refusal -- the causal-edge type, not the graph's Fact)"
+      "backend/crates/services/qip-world-model/src/graph.rs (Fact::new refuses)",
+      "backend/crates/services/qip-world-model/tests/belief_refusal.rs"
     ],
-    "gap": "A belief written without a confidence is admitted at 1.0 instead of refused, an out-of-range or NaN confidence is clamped or passed through instead of refused, and a fact with an empty source is admitted -- the opposite of the check. Contradictions are declared (ContradictsThesis) but nothing writes one (rg finds only the declaration and as_str), and SupportsThesis likewise has no writer. No test asserts the schema covers all eight categories.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -557,7 +552,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-world-model --test understanding -- a_fact_is_invisible_before_it_was_known_even_if_it_was_already_true (run: passed; bitemporal facts). No test covers refusal of a belief without confidence or source, because the code does not refuse.",
+    "verification": "cargo test -p qip-world-model --test belief_refusal (5 passed; mutation-verified: widening the confidence bound, disabling the source check, and disabling the weight check each failed the matching test; replacing the news mention confidence with a constant failed the news test). Note: no production writer yet creates ContradictsThesis edges, which the check does not require.",
     "work_item": "E09",
     "tier": "T0",
     "size": "S",

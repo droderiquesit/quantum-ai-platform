@@ -45,7 +45,9 @@ fn a_fact_is_invisible_before_it_was_known_even_if_it_was_already_true() {
         Relationship::new("a", "b", RelationshipKind::Supplies, 0.5, "filings"),
         began,
         learned,
-    );
+        1.0,
+    )
+    .unwrap();
 
     assert!(!fact.holds(march, march), "not knowable in March");
     assert!(
@@ -61,7 +63,9 @@ fn a_fact_outside_its_validity_window_does_not_hold() {
         Relationship::new("a", "b", RelationshipKind::Supplies, 0.5, "filings"),
         days_ago(100),
         days_ago(100),
+        1.0,
     )
+    .unwrap()
     .valid_until(days_ago(30));
 
     assert!(fact.holds(days_ago(50), now()), "inside the window");
@@ -77,7 +81,7 @@ fn a_retracted_fact_is_hidden_going_forward_but_not_rewritten_backwards() {
     graph.add_node(Node::new("b", NodeKind::Entity, "B", days_ago(100)));
     let relationship = Relationship::new("a", "b", RelationshipKind::Supplies, 0.5, "filings");
     let key = relationship.key();
-    graph.assert_fact(Fact::new(relationship, days_ago(100), days_ago(100)));
+    graph.assert_fact(Fact::new(relationship, days_ago(100), days_ago(100), 1.0).unwrap());
 
     assert_eq!(
         graph
@@ -105,17 +109,21 @@ fn a_retracted_fact_is_hidden_going_forward_but_not_rewritten_backwards() {
 #[test]
 fn an_inverse_edge_is_asserted_automatically() {
     let mut graph = KnowledgeGraph::new();
-    graph.assert_fact(Fact::new(
-        Relationship::new(
-            "supplier",
-            "buyer",
-            RelationshipKind::Supplies,
-            0.6,
-            "filings",
-        ),
-        days_ago(10),
-        days_ago(10),
-    ));
+    graph.assert_fact(
+        Fact::new(
+            Relationship::new(
+                "supplier",
+                "buyer",
+                RelationshipKind::Supplies,
+                0.6,
+                "filings",
+            ),
+            days_ago(10),
+            days_ago(10),
+            1.0,
+        )
+        .unwrap(),
+    );
 
     let forward = graph.neighbours("supplier", Some(RelationshipKind::Supplies), now(), now());
     assert_eq!(forward.len(), 1);
@@ -136,39 +144,51 @@ fn chain_graph() -> KnowledgeGraph {
     for id in ["kestrel", "northwind", "vantage", "meridian"] {
         graph.add_node(Node::new(id, NodeKind::Entity, id, days_ago(400)));
     }
-    graph.assert_fact(Fact::new(
-        Relationship::new(
-            "kestrel",
-            "northwind",
-            RelationshipKind::Supplies,
-            0.4,
-            "filings",
-        ),
-        days_ago(400),
-        days_ago(400),
-    ));
-    graph.assert_fact(Fact::new(
-        Relationship::new(
-            "northwind",
-            "vantage",
-            RelationshipKind::Supplies,
-            0.6,
-            "filings",
-        ),
-        days_ago(400),
-        days_ago(400),
-    ));
-    graph.assert_fact(Fact::new(
-        Relationship::new(
-            "northwind",
-            "meridian",
-            RelationshipKind::Competitor,
-            0.2,
-            "research",
-        ),
-        days_ago(400),
-        days_ago(400),
-    ));
+    graph.assert_fact(
+        Fact::new(
+            Relationship::new(
+                "kestrel",
+                "northwind",
+                RelationshipKind::Supplies,
+                0.4,
+                "filings",
+            ),
+            days_ago(400),
+            days_ago(400),
+            1.0,
+        )
+        .unwrap(),
+    );
+    graph.assert_fact(
+        Fact::new(
+            Relationship::new(
+                "northwind",
+                "vantage",
+                RelationshipKind::Supplies,
+                0.6,
+                "filings",
+            ),
+            days_ago(400),
+            days_ago(400),
+            1.0,
+        )
+        .unwrap(),
+    );
+    graph.assert_fact(
+        Fact::new(
+            Relationship::new(
+                "northwind",
+                "meridian",
+                RelationshipKind::Competitor,
+                0.2,
+                "research",
+            ),
+            days_ago(400),
+            days_ago(400),
+            1.0,
+        )
+        .unwrap(),
+    );
     graph
 }
 
@@ -284,18 +304,20 @@ fn a_relationship_is_structure_and_never_a_path_a_shock_travels_along() {
     // creates no causal edge and therefore no effect. Were `relate` ever to
     // mint one, every index membership would read as contagion.
     let mut world = WorldModel::new();
-    world.relate(
-        Relationship::new(
-            "kestrel",
-            "northwind",
-            RelationshipKind::Supplies,
+    world
+        .relate(
+            Relationship::new(
+                "kestrel",
+                "northwind",
+                RelationshipKind::Supplies,
+                0.9,
+                "filings",
+            ),
+            days_ago(400),
+            days_ago(400),
             0.9,
-            "filings",
-        ),
-        days_ago(400),
-        days_ago(400),
-        0.9,
-    );
+        )
+        .unwrap();
 
     // Premise: the relationship is in the graph and traversable.
     let structural = world.graph().neighbours("kestrel", None, now(), now());

@@ -237,7 +237,7 @@ impl WorldModel {
         valid_from: Timestamp,
         recorded_at: Timestamp,
         confidence: f64,
-    ) {
+    ) -> Result<()> {
         let description = format!(
             "{} {} {}",
             relationship.from,
@@ -245,9 +245,14 @@ impl WorldModel {
             relationship.to
         );
         let subject = relationship.key();
-        self.graph.assert_fact(
-            Fact::new(relationship, valid_from, recorded_at).with_confidence(confidence),
-        );
+        // Refused before anything is written: a fact with no valid confidence
+        // or source must leave neither a graph row nor a journal entry.
+        self.graph.assert_fact(Fact::new(
+            relationship,
+            valid_from,
+            recorded_at,
+            confidence,
+        )?);
         self.journal.push(Change::new(
             ChangeKind::RelationshipAdded,
             subject,
@@ -255,6 +260,7 @@ impl WorldModel {
             0.4,
             recorded_at,
         ));
+        Ok(())
     }
 
     /// Record the authority a thesis is settled against, and the edge from
@@ -280,7 +286,7 @@ impl WorldModel {
     /// so the attribute keeps what was known then and the *edge* carries what
     /// this settlement used. The thesis end is ensured too, so the edge runs
     /// between two nodes rather than out of nothing.
-    pub fn record_resolution_source(&mut self, claim: &ResolutionSourceClaim) -> String {
+    pub fn record_resolution_source(&mut self, claim: &ResolutionSourceClaim) -> Result<String> {
         let id = claim.node_id();
         if self.graph.node(&id).is_none() {
             self.graph.add_node(
@@ -313,8 +319,8 @@ impl WorldModel {
             claim.authoritative_from(),
             claim.knowable_at(),
             1.0,
-        );
-        id
+        )?;
+        Ok(id)
     }
 
     /// Record a causal claim.
@@ -537,6 +543,25 @@ impl WorldModel {
             let (decision, _) = self.resolver.resolve(&record, context);
             if let Some(entity_id) = decision.entity_id() {
                 let id = entity_id.as_str().to_string();
+                let event_id = format!("news:{}", item.item_id);
+                // The mention's own confidence is the claim's confidence. A
+                // mention whose confidence or provenance source the graph
+                // refuses (out of range, NaN, no source) is dropped whole,
+                // before any node is written: it used to be stored at 1.0.
+                let Ok(concerns) = Fact::new(
+                    Relationship::new(
+                        &event_id,
+                        &id,
+                        RelationshipKind::ConcernsEntity,
+                        mention.confidence,
+                        item.provenance.source.clone(),
+                    ),
+                    item.published_at,
+                    now,
+                    mention.confidence,
+                ) else {
+                    continue;
+                };
                 if self.graph.node(&id).is_none()
                     && let Some(entity) = self.resolver.get(entity_id)
                 {
@@ -547,24 +572,13 @@ impl WorldModel {
                 resolved.push(id.clone());
 
                 // The item becomes an evidence node linked to the entity.
-                let event_id = format!("news:{}", item.item_id);
                 if self.graph.node(&event_id).is_none() {
                     self.graph.add_node(
                         Node::new(&event_id, NodeKind::Event, &item.headline, now)
                             .with_attribute("source", item.source.as_str()),
                     );
                 }
-                self.graph.assert_fact(Fact::new(
-                    Relationship::new(
-                        &event_id,
-                        &id,
-                        RelationshipKind::ConcernsEntity,
-                        mention.confidence,
-                        item.provenance.source.clone(),
-                    ),
-                    item.published_at,
-                    now,
-                ));
+                self.graph.assert_fact(concerns);
 
                 // Sentiment is a feature of the entity, available when the item
                 // was published rather than when it was written.
@@ -1084,7 +1098,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         known_from,
         known_from,
         0.9,
-    );
+    )?;
     model.relate(
         Relationship::new(
             "ent-northwind",
@@ -1096,7 +1110,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         known_from,
         known_from,
         0.92,
-    );
+    )?;
     model.relate(
         Relationship::new(
             "ent-northwind",
@@ -1108,7 +1122,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         known_from,
         known_from,
         0.4,
-    );
+    )?;
     for (entity, country) in [
         ("ent-northwind", "ctry-us"),
         ("ent-vantage", "ctry-us"),
@@ -1127,7 +1141,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
             known_from,
             known_from,
             1.0,
-        );
+        )?;
     }
 
     // Causal claims. Each carries a mechanism, a lag and evidence.

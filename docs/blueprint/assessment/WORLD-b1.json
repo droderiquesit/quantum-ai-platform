@@ -180,7 +180,7 @@
   },
   {
     "id": "WORLD-008",
-    "status": "INCORRECT",
+    "status": "PARTIAL",
     "current": "Mixed. qip_streaming::provenance::Confidence::new (backend/crates/services/qip-streaming/src/provenance.rs:252-259) refuses an out-of-range or NaN confidence, as does qip_learning_engine::self_model::ScoredOutcome::new (backend/crates/services/qip-learning-engine/src/self_model.rs:202-219). qip_world_model::causal::CausalEdge refuses a non-fraction strength (causal.rs:363-392, fixed 2026-09-15) and CausalEdge::with_confidence refuses an out-of-range confidence, but CausalEdge::new itself assigns DEFAULT_CONFIDENCE = 0.7 (causal.rs:359, :398) to every edge built without one. qip_world_model::graph::Fact::new assigns confidence 1.0 by default (graph.rs:84-93) and Fact::with_confidence calls `confidence.clamp(0.0, 1.0)` (graph.rs:96-98); the production news arm builds its ConcernsEntity facts with Fact::new and no confidence at all (world.rs:557-566), so they read as certain. relationship.rs:147 and state.rs:58 clamp a weight and a materiality the same way.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/graph.rs:84-93 (Fact::new defaults confidence to 1.0)",
@@ -192,7 +192,7 @@
       "counter-evidence (the correct pattern, elsewhere): backend/crates/services/qip-world-model/src/causal.rs:363-392 (strength refused, not clamped, since 2026-09-15)",
       "backend/crates/services/qip-streaming/src/provenance.rs:236-259 (Confidence, refuses NaN/out-of-range)"
     ],
-    "gap": "Two forms of the forbidden behaviour, both on production paths. Defaulting: Fact::new stamps 1.0 and CausalEdge::new stamps 0.7 on anything built without a confidence, and the news arm's facts are built that way — the requirement says an output without a confidence is refused, not given a default. Clamping: Fact::with_confidence, Relationship::new and WorldState clamp an invalid value into range, so a broken estimator's 2.0 reads as certainty (and NaN.clamp is NaN, passing straight through). No arbitration layer exists, so the arbitration-output half cannot be evaluated.",
+    "gap": "Graph beliefs are now refused when unconfident, out of range, NaN or sourceless (Fact::new, WORLD-056). Still open: CausalEdge::new stamps DEFAULT_CONFIDENCE 0.7 on an edge built without one (50 call sites), and state::Change::new clamps materiality. No arbitration layer output is checked beyond federation::Arbitration.",
     "implemented": true,
     "tested": true,
     "integrated": true,

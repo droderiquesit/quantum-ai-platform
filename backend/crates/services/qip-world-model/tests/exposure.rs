@@ -27,28 +27,24 @@ fn supply_chain(known_from: i64) -> Result<KnowledgeGraph> {
     graph.add_node(Node::new("NORTHWIND", NodeKind::Entity, "Northwind", at(0)));
     graph.add_node(Node::new("NWD", NodeKind::FinancialObject, "NWD", at(0)));
 
-    graph.assert_fact(
-        Fact::new(
-            Relationship::new(
-                "KESTREL",
-                "NORTHWIND",
-                RelationshipKind::Supplies,
-                1.0,
-                "fixture",
-            ),
-            at(0),
-            at(0),
-        )
-        .with_confidence(0.9),
-    );
-    graph.assert_fact(
-        Fact::new(
-            Relationship::new("NORTHWIND", "NWD", RelationshipKind::Issues, 1.0, "fixture"),
-            at(0),
-            at(known_from),
-        )
-        .with_confidence(0.8),
-    );
+    graph.assert_fact(Fact::new(
+        Relationship::new(
+            "KESTREL",
+            "NORTHWIND",
+            RelationshipKind::Supplies,
+            1.0,
+            "fixture",
+        ),
+        at(0),
+        at(0),
+        0.9,
+    )?);
+    graph.assert_fact(Fact::new(
+        Relationship::new("NORTHWIND", "NWD", RelationshipKind::Issues, 1.0, "fixture"),
+        at(0),
+        at(known_from),
+        0.8,
+    )?);
     Ok(graph)
 }
 
@@ -128,21 +124,33 @@ fn a_cycle_in_the_relationship_graph_terminates_rather_than_walking_for_ever() {
     }
     graph.add_node(Node::new("SEC", NodeKind::FinancialObject, "SEC", at(0)));
     // A -> B -> A, and B -> SEC.
-    graph.assert_fact(Fact::new(
-        Relationship::new("A", "B", RelationshipKind::Supplies, 1.0, "fixture"),
-        at(0),
-        at(0),
-    ));
-    graph.assert_fact(Fact::new(
-        Relationship::new("B", "A", RelationshipKind::Customer, 1.0, "fixture"),
-        at(0),
-        at(0),
-    ));
-    graph.assert_fact(Fact::new(
-        Relationship::new("B", "SEC", RelationshipKind::Issues, 1.0, "fixture"),
-        at(0),
-        at(0),
-    ));
+    graph.assert_fact(
+        Fact::new(
+            Relationship::new("A", "B", RelationshipKind::Supplies, 1.0, "fixture"),
+            at(0),
+            at(0),
+            1.0,
+        )
+        .unwrap(),
+    );
+    graph.assert_fact(
+        Fact::new(
+            Relationship::new("B", "A", RelationshipKind::Customer, 1.0, "fixture"),
+            at(0),
+            at(0),
+            1.0,
+        )
+        .unwrap(),
+    );
+    graph.assert_fact(
+        Fact::new(
+            Relationship::new("B", "SEC", RelationshipKind::Issues, 1.0, "fixture"),
+            at(0),
+            at(0),
+            1.0,
+        )
+        .unwrap(),
+    );
 
     let found = instruments_exposed_to(&graph, "A", MAX_EXPOSURE_HOPS, at(10), at(10)).unwrap();
     // The premise and the property in one: the walk terminated, and it found
