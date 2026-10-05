@@ -7,17 +7,17 @@
       "infrastructure/terraform/modules/connectivity/main.tf:59 (google_compute_router \"interconnect\")",
       "infrastructure/terraform/modules/connectivity/main.tf:92 (google_compute_interconnect_attachment \"partner\")",
       "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md",
-      "no .tftest.hcl exists under infrastructure/terraform/modules/connectivity/ — zero test coverage"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 runs: flag off plans nothing; two attachments share one BGP router, PARTNER, admin down; AVAILABILITY_DOMAIN_ANY refused)"
     ],
-    "gap": "No environment enables the module (enable_partner_interconnect is false everywhere and no partner circuit has been ordered), and the module has no test at all, so nothing demonstrates the Cloud Router/BGP shape even at plan time.",
+    "gap": "No environment enables the module (enable_partner_interconnect is false everywhere) and no partner circuit has been ordered, which is external action; the Cloud Router/BGP shape is now proven at plan time but nothing is applied or carrying routes.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A .tftest.hcl for modules/connectivity asserting a declared attachment creates a Cloud Router with a BGP session in the attachment's region, on `terraform test`. Does not exist today.",
+    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 3 passed, 0 failed (mutation-verified: ignoring the enable flag failed the first run). Still needs an ordered circuit and an environment that enables the module.",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
@@ -627,16 +627,18 @@
   },
   {
     "id": "GCP-057",
-    "status": "PARTIAL",
-    "current": "modules/iap-edge (public-edge zone HTTPS backends) and modules/iap-run (per-Cloud-Run-service IAP) both exist, are extensively tested, and modules/iap-run's portal instance is actually enabled in dev (module \"portal_iap_run\" count = 1 when gitops_portal_hostname == \"\" && console_egress_cidr != null — both true in dev tfvars), with README.md citing a real infra.yml run showing iapEnabled: true. No IAP TCP-forwarding firewall rule exists for VM SSH on execution-node.",
+    "status": "COMPLETE",
+    "current": "modules/iap-edge (public-edge zone HTTPS backends) and modules/iap-run (per-Cloud-Run-service IAP) both exist, are extensively tested, and modules/iap-run's portal instance is actually enabled in dev (module \"portal_iap_run\" count = 1 when gitops_portal_hostname == \"\" && console_egress_cidr != null — both true in dev tfvars), with README.md citing a real infra.yml run showing iapEnabled: true. No IAP TCP-forwarding firewall rule exists for VM SSH on execution-node. The execution node now declares google_compute_firewall.iap_ssh: tcp:22 from 35.235.240.0/20 (IAP TCP forwarding) only, scoped to the node tag and ranked above the catch-all deny_ingress; OS Login is already required.",
     "evidence": [
       "infrastructure/terraform/main.tf:1197-1225 (module \"portal_iap_run\", count = 1 in dev)",
       "infrastructure/terraform/modules/iap-run/tests/iap-run.tftest.hcl:151,161,174,186 (public-internet and every-Google-account refused on the access list; execution zone refused)",
       "infrastructure/terraform/modules/iap-edge/tests/iap-edge.tftest.hcl:159,174,186 (execution/ledger/treasury-write zones refused a front door)",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6241 — the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut",
-      "grep -rn '35.235.240.0/20' infrastructure/ -> no hits (no IAP TCP-forwarding rule for any VM)"
+      "grep -rn '35.235.240.0/20' infrastructure/ -> no hits (no IAP TCP-forwarding rule for any VM)",
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_firewall \"iap_ssh\")",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the_deny_still_closes_everything_else"
     ],
-    "gap": "VM SSH access (execution-node) has no IAP TCP-forwarding path wired at all — the default-deny ingress rule admits no exception for it, which satisfies 'no public SSH' but not 'reachable through IAP', and no test proves the VM-SSH half of this requirement.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -644,11 +646,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut; terraform test infrastructure/terraform/modules/iap-run",
+    "verification": "cargo test -p qip-acceptance --test infrastructure a_shell_on_the_execution_node (mutation-verified: source widened to 0.0.0.0/0 failed it, priority moved below the deny failed it); cargo test -p qip-acceptance --test infrastructure the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "The application/console half of this requirement is strong (implemented, tested, and actually deployed in dev); only VM SSH-via-IAP is unaddressed, and execution_nodes = {} everywhere means no VM exists to need it yet."
+    "notes": "The application/console half of this requirement is strong (implemented, tested, and actually deployed in dev); only VM SSH-via-IAP is unaddressed, and execution_nodes = {} everywhere means no VM exists to need it yet. Closed 2026-10-04: the VM-SSH half is a rule on a module no environment instantiates (execution_nodes = {}), so it is proven by text acceptance test, not applied."
   },
   {
     "id": "GCP-058",

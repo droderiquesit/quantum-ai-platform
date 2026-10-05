@@ -9925,3 +9925,60 @@ fn the_diagnose_action_reaches_no_step_that_writes() {
         }
     }
 }
+
+#[test]
+fn a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the_deny_still_closes_everything_else()
+ {
+    // GCP-057: administrative interfaces are reachable only through IAP. A VM
+    // with no SSH path at all satisfies "no public SSH" by being unreachable;
+    // the failure to prevent is the operator who needs a shell and widens the
+    // ingress to 0.0.0.0/0 to get one.
+    let module = without_comments(&read(NODE_MODULE));
+    let rules = terraform_resources(&module, "google_compute_firewall");
+    let ingress: Vec<&(String, String)> = rules
+        .iter()
+        .filter(|(_, body)| body.contains("\"INGRESS\""))
+        .collect();
+    let deny = ingress
+        .iter()
+        .find(|(n, _)| n == "deny_ingress")
+        .map(|(_, b)| b.as_str())
+        .expect(
+            "the node's deny_ingress rule was not found; this check is reading the wrong module",
+        );
+    let ssh: Vec<&&(String, String)> = ingress
+        .iter()
+        .filter(|(_, body)| body.contains("\"22\""))
+        .collect();
+    assert_eq!(
+        ssh.len(),
+        1,
+        "exactly one ingress rule may open port 22 on the execution node, found {}",
+        ssh.len()
+    );
+    let (name, body) = (&ssh[0].0, ssh[0].1.as_str());
+    assert_eq!(name, "iap_ssh");
+    assert!(
+        body.contains("source_ranges = [\"35.235.240.0/20\"]"),
+        "the SSH rule's only source must be the IAP TCP-forwarding range"
+    );
+    assert!(
+        !body.contains("0.0.0.0/0"),
+        "the SSH rule admits the whole internet"
+    );
+    assert!(
+        body.contains("[local.node_tag]"),
+        "the SSH rule is not scoped to the node's tag"
+    );
+    // The allow must outrank the catch-all deny, or it never fires.
+    let priority = |b: &str| -> u32 {
+        b.lines()
+            .find_map(|l| l.trim().strip_prefix("priority"))
+            .and_then(|r| r.trim_start_matches([' ', '=']).trim().parse().ok())
+            .expect("a firewall rule without a numeric priority")
+    };
+    assert!(
+        priority(body) < priority(deny),
+        "the IAP allow ranks below the catch-all deny, so it can never fire"
+    );
+}
