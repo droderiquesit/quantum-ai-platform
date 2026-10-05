@@ -377,6 +377,17 @@ jobs:
             terraform -chdir="$directory" test
             echo "::endgroup::"
           done
+      # The fleet root (ADR 0102) is a separate Terraform root with its own
+      # state, so the steps above, all `-chdir=infrastructure/terraform`, never
+      # open it. No credential: providers are mocked and the backend is off.
+      - name: fleet root
+        run: |
+          set -euo pipefail
+          cd infrastructure/fleet
+          terraform fmt -check -recursive .
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
       # `validate` accepts a module using a provider it never declared; only
       # `plan` refuses it, and a plan of the whole root against real providers
       # needs credentials CI does not have. The mocked plans above declare the

@@ -36,6 +36,7 @@ pub mod evidence;
 pub mod hypothesis;
 pub mod providers;
 pub mod redteam;
+pub mod rules;
 
 pub use bayes::{BaseRate, BeliefUpdate, EvidenceStrength};
 pub use belief::BeliefState;

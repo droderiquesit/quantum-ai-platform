@@ -3,6 +3,7 @@
 //! Most of these assert a *prohibition*. The value of this crate is that
 //! certain things cannot happen, and a prohibition only holds if something
 //! fails when you try to violate it.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_agents::budget::{Budget, BudgetLedger, BudgetLine};
 use qip_agents::capability::{Capability, CapabilitySet};

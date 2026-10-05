@@ -87,9 +87,9 @@
       "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:1-20 (module doc naming the discard as a section 22.1 requirement)",
       "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:527-570"
     ],
-    "gap": "There is no discard stage: the fetched body is a local that is released when ConnectorRuntime::ingest returns, so the requirement's mandatory discard stage wired from knowledge-delta creation, and the refusal to construct a pipeline without it, do not exist. No test asserts release of the buffer or deletion of an ephemeral file after a successful fetch or after a fetch that fails at parse. The ownership-based drop makes retention of the body unlikely, but that is not the construction-time refusal the requirement names and nothing demonstrates it.",
+    "gap": "There is no discard stage: the fetched body is a local that is released when ConnectorRuntime::ingest returns, so the requirement's mandatory discard stage wired from knowledge-delta creation, and the refusal to construct a pipeline without it, do not exist. No test asserts release of the buffer or deletion of an ephemeral file after a successful fetch or after a fetch that fails at parse. The ownership-based drop makes retention of the body unlikely, but that is not the construction-time refusal the requirement names and nothing demonstrates it. Update: a marker-carrying body is shown unreachable from the PollReport and runtime after a successful poll (test a_marker_in_the_served_body_is_reachable_from_nothing_the_runtime_returns_or_keeps), and the one deliberate exception, a rejected payload held as a bounded in-memory excerpt in the Quarantine (320 chars; 240 via body_excerpt), is pinned by a_body_that_fails_to_parse_is_held_only_as_a_bounded_excerpt_in_the_quarantine. Still open: the construction-time discard stage, and a ruling on whether the quarantine excerpt is acceptable raw-text retention under DATA-004.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -309,15 +309,17 @@
   },
   {
     "id": "DATA-013",
-    "status": "MISSING",
-    "current": "Nothing. No KnowledgePack type, and no protobuf or Parquet encoding exists anywhere in the workspace (`grep -rn KnowledgePack` and `grep -rn parquet|protobuf` outside comments/enum-variant-names return nothing). Durable state is JSON via serde_json through qip_core::kv::KeyValueStore, the workspace's only permitted serialization dependency.",
+    "status": "PARTIAL",
+    "current": "qip_contracts::knowledge_pack::{KnowledgePack,PackBody,SCHEMA_VERSION} (backend/crates/libs/qip-contracts/src/knowledge_pack.rs): a versioned pack with one typed body per content kind (summary, embedding, world-state snapshot, world-model delta, model artifact, episodic memory), canonical serde_json encoding, deny_unknown_fields at both levels and a refusal of any other schema version.",
     "evidence": [
-      "grep -rn 'KnowledgePack' backend/crates -> no results",
-      "backend/crates/services/qip-data-finder/src/endpoint.rs:127 (the only 'Parquet' hit in the tree, an AccessMechanism/FileFormat enum variant describing a vendor's own file format, not the platform's output)"
+      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
+      "test: a_pack_of_each_content_type_round_trips_byte_for_byte_and_carries_its_schema_version (backend/crates/libs/qip-contracts/tests/knowledge_pack.rs)",
+      "test: a_pack_carrying_a_field_outside_its_schema_is_refused_at_every_level",
+      "mutation: removing deny_unknown_fields from the pack, from the body enum, and the version check each made the second test fail at the matching assertion; restored"
     ],
-    "gap": "No KnowledgePack type exists in any form. The permitted form (a versioned, schema-checked pack type on serde/serde_json, with round-trip and refusal of out-of-schema fields) can be built in-tree today and has not been; only the literal protobuf/Parquet encoding would need a dependency record (ADR 0099 C2 names prost), and a protobuf wire encoding could also be written in-tree without a client stack.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The pack type and its schema checks exist and are tested, but the encoding is uncompressed JSON, not the protobuf/Parquet the requirement names, and no producer builds a pack and no store (K2, DATA-044) holds one. A protobuf or Parquet encoding and compression need a dependency record (ADR 0099 C2) or an in-tree wire codec.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -326,11 +328,11 @@
       "DATA-012"
     ],
     "blocked_by": "",
-    "verification": "Missing: a pack type per content kind with a schema version, a byte-for-byte round-trip test, and a test that a pack carrying a field outside its schema is refused.",
+    "verification": "cargo test -p qip-contracts --test knowledge_pack (2 tests)",
     "work_item": "E08",
     "tier": "T4",
     "size": "L",
-    "notes": "verify: changed BLOCKED(C2)->MISSING. C2 is not the reason nothing exists: the requirement's own notes name an in-tree serde pack as the permitted form, and that form is buildable and absent. The dependency question applies only to the protobuf/Parquet encoding. Prior note: Permitted form today: JSON documents via qip_core::kv::KeyValueStore, which is what every durable structure in the platform (world model, ledgers, journal) actually uses."
+    "notes": "verify: MISSING -> PARTIAL. The requirement's unit check (round trip, schema version, out-of-schema refusal) is demonstrated for the in-tree serde form; the statement's protobuf/Parquet + compressed wording is not, so it is not marked COMPLETE."
   },
   {
     "id": "DATA-014",

@@ -14,6 +14,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_acceptance::{files_with_extension, read, repository_root};
 
@@ -4314,6 +4315,9 @@ fn no_workflow_depends_on_a_repository_variable() {
         ".github/workflows/deploy.yml",
         ".github/workflows/vendor.yml",
         ".github/workflows/image.yml",
+        // Authenticates by workload identity as infra.yml does, so the same
+        // failure mode is available to it; it was outside the list when added.
+        ".github/workflows/fleet.yml",
     ] {
         let workflow = read(workflow_file);
         assert!(
@@ -5211,12 +5215,13 @@ fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, Str
 
 #[test]
 fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
-    const WORKFLOWS: [&str; 5] = [
+    const WORKFLOWS: [&str; 6] = [
         ".github/workflows/ci.yml",
         ".github/workflows/deploy.yml",
         ".github/workflows/image.yml",
         ".github/workflows/infra.yml",
         ".github/workflows/vendor.yml",
+        ".github/workflows/fleet.yml",
     ];
 
     /// The outputs each `id`-bearing step of one job writes.
@@ -8764,7 +8769,9 @@ fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_proje
          broken bootstrap. It printed: {printed}"
     );
     assert!(
-        written.lines().any(|line| line == "project=algorik-dev"),
+        written
+            .lines()
+            .any(|line| line == "project=algorik-platform-dev"),
         "the identity step admitted `dev` and wrote no `project=` output naming dev's project; \
          it exited 0 without reaching its end, which is the failure the four steps that read \
          `steps.identity.outputs.project` cannot see"
@@ -8894,7 +8901,7 @@ fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_wh
     //    stops. The project id it echoes is printed only after both guards.
     let (code, printed) = run(&real, "dev");
     assert!(
-        printed.contains("project:") && printed.contains("algorik-dev"),
+        printed.contains("project:") && printed.contains("algorik-platform-dev"),
         "scripts/bootstrap-deploy.sh did not get past its own guards for `dev`, the one \
          provisioned environment: it never echoed the project it would act on. A guard that \
          refuses everything is not a guard. It exited {code} and printed: {printed}"

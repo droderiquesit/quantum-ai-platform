@@ -139,6 +139,7 @@ pub mod ledger;
 pub mod margin;
 pub mod recall;
 pub mod reservation;
+pub mod treasury;
 
 pub use allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,
