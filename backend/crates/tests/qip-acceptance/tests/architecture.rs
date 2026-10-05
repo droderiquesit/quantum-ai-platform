@@ -2391,6 +2391,192 @@ fn nothing_that_moves_capital_can_reach_a_language_model() {
     }
 }
 
+/// CAPITAL-022: the modules in which the Capital Brain *decides*.
+///
+/// Sizing, grants, compounding, recall and funding. Each returns a value —
+/// an allocation, an envelope, a plan, an order — and the kernel journals it.
+const CAPITAL_BRAIN_MODULES: [&str; 6] = [
+    "allocation.rs",
+    "capacity.rs",
+    "compounding.rs",
+    "envelope.rs",
+    "funding.rs",
+    "recall.rs",
+];
+
+/// The types in `qip-capital` that hold authoritative capital state and
+/// change it: balances, holds, obligations, postings.
+const CAPITAL_STATE_WRITERS: [&str; 7] = [
+    "UserLedger",
+    "CashBalance",
+    "ReservationLedger",
+    "CapitalBook",
+    "InternalFunding",
+    "PostingBook",
+    "CurrencyBook",
+];
+
+/// The crates that hold custody policy or stand in front of an order or a
+/// transfer. The Capital Brain's crate must reach none of them.
+const CUSTODY_OR_EXECUTING: [&str; 4] = [
+    "qip-capital-fabric",
+    "qip-brokers",
+    "qip-execution-engine",
+    "qip-edge",
+];
+
+/// What a line of a brain module names that it must not, if anything.
+///
+/// Matched as whole identifiers, because `CapitalBook` is a substring of
+/// nothing today and `ledger` is a substring of `FeeVolumeLedger`, which
+/// lives in a brain module and writes no capital state. A line whose first
+/// token is `//` is prose and skipped, as everywhere else in this file.
+fn capital_state_named_on(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") {
+        return None;
+    }
+    let tokens: Vec<&str> = trimmed
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|token| !token.is_empty())
+        .collect();
+    if let Some(writer) = tokens
+        .iter()
+        .find(|token| CAPITAL_STATE_WRITERS.contains(token))
+    {
+        return Some((*writer).to_string());
+    }
+    // The event log's own types: a module that names one can write a record
+    // itself, rather than returning a value for the kernel to journal.
+    if let Some(event) = tokens
+        .iter()
+        .find(|token| ["qip_events", "EventLog", "EventBody"].contains(token))
+    {
+        return Some((*event).to_string());
+    }
+    // `crate::ledger`, `super::reservation`, `crate::bank`: the modules the
+    // writers live in, by path.
+    tokens
+        .windows(2)
+        .find(|pair| {
+            ["crate", "super"].contains(&pair[0])
+                && ["ledger", "reservation", "bank"].contains(&pair[1])
+        })
+        .map(|pair| format!("{}::{}", pair[0], pair[1]))
+}
+
+#[test]
+fn the_capital_brain_decides_and_names_no_type_that_writes_capital_state_or_moves_it() {
+    // CAPITAL-022. The brain produces recommendations and grants; balances,
+    // holds and obligations are written by controlled services, and capital
+    // is moved by nothing at all here (ADR 0021).
+    //
+    // The failure this prevents is the short cut that reads as a tidy-up: an
+    // allocator that, having sized a grant, takes the hold on it too. From
+    // then on the component that decides how much capital a strategy gets is
+    // also the one that says the capital is there, and a sizing bug is a
+    // ledger bug with nothing between them. `qip-capital` holds both halves
+    // in one crate, so the dependency graph cannot see this boundary and the
+    // crate-level tests in this file pass whatever a brain module imports.
+    // This is the boundary at the granularity it actually has.
+    let source = "backend/crates/services/qip-capital/src";
+    let root = repository_root();
+    let files = qip_acceptance::files_with_extension(source, "rs");
+
+    // Premise one: every writer named above is still declared in the crate,
+    // outside the brain. A writer renamed away would otherwise leave the
+    // list guarding a name nothing has.
+    for writer in CAPITAL_STATE_WRITERS {
+        let declaration = format!("pub struct {writer} ");
+        let declared_in: Vec<String> = files
+            .iter()
+            .filter(|path| {
+                std::fs::read_to_string(path)
+                    .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()))
+                    .lines()
+                    .any(|line| line.starts_with(&declaration))
+            })
+            .map(|path| {
+                path.file_name()
+                    .expect("a source file has a name")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            declared_in.len(),
+            1,
+            "{writer} is declared in {declared_in:?}; the list of capital-state writers must \
+             name types that exist, once"
+        );
+        assert!(
+            !CAPITAL_BRAIN_MODULES.contains(&declared_in[0].as_str()),
+            "{writer} is declared inside the brain module {}",
+            declared_in[0]
+        );
+    }
+
+    // Premise two: the matcher fires. The bank module is built on the
+    // capital book, so a scan that finds nothing there finds nothing anywhere.
+    let bank = qip_acceptance::read(&format!("{source}/bank.rs"));
+    assert!(
+        bank.lines()
+            .filter_map(capital_state_named_on)
+            .any(|named| named == "CapitalBook"),
+        "the scan does not find CapitalBook in bank.rs, where it is imported and used"
+    );
+
+    let mut violations = Vec::new();
+    for module in CAPITAL_BRAIN_MODULES {
+        let relative = format!("{source}/{module}");
+        assert!(
+            root.join(&relative).is_file(),
+            "{relative} is listed as a Capital Brain module and does not exist"
+        );
+        let text = qip_acceptance::read(&relative);
+        // Premise three: the module is real code, not an emptied file.
+        let code_lines = text
+            .lines()
+            .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with("//"))
+            .count();
+        assert!(
+            code_lines >= 40,
+            "{relative} has {code_lines} lines of code; an emptied brain module names nothing \
+             and proves nothing"
+        );
+        for (index, line) in text.lines().enumerate() {
+            if let Some(named) = capital_state_named_on(line) {
+                violations.push(format!("{relative}:{}: names {named}", index + 1));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "a Capital Brain module names a type that writes authoritative capital state or the \
+         event log. The brain returns a decision; the kernel journals it and a controlled \
+         service applies it. Return a value instead:\n{}",
+        violations.join("\n")
+    );
+
+    // And at the granularity the graph does have: the brain's crate reaches
+    // no crate that holds custody policy or stands in front of a transfer or
+    // an order.
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, CUSTODY_OR_EXECUTING.iter().copied());
+    let reachable = reachable_from(&graph, "qip-capital");
+    assert!(
+        !reachable.is_empty(),
+        "qip-capital reaches nothing at all, so the absence asserted for it proves nothing"
+    );
+    for forbidden in CUSTODY_OR_EXECUTING {
+        assert!(
+            !reachable.contains(forbidden),
+            "qip-capital can reach {forbidden}. The Capital Brain's crate decides; it must not \
+             depend on custody or on anything that executes. Reachable: {reachable:?}"
+        );
+    }
+}
+
 /// RISK-031: the Risk Gate produces verdicts with no Redis, because nothing
 /// that holds it can reach the crate that owns the Redis client.
 ///

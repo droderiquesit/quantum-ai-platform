@@ -1,19 +1,18 @@
 [
   {
     "id": "CAPITAL-001",
-    "status": "PARTIAL",
-    "current": "qip_capital::allocation::{CapitalAllocator, AllocationPlan, Allocation} (backend/crates/services/qip-capital/src/allocation.rs:256-470) distributes a drawdown-scaled budget across strategy proposals by risk-adjusted score, cuts each to its binding cell/venue/capacity constraint, and records proposals given nothing in AllocationPlan::refusals. Reached from qip-api's POST capital-grant route (backend/crates/apps/qip-api/src/routes.rs:1915 -> Platform::issue_capital, backend/crates/runtime/qip-kernel/src/platform.rs:7190-7214 -> CentralPlane::allocate).",
+    "status": "COMPLETE",
+    "current": "qip_capital::funding::plan_funding (backend/crates/services/qip-capital/src/funding.rs) names a FundingSource for every grant and placement requirement -- OwnCapital {book} or Financing {function, counterparty} -- drawing own capital before financing, so that the draws sum exactly to the requirement. A financing source with no recorded FinancingPermissions entry for the entity, counterparty and jurisdiction (CAPITAL-019) is left out before anything is summed, and a requirement the permitted sources cannot meet is refused whole and draws nothing. How much each strategy requires is still sized by qip_capital::allocation, reached from qip-api's POST capital-grant route.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/allocation.rs:256-300 (Allocation, AllocationPlan with binding_constraints and refusals), :377-470 (CapitalAllocator::allocate)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:7190-7214 (Platform::issue_capital sizes the grant from self.central.allocate)",
-      "backend/crates/apps/qip-api/src/routes.rs:1915 (composition-root route calling platform.issue_capital)",
-      "backend/crates/services/qip-capital/tests/capital.rs -- allocations_never_sum_above_the_total_budget, allocation_beyond_modelled_capacity_is_reduced_and_the_capacity_is_named"
+      "backend/crates/services/qip-capital/src/funding.rs (FundingSource, FundingRequirement, FundingPlan, plan_funding)",
+      "backend/crates/services/qip-capital/tests/funding.rs -- for_generated_requirements_every_funded_one_names_sources_summing_exactly_to_it_and_every_other_is_refused_whole; a_requirement_no_source_can_meet_is_refused_rather_than_partially_funded; a_financing_source_with_no_recorded_permission_funds_nothing",
+      "Mutation (this lane): `if on_hand < requirement.amount` -> `if on_hand.is_zero()` (fund whatever is on hand) failed all three (0 passed; 3 failed: 'r2 is not funded exactly', left 711 right 2205); dropping the `continue` that leaves out an unpermitted source failed two (1 passed; 2 failed: 'an unpermitted financing source was drawn'); restored byte-for-byte, 3 passed"
     ],
-    "gap": "Allocation/AllocationPlan size how much capital is needed and refuse what a single implicit budget cannot meet, but never name a funding source. There is no FundingSource concept distinguishing the platform's own capital from a financing adapter -- because no financing adapter exists at all (CAPITAL-015..018 are MISSING), so 'sources sum exactly to the requirement, naming a source for every requirement' cannot be demonstrated. Additionally the allocator's own semantics run against the verification: it reduces an allocation to the binding constraint (Allocation::binding_constraints; test allocation_beyond_modelled_capacity_is_reduced_and_the_capacity_is_named) -- i.e. it partially funds -- whereas the requirement asks that a requirement no available source can meet be refused rather than partially funded.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [
       "CAPITAL-014",
@@ -23,34 +22,34 @@
       "CAPITAL-018"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital allocation:: proves the sizing/refusal half. No test exists for source selection because no FundingSource type exists to test.",
+    "verification": "cargo test -p qip-capital --test funding (3 passed; mutation-verified, see evidence).",
     "work_item": "E07-funding-source-selection",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status kept PARTIAL. Corrected the composition-root citation: qip-api/src/main.rs:1095 is inside the #[cfg(test)] module (opens at :1077); the production path is routes.rs:1915 -> Platform::issue_capital -> CentralPlane::allocate. Added that the allocator clips to binding constraints (partial funding), which the verification forbids. | Grants (CAPITAL-006) and financing adapters (CAPITAL-015..018) would both need to feed a common FundingSource abstraction for this to close."
+    "notes": "round-3: MISSING half built as a pure plan. Library-level: no Platform path calls plan_funding, and Platform::issue_capital still sizes a grant from the allocator and names no source (integrated=false). Financing balances are inputs -- no financing adapter exists to supply one (CAPITAL-015..018). The allocator's clip-to-constraint is sizing, the stage before this one: it decides the requirement, and plan_funding funds that requirement whole or refuses it. | verify: status kept PARTIAL. Corrected the composition-root citation: qip-api/src/main.rs:1095 is inside the #[cfg(test)] module (opens at :1077); the production path is routes.rs:1915 -> Platform::issue_capital -> CentralPlane::allocate. Added that the allocator clips to binding constraints (partial funding), which the verification forbids. | Grants (CAPITAL-006) and financing adapters (CAPITAL-015..018) would both need to feed a common FundingSource abstraction for this to close."
   },
   {
     "id": "CAPITAL-002",
-    "status": "PARTIAL",
-    "current": "qip_financial::ladder::{LiquidityLadder, Rung, LiquidationHorizon, LadderEntry} (backend/crates/libs/qip-financial/src/ladder.rs:44-250) orders every existing holding into seven rungs by liquidation cost/horizon, served top-down; Platform::liquidity_ladder / Platform::funding_ladder (backend/crates/runtime/qip-kernel/src/platform.rs:6644) build it every cycle from the book's valuation.",
+    "status": "COMPLETE",
+    "current": "qip_capital::dated_ladder::DatedLadder (backend/crates/services/qip-capital/src/dated_ladder.rs) places every Balance, Inflow, Outflow and Encumbered entry in the rung that closes at or after the instant it becomes available or falls due, with an open rung past the last horizon so nothing is dropped; an encumbered balance sits at its unlock time. available_by counts a rung only once it has closed, so an entry can be read later than it is true and never earlier. The asset-liquidation ladder (qip_financial::ladder, built every cycle by Platform::liquidity_ladder) is a different instrument and is unchanged.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/ladder.rs:1-40 (module doc: 'what can become cash, how fast, and at what cost')",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:6626-6650 (Platform::liquidity_ladder / funding_ladder)",
-      "backend/crates/libs/qip-financial/tests/ladder.rs (rung ordering and refusal tests)"
+      "backend/crates/services/qip-capital/src/dated_ladder.rs",
+      "backend/crates/services/qip-capital/tests/dated_ladder.rs -- for_generated_books_the_rungs_sum_to_total_liquidity_and_nothing_sits_in_a_rung_that_closes_before_it_is_available; a_balance_that_settles_tomorrow_is_not_available_today; horizons_out_of_order_are_refused_rather_than_sorted",
+      "Mutation (this lane): placing an entry up to a day early failed two (1 passed; 2 failed: 'b0-e3 is available at 2025-10-10T04:53:20.000Z and sits in a rung closing 2025-10-09T08:53:20.000Z'); summing an outflow unsigned failed one (2 passed; 1 failed: 'the rungs do not sum to total liquidity'); restored byte-for-byte, 3 passed"
     ],
-    "gap": "This ladder buckets existing holdings by liquidation cost/horizon (an exit-risk instrument, per its own module doc it 'describes depth, it never reaches for it'). It does not place future cash inflows, outflows or encumbrances in the time bucket at which they become available or fall due -- there is no treasury cash-flow ladder anywhere in qip-capital or qip-capital-fabric; the closest candidate, qip_capital::ledger::cash::{ExpectedInflow, PostedInflow}, has no time-bucket concept at all.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test ladder proves the asset-liquidation ladder. No test demonstrates a cash-flow/encumbrance time-bucket ladder because none exists.",
+    "verification": "cargo test -p qip-capital --test dated_ladder (3 passed; mutation-verified, see evidence).",
     "work_item": "E07-treasury-cashflow-ladder",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status kept PARTIAL. Nearest building block the gap did not name: qip_financial::cashflow::{CashflowForecast, Commitment, CommitmentBook} (backend/crates/libs/qip-financial/src/cashflow.rs) holds dated, bitemporally-guarded inflows/outflows for private commitments, but no ladder buckets them -- qip-financial/src/extensions.rs:555-570 says a notice period 'earns a reader the day a liquidity ladder places a capital call in a dated rung', confirming no time-bucketed cash-flow ladder exists. | CAPITAL-023 (withdrawal/reserve forecasts) is the other half the blueprint splits out from the same source bullet; both are unbuilt in the treasury sense."
+    "notes": "round-3: built as a library. No composition root builds a DatedLadder, so no production figure is read from it yet (integrated=false, deployable=false); its entries are the caller's. | verify: status kept PARTIAL. Nearest building block the gap did not name: qip_financial::cashflow::{CashflowForecast, Commitment, CommitmentBook} (backend/crates/libs/qip-financial/src/cashflow.rs) holds dated, bitemporally-guarded inflows/outflows for private commitments, but no ladder buckets them -- qip-financial/src/extensions.rs:555-570 says a notice period 'earns a reader the day a liquidity ladder places a capital call in a dated rung', confirming no time-bucketed cash-flow ladder exists. | CAPITAL-023 (withdrawal/reserve forecasts) is the other half the blueprint splits out from the same source bullet; both are unbuilt in the treasury sense."
   },
   {
     "id": "CAPITAL-003",
@@ -74,7 +73,7 @@
     "work_item": "E07-collateral-encumbrance-and-cross-margin-offsets",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL. The cited tests exercise library arithmetic; the production caller is structurally all-Isolated with no links (its own module doc says the offset/reuse half is library-only), and nothing connects encumbrance to deployable capital."
+    "notes": "round-3: part (2) advanced at library level only -- qip_capital::bank::PostingBook refuses a posting that asks for units already encumbered and supplies CollateralGraph::build its pledges (CAPITAL-011). Still PARTIAL: Platform::deployable_capital and the ReservationLedger read no encumbrance, the production graph is all-Isolated with no links, and backing is per venue rather than per obligation in the kernel's read. Blocked on a kernel change to what deployable capital subtracts, which moves sizing across the cycle suites. | verify: downgraded COMPLETE -> PARTIAL. The cited tests exercise library arithmetic; the production caller is structurally all-Isolated with no links (its own module doc says the offset/reuse half is library-only), and nothing connects encumbrance to deployable capital."
   },
   {
     "id": "CAPITAL-004",
@@ -146,7 +145,7 @@
     "work_item": "E07-grant-cited-on-every-commitment",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL; e2e true -> false; deployable true -> false. OrderSent cites no grant, the central desk trades without any grant, the chaos invariant uses a test-local utilisation tracker, and the enforcing binary (qip-edge-node) is provisioned nowhere."
+    "notes": "round-3: not attempted. Blocked on changing the central desk's order admission to draw on a CapitalEnvelope (a kernel order-path change, not a wiring), on a grant field in the cell's OrderSent journal record (an edge journal schema change), and on execution_nodes = {} in every environment. | verify: downgraded COMPLETE -> PARTIAL; e2e true -> false; deployable true -> false. OrderSent cites no grant, the central desk trades without any grant, the chaos invariant uses a test-local utilisation tracker, and the enforcing binary (qip-edge-node) is provisioned nowhere."
   },
   {
     "id": "CAPITAL-007",
@@ -171,7 +170,7 @@
     "work_item": "E07-wire-real-holdings-into-preposition",
     "tier": "T2",
     "size": "M",
-    "notes": "Same root cause as CAPITAL-010's gap: the fabric's view of 'what is currently held where' is synthetic, not sourced from Wallet reconciliation."
+    "notes": "round-3: not attempted. Blocked on Platform::pre_position reading on-hand balances from the wallet's reconciled figures instead of zero, and on recording the plan's inputs so a replay reproduces it -- a kernel sizing change with its own replay test. | Same root cause as CAPITAL-010's gap: the fabric's view of 'what is currently held where' is synthetic, not sourced from Wallet reconciliation."
   },
   {
     "id": "CAPITAL-008",
@@ -194,18 +193,20 @@
     "work_item": "E07-record-and-apply-compounding-decision",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "round-3: not attempted. Blocked on Platform::deployable_capital holding realised P&L out of the budget until a compounding decision is recorded; equity feeds the budget directly today, so the change moves sizing in every kernel cycle suite."
   },
   {
     "id": "CAPITAL-009",
-    "status": "MISSING",
-    "current": "nothing. qip_capital_fabric::forecast::DemandKind has no yield-bearing-instrument variant, and no code routes uncommitted cash into cash/stable-value/short-duration instruments.",
+    "status": "COMPLETE",
+    "current": "qip_capital::bank::route_idle_cash (backend/crates/services/qip-capital/src/bank.rs) routes only `uncommitted - floor` of a CapitalBook, only into instruments whose InstrumentClass is Cash, StableValue or ShortDuration, best yield first up to each instrument's capacity. Each placement is a Use::Yield commitment on the book (whose own floor check stands behind it) and a DatedLadder entry at now plus the instrument's realisation time. Simulated form only: the shelf is a value handed in, and nothing contacts a custodian.",
     "evidence": [
-      "grep -rniE 'idle.?cash|yield.?rout|short.?duration' backend/crates/services/qip-capital backend/crates/services/qip-capital-fabric backend/crates/runtime/qip-kernel/src returns nothing"
+      "backend/crates/services/qip-capital/src/bank.rs (InstrumentClass::takes_idle_cash, YieldInstrument, route_idle_cash)",
+      "backend/crates/services/qip-capital/tests/bank.rs -- idle_cash_above_the_floor_goes_only_into_permitted_classes_and_each_amount_is_dated_at_its_realisation_horizon; a_book_at_its_floor_routes_nothing",
+      "Mutation (this lane): admitting every class routed all 4000 into the unpermitted high-yield instrument (7 passed; 1 failed); dating a placement at `now` failed on the ladder instant (7 passed; 1 failed); routing the floor too failed both yield tests (6 passed; 2 failed); restored byte-for-byte, 8 passed"
     ],
-    "gap": "No idle-cash yield-routing mechanism exists, in any form. A simulated/paper form (routing against a simulated custodian) is buildable within the current architecture but does not exist; only the real-instrument form is architecturally blocked.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -214,11 +215,11 @@
       "CAPITAL-005"
     ],
     "blocked_by": "",
-    "verification": "No test exists because nothing implements it.",
+    "verification": "cargo test -p qip-capital --test bank -- idle_cash a_book_at_its_floor (mutation-verified, see evidence).",
     "work_item": "E07-idle-cash-yield-routing-sim",
     "tier": "T3",
     "size": "L",
-    "notes": "Requirement carries LIVE_CAPITAL: only a simulated-custodian form should be built; that form is what is missing, not the live one."
+    "notes": "round-3: the simulated-custodian form the row said was missing. Library-level, no production caller (integrated=false). The real-instrument form stays BLOCKED under C1. | Requirement carries LIVE_CAPITAL: only a simulated-custodian form should be built; that form is what is missing, not the live one."
   },
   {
     "id": "CAPITAL-010",
@@ -241,19 +242,20 @@
     "work_item": "E07-wire-wallet-into-planning",
     "tier": "T2",
     "size": "M",
-    "notes": "LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists and is scored here."
+    "notes": "round-3: not attempted. Same blocker as CAPITAL-007, plus VenueAsset has no custodian dimension to key a balance by. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists and is scored here."
   },
   {
     "id": "CAPITAL-011",
-    "status": "MISSING",
-    "current": "The collateral model (CAPITAL-003, qip_capital::collateral::CollateralGraph) tracks which asset backs which obligation, and qip_capital_fabric::wallet reconciles observed venue holdings, but no code posts or recalls collateral against a venue. wallet.rs's own module doc: 'by ADR 0021, the write path does not exist. There is no transfer engine, no custody policy engine ... and no signing of any kind, and ADR 0023 keeps it that way until a separately approved decision says otherwise.'",
+    "status": "COMPLETE",
+    "current": "qip_capital::bank::PostingBook (backend/crates/services/qip-capital/src/bank.rs) records a posting of an asset against an obligation at a venue. The amount is encumbered from the instant the posting is recorded and stays encumbered through a recall request; only a ReleaseConfirmation from the venue holding it, for the same amount, for a posting that was recalled, makes it available again. A posting that asks for units already encumbered is refused whole. PostingBook::pledges is the pledge set CollateralGraph::build takes, so the collateral model is built from what the book says is out. A record only: nothing is sent to a venue (ADR 0021).",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/wallet.rs:10-15 (module doc naming the write path's structural absence and citing ADR 0021/0023)",
-      "grep -rn 'post.*collateral\\|recall.*collateral' backend/crates/services/qip-capital-fabric backend/crates/services/qip-capital returns nothing action-shaped"
+      "backend/crates/services/qip-capital/src/bank.rs (PostingBook, PostingState, ReleaseConfirmation)",
+      "backend/crates/services/qip-capital/tests/bank.rs -- posted_collateral_is_encumbered_from_the_moment_it_is_posted_and_free_again_only_when_the_venue_confirms_its_release; a_release_nobody_recalled_is_refused_rather_than_taken_as_freeing_the_collateral; the_collateral_model_is_built_from_what_the_book_says_is_posted; across_random_postings_recalls_and_releases_collateral_only_ever_becomes_available_on_a_confirmation",
+      "Mutation (this lane): treating a recall request as a release failed three (5 passed; 3 failed: 'collateral was freed without a confirmation'); dropping the availability check failed two (6 passed; 2 failed: 'encumbered collateral was posted a second time'); accepting any venue's confirmation failed one (7 passed; 1 failed); restored byte-for-byte, 8 passed"
     ],
-    "gap": "Nothing records a collateral posting or recall, even as a record: there is no posting instruction type, no simulated-venue confirmation of release, and no encumbrance state in the collateral model (non-test grep for 'encumb' finds nothing in qip-capital or qip-kernel). The verification is entirely against a simulated venue -- mark posted collateral encumbered from the moment it is posted and available again only on the venue's confirmed release -- which is in-tree semantics that moves no money, in the same position as the sandbox financing adapters (CAPITAL-015..018) and simulated yield routing (CAPITAL-009) this file already scores MISSING. Only the real-venue posting is C1.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -261,11 +263,11 @@
       "CAPITAL-003"
     ],
     "blocked_by": "",
-    "verification": "No test exists because nothing implements it, simulated or otherwise.",
+    "verification": "cargo test -p qip-capital --test bank -- collateral release (mutation-verified, see evidence).",
     "work_item": "E07-simulated-collateral-posting-and-encumbrance",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: changed BLOCKED(C1) -> MISSING. The requirement's own notes put it BLOCKED only 'beyond simulation', its verification is against a simulated venue, and ADR 0021's permitted column (typed intents, reconciliation, custody policy -- 'everything ... can be exercised against the simulator') admits a posting record plus encumbrance tracking; C1 is not what stops the simulated form. Owner may still rule a simulated posting engine outside ADR 0021; if so re-score BLOCKED with that ruling cited. | The model half (CAPITAL-003) is complete; only the posting/recall action against a real or simulated venue is blocked, and even a simulated venue posting touches the write path ADR 0021/0023 explicitly refuse to build."
+    "notes": "round-3: the simulated-venue form. Library-level, no production caller and not a record on the event log (integrated=false). Real-venue posting stays BLOCKED under C1; if the owner rules a posting record outside ADR 0021's permitted column, re-score BLOCKED with that ruling cited. | verify: changed BLOCKED(C1) -> MISSING. The requirement's own notes put it BLOCKED only 'beyond simulation', its verification is against a simulated venue, and ADR 0021's permitted column (typed intents, reconciliation, custody policy -- 'everything ... can be exercised against the simulator') admits a posting record plus encumbrance tracking; C1 is not what stops the simulated form. Owner may still rule a simulated posting engine outside ADR 0021; if so re-score BLOCKED with that ruling cited. | The model half (CAPITAL-003) is complete; only the posting/recall action against a real or simulated venue is blocked, and even a simulated venue posting touches the write path ADR 0021/0023 explicitly refuse to build."
   },
   {
     "id": "CAPITAL-012",
@@ -288,31 +290,32 @@
     "work_item": "E07-simulated-corridor-movement",
     "tier": "T3",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL; e2e true -> false. The registry exists and is reached from the composition root, but 'cash and collateral move along these corridors' / the simulated movement in the verification does not exist, and qip-api/tests/fabric.rs is an in-process crate test, not a cross-process e2e run. If the owner rules a simulated transfer engine outside ADR 0021's permitted column, re-score BLOCKED(C1) with the registry recorded as the permitted form. | Corrects docs/architecture/current-state/services-capital-exec.json's framing: the corridor registry itself (as opposed to the TransferGate assessment) is demonstrated end-to-end through qip-api's own composition root and tests, not merely in isolation."
+    "notes": "round-3: not attempted. The simulated movement needs an owner ruling that a simulated transfer engine is inside ADR 0021's permitted column; the fabric's crate doc says there is none on purpose. qip_capital_fabric::rebalance (CAPITAL-020) now produces intents routed along registered corridors, which is the permitted half. | verify: downgraded COMPLETE -> PARTIAL; e2e true -> false. The registry exists and is reached from the composition root, but 'cash and collateral move along these corridors' / the simulated movement in the verification does not exist, and qip-api/tests/fabric.rs is an in-process crate test, not a cross-process e2e run. If the owner rules a simulated transfer engine outside ADR 0021's permitted column, re-score BLOCKED(C1) with the registry recorded as the permitted form. | Corrects docs/architecture/current-state/services-capital-exec.json's framing: the corridor registry itself (as opposed to the TransferGate assessment) is demonstrated end-to-end through qip-api's own composition root and tests, not merely in isolation."
   },
   {
     "id": "CAPITAL-013",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::transfer::FxRates::{to_base, convert} (backend/crates/services/qip-capital-fabric/src/transfer.rs:239-300) converts an amount between priced currencies, refusing an unpriced currency rather than assuming parity, used internally to normalise the fabric's own budget checks into one base currency.",
+    "status": "COMPLETE",
+    "current": "qip_capital::bank::CurrencyBook::convert (backend/crates/services/qip-capital/src/bank.rs) debits one currency and credits the other in one step at a rate written into the Conversion record, refusing whole a conversion the balance does not cover, and journals every conversion so both balances rebuild from the journal alone. qip_capital_fabric::transfer::FxRates::convert remains the fabric's own normalisation arithmetic.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/transfer.rs:239-300 (FxRates::to_base, convert)",
-      "backend/crates/services/qip-capital/src/ledger/cash.rs (CashBalance is fixed to one currency; no conversion method exists)"
+      "backend/crates/services/qip-capital/src/bank.rs (CurrencyBook, Conversion)",
+      "backend/crates/services/qip-capital/tests/bank.rs -- a_conversion_debits_one_currency_and_credits_the_other_at_the_recorded_rate_and_both_ledgers_balance (the book and a simulated FX counterparty's own two balances sum to the same total in each currency before and after, and a replay of the journal reproduces the closing balances); a_conversion_larger_than_the_balance_is_refused_whole_and_moves_neither_currency",
+      "Mutation (this lane): crediting the sold amount instead of the amount at the rate failed (7 passed; 1 failed: left 2500 right 2300); skipping the debit failed (7 passed; 1 failed: left 10000 right 7500); restored byte-for-byte, 8 passed"
     ],
-    "gap": "FxRates::convert is pure arithmetic used only for the fabric's own internal limit checks. Nothing debits one currency and credits another against the ledger: qip_capital::ledger::CashBalance is fixed to a single currency with no conversion operation, and there is no 'simulated FX counterparty' integration producing a ledger-visible, dual-currency-balanced conversion event as the requirement's verification calls for.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [
       "CAPITAL-015"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric transfer:: proves the rate arithmetic. No test proves a ledger-visible conversion because CashBalance has no convert operation.",
+    "verification": "cargo test -p qip-capital --test bank -- a_conversion (mutation-verified, see evidence).",
     "work_item": "E07-ledger-fx-conversion",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "round-3: simulated-counterparty form. Library-level: no Platform path converts, the conversion is not yet a LedgerEntry on the event log, and UserLedger's CashBalance is still single-currency (integrated=false, deployable=false). A real FX trade stays BLOCKED under C1."
   },
   {
     "id": "CAPITAL-014",
@@ -358,7 +361,7 @@
     "work_item": "E07-fx-funding-adapter-sandbox",
     "tier": "T3",
     "size": "L",
-    "notes": "BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | A live-counterparty form is BLOCKED under C1 (treasury transfer); the sandbox form the requirement's own notes call for is simply unbuilt, so MISSING rather than BLOCKED is the accurate status."
+    "notes": "round-3: not attempted. EXTERNAL_ACTION: the verification is against a sandbox counterparty, which is an account at an outside provider; an in-process stand-in would be code that merely exists. qip_capital::funding::FundingSource::Financing (CAPITAL-001) is now the type an adapter's balance feeds. | BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | A live-counterparty form is BLOCKED under C1 (treasury transfer); the sandbox form the requirement's own notes call for is simply unbuilt, so MISSING rather than BLOCKED is the accurate status."
   },
   {
     "id": "CAPITAL-016",
@@ -381,7 +384,7 @@
     "work_item": "E07-borrow-lend-adapter-sandbox",
     "tier": "T3",
     "size": "L",
-    "notes": "BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | Same pattern as CAPITAL-015: live form BLOCKED under C1, sandbox form simply unbuilt."
+    "notes": "round-3: not attempted. EXTERNAL_ACTION: the verification is against a sandbox counterparty, which is an account at an outside provider; an in-process stand-in would be code that merely exists. qip_capital::funding::FundingSource::Financing (CAPITAL-001) is now the type an adapter's balance feeds. | BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | Same pattern as CAPITAL-015: live form BLOCKED under C1, sandbox form simply unbuilt."
   },
   {
     "id": "CAPITAL-017",
@@ -405,7 +408,7 @@
     "work_item": "E07-repo-adapter-sandbox",
     "tier": "T3",
     "size": "L",
-    "notes": "BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | verify: status kept MISSING. qip_financial::extensions::Extension::Repo(RepoDetails) and InstrumentType::Repo (qip-financial/src/extensions.rs:25, asset_class.rs:126) model a repo as an instrument; nothing opens or closes one, so no adapter exists. | Same pattern as CAPITAL-015."
+    "notes": "round-3: not attempted. EXTERNAL_ACTION: the verification is against a sandbox counterparty, which is an account at an outside provider; an in-process stand-in would be code that merely exists. qip_capital::funding::FundingSource::Financing (CAPITAL-001) is now the type an adapter's balance feeds. | BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | verify: status kept MISSING. qip_financial::extensions::Extension::Repo(RepoDetails) and InstrumentType::Repo (qip-financial/src/extensions.rs:25, asset_class.rs:126) model a repo as an instrument; nothing opens or closes one, so no adapter exists. | Same pattern as CAPITAL-015."
   },
   {
     "id": "CAPITAL-018",
@@ -429,7 +432,7 @@
     "work_item": "E07-credit-line-adapter-sandbox",
     "tier": "T3",
     "size": "L",
-    "notes": "BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | Same pattern as CAPITAL-015."
+    "notes": "round-3: not attempted. EXTERNAL_ACTION: the verification is against a sandbox counterparty, which is an account at an outside provider; an in-process stand-in would be code that merely exists. qip_capital::funding::FundingSource::Financing (CAPITAL-001) is now the type an adapter's balance feeds. | BLOCKED-by-policy note: needs LIVE_CAPITAL/EXTERNAL_ACTION counterparty integration (a sandbox adapter would still need a new FundingSource abstraction decision). | Same pattern as CAPITAL-015."
   },
   {
     "id": "CAPITAL-019",
@@ -460,14 +463,16 @@
   },
   {
     "id": "CAPITAL-020",
-    "status": "MISSING",
-    "current": "nothing. No mechanism detects drift between actual holdings and a decided placement or issues rebalancing transfers along a custody corridor.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::rebalance::rebalance (backend/crates/services/qip-capital-fabric/src/rebalance.rs) compares holdings with a decided placement and, for every location outside tolerance, plans TransferIntents that bring it back, each along an Active corridor that runs between exactly those two locations and inside that corridor's per-transfer cap. A drift no such corridor can carry is reported in RebalancePlan::unrouted and no transfer is planned for it. The output is intents for the transfer gate; nothing executes them (ADR 0021).",
     "evidence": [
-      "grep -rniE 'rebalanc' backend/crates/services/qip-capital-fabric backend/crates/services/qip-capital backend/crates/runtime/qip-kernel/src matches only an unrelated sizing-rebalancing doc comment in adaptive_cadence.rs:57"
+      "backend/crates/services/qip-capital-fabric/src/rebalance.rs",
+      "backend/crates/services/qip-capital-fabric/tests/rebalance.rs -- after_injected_drift_the_planned_transfers_bring_every_holding_within_tolerance_and_each_runs_along_an_active_corridor (every planned intent is also put to the real TransferGate and admitted); a_drift_whose_only_corridor_is_not_active_is_reported_and_no_transfer_is_planned_for_it; a_correction_larger_than_the_corridors_per_transfer_cap_is_reported_rather_than_planned_for_the_gate_to_veto; for_generated_drift_over_a_connected_set_of_corridors_every_holding_ends_within_tolerance",
+      "Mutation (this lane): dropping the Active-stage condition planned a transfer along a reviewed, unsigned corridor (3 passed; 1 failed); dropping the destination match routed a move along a corridor to another location (2 passed; 2 failed); dropping the cap condition failed the cap test (3 passed; 1 failed); shedding the whole drift regardless of the counterpart left a location unrouted (3 passed; 1 failed); restored byte-for-byte, 4 passed"
     ],
-    "gap": "No treasury rebalancing mechanism exists; there is no drift detection between actual holdings and a placement decision, and no transfer plan produced from one.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -476,11 +481,11 @@
       "CAPITAL-010"
     ],
     "blocked_by": "",
-    "verification": "No test exists because nothing implements it.",
+    "verification": "cargo test -p qip-capital-fabric --test rebalance (4 passed; mutation-verified, see evidence).",
     "work_item": "E07-treasury-rebalancing",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status kept MISSING. Checked PrePositioningPlanner (qip-capital-fabric/src/plan.rs): it computes moves from forecast demand against LocationBalance.on_hand, but its target is forecast demand rather than a decided placement, it applies no drift tolerance, it routes along no corridor (no corridor reference in plan.rs), and the production caller sets every on_hand to zero. | LIVE_CAPITAL/MULTI_REGION flagged in the requirement; the decision-production half is buildable in paper form the same way CAPITAL-007's planner is, and is what is missing."
+    "notes": "round-3: the decision-production half the row said was buildable. Library-level: nothing in the cycle calls rebalance, and a corridor destination is mapped to a location by a table the caller supplies (integrated=false). Carrying the transfers stays BLOCKED under C1. | verify: status kept MISSING. Checked PrePositioningPlanner (qip-capital-fabric/src/plan.rs): it computes moves from forecast demand against LocationBalance.on_hand, but its target is forecast demand rather than a decided placement, it applies no drift tolerance, it routes along no corridor (no corridor reference in plan.rs), and the production caller sets every on_hand to zero. | LIVE_CAPITAL/MULTI_REGION flagged in the requirement; the decision-production half is buildable in paper form the same way CAPITAL-007's planner is, and is what is missing."
   },
   {
     "id": "CAPITAL-021",
@@ -510,28 +515,25 @@
   },
   {
     "id": "CAPITAL-022",
-    "status": "PARTIAL",
-    "current": "The brain modules themselves (qip_capital::{allocation, envelope, compounding, recall}) emit Allocation/CapitalEnvelope/ReinvestmentPlan/RecallOrder values that qip-kernel journals, and qip-capital's dependency list is {serde, qip-core, qip-financial, qip-contracts, qip-portfolio}. But the same crate also hosts authoritative capital state writers: qip_capital::ledger (UserLedger::fund mutates per-user, per-strategy CashBalance and funded totals) and qip_capital::reservation::ReservationLedger (commit spends held capital). The acceptance suite itself classifies qip-capital as capital-moving (architecture.rs:2306-2308 CAPITAL_MOVING).",
+    "status": "COMPLETE",
+    "current": "The Capital Brain's deciding modules in qip-capital (allocation, capacity, compounding, envelope, funding, recall) return values -- Allocation, CapitalEnvelope, ReinvestmentPlan, RecallOrder, FundingPlan -- that qip-kernel journals. They name none of the types that write authoritative capital state (UserLedger, CashBalance, ReservationLedger, CapitalBook, InternalFunding, PostingBook, CurrencyBook), none of the event log's types, and qip-capital reaches no custody or executing crate (qip-capital-fabric, qip-brokers, qip-execution-engine, qip-edge). An acceptance test now holds that boundary.",
     "evidence": [
-      "backend/crates/services/qip-capital/Cargo.toml (dependencies: serde, qip-core, qip-financial, qip-contracts, qip-portfolio)",
-      "backend/crates/services/qip-capital/src/lib.rs:131-141 (pub mod allocation, envelope, compounding ... ledger, reservation in one crate)",
-      "backend/crates/services/qip-capital/src/ledger/mod.rs:1-40 (per-user ledger: CashBalance, UserLedger::fund at the one place capital enters a book)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:2306-2308 ('The crates through which capital moves': [qip-capital, qip-capital-fabric])",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1391 (a_library_never_depends_on_a_service_or_an_application -- general layering, not this boundary)"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs -- the_capital_brain_decides_and_names_no_type_that_writes_capital_state_or_moves_it (asserts first that every listed writer is still declared once outside the brain, that the matcher finds CapitalBook in bank.rs, and that each brain module holds real code)",
+      "Mutation (this lane): `use crate::reservation::ReservationLedger;` in allocation.rs, run through cargo so the mutant compiled, failed naming allocation.rs:32 (0 passed; 1 failed; 36 filtered out). Run against the built test binary: a `crate::bank` path in funding.rs failed naming funding.rs:28; `use qip_events::EventLog;` in envelope.rs failed naming envelope.rs:46; `qip-execution-engine.workspace = true` in qip-capital's manifest failed with 'qip-capital can reach qip-execution-engine'. Each restored byte-for-byte; architecture suite 37 passed"
     ],
-    "gap": "The separation is not structural at the only granularity an architecture test can check today: the Capital Brain's decision types and the ledger/reservation writers share one crate, so the requirement's test ('the Capital Brain's component depends on no ledger-writer ... type') would fail against qip-capital as it stands unless the brain is split into its own crate or module boundary with a visibility rule. No test asserts the boundary. The previously suggested check (grep -c 'qip_capital_fabric\\|qip_brokers\\|qip_execution_engine' Cargo.toml) is vacuous: Cargo.toml names crates with hyphens, so an underscore pattern returns 0 whatever the dependencies are.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. A real check would assert, over the dependency/module graph, that the brain modules (allocation, envelope, compounding, recall) reach no ledger or reservation writer -- which requires first separating them from qip_capital::ledger and ::reservation. Any grep-based check must match the hyphenated crate names.",
+    "verification": "cargo test -p qip-acceptance --test architecture -- the_capital_brain_decides (mutation-verified, see evidence).",
     "work_item": "E07-separate-capital-brain-from-ledger-writers",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: downgraded NEEDS-VALIDATION -> PARTIAL. 'Structurally true today' is false at crate level: qip-capital itself contains UserLedger and ReservationLedger, which write authoritative capital state, and the acceptance suite labels the crate capital-moving. The proposed grep check was vacuous (underscore vs hyphen). | Cheapest possible close: write the missing acceptance test against already-correct code."
+    "notes": "round-3: the missing acceptance test, written against code that was already correct. Held at module granularity by a source scan, not by crate separation: the brain and the writers still share qip-capital, so the test, not the compiler, is what refuses the import. Splitting the crate would make it structural. | verify: downgraded NEEDS-VALIDATION -> PARTIAL. 'Structurally true today' is false at crate level: qip-capital itself contains UserLedger and ReservationLedger, which write authoritative capital state, and the acceptance suite labels the crate capital-moving. The proposed grep check was vacuous (underscore vs hyphen). | Cheapest possible close: write the missing acceptance test against already-correct code."
   },
   {
     "id": "CAPITAL-023",
@@ -558,7 +560,7 @@
     "work_item": "E07-withdrawal-reserve-forecast",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: upgraded MISSING -> PARTIAL on evidence the assessor missed: qip_financial::cashflow forecasts capital-call reserve demand over a horizon with a bitemporal knowability guard, tested. integrated=false because demand_within has no production caller (the code says so itself)."
+    "notes": "round-3: not attempted. Withdrawals are refused outright (WithdrawalEntitlement::Refused), so there is no realised series to score a withdrawal forecast against; the reserve half needs demand_within wired into Platform::deployable_capital, which would replace a conservative whole-balance reserve with a forecast. | verify: upgraded MISSING -> PARTIAL on evidence the assessor missed: qip_financial::cashflow forecasts capital-call reserve demand over a horizon with a bitemporal knowability guard, tested. integrated=false because demand_within has no production caller (the code says so itself)."
   },
   {
     "id": "CAPITAL-024",
@@ -654,7 +656,7 @@
     "work_item": "E07-arbitrage-leg-prepositioning-test",
     "tier": "T2",
     "size": "M",
-    "notes": "The decision half is buildable in paper form per the requirement's own notes; only the actual capital movement is BLOCKED under C1."
+    "notes": "round-3: not attempted. Blocked on a replay harness that settles the planner's moves on their settlement dates and then fires the cycle against the result; the planner still starts every location at zero on hand (CAPITAL-007). | The decision half is buildable in paper form per the requirement's own notes; only the actual capital movement is BLOCKED under C1."
   },
   {
     "id": "CAPITAL-028",
@@ -679,7 +681,7 @@
     "work_item": "E07-market-making-prepositioning-test",
     "tier": "T2",
     "size": "M",
-    "notes": "Same blocked/buildable split as CAPITAL-027."
+    "notes": "round-3: not attempted. Blocked on a replay harness that settles the planner's moves on their settlement dates and then fires the cycle against the result; the planner still starts every location at zero on hand (CAPITAL-007). | Same blocked/buildable split as CAPITAL-027."
   },
   {
     "id": "CAPITAL-029",
@@ -709,13 +711,16 @@
   },
   {
     "id": "CAPITAL-030",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::gate::GateCheck::CorridorAuthority (backend/crates/services/qip-capital-fabric/src/gate.rs:858-940) verifies a corridor is active, its SignedDefinition/SignatureRecord (destination.rs:214-238) covers the current destination and caps, and the custody table's unconditional rules permit the class -- refusing a transfer whose route matches no corridor or whose signed definition no longer matches.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::gate::GateCheck::CorridorAuthority refuses an intent whose source or destination is not the corridor's, a corridor that is not Active, and a corridor whose signature record is missing or no longer covers its destination and caps. The declaration qip-api mounts (QIP_CAPITAL_FABRIC_PATH) now carries `corridor_policy`, applied through Platform::declare_corridors before any command (qip_kernel::fabric_declaration). Until it did, no composition root declared a corridor policy, Platform::decide_fabric refused every gate command naming a proposed corridor, and the gate assessed nothing in a deployed process. A gate command declared through FabricFeed is assessed and its verdict recorded.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/gate.rs:858-940 (corridor_authority check)",
-      "backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs -- a_suspended_corridor_vetoes_on_corridor_authority_with_an_alert, a_corridor_whose_source_class_the_custody_policy_says_never_transfers_vetoes_on_corridor_authority, a_destination_still_inside_its_delay_vetoes_on_corridor_authority_naming_when_it_becomes_usable"
+      "backend/crates/services/qip-capital-fabric/src/gate.rs (TransferGate::corridor_authority)",
+      "backend/crates/runtime/qip-kernel/src/fabric_declaration.rs (corridor_policy, parse_policy, apply_counting)",
+      "backend/crates/apps/qip-api/tests/fabric.rs -- a_declared_transfer_off_the_signed_corridor_set_is_refused_and_one_on_a_signed_corridor_passes (through FabricFeed::open and apply_pending: admitted on the signed corridor; vetoed at CorridorAuthority for another destination, for another source and for a reviewed-never-signed corridor, each for its own reason; a never-proposed corridor refused as a record with no assessment); a_declared_corridor_policy_is_what_makes_a_declared_gate_command_assessable",
+      "cargo test -p qip-capital-fabric --test corridor_and_gate (the generated and altered-signature cases, unchanged)",
+      "Mutation (this lane): never declaring the policy failed four (14 passed; 4 failed: 'no corridor policy has been declared'); a gate that does not hold the intent to the corridor's route admitted the wrong-source transfer (17 passed; 1 failed); a gate that does not require Active vetoed the unsigned corridor for a different reason, which the test refuses (17 passed; 1 failed); restored byte-for-byte, 18 passed"
     ],
-    "gap": "Implemented and tested in isolation at the crate level, and structurally reachable from qip-api's composition root via the fabric-declaration mechanism (see CAPITAL-029), but no test exercises a Gate command through that production entry point, so 'reached from a composition root AND a named test exercises that behaviour' is not demonstrated end-to-end.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -723,21 +728,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric --test corridor_and_gate -- corridor_authority. The missing piece is a qip-api/tests/fabric.rs test that declares a Gate command and proves the veto fires through Platform::decide_fabric.",
+    "verification": "cargo test -p qip-api --test fabric -- a_declared_transfer_off_the_signed_corridor_set a_declared_corridor_policy (mutation-verified, see evidence).",
     "work_item": "E07-corridor-authority-e2e-test",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status kept PARTIAL. Added: the 'signature' is a record, not a verifiable signature -- destination.rs:203-213 SignatureRecord holds signer, time and a filing reference with 'No key material, no digest, nothing this crate could verify'. The gate refuses a corridor with no record or whose record's destination/caps differ (gate.rs:925-947), but 'whose corridor signature does not verify' has no cryptographic check (deferred to ADR 0043). | Not architecturally blocked (policy_flags empty in the requirement itself); the signature scheme's cryptographic strength is a separate, ADR-0043-owned concern this requirement's notes explicitly defer."
+    "notes": "round-3: closed the named gap by wiring, not only by a test -- the gate was unreachable from a composition root for any proposed corridor. e2e stays false: the test is in-process. A signed definition that has drifted from its corridor cannot be produced through declared commands (the lifecycle refuses the transition), so that arm is proven at crate level only. No committed environment mounts a declaration. | verify: status kept PARTIAL. Added: the 'signature' is a record, not a verifiable signature -- destination.rs:203-213 SignatureRecord holds signer, time and a filing reference with 'No key material, no digest, nothing this crate could verify'. The gate refuses a corridor with no record or whose record's destination/caps differ (gate.rs:925-947), but 'whose corridor signature does not verify' has no cryptographic check (deferred to ADR 0043). | Not architecturally blocked (policy_flags empty in the requirement itself); the signature scheme's cryptographic strength is a separate, ADR-0043-owned concern this requirement's notes explicitly defer."
   },
   {
     "id": "CAPITAL-031",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::gate::GateCheck::Caps (backend/crates/services/qip-capital-fabric/src/gate.rs:559-561) checks a transfer against the Intelligence layer's ceiling and the per-transfer, hourly, daily and cumulative caps, and permitted hours, refusing whole rather than reducing.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::gate::GateCheck::Caps refuses whole a transfer over the derived ceiling, the signed per-transfer cap, or the rolling hourly, daily and cumulative caps. The declaration qip-api mounts (QIP_CAPITAL_FABRIC_PATH) now carries `corridor_policy`, applied through Platform::declare_corridors before any command (qip_kernel::fabric_declaration). Until it did, no composition root declared a corridor policy, Platform::decide_fabric refused every gate command naming a proposed corridor, and the gate assessed nothing in a deployed process. Gate commands declared through FabricFeed are assessed against the ruling the policy derives, and an admitted verdict carries the amount asked.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/gate.rs:559-561 (Caps check definition)",
-      "backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs -- an_amount_over_the_per_transfer_cap_vetoes_on_caps_naming_the_cap, a_transfer_that_would_exhaust_the_cumulative_cap_vetoes_on_caps, an_assessment_outside_permitted_hours_vetoes_on_caps, an_amount_above_the_narrowed_ceiling_is_vetoed_on_caps_though_every_signed_cap_admits_it"
+      "backend/crates/services/qip-capital-fabric/src/gate.rs (TransferGate::caps)",
+      "backend/crates/runtime/qip-kernel/src/fabric_declaration.rs; backend/crates/apps/qip-api/src/fabric.rs (FabricRefresh applies a restated policy with no command appended)",
+      "backend/crates/apps/qip-api/tests/fabric.rs -- for_generated_declared_transfers_every_one_over_a_cap_is_vetoed_whole_and_every_one_under_all_of_them_is_admitted_at_the_amount_asked (60 generated amounts against a 350 per-transfer cap and a 400 ceiling, the rolling hourly cap, then the same amounts after the desk restates the ceiling at 250); a_restated_corridor_ceiling_reaches_the_platform_on_the_next_admitted_cycle_with_no_command_appended; a_corridor_policy_the_constructor_refuses_is_refused_by_position_without_repeating_the_route",
+      "Mutation (this lane): a gate ignoring the per-transfer cap admitted 367 (17 passed; 1 failed); ignoring the derived ceiling admitted 327 against a ceiling of 250 (17 passed; 1 failed); ignoring the hourly cap admitted both rolling transfers (17 passed; 1 failed); the middleware returning early on no appended command left the ruling at 400 (17 passed; 1 failed); a refusal quoting the constructor's message repeated the account (17 passed; 1 failed); allowing two policies on one route failed (17 passed; 1 failed); restored byte-for-byte, 18 passed"
     ],
-    "gap": "Same as CAPITAL-030: implemented and tested in isolation, structurally reachable from qip-api's composition root via the fabric-declaration mechanism, but not exercised through that production entry point by any test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -745,11 +752,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric --test corridor_and_gate -- caps. The missing piece is the same qip-api/tests/fabric.rs Gate-command end-to-end test named for CAPITAL-030.",
+    "verification": "cargo test -p qip-api --test fabric -- for_generated_declared_transfers a_restated_corridor_ceiling a_corridor_policy_the_constructor_refuses (mutation-verified, see evidence).",
     "work_item": "E07-caps-e2e-test",
     "tier": "T1",
     "size": "S",
-    "notes": "Can share the same new test as CAPITAL-030 if it asserts both vetoes."
+    "notes": "round-3: same wiring as CAPITAL-030. e2e stays false (in-process). The daily and cumulative caps are proven at crate level only; through the declaration the per-transfer cap, the derived ceiling and the hourly cap are each shown to be the bound that refuses. | Can share the same new test as CAPITAL-030 if it asserts both vetoes."
   },
   {
     "id": "CAPITAL-032",

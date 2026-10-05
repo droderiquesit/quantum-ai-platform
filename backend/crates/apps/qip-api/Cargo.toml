@@ -77,6 +77,15 @@ qip-market.workspace = true
 # build edges, which is what makes a fixture like this reviewable rather than
 # a hole in that rule.
 qip-execution-engine.workspace = true
+# The transfer gate's tests declare gate commands through the composition
+# root's own feed, and a gate command binds two of its three attestations to
+# values only the fabric can derive: the `AssessmentId` of the movement and
+# the custody table's fingerprint. Writing those digests out by hand would
+# make the fixture a constant the gate could never refuse. Dev-only, for the
+# reason given above: the serving binary holds a declaration as an opaque
+# kernel type and never names a fabric command, which `api_boundary.rs`
+# proves on the shipped graph.
+qip-capital-fabric.workspace = true
 
 [lints]
 workspace = true
