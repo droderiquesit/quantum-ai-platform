@@ -516,3 +516,30 @@ fn the_resolved_settings_never_render_a_credential() {
     assert!(!rendered.contains("file-token"), "{rendered}");
     assert_eq!(rendered.matches("<redacted>").count(), 2, "{rendered}");
 }
+
+#[test]
+fn a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted() {
+    // Premise first: the cache target resolves, so the refusal below is the
+    // guard and not a parse failure that would pass for one.
+    let cache = StorageSettings::from_values(Some("memorystore"), None)
+        .expect("memorystore resolves without a root");
+    let refusal = cache
+        .require_authoritative()
+        .expect_err("a persistence-disabled cache must not hold the only copy");
+    assert!(
+        refusal.message().contains("memorystore"),
+        "{}",
+        refusal.message()
+    );
+
+    let dir = temp_dir("authoritative");
+    let root = dir.display().to_string();
+    for target in ["engine", "file"] {
+        let settings = StorageSettings::from_values(Some(target), Some(&root)).unwrap();
+        assert!(
+            settings.require_authoritative().is_ok(),
+            "{target} is admitted"
+        );
+    }
+    assert!(StorageSettings::in_memory().require_authoritative().is_ok());
+}

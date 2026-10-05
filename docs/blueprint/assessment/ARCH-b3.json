@@ -148,11 +148,12 @@
       "backend/crates/apps/qip-api/src/main.rs:105-107, :184, :291, :322 (event-log archive, StreamJournal, trial-book, mesh opened on the configured store)",
       "backend/crates/apps/qip-edge-node/src/main.rs:475 (cell-journal on the configured store), :547 (non-durable target warns, does not refuse)",
       "backend/crates/services/qip-execution-engine/src/oms.rs:395 and backend/crates/runtime/qip-kernel/src/central/plane.rs:763 (derived sets described as caches of the event log)",
-      "grep -rln Redis backend/crates/services/qip-risk-engine/src backend/crates/runtime/qip-kernel/src -> no matches (2026-09-25)"
+      "grep -rln Redis backend/crates/services/qip-risk-engine/src backend/crates/runtime/qip-kernel/src -> no matches (2026-09-25)",
+      "backend/crates/libs/qip-storage/src/settings.rs require_authoritative; backend/crates/apps/qip-deepbrain/src/config.rs and qip-fastbrain/src/config.rs tests a_node_configured_to_keep_its_state_in_memorystore_refuses_to_start"
     ],
-    "gap": "No composition root refuses a Memorystore storage target, so the only thing keeping Redis from becoming the sole store of the mesh spool, cell journal and trial book is a Terraform validation that an out-of-band service update bypasses (the second-layer check the paper boundary has, this invariant lacks). No chaos test flushes or corrupts any cache during a paper session and checks positions, capital and risk decisions are unchanged.",
+    "gap": "The second-layer start-up refusal now exists: StorageSettings::require_authoritative refuses QIP_STORAGE_TARGET=memorystore in qip-api, qip-fastbrain, qip-deepbrain and qip-edge-node. Still missing: no chaos test flushes or corrupts any cache during a paper session and checks positions, capital and risk decisions are unchanged with reconciliation reporting no break. The api and edge-node call sites are one-line wirings with no root-level test of their own (their main.rs is not unit-testable); the deepbrain and fastbrain config tests cover the same call.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -160,11 +161,11 @@
       "ARCH-066"
     ],
     "blocked_by": "",
-    "verification": "no test exists; needed: (1) a composition-root test that QIP_STORAGE_TARGET=memorystore is refused for every namespace that holds state (or confined to a cache role with an owning store behind it), and (2) a chaos test flushing every cache mid-session with reconciliation reporting no break",
+    "verification": "cargo test -p qip-storage --test settings a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted; cargo test -p qip-deepbrain -p qip-fastbrain --lib a_node_configured_to_keep_its_state_in_memorystore_refuses_to_start (mutation-verified). Still needed: the cache-flush chaos test.",
     "work_item": "E07-cache-authority-chaos-test",
     "tier": "T1",
     "size": "S",
-    "notes": "v2.1's own anti-pattern (Redis as position/capital truth or a required risk-gate dependency) has no instance to check against yet because Memorystore ships in GCP Phase 6 (ARCH-066). verify: NEEDS-VALIDATION -> PARTIAL. The assessor's premise 'Redis can never be selected by any composition root' is false: only Terraform refuses it; StorageSettings::from_env and all four state-holding roots admit memorystore and would put the mesh spool, cell journal and trial book on Redis alone. The invariant is therefore not implemented as a runtime control, only as a plan-time one."
+    "notes": "v2.1's own anti-pattern (Redis as position/capital truth or a required risk-gate dependency) has no instance to check against yet because Memorystore ships in GCP Phase 6 (ARCH-066). verify: NEEDS-VALIDATION -> PARTIAL. The assessor's premise 'Redis can never be selected by any composition root' is false: only Terraform refuses it; StorageSettings::from_env and all four state-holding roots admit memorystore and would put the mesh spool, cell journal and trial book on Redis alone. The invariant is therefore not implemented as a runtime control, only as a plan-time one. Round 2: composition-root refusal added; status stays PARTIAL because the chaos half is unbuilt."
   },
   {
     "id": "ARCH-055",

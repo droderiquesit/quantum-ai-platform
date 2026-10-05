@@ -243,6 +243,7 @@ impl NodeConfig {
         }
 
         let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())
+            .and_then(StorageSettings::require_authoritative)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
         let mesh = MeshSettings::from_env(&cell_id, &region)?;
         // Set but unusable is refused; unset is a node without the second

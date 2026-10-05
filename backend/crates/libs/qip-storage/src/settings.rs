@@ -171,6 +171,26 @@ impl StorageSettings {
         }
     }
 
+    /// Refuse a cache as the store of record: every composition root opens
+    /// the event-log archive, spool and journals on one configured store, and
+    /// Memorystore is provisioned with persistence disabled, so an out-of-band
+    /// `QIP_STORAGE_TARGET=memorystore` would make a restart-volatile Redis the
+    /// only copy of state the log is meant to outlive. Terraform refuses the
+    /// value at plan time; this is the second layer, for the unreviewed edit
+    /// (ARCH-054: a cache owns nothing authoritative).
+    pub fn require_authoritative(self) -> Result<Self> {
+        if self.target == StorageTarget::Memorystore {
+            return Err(Error::invalid(format!(
+                "{TARGET_VARIABLE} is memorystore, a cache whose instance has persistence \
+                 disabled; this process keeps its event-log archive, journals and spool on the \
+                 configured store, and a restart or failover would take the only copy. Set \
+                 {TARGET_VARIABLE}=engine with {ROOT_VARIABLE}, or file, and keep Memorystore \
+                 for caches an owning store backs"
+            )));
+        }
+        Ok(self)
+    }
+
     /// Settings that persist nothing, for a simulation or an embedder that has
     /// decided in its own code rather than by configuration.
     pub fn in_memory() -> Self {
