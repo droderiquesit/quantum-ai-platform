@@ -8,15 +8,24 @@
 //! the authority for (wanting an outcome grants no permission), and a goal
 //! only reachable by exceeding budget or risk envelope yields an error, not a
 //! smaller plan quietly trimmed to fit.
+//!
+//! AGENCY-043 / AGENCY-047: [`select`] is the only ranker, and it ranks
+//! [`InterventionPlan`]s, which exist only once every hard constraint held.
+//! The learned effect estimate arrives beside the raw plan and is read after
+//! the refusal, so no value of it, however large, is ever weighed against a
+//! constraint. A penalty term would lose to a big enough estimate; a value
+//! that cannot be constructed does not.
 
 use crate::affordance::AffordanceGraph;
+use crate::comparison::Comparison;
 use qip_core::{Decimal, Error};
+use serde::Deserialize;
 use std::collections::BTreeSet;
 
 use crate::goal::GoalSpec;
 
 /// One use of one tool on one variable.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Step {
     pub tool: String,
     pub variable: String,
@@ -25,7 +34,8 @@ pub struct Step {
 }
 
 /// A plan's structure (AGENCY-016).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PlanNode {
     Step(Step),
     Sequence(Vec<PlanNode>),
@@ -46,7 +56,7 @@ pub enum PlanNode {
 
 impl PlanNode {
     /// Every step on every branch: the worst case a bound must hold against.
-    fn all_steps<'a>(&'a self, out: &mut Vec<&'a Step>) {
+    pub(crate) fn all_steps<'a>(&'a self, out: &mut Vec<&'a Step>) {
         match self {
             Self::Step(s) => out.push(s),
             Self::Sequence(n) | Self::Parallel(n) => n.iter().for_each(|c| c.all_steps(out)),
@@ -92,7 +102,7 @@ impl PlanNode {
 }
 
 /// The identity a plan acts as, and the authorities it independently holds.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ActingIdentity {
     pub name: String,
     pub authorities: BTreeSet<String>,
@@ -143,6 +153,15 @@ impl InterventionPlan {
                 return Err(Error::denied(format!(
                     "identity `{}` does not hold authority `{}` that `{}` requires",
                     who.name, edge.authority, step.tool
+                )));
+            }
+            // AGENCY-047: infeasible by policy. Nothing about the plan's
+            // expected effect is in scope here, so nothing can outweigh it.
+            if edge.method.is_deceptive() {
+                return Err(Error::denied(format!(
+                    "tool `{}` works by {:?}, a deceptive or manipulative method; a plan that \
+                     depends on it is infeasible, remove the step",
+                    step.tool, edge.method
                 )));
             }
             if goal.prohibited_methods.contains(&step.tool) {
@@ -225,4 +244,73 @@ impl CandidateSet {
         }
         Ok(Self { candidates })
     }
+}
+
+/// A plan as proposed, beside the learned estimate of what it would achieve.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Proposal {
+    pub root: PlanNode,
+    pub comparison: Comparison,
+}
+
+/// What [`select`] chose, and every proposal it refused with the reason.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    pub chosen: Candidate,
+    /// Index into the proposals, and the refusal.
+    pub refused: Vec<(usize, Error)>,
+}
+
+/// Rank the proposals that survive every hard constraint against the
+/// no-action baseline, and choose the largest expected causal effect.
+///
+/// A proposal is refused, whatever its estimate, when its plan breaks a bound
+/// [`InterventionPlan::plan`] holds, uses a variable that is not one of the
+/// goal's `levers`, or is not legally eligible. Doing nothing is worth zero
+/// by definition, so an effect that is not strictly positive loses to it.
+pub fn select(
+    goal: &GoalSpec,
+    graph: &AffordanceGraph,
+    who: &ActingIdentity,
+    levers: &[String],
+    proposals: Vec<Proposal>,
+) -> Result<Selection, Error> {
+    let mut refused = Vec::new();
+    let mut admitted: Vec<(Decimal, InterventionPlan)> = Vec::new();
+    for (index, proposal) in proposals.into_iter().enumerate() {
+        let mut steps = Vec::new();
+        proposal.root.all_steps(&mut steps);
+        let stray = steps.iter().find(|s| !levers.contains(&s.variable));
+        let verdict = if let Some(step) = stray {
+            Err(Error::denied(format!(
+                "`{}` is not a lever for this goal's targets",
+                step.variable
+            )))
+        } else if !proposal.comparison.legally_eligible {
+            Err(Error::denied("the proposal is not legally eligible"))
+        } else {
+            InterventionPlan::plan(goal, graph, who, proposal.root)
+        };
+        match verdict {
+            Ok(plan) => admitted.push((proposal.comparison.expected_causal_effect, plan)),
+            Err(refusal) => refused.push((index, refusal)),
+        }
+    }
+    let mut best: Option<&(Decimal, InterventionPlan)> = None;
+    for entry in &admitted {
+        if entry.0 > best.map_or(Decimal::ZERO, |(effect, _)| *effect) {
+            best = Some(entry);
+        }
+    }
+    let chosen = best.map_or(Candidate::NoAction, |(_, plan)| {
+        Candidate::Plan(plan.clone())
+    });
+    // Routed through `CandidateSet` so the baseline is present by the same
+    // rule everywhere, not by this function remembering to add it.
+    if !admitted.is_empty() {
+        let mut all = vec![Candidate::NoAction];
+        all.extend(admitted.into_iter().map(|(_, plan)| Candidate::Plan(plan)));
+        CandidateSet::new(all)?;
+    }
+    Ok(Selection { chosen, refused })
 }

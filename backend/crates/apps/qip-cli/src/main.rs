@@ -68,6 +68,7 @@ fn main() {
         "registrations" => registrations_command(&arguments[1..]),
         "replay" => replay_command(&arguments[1..]),
         "blueprint" => blueprint_command(&arguments[1..]),
+        "agency" => qip_cli::agency::run(&arguments[1..]),
         // The whole family, once: a subcommand added to
         // `qip_cli::event_fabric` is reachable without this file changing,
         // and an unknown one is refused by the family naming its list.
@@ -110,6 +111,10 @@ fn print_help() {
     println!("  blueprint render|check [--root <path>]");
     println!("                    render the blueprint registers from their JSON sources,");
     println!("                    or exit 3 if a committed view is stale");
+    println!("  agency shadow --request <path>");
+    println!("                    run one shadow pass of the agency loop over a request");
+    println!("                    document and print what it would do and why. It calls");
+    println!("                    no adapter; exits 3 when the engine declines to act");
     println!("  event-fabric grant --fixture <path> --peer <loopback-address:port>");
     println!("                    sign the labelled slice fixture's grant and policy with");
     println!("                    the fixture key and publish them to a loopback broker's");

@@ -5,12 +5,13 @@
     "current": "qip_agency::InterventionPlan::plan (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
     "evidence": [
       "backend/crates/services/qip-agency/src/plan.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs -- a_plan_within_budget_and_envelope_is_admitted_and_one_beyond_either_is_refused; a_bound_is_checked_against_every_branch_not_only_the_one_that_fires"
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_plan_within_budget_and_envelope_is_admitted_and_one_beyond_either_is_refused; a_bound_is_checked_against_every_branch_not_only_the_one_that_fires",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -21,11 +22,11 @@
       "AGENCY-012"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency -- a_plan_within_budget_and_envelope_is_admitted_and_one_beyond_either_is_refused a_bound_is_checked_against_every_branch_not_only_the_one_that_fires (mutation-verified: breaking the check fails the named test).",
+    "verification": "cargo test -p qip-agency --test agency -- a_plan_within_budget_and_envelope_is_admitted_and_one_beyond_either_is_refused a_bound_is_checked_against_every_branch_not_only_the_one_that_fires (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16",
     "tier": "T3",
     "size": "XL",
-    "notes": "Phase 10 (P3), the anchor requirement for the whole domain. Capital/market actions in any plan can be built only against the simulator per ADR 0099; that does not block building the planner itself. verify: status confirmed MISSING (rg for GoalSpec|InterventionPlan returns nothing in backend/, infrastructure/, frontend/, .github/); corrected the stage_act_orders line reference from :13323 to :13326. | Library-level, integrated=false: No composition root builds a GoalSpec or calls the planner; it plans against a caller-supplied AffordanceGraph, not the live world model."
+    "notes": "Phase 10 (P3), the anchor requirement for the whole domain. Capital/market actions in any plan can be built only against the simulator per ADR 0099; that does not block building the planner itself. verify: status confirmed MISSING (rg for GoalSpec|InterventionPlan returns nothing in backend/, infrastructure/, frontend/, .github/); corrected the stage_act_orders line reference from :13323 to :13326. | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-002",
@@ -56,21 +57,22 @@
     "current": "qip_agency::GoalSpecDraft::build / GoalSpec (serde try_from) (backend/crates/services/qip-agency/src/goal.rs) refuses at construction as the requirement states.",
     "evidence": [
       "backend/crates/services/qip-agency/src/goal.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs -- a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field; a_goal_document_missing_a_field_is_refused_on_deserialisation_not_defaulted"
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field; a_goal_document_missing_a_field_is_refused_on_deserialisation_not_defaulted",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency -- a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field a_goal_document_missing_a_field_is_refused_on_deserialisation_not_defaulted (mutation-verified: breaking the check fails the named test).",
+    "verification": "cargo test -p qip-agency --test agency -- a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field a_goal_document_missing_a_field_is_refused_on_deserialisation_not_defaulted (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16",
     "tier": "T2",
     "size": "M",
-    "notes": "P0 as a canonical contract (Phase 0 exit criterion) even though the engine consuming it is Phase 10. Should follow the qip-contracts pattern already used for other typed refuse-don't-clamp contracts (e.g. qip-contracts::capital::CapitalEnvelope, qip-contracts::governance::Approval). | Library-level, integrated=false: The planner entry point InterventionPlan::plan takes only &GoalSpec; no kernel caller yet."
+    "notes": "P0 as a canonical contract (Phase 0 exit criterion) even though the engine consuming it is Phase 10. Should follow the qip-contracts pattern already used for other typed refuse-don't-clamp contracts (e.g. qip-contracts::capital::CapitalEnvelope, qip-contracts::governance::Approval). | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-004",
@@ -78,12 +80,13 @@
     "current": "qip_agency::AffordanceGraph::levers (backend/crates/services/qip-agency/src/affordance.rs) refuses at construction as the requirement states.",
     "evidence": [
       "backend/crates/services/qip-agency/src/affordance.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs -- levers_over_generated_graphs_are_only_controllable_variables_with_a_tool_edge"
+      "backend/crates/services/qip-agency/tests/agency.rs -- levers_over_generated_graphs_are_only_controllable_variables_with_a_tool_edge",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -91,11 +94,11 @@
       "AGENCY-012"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency -- levers_over_generated_graphs_are_only_controllable_variables_with_a_tool_edge (mutation-verified: breaking the check fails the named test).",
+    "verification": "cargo test -p qip-agency --test agency -- levers_over_generated_graphs_are_only_controllable_variables_with_a_tool_edge (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16",
     "tier": "T3",
     "size": "M",
-    "notes": "Depends structurally on AGENCY-012's action-affordance graph existing first. | Library-level, integrated=false: Graph is hand-built; not fed from qip-world-model's CausalGraph. The is_some_and(controllable) filter is redundant with add_tool_edge's refusal (equivalent mutant), the tool-edge filter is the one the test kills."
+    "notes": "Depends structurally on AGENCY-012's action-affordance graph existing first. | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-005",
@@ -103,12 +106,13 @@
     "current": "qip_agency::CandidateSet::new (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
     "evidence": [
       "backend/crates/services/qip-agency/src/plan.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs -- a_candidate_set_needs_exactly_one_no_action_baseline_and_one_alternative"
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_candidate_set_needs_exactly_one_no_action_baseline_and_one_alternative",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -116,11 +120,11 @@
       "AGENCY-003"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency -- a_candidate_set_needs_exactly_one_no_action_baseline_and_one_alternative (mutation-verified: breaking the check fails the named test).",
+    "verification": "cargo test -p qip-agency --test agency -- a_candidate_set_needs_exactly_one_no_action_baseline_and_one_alternative (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16",
     "tier": "T2",
     "size": "S",
-    "notes": "Small once AGENCY-001/003 exist: mainly a refusal rule on the candidate-set constructor. verify: status confirmed MISSING. Adjacent and not credited: qip_twin::counterfactual::AlternativeMenu::standard (qip-twin/src/counterfactual.rs:134, :186) always includes Alternative::DoNotTrade, but that menu is priced after a decision was taken, not generated as a candidate set before simulation and selection, so it is the attribution half (AGENCY-008) and not the planning half. | Library-level, integrated=false: No candidate generator exists; this is the validity gate a generator's output must pass."
+    "notes": "Small once AGENCY-001/003 exist: mainly a refusal rule on the candidate-set constructor. verify: status confirmed MISSING. Adjacent and not credited: qip_twin::counterfactual::AlternativeMenu::standard (qip-twin/src/counterfactual.rs:134, :186) always includes Alternative::DoNotTrade, but that menu is priced after a decision was taken, not generated as a candidate set before simulation and selection, so it is the attribution half (AGENCY-008) and not the planning half. | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-006",
@@ -282,21 +286,22 @@
     "current": "qip_agency::AffordanceGraph::add_tool_edge (backend/crates/services/qip-agency/src/affordance.rs) refuses at construction as the requirement states.",
     "evidence": [
       "backend/crates/services/qip-agency/src/affordance.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs -- a_tool_edge_missing_a_declaration_or_on_an_observable_only_variable_is_refused"
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_tool_edge_missing_a_declaration_or_on_an_observable_only_variable_is_refused",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency -- a_tool_edge_missing_a_declaration_or_on_an_observable_only_variable_is_refused (mutation-verified: breaking the check fails the named test).",
+    "verification": "cargo test -p qip-agency --test agency -- a_tool_edge_missing_a_declaration_or_on_an_observable_only_variable_is_refused (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16",
     "tier": "T2",
     "size": "M",
-    "notes": "P0 as a contract. GCP v2.1 places this graph in Spanner Graph (C4, not decided); the schema itself is a plain serde type and needs no store decision to exist. | Library-level, integrated=false: Graph is an in-memory record; no Spanner/world-model federation store, no composition root."
+    "notes": "P0 as a contract. GCP v2.1 places this graph in Spanner Graph (C4, not decided); the schema itself is a plain serde type and needs no store decision to exist. | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-013",
@@ -345,12 +350,15 @@
   },
   {
     "id": "AGENCY-015",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No Action Outcome Memory and no learned action-selection policy exist. qip-agents::memory::ResearchMemory (backend/crates/libs/qip-agents/src/memory.rs) is the closest structural pattern — bitemporal episodic + promoted-lesson memory with a minimum-support threshold — but it records agent research findings, not measured intervention effects by regime.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "qip_agency::memory::ActionOutcomeMemory::recommend reads the Action Outcome Memory for one environment state and returns the action sequence with the largest mean attributed effect (observation minus the no-action counterfactual) among those seen at least min_support times, or None when no sequence has a strictly positive mean there, which is the \"not acting is better\" answer.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/memory.rs (ActionOutcomeMemory::recommend)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- the_learned_policy_selects_an_action_where_it_measurably_worked_and_no_action_where_it_did_not"
+    ],
+    "gap": "A plain mean over a support floor. It does not learn the delay to effect (the nine-field record has no delay), does not weight by attribution confidence, and learns side effects not at all. Nothing feeds it: no intervention executes, so the memory is only ever filled by a test, and no composition root calls recommend.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -359,11 +367,11 @@
       "AGENCY-014"
     ],
     "blocked_by": "",
-    "verification": "Must be written: trained on a replayed history in which one action class has a measured positive effect in regime A and none in regime B, the learned policy selects that class in A and no-action in B.",
+    "verification": "cargo test -p qip-agency --test agency -- the_learned_policy_selects_an_action_where_it_measurably_worked (the replay check as stated: same observation in both regimes, different counterfactual; mutation-verified: ignoring the counterfactual or the regime fails it).",
     "work_item": "E16",
     "tier": "T3",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-05: Was MISSING. The replay check passes; the statement's delay and side-effect learning are not built."
   },
   {
     "id": "AGENCY-016",
@@ -371,23 +379,24 @@
     "current": "qip_agency::PlanNode (Step/Sequence/Parallel/Conditional/Adaptive)::simulate (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
     "evidence": [
       "backend/crates/services/qip-agency/src/plan.rs",
-      "backend/crates/services/qip-agency/tests/agency.rs -- a_conditional_step_runs_only_when_its_condition_holds_and_an_adaptive_one_switches"
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_conditional_step_runs_only_when_its_condition_holds_and_an_adaptive_one_switches",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "AGENCY-001"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency -- a_conditional_step_runs_only_when_its_condition_holds_and_an_adaptive_one_switches (mutation-verified: breaking the check fails the named test).",
+    "verification": "cargo test -p qip-agency --test agency -- a_conditional_step_runs_only_when_its_condition_holds_and_an_adaptive_one_switches (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16",
     "tier": "T2",
     "size": "M",
-    "notes": "Library-level, integrated=false: simulate() selects steps; nothing executes them (no orchestrator, AGENCY-018)."
+    "notes": "Library-level, integrated=false: simulate() selects steps; nothing executes them (no orchestrator, AGENCY-018). | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-017",
@@ -539,24 +548,28 @@
   },
   {
     "id": "AGENCY-023",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No operational-action tool and no owned-system registry exist.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::affordance::AffordanceGraph holds an owned-system registry (declare_owned). add_tool_edge refuses an Operational or Product tool edge on a variable that is not in it, so an operational action on a system Algorik does not own is not a lever a plan can name. Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/affordance.rs (Method::needs_ownership, AffordanceGraph::declare_owned, the refusal in add_tool_edge)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- an_operational_tool_on_a_system_outside_the_owned_registry_is_refused",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (an operational edge on an unowned variable exits 1 naming the registry; owned, it exits 0)"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "AGENCY-026"
     ],
     "blocked_by": "",
-    "verification": "Must be written: an operational action whose target system is not in the owned-system registry is refused.",
+    "verification": "cargo test -p qip-agency --test agency -- an_operational_tool_on_a_system_outside_the_owned_registry_is_refused ; cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (mutation-verified: replacing the ownership condition in add_tool_edge with `false` fails both tests).",
     "work_item": "E16",
     "tier": "T3",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-05: The registry is whatever the request or caller declares owned; nothing reconciles it against an inventory of real systems, and no operational adapter exists, so nothing can be changed through it."
   },
   {
     "id": "AGENCY-024",
