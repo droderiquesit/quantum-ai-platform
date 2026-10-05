@@ -304,17 +304,18 @@
   },
   {
     "id": "MODEL-037",
-    "status": "PARTIAL",
-    "current": "No 'ModelPack' type exists, but the promoted set behaves as an unversioned pack with log-recorded deltas: every Platform::promote_model journals a ModelPromotion naming the model added (reference, digest, distillate) and the incumbents it removes (displaced), apply_promotion applies the delta, and resume_model_promotions rebuilds membership from the log alone (qip-kernel/src/model_serving.rs:150-260). A model without a passing evaluation cannot be promoted (ModelRegistry::promote, registry.rs:280-290). Platform::model_manifest produces the membership as qip_contracts::policy::ModelManifest (policy.rs:265-268), shipped by qip-api (mesh.rs:880); promotions come from qip-deepbrain's promote_candidate.",
+    "status": "COMPLETE",
+    "current": "Every promotion record that changes the promoted set makes a Model Pack version: qip_kernel::model_serving::ModelPack {id, predecessor, added (reference -> artifact digest), kept, removed, at}. The id is SHA-256 over the predecessor's id and the full membership, so it names a membership and its history. Packs are a projection of the journalled ModelPromotion records and are not journalled a second time: Platform::model_pack_lineage reads them from the log, Platform::model_pack holds the pack in force (advanced by the same ModelPack::succeed on the live path and on a restart), and pack_membership walks the predecessor pointers and rebuilds any pack's members from the deltas alone, refusing a lineage whose deltas, kept set or id do not reproduce. A model with no passing evaluation is refused by promote_model and makes no pack. In production qip-deepbrain's LearningDesk promotes and rolls back through Platform::promote_model and rollback_model, and qip-api's pending_policy ships Platform::model_manifest, whose journalled line names the pack in force, the pack it supersedes and the delta.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:150-171 (resume/apply: add + displaced), 210-260 (promote_model journals the delta)",
-      "backend/crates/libs/qip-contracts/src/policy.rs:265-268 (ModelManifest: flat name -> digest map, no pack version or predecessor)",
-      "backend/crates/apps/qip-api/src/mesh.rs:880 (manifest shipped from production)",
-      "rg -n 'ModelPack' backend --type rust -> no hits",
-      "test: a_displaced_incumbent_is_retired_on_the_same_record_and_leaves_the_manifest (crates/runtime/qip-kernel/tests/serving.rs:315)",
-      "test: a_restarted_platform_resumes_its_promotions_from_the_log_alone (crates/runtime/qip-kernel/tests/serving.rs:224)"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs (ModelPack, ModelPack::succeed, packs_of, pack_membership, resume_model_pack, Platform::model_pack / model_pack_lineage, ModelManifestIssue::pack and describe)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (model_pack field, resumed from the log beside model_promotions)",
+      "backend/crates/apps/qip-api/src/mesh.rs (pending_policy pushes issue.describe() for the trained_models slot)",
+      "test: every_accepted_model_makes_a_pack_naming_its_predecessor_and_delta_and_walking_the_lineage_rebuilds_each_membership (backend/crates/runtime/qip-kernel/tests/serving.rs) -- three promotions, a refused unaccepted model, a rollback, a restart over the log, and three edited lineages each refused by a different check",
+      "test: the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_then_names_it_by_the_cells_digest (backend/crates/apps/qip-api/tests/mesh.rs) now asserts the shipped line names the pack in force",
+      "mutations, each failed and was restored byte-for-byte: displaced model not recorded as removed -> delta assertion (left {}, right {\"pack-a@0.1.0\"}); predecessor pointer dropped -> predecessor assertion; id check removed from the walk -> the swapped-digest lineage was walked; kept check removed -> the padded lineage was walked; shipping line stops naming the pack -> line assertion; live path stops advancing the pack in force -> head != lineage.last()",
+      "cargo test -p qip-kernel --test serving: 'test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'"
     ],
-    "gap": "There is no pack version identity: no pack id, no predecessor pointer, no explicit 'kept' set, and the manifest carries no lineage. Membership at a point in time is reconstructible only by replaying ModelPromotion records in log order, and acceptance is the producer's own skill-bar verdict (see MODEL-040), not an acceptance record. A ModelPack entity naming its predecessor and added/kept/removed delta, and a test walking pack lineage, are still to build.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -325,11 +326,11 @@
       "MODEL-036"
     ],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-kernel --test serving. Needed: a test that each accepted-model addition creates a new pack version naming its predecessor and delta, that an unaccepted model is refused, and that walking the lineage reconstructs every pack.",
+    "verification": "backend/crates/runtime/qip-kernel/tests/serving.rs::every_accepted_model_makes_a_pack_naming_its_predecessor_and_delta_and_walking_the_lineage_rebuilds_each_membership",
     "work_item": "E10-model-pack-lineage",
     "tier": "T2",
     "size": "M",
-    "notes": "Overlaps CONTRACT-007 (acceptance precondition) and CONTRACT-011 (ModelPack fields, also not found in this codebase search). ModelManifest is the nearest existing structure to build this on top of. verify: upgraded MISSING -> PARTIAL. The promoted set's ModelPromotion records already carry add/remove deltas and are replayed from the log (tested, reached from qip-deepbrain and shipped by qip-api); what is missing is a versioned pack entity with predecessor lineage."
+    "notes": "Overlaps CONTRACT-007 (acceptance precondition) and CONTRACT-011 (ModelPack fields, also not found in this codebase search). ModelManifest is the nearest existing structure to build this on top of. verify: upgraded MISSING -> PARTIAL. The promoted set's ModelPromotion records already carry add/remove deltas and are replayed from the log (tested, reached from qip-deepbrain and shipped by qip-api); what is missing is a versioned pack entity with predecessor lineage. | 2026-10-05: closed. The pack here is the version and lineage record this requirement names. What a pack must carry to be applied (signed artifacts, features, calibration, universes, budget, expiry — CONTRACT-011) and the independence of the acceptance verdict from its producer (MODEL-040) are their own rows and are not claimed. 'Acceptance record' is the card's passing EvaluationRecord, which promote_model requires. A record that changes nothing (the same version re-promoted at the same bytes) makes no pack."
   },
   {
     "id": "MODEL-038",
@@ -356,20 +357,23 @@
     "work_item": "E10-promotion-counterfactual-input",
     "tier": "T2",
     "size": "M",
-    "notes": "Fails the requirement's 'all three inputs recorded' verification specifically on the counterfactual leg; live+drift are solidly covered. verify: status PARTIAL kept; corrected the verification command -- the cited test is in qip-lifecycle's tests/lifecycle.rs:1056, so 'cargo test --lib demotion::' does not run it. RegretAnalysis confirmed to have no production caller (only the lib.rs re-export)."
+    "notes": "Fails the requirement's 'all three inputs recorded' verification specifically on the counterfactual leg; live+drift are solidly covered. verify: status PARTIAL kept; corrected the verification command -- the cited test is in qip-lifecycle's tests/lifecycle.rs:1056, so 'cargo test --lib demotion::' does not run it. RegretAnalysis confirmed to have no production caller (only the lib.rs re-export). | 2026-10-05 not built: no stage reads a served model score (qip-kernel model_serving.rs module doc), so no decision, P&L or counterfactual is attributable to a model; a three-input verdict per model has no live or counterfactual input to record until a consumer exists. RegretAnalysis still has no production caller."
   },
   {
     "id": "MODEL-039",
     "status": "PARTIAL",
-    "current": "qip_kernel::Platform::{score_declined, score_filled} (backend/crates/runtime/qip-kernel/src/platform.rs:16326,16483) turn declined orders and filled orders into counterfactual episodes every LEARN stage, bounded by COUNTERFACTUALS_PER_CYCLE with the overflow counted as deferred; refusals are captured as Action::Rejected (platform.rs:15506) and each fill slice as Action::Filled (platform.rs:15624). qip_twin::capture::Action has a PartiallyFilled variant, but production never constructs it: a partially filled order's filled slices are recorded as Filled, and its unfilled remainder is recorded nowhere as an episode.",
+    "current": "qip_kernel::Platform::{score_declined, score_filled} turn declined orders and filled orders into counterfactual episodes every LEARN stage, bounded by COUNTERFACTUALS_PER_CYCLE with the overflow counted as deferred; refusals are captured as Action::Rejected and each fill slice as Action::Filled. The desk's venue fills a fraction of an order immediately (SimulationSettings::default, immediate_fill_fraction 0.6), so every desk order is partly filled, and Platform::capture_submission now records the remainder too: Action::PartiallyFilled {filled, remaining, price}, read from the order manager's own book after it applied the fills, caused by the placement, with nothing realised a second time. An opportunity that lapsed in the queue unworked is captured as Action::ExpiredOpportunity (MODEL-013).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:16218-16290 (evaluate_alternatives), 16326,16483 (score_declined/score_filled), 15506 (Rejected), 15601-15630 (OrderPlaced/Filled per fill)",
       "backend/crates/services/qip-twin/src/capture.rs:44-74 (Action enum: OrderPlaced, Filled, PartiallyFilled, Cancelled, Rejected)",
       "rg -n 'Action::PartiallyFilled' backend --type rust -> constructed only in crates/tests/qip-acceptance/tests/e2e.rs:810 (hand-built fixture), never in production",
       "test (cross-stage, run_cycle): crates/tests/qip-acceptance/tests/adversary.rs:176-205 (every fill reaches the twin's queue and is priced after cycles)",
-      "test (cross-stage): crates/runtime/qip-kernel/tests/valuation_seam.rs:860-900 (seeded declines and fills are all scored across LEARN passes)"
+      "test (cross-stage): crates/runtime/qip-kernel/tests/valuation_seam.rs:860-900 (seeded declines and fills are all scored across LEARN passes)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (capture_submission: the shortfall record after the fill slices)",
+      "test: an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_realises_nothing_twice (backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs) -- premise asserted from the order manager's book (600 filled, 400 remaining); mutations, each failed and was restored byte-for-byte: shortfall not recorded -> 'one record of the shortfall, found 0'; remainder taken as the whole order -> left 1000, right 400; shortfall record realises the filled quantity again -> 'the filled quantity is on the chain twice' (1200 against 600); filed without its placement -> caused_by assertion",
+      "correction: the row said production never constructs PartiallyFilled because fills were assumed whole; the default venue fills 60%, so the gap was reachable on every desk order"
     ],
-    "gap": "Actions taken (fills) and declined opportunities (including refusals) become counterfactual episodes every cycle; partial fills do not become episodes of their own kind -- PartiallyFilled is never constructed in production, so the unfilled remainder of a partially filled order produces no episode. The per-cycle cap means episodes lag decisions (deferred, not dropped), and no test asserts 'episodes == decisions' over a cycle containing an action, a decline, a partial fill and a failure. These records feed evaluation (sizing review, venue review), not any model's training set.",
+    "gap": "Closed this pass: the unfilled remainder of a partly filled order is captured, and so is an opportunity that lapsed unworked (MODEL-013). Remaining: (1) neither is replayed counterfactually — evaluate_alternatives prices against the placement and the Filled slice (MODEL-042); (2) no test drives one cycle holding an action, a decline, a partial fill and a failure and asserts one episode for each: a venue failure cannot be forced through the platform's own broker, which Platform constructs itself and does not take from the caller; (3) these records feed evaluation (sizing review, venue review), not any model's training set.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -377,11 +381,11 @@
     "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-kernel --test valuation_seam && cargo test -p qip-acceptance --test adversary. Needed: a replayed cycle with one action, one decline, one partial fill and one failure asserting one episode each.",
+    "verification": "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs::an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_realises_nothing_twice; cd backend && cargo test -p qip-kernel --test valuation_seam && cargo test -p qip-acceptance --test adversary. Still needed: a replayed cycle with one action, one decline, one partial fill and one failure asserting one episode each.",
     "work_item": "E10-partial-fill-episodes",
     "tier": "T1",
     "size": "S",
-    "notes": "e2e=true reflects that the acceptance suite exercises the type; it does not prove production code ever produces a PartiallyFilled action, which is the actual gap. verify: status PARTIAL and e2e=true kept, but the e2e evidence is replaced: the e2e.rs:810 fixture is hand-built and proves nothing about production; qip-acceptance adversary.rs drives real fills through run_cycle into score_filled, which is the cross-stage demonstration for the half that exists. Gap sharpened: partial fills are recorded as Filled slices, the remainder is never an episode."
+    "notes": "e2e=true reflects that the acceptance suite exercises the type; it does not prove production code ever produces a PartiallyFilled action, which is the actual gap. verify: status PARTIAL and e2e=true kept, but the e2e evidence is replaced: the e2e.rs:810 fixture is hand-built and proves nothing about production; qip-acceptance adversary.rs drives real fills through run_cycle into score_filled, which is the cross-stage demonstration for the half that exists. Gap sharpened: partial fills are recorded as Filled slices, the remainder is never an episode. | 2026-10-05: partial-fill capture built and mutation-verified; left PARTIAL for the three items in the gap."
   },
   {
     "id": "MODEL-040",
@@ -466,7 +470,7 @@
     "work_item": "E10-counterfactual-partial-unwound",
     "tier": "T2",
     "size": "M",
-    "notes": "Point-in-time correctness (MODEL-030's property) is directly enforced here: planning against a later market is refused and named as leakage. verify: status PARTIAL kept; corrected the claim that hedged opportunities are 'genuinely replayed' -- the platform builds every ActualTrade unhedged and never configures the hedge menu, so of the four kinds only 'declined' is covered in production."
+    "notes": "Point-in-time correctness (MODEL-030's property) is directly enforced here: planning against a later market is refused and named as leakage. verify: status PARTIAL kept; corrected the claim that hedged opportunities are 'genuinely replayed' -- the platform builds every ActualTrade unhedged and never configures the hedge menu, so of the four kinds only 'declined' is covered in production. | 2026-10-05: partial fills are now captured (MODEL-039) and lapsed opportunities too (MODEL-013), but neither is replayed: evaluate_alternatives prices against the placement and the Filled slice and reads no PartiallyFilled or ExpiredOpportunity record."
   },
   {
     "id": "MODEL-043",
@@ -491,7 +495,7 @@
     "work_item": "E10-regime-champion-challenger-scorecards",
     "tier": "T2",
     "size": "M",
-    "notes": "Scoreboard::sources() (the fifth of the crate's five named constructors) is never constructed in production — see MODEL-044, which is the actual gap that name suggests. verify: downgraded COMPLETE -> PARTIAL. The cited boards score model classes, challenge outcomes and claim classes by regime; none gives champion and challenger their own per-regime scorecard, model promotion is regime-blind, and the row's claim that claim_scores scores strategies is wrong (it is keyed on the anomaly kind). | 2026-10-04: model-class half closed and mutation-verified; left PARTIAL for the strategy half."
+    "notes": "Scoreboard::sources() (the fifth of the crate's five named constructors) is never constructed in production — see MODEL-044, which is the actual gap that name suggests. verify: downgraded COMPLETE -> PARTIAL. The cited boards score model classes, challenge outcomes and claim classes by regime; none gives champion and challenger their own per-regime scorecard, model promotion is regime-blind, and the row's claim that claim_scores scores strategies is wrong (it is keyed on the anomaly kind). | 2026-10-04: model-class half closed and mutation-verified; left PARTIAL for the strategy half. | 2026-10-05 not built: a strategy challenger is minted and judged inside one round (qip-deepbrain succession.rs), so it never meets a second regime; per-regime scorecards for a challenger need challengers that persist across rounds."
   },
   {
     "id": "MODEL-044",

@@ -35,7 +35,9 @@ use std::collections::BTreeMap;
 
 /// One thing the platform did, or declined to do.
 ///
-/// Twelve variants, covering the whole surface the audit named. The ones that
+/// The variants cover the whole surface the audit named — count them in the
+/// enum rather than here; this sentence said "twelve" until a thirteenth was
+/// added and nothing but a reader would have caught it. The ones that
 /// describe an absence are not second-class: a stale opportunity and a filled
 /// order are recorded by the same call, into the same chain, and are counted by
 /// the same tally.
@@ -99,6 +101,21 @@ pub enum Action {
         age: Duration,
         would_have_earned: Simulated<Decimal>,
     },
+    /// An opportunity lapsed in the queue before anything took it up.
+    ///
+    /// Not a [`Self::MissedOpportunity`]: that variant says what the miss
+    /// would have earned, and nothing ever proposed a side or a size for
+    /// this one, so there is no alternative world to price. A zero there
+    /// would be a number nobody computed, summed into
+    /// [`OutcomeCapture::forgone`] beside the ones somebody did.
+    ExpiredOpportunity {
+        opportunity: OpportunityId,
+        object_id: ObjectId,
+        /// When the platform first saw it.
+        seen_at: Timestamp,
+        /// How long it waited before it lapsed.
+        age: Duration,
+    },
     /// The gap between the price a decision assumed and the price it got.
     Slippage {
         order_id: OrderId,
@@ -146,6 +163,7 @@ impl Action {
             Self::Rejected { .. } => "rejected",
             Self::MissedOpportunity { .. } => "missed_opportunity",
             Self::StaleOpportunity { .. } => "stale_opportunity",
+            Self::ExpiredOpportunity { .. } => "expired_opportunity",
             Self::Slippage { .. } => "slippage",
             Self::Latency { .. } => "latency",
             Self::ModelRecommendation { .. } => "model_recommendation",
@@ -174,6 +192,7 @@ impl Action {
             Self::Rejected { .. }
                 | Self::MissedOpportunity { .. }
                 | Self::StaleOpportunity { .. }
+                | Self::ExpiredOpportunity { .. }
                 | Self::RiskDecision { allowed: false, .. }
         )
     }

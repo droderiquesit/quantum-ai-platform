@@ -3195,6 +3195,48 @@ impl Cell {
         self.deployed.keys().map(String::as_str).collect()
     }
 
+    /// The content identity of what a deployed strategy runs: SHA-256 over
+    /// its compiled form — rules, parameters, plan and cost — the program
+    /// that plan indexes into, its pause class and its pricing policy.
+    /// `None` for a strategy that is not deployed.
+    ///
+    /// The cell's answer to "is this still the package I was given"
+    /// (MODEL-015). A deployed strategy is replaced only by
+    /// [`Self::deploy`] and removed only by [`Self::withdraw`], so a digest
+    /// that moved between two passes with neither call in between is the
+    /// silent adaptation the blueprint forbids: fills, slippage or a venue's
+    /// behaviour rewriting what trades without a promotion. The capital
+    /// envelope is deliberately outside the digest — utilisation is charged
+    /// on every pass and a grant the centre renews is a different act with
+    /// its own record.
+    pub fn deployment_digest(&self, strategy: &str) -> Result<Option<String>> {
+        let Some(deployed) = self.deployed.get(strategy) else {
+            return Ok(None);
+        };
+        let unencodable = |error: serde_json::Error| {
+            Error::invalid(format!(
+                "the deployment of {strategy} could not be encoded to be named by digest: \
+                 {error}; redeploy it from a plan that serialises"
+            ))
+        };
+        let compiled = serde_json::to_string(&deployed.strategy).map_err(unencodable)?;
+        let program = serde_json::to_string(deployed.runtime.program()).map_err(unencodable)?;
+        let pricing = match deployed.pricing {
+            None => "unpriced".to_string(),
+            Some(PricingPolicy::Marketable) => "marketable".to_string(),
+            Some(PricingPolicy::RestAtMid { time_to_live }) => {
+                format!("rest_at_mid:{}", time_to_live.as_nanos())
+            }
+        };
+        Ok(Some(qip_core::sha256_hex(
+            format!(
+                "{compiled}\n{program}\n{}\n{pricing}",
+                deployed.class.as_str()
+            )
+            .as_bytes(),
+        )))
+    }
+
     /// Withdraw a deployed strategy, handing back the envelope it ran under.
     ///
     /// The path a node takes when a fresh plan no longer names a strategy,

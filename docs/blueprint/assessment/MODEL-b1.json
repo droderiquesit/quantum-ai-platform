@@ -301,7 +301,7 @@
     "work_item": "E10-strategy-stress-gate",
     "tier": "T1",
     "size": "M",
-    "notes": "GateStage's Pilot/Scaled stages are labeled 'live with capital' in the enum's own doc comment; under ADR 0003/0021 nothing in this repository ever reaches a real venue there, so within this paper-only platform 'promotion' terminates at simulated/paper capital, exactly as this requirement's own notes anticipate. verify: downgraded COMPLETE -> PARTIAL. The gate ladder has no stress-testing stage or check anywhere on the promotion path, which the requirement's statement makes a precondition of promotion; the rest of the lifecycle is as the row describes and its citations check out."
+    "notes": "GateStage's Pilot/Scaled stages are labeled 'live with capital' in the enum's own doc comment; under ADR 0003/0021 nothing in this repository ever reaches a real venue there, so within this paper-only platform 'promotion' terminates at simulated/paper capital, exactly as this requirement's own notes anticipate. verify: downgraded COMPLETE -> PARTIAL. The gate ladder has no stress-testing stage or check anywhere on the promotion path, which the requirement's statement makes a precondition of promotion; the rest of the lifecycle is as the row describes and its citations check out. | 2026-10-05 not built: a stress check on the ladder needs a production producer of stress evidence and tightens a gate that ladder-climbing fixtures in four crates pass today, so it wants a serial slot and not a parallel lane. Note that PaperEvidence itself has no production producer (grep -rn 'PaperEvidence' backend/crates --include=*.rs | grep -v /tests/ shows only its definition)."
   },
   {
     "id": "MODEL-012",
@@ -329,15 +329,16 @@
   },
   {
     "id": "MODEL-013",
-    "status": "PARTIAL",
-    "current": "qip-learning-engine (backend/crates/services/qip-learning-engine/src) is hardened and reached every LEARN-stage pass: Attribution::residual is enforced to be zero by construction (attribution.rs:48-153), ThesisEvaluator grades claims against real observations only after their horizon closes (evaluation.rs), and FeedbackEngine::calibrate produces calibration reports. qip-kernel/src/platform.rs's stage_learn (14398 calibrate_resolved, 16218 evaluate_alternatives, 16326 score_declined, 16483 score_filled) ties Episode/EpisodeOutcome records to a hypothesis_id and realised_pnl for every resolved claim (platform.rs:11550-11568).",
+    "status": "COMPLETE",
+    "current": "Every path a decision takes reaches the evaluation input — the platform's hash-chained outcome capture (qip_twin::capture::OutcomeCapture, held by Platform, counted by the LEARN stage and read by the twin's counterfactual pricing) — under a decision id of its own. A fill: Platform::capture_submission records OrderPlaced and then Filled (caused_by the placement's decision id) with the order manager's order id, quantity and price, in the seam that books the same fill into TrackedCapital. A refused order: Action::Rejected with the order id and the gate. An opportunity that lapsed in the queue before REASON took it up: Platform::capture_unworked, called from stage_discover where the queue's retain used to drop it and report only a count, records Action::ExpiredOpportunity with the opportunity id, the instant it was first seen and how long it waited. REASON marks the opportunity it takes up (worked_opportunities), so the head of the queue is not also filed as unworked. No record can be built without a Decision, whose constructor requires a decision id and a trace. qip-learning-engine's attribution, thesis grading and calibration derive from the same fills and resolved theses, as before.",
     "evidence": [
-      "backend/crates/services/qip-learning-engine/src/attribution.rs:48,66,111,153",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:11550-11568,13828,14398,16218,16326,16483",
-      "backend/crates/libs/qip-ai/src/memory/episode.rs:458-483",
-      "test: a_resolved_episode_records_how_far_the_outcome_was_from_what_the_claim_expected (backend/crates/runtime/qip-kernel/tests/episodic.rs:280)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs (capture_unworked; stage_discover partitions the queue and captures the lapsed; reason_about_the_queue marks worked_opportunities; capture_submission)",
+      "backend/crates/services/qip-twin/src/capture.rs (Action::ExpiredOpportunity: its own kind, a refusal, never priced)",
+      "test: a_fill_a_refused_order_and_an_opportunity_that_lapsed_unworked_each_reach_the_evaluation_input_under_their_own_decision_id (backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs) -- drives run_cycle twice, six days apart, over two instruments with a jump; asserts the premise (two queued, nothing lapsed yet) before the lapse",
+      "mutations, each failed for its own reason and was restored byte-for-byte: lapse dropped without a record -> 'the lapses captured are not exactly the opportunities that waited unworked' (left {}); worked check disabled -> same assertion, the head included; REASON no longer marks what it takes up -> same; seen_at stamped at the lapse -> seen_at assertion; variant removed from is_refusal -> 'a lapse is declined'; kind tallied as missed_opportunity -> tally assertion; captured fill given the arrival price -> 'the captured fill is not the fill the ledger booked'",
+      "cargo test -p qip-kernel --test platform_outcomes: 'test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'"
     ],
-    "gap": "Episode/EpisodeOutcome carries a hypothesis_id and realised_pnl, not a directly traceable ledger/settlement event id as the requirement's verification asks for; the exact provenance chain from a booked ledger entry to a specific episode record was not independently confirmed in this pass.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -345,11 +346,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/services/qip-learning-engine tests (44 tests, e.g. an_estimate_is_refused_below_the_minimum_sample_rather_than_reported_as_one_half); qip-acceptance/tests/truth_loop.rs for the wider event-log traceability",
+    "verification": "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs::a_fill_a_refused_order_and_an_opportunity_that_lapsed_unworked_each_reach_the_evaluation_input_under_their_own_decision_id",
     "work_item": "E10-ledger-event-id-on-episode",
     "tier": "T1",
     "size": "S",
-    "notes": "The core attribution/evaluation/feedback loop is real, hardened and reached from every composition root; the gap noted is about explicit event-id traceability, not about whether outcomes are used at all. verify: status kept PARTIAL; citations checked (platform.rs:13828/14398/16218/16326/16483 and 11550-11568 land on the named functions). Added the kernel-level episode test — the cited qip-learning-engine tests exercise attribution arithmetic, not the ledger-to-episode contract. Episodes are keyed by hypothesis id, and their realised_move_bps/realised_pnl source was not traced to a booked ledger entry."
+    "notes": "The core attribution/evaluation/feedback loop is real, hardened and reached from every composition root; the gap noted is about explicit event-id traceability, not about whether outcomes are used at all. verify: status kept PARTIAL; citations checked (platform.rs:13828/14398/16218/16326/16483 and 11550-11568 land on the named functions). Added the kernel-level episode test — the cited qip-learning-engine tests exercise attribution arithmetic, not the ledger-to-episode contract. Episodes are keyed by hypothesis id, and their realised_move_bps/realised_pnl source was not traced to a booked ledger entry. | 2026-10-05: closed on the outcome capture. Reading used: the check's 'episode record in the evaluation input' is the capture chain's decision-plus-outcome record — an expired opportunity never forms a hypothesis, so it can never be a qip_ai episodic-memory Episode, which is keyed by hypothesis id. 'Declined' is a refused order (Action::Rejected) or a risk veto (Action::RiskDecision, allowed false); an opportunity REASON took up and did not act on is on the journal as a ReasonRouting record, not on this chain. An episodic Episode still reaches its fills by hypothesis id through the order, not by an event id of its own. ExpiredOpportunity is deliberately unpriced: no side or size was ever proposed, so there is nothing to add to forgone(). The DISCOVER stage's 'expired before they were worked' problem now counts only opportunities REASON never took up; it used to count the worked head as well."
   },
   {
     "id": "MODEL-014",
@@ -374,11 +375,11 @@
     "work_item": "E09-learn-to-world-model-feedback",
     "tier": "T2",
     "size": "M",
-    "notes": "Both halves of the machinery this requirement needs already exist in their respective crates (CausalGraph::reestimate, qip-training's refit cadence); what is missing is the wiring from LEARN-stage output to either. verify: kept MISSING after searching for other return edges. LEARN does feed two things back — Platform::learn_from sets the reasoning engine's origin factors from graded theses (platform.rs:8480, reasoning.set_origin_factors), and resolved episodes join episodic memory that REASON recalls as precedents — but neither is addressed to the world model/knowledge graph or to microstructure training, which are the two edges this requirement and its check name. absorb_causal_support still has no production caller (grep shows only its definition, a test at qip-world-model tests/understanding.rs:1181, and the causal.rs doc)."
+    "notes": "Both halves of the machinery this requirement needs already exist in their respective crates (CausalGraph::reestimate, qip-training's refit cadence); what is missing is the wiring from LEARN-stage output to either. verify: kept MISSING after searching for other return edges. LEARN does feed two things back — Platform::learn_from sets the reasoning engine's origin factors from graded theses (platform.rs:8480, reasoning.set_origin_factors), and resolved episodes join episodic memory that REASON recalls as precedents — but neither is addressed to the world model/knowledge graph or to microstructure training, which are the two edges this requirement and its check name. absorb_causal_support still has no production caller (grep shows only its definition, a test at qip-world-model tests/understanding.rs:1181, and the causal.rs doc). | 2026-10-05 not built: calling WorldModel::absorb_causal_support from LEARN needs a defined estimator of the transmission a resolved episode measured for each edge in its causal_context — SupportingClaim.strength is refused outside [0,1] and is a number the platform sizes against. None exists and inventing one is a modelling decision. The microstructure-training edge has no consumer (MODEL-010 and MODEL-019 are missing)."
   },
   {
     "id": "MODEL-015",
-    "status": "NEEDS-VALIDATION",
+    "status": "PARTIAL",
     "current": "qip_edge::Cell has exactly one mutator of a deployed strategy's model/parameters/sizing: Cell::deploy (backend/crates/edge/qip-edge/src/cell.rs:2505-2535), driven only by an explicit centre-issued policy the cell validates and promotes through. No 'adapt'/'redeploy'/'auto-adjust' method exists on Cell. Drift measurement (qip_training::estimators::degraded_models, reached from qip-deepbrain/src/learning.rs:1051) only writes to the ModelRegistry's drift_score/drift_threshold fields, which govern future decision eligibility — it never touches a live Cell's deployed CompiledStrategy.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:2505-2535 (Cell::deploy); the only other writers of a deployed entry are classify, withdraw, renew_capital and work's utilisation charge (cell.rs:3748) — none reads drift, slippage or residuals",
@@ -386,21 +387,25 @@
       "backend/crates/runtime/qip-kernel/src/central/learning.rs:12-31 (live residuals only widen the allocator's standard error and demote/retire — narrowing, as the requirement's notes permit)",
       "test (different property): a_drifted_model_in_production_may_no_longer_inform_a_decision (backend/crates/apps/qip-deepbrain/src/learning.rs:2156) — drift makes a promoted card ineligible in ModelRegistry; no cell is involved",
       "test (centre-side half only): a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue (backend/crates/runtime/qip-kernel/tests/learning.rs:831)",
-      "backend/crates/edge/qip-edge/src/dispersion.rs:1-40 and cell.rs:6073,6338 (ReleaseSchedule derived from the cell's rolling per-venue fill-time medians)"
+      "backend/crates/edge/qip-edge/src/dispersion.rs:1-40 and cell.rs:6073,6338 (ReleaseSchedule derived from the cell's rolling per-venue fill-time medians)",
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::deployment_digest: SHA-256 over the compiled strategy, its program, its pause class and its pricing policy)",
+      "test: sustained_slippage_drift_changes_no_deployed_package_no_parameter_and_no_size_until_a_new_package_is_deployed (backend/crates/edge/qip-edge/tests/fills.rs) -- twelve passes, each fill 20 cents further from the price sent and a second slower than the last; digest, pricing, the plan's computed size and the size sent are asserted on every pass; a withdraw and a redeploy then move the digest and double the size",
+      "mutations, each failed and was restored byte-for-byte: a confirmed fill rewrites the deployed pricing -> 'the deployed package changed during pass 1 with no deployment'; a confirmed fill reclassifies the strategy -> same assertion; order size grows with the fills seen -> 'order size moved under drift with no new package'; digest made blind to the compiled strategy -> 'a new package carries the old digest'",
+      "cargo test -p qip-edge --test fills: 'test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'"
     ],
-    "gap": "No test drives the verification: nothing feeds a reflex cell sustained slippage drift on replay and asserts its deployed plan digest, parameters and sizing are unchanged until a new package is promoted. The cited test proves a different property (registry eligibility), and the one fill-error test is centre-side and covers only venue withdrawal. Open question for an owner: Cell::work derives a per-venue ReleaseSchedule from the cell's own rolling fill-time medians (ADR 0084), so a change in a venue's latency moves when legs are released with no retraining or promotion — deterministic and replayable, and not a change to package, parameters or sizing, but execution logic that a live venue measurement adjusts directly, which the statement's 'venue changes never adjust execution' reads on.",
+    "gap": "The cell half of the check is now demonstrated: through a sustained run of fills each worse and later than the last, the deployed package's digest, its pricing, the size the plan computes and the size the cell sends are unchanged, and only a new deployment moves them. Two things remain. (1) The check's second sentence — the only effect of the drift is a recorded retraining or curriculum task — is not met: fill and slippage error reach no retraining task (MODEL-016; ADR 0062 keeps qip_venue_fill_error_bps diagnostic). (2) An owner ruling is still needed on ADR 0084's ReleaseSchedule, which the cell derives from its own rolling per-venue fill-time medians, so a venue's latency moves when legs are released with no promotion. It is deterministic and replayable and changes neither package, parameters nor sizing, but it is execution timing a live venue measurement adjusts directly; this test's single-venue cell does not exercise it.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needed: a qip-edge or qip-edge-node test replaying sustained fill/slippage drift into a cell and asserting deployed_strategies, each plan's digest, parameters and sizing are unchanged and that the only effect is a recorded retraining task; plus an owner ruling on whether the fill-time-driven ReleaseSchedule falls inside the permitted deterministic controls",
+    "verification": "backend/crates/edge/qip-edge/tests/fills.rs::sustained_slippage_drift_changes_no_deployed_package_no_parameter_and_no_size_until_a_new_package_is_deployed. Still needed: the retraining-task half (MODEL-016) and an owner ruling on the fill-time-driven ReleaseSchedule.",
     "work_item": "E04-drift-cannot-adapt-a-cell-test",
     "tier": "T0",
     "size": "S",
-    "notes": "Enforced structurally by the absence of a mutator, not by a runtime check — consistent with principle 4. verify: downgraded COMPLETE -> NEEDS-VALIDATION. The prohibition appears structurally held (no drift-driven mutator of a deployed strategy exists), but the only cited test demonstrates a registry property, not the reflex-cell behaviour the requirement's check names, and the fill-time release schedule needs an explicit ruling."
+    "notes": "Enforced structurally by the absence of a mutator, not by a runtime check — consistent with principle 4. verify: downgraded COMPLETE -> NEEDS-VALIDATION. The prohibition appears structurally held (no drift-driven mutator of a deployed strategy exists), but the only cited test demonstrates a registry property, not the reflex-cell behaviour the requirement's check names, and the fill-time release schedule needs an explicit ruling. | 2026-10-05: NEEDS-VALIDATION -> PARTIAL. The cell-side test the row asked for exists and is mutation-verified; not COMPLETE because the retraining-task half is MODEL-016's and the ReleaseSchedule question is an owner's to rule on, not a lane's."
   },
   {
     "id": "MODEL-016",
@@ -606,7 +611,7 @@
     "work_item": "E10-compiled-artifact-validation-reference",
     "tier": "T1",
     "size": "S",
-    "notes": "This requirement's own notes name qip-strategy's compile as the existing reflex-side compiler (ADR 0083); the neural-to-symbolic half grows with master Phase 9 and is not attempted here. verify: status kept PARTIAL; gap corrected — it called the ModelManifest 'currently unproduced', which is stale (qip-api mesh.rs:880,973 produces it from promote_model's record)."
+    "notes": "This requirement's own notes name qip-strategy's compile as the existing reflex-side compiler (ADR 0083); the neural-to-symbolic half grows with master Phase 9 and is not attempted here. verify: status kept PARTIAL; gap corrected — it called the ModelManifest 'currently unproduced', which is stale (qip-api mesh.rs:880,973 produces it from promote_model's record). | 2026-10-05 not built: the compiler runs before validation by design — a candidate is compiled so that it can be backtested — so 'compile nothing unvalidated' needs the post-validation Reflex Package Builder of MODEL-051, which does not exist."
   },
   {
     "id": "MODEL-024",

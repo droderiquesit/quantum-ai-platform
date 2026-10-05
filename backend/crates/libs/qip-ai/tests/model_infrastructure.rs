@@ -1087,3 +1087,74 @@ fn a_package_of_each_of_the_four_kinds_registers_and_any_other_kind_is_refused()
             .is_err()
     );
 }
+
+// --- who moved an alias (MODEL-057) ------------------------------------------
+
+#[test]
+fn an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newest_moves() {
+    use qip_ai::registry::{ALIAS_MOVES_RETAINED, PRODUCTION_ALIAS};
+    const REFERENCE: &str = "regime-classifier@2.1.0";
+    let mut registry = ModelRegistry::new();
+    registry.register(evaluated_card(now(), true));
+    // Premise: an unpromoted card holds no alias and no move, so what is
+    // read below was written below.
+    assert!(registry.aliases(REFERENCE).unwrap().is_empty());
+    assert!(registry.get(REFERENCE).unwrap().alias_moves.is_empty());
+
+    // An anonymous move and an unexplained one are refused, and leave no
+    // record behind them.
+    registry.promote(REFERENCE, now()).unwrap();
+    let anonymous = registry
+        .record_alias_move(REFERENCE, "  ", "held-out-2025 passed", now())
+        .unwrap_err();
+    assert!(anonymous.message().contains("names nobody"), "{anonymous}");
+    let unexplained = registry
+        .record_alias_move(REFERENCE, "model-desk", "", now())
+        .unwrap_err();
+    assert!(
+        unexplained.message().contains("states no evidence"),
+        "{unexplained}"
+    );
+    assert!(
+        registry
+            .record_alias_move("nobody@0.0.0", "model-desk", "evidence", now())
+            .is_err()
+    );
+    assert!(registry.get(REFERENCE).unwrap().alias_moves.is_empty());
+
+    // Which way the alias went is read off the card, not asserted.
+    registry
+        .record_alias_move(REFERENCE, "model-desk", "held-out-2025 passed", now())
+        .unwrap();
+    assert_eq!(registry.aliases(REFERENCE).unwrap(), vec![PRODUCTION_ALIAS]);
+    let on = registry.get(REFERENCE).unwrap().alias_moves[0].clone();
+    assert!(on.assigned);
+    assert_eq!(on.alias, PRODUCTION_ALIAS);
+    assert_eq!(on.moved_by, "model-desk");
+    assert_eq!(on.evidence, "held-out-2025 passed");
+
+    registry.retire(REFERENCE, now()).unwrap();
+    registry
+        .record_alias_move(REFERENCE, "model-desk", "drift past threshold", now())
+        .unwrap();
+    assert!(registry.aliases(REFERENCE).unwrap().is_empty());
+    assert!(!registry.get(REFERENCE).unwrap().alias_moves[1].assigned);
+
+    // Bounded: a card that flaps keeps its newest moves and drops the oldest.
+    for flap in 0..ALIAS_MOVES_RETAINED * 2 {
+        registry
+            .record_alias_move(REFERENCE, "model-desk", &format!("flap {flap}"), now())
+            .unwrap();
+    }
+    let moves = &registry.get(REFERENCE).unwrap().alias_moves;
+    assert_eq!(moves.len(), ALIAS_MOVES_RETAINED);
+    assert_eq!(
+        moves.last().unwrap().evidence,
+        format!("flap {}", ALIAS_MOVES_RETAINED * 2 - 1)
+    );
+    assert_eq!(
+        moves[0].evidence,
+        format!("flap {}", ALIAS_MOVES_RETAINED),
+        "the oldest retained move is not the one the bound implies"
+    );
+}

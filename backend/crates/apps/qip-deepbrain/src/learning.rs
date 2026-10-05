@@ -150,6 +150,15 @@ use std::collections::{BTreeMap, BTreeSet};
 /// measure.
 const DATASET_PREFIX: &str = "bars-";
 
+/// The name this desk moves a model's production alias under (MODEL-057).
+///
+/// Given to [`Platform::name_model_desk`] before every promotion and
+/// rollback, so the journalled record and the registry card both answer
+/// "who moved it" with a name somebody can go and read the code of. A
+/// promotion here has no person behind it; the honest attribution is the
+/// desk, by name, rather than a blank.
+pub const MODEL_DESK: &str = "qip-deepbrain/learning-desk";
+
 /// The class every round fits and registers unless the board says otherwise.
 ///
 /// Ridge regression: the class whose coefficients a person can read, and the
@@ -952,6 +961,13 @@ impl LearningDesk {
                 .approved_student(&FidelityPolicy::default())
                 .ok()
         });
+        // MODEL-057: the desk names itself before it moves an alias, so
+        // the promotion record and the registry both say who moved it. The
+        // same name every time; a platform some other desk already named
+        // refuses, and that refusal is this candidate's verdict.
+        if let Err(error) = platform.name_model_desk(MODEL_DESK) {
+            return not_promoted(error.message().to_string());
+        }
         let published = match platform.promote_model(
             &mut self.registry,
             &artifact,
@@ -1007,6 +1023,11 @@ impl LearningDesk {
             .filter(|card| card.drift_score > card.drift_threshold)
             .map(ModelCard::reference)
             .collect();
+        if degraded.is_empty() {
+            return Ok(Vec::new());
+        }
+        // MODEL-057: a rollback moves the alias too, and names this desk.
+        platform.name_model_desk(MODEL_DESK)?;
         let mut rolled_back = Vec::new();
         for reference in degraded {
             let Ok(reactivated) = platform.rollback_model(&mut self.registry, &reference, now)
@@ -1784,6 +1805,11 @@ mod tests {
             platform.model_promotions().is_empty(),
             "premise: nothing promoted yet"
         );
+        assert_eq!(
+            platform.model_desk(),
+            None,
+            "premise: nothing named the desk before it acted"
+        );
 
         let first = desk
             .promote_candidate(&mut platform, at())?
@@ -1831,6 +1857,28 @@ mod tests {
         );
         assert_eq!(platform.model_promotions().len(), 1);
         assert_eq!(desk.stats().promoted, 1);
+        // MODEL-057: the desk named itself before it moved the alias, and
+        // the journalled record and the registry card both say who moved it
+        // and on what evidence — the same evidence, read off the card's own
+        // evaluation rather than asserted by the desk.
+        assert_eq!(platform.model_desk(), Some(MODEL_DESK));
+        let record = platform
+            .model_promotions()
+            .get(&first_reference)
+            .ok_or_else(|| Error::not_found("the promotion record"))?;
+        assert_eq!(record.moved_by.as_deref(), Some(MODEL_DESK));
+        let moved = desk
+            .registry()
+            .get(&first_reference)
+            .and_then(|card| card.alias_moves.last())
+            .ok_or_else(|| Error::not_found("the alias move on the card"))?;
+        assert!(moved.assigned);
+        assert_eq!(moved.moved_by, MODEL_DESK);
+        assert_eq!(record.evidence.as_deref(), Some(moved.evidence.as_str()));
+        assert_eq!(
+            desk.registry().aliases(&first_reference)?,
+            vec![qip_ai::registry::PRODUCTION_ALIAS]
+        );
         // What the cells are told agrees with what the fidelity policy
         // admitted, in both directions. On this fixture the linear student
         // of the linear teacher is *not* admitted — it reproduces 0.76 of

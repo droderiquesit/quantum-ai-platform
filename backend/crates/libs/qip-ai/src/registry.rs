@@ -51,6 +51,36 @@ pub struct EvaluationRecord {
     pub passed: bool,
 }
 
+/// The one alias this registry assigns: the version of a model name that may
+/// inform a decision. It follows [`ModelStage::Production`] rather than being
+/// a second pointer beside it, so the alias and the stage cannot disagree.
+pub const PRODUCTION_ALIAS: &str = "production";
+
+/// How many alias moves a card retains, newest last. A model that flaps
+/// between rollback and reactivation would otherwise grow its card without
+/// bound; whoever journals the move holds the full history.
+pub const ALIAS_MOVES_RETAINED: usize = 16;
+
+/// One move of an alias on to or off a model version: who moved it, and on
+/// what evidence (MODEL-057).
+///
+/// Until this record a promoted card said *when* it was deployed and nothing
+/// about who decided or what they were looking at, so an alias found
+/// pointing at the wrong version could not be traced to anyone.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AliasMove {
+    pub alias: String,
+    /// Whether the move put the alias on this version (`true`) or took it
+    /// off (`false`).
+    pub assigned: bool,
+    /// The desk or operator that moved it. Never blank.
+    pub moved_by: String,
+    /// What the move rested on, in words a reviewer can check against the
+    /// card's evaluations. Never blank.
+    pub evidence: String,
+    pub at: Timestamp,
+}
+
 /// The record for one model.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelCard {
@@ -107,6 +137,11 @@ pub struct ModelCard {
     /// that displaced nothing, which therefore cannot be rolled back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback_parent: Option<String>,
+    /// Every recorded move of an alias on to or off this version, oldest
+    /// first, bounded by [`ALIAS_MOVES_RETAINED`]. Written only by
+    /// [`ModelRegistry::record_alias_move`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alias_moves: Vec<AliasMove>,
 }
 
 /// A declared ceiling on what a model may consume. A ceiling set at
@@ -166,6 +201,7 @@ impl ModelCard {
             benchmarks: Vec::new(),
             resource_budget: None,
             rollback_parent: None,
+            alias_moves: Vec::new(),
         }
     }
 
@@ -603,6 +639,73 @@ impl ModelRegistry {
         card.stage = ModelStage::Production;
         card.deployed_at = Some(at);
         card.retired_at = None;
+        Ok(())
+    }
+
+    /// The aliases `reference` holds right now.
+    ///
+    /// [`PRODUCTION_ALIAS`] when the card is the production version of its
+    /// name, and nothing otherwise — a retired, shadow or development card
+    /// holds no alias, and of two production cards under one name only the
+    /// one [`Self::production_version`] returns does. A list because the
+    /// question is "which aliases", and one alias today is not a promise of
+    /// one for ever.
+    pub fn aliases(&self, reference: &str) -> Result<Vec<&'static str>> {
+        let card = self
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        let holds = self
+            .production_version(&card.name)
+            .is_some_and(|production| production.reference() == reference);
+        Ok(if holds {
+            vec![PRODUCTION_ALIAS]
+        } else {
+            Vec::new()
+        })
+    }
+
+    /// Record who moved the production alias on to or off `reference`, and
+    /// on what evidence (MODEL-057).
+    ///
+    /// Called by whoever moved it, immediately after the move. Which way the
+    /// alias went is read from the card's own stage rather than taken as an
+    /// argument, so a caller cannot record an assignment the registry did
+    /// not make. Refuses a blank mover or blank evidence — an anonymous move
+    /// and an unexplained one are the two records this exists to rule out —
+    /// and a reference the registry does not hold.
+    pub fn record_alias_move(
+        &mut self,
+        reference: &str,
+        moved_by: &str,
+        evidence: &str,
+        at: Timestamp,
+    ) -> Result<()> {
+        if moved_by.trim().is_empty() {
+            return Err(Error::denied(format!(
+                "the production alias move on {reference} names nobody; name the desk or \
+                 operator that moved it"
+            )));
+        }
+        if evidence.trim().is_empty() {
+            return Err(Error::denied(format!(
+                "the production alias move on {reference} states no evidence; say what the \
+                 move rested on"
+            )));
+        }
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if card.alias_moves.len() >= ALIAS_MOVES_RETAINED {
+            let excess = card.alias_moves.len() + 1 - ALIAS_MOVES_RETAINED;
+            card.alias_moves.drain(..excess);
+        }
+        card.alias_moves.push(AliasMove {
+            alias: PRODUCTION_ALIAS.to_string(),
+            assigned: card.stage == ModelStage::Production,
+            moved_by: moved_by.to_string(),
+            evidence: evidence.to_string(),
+            at,
+        });
         Ok(())
     }
 
