@@ -290,6 +290,41 @@ fn the_public_edge_attaches_every_backend_to_the_cloud_armor_policy() {
 }
 
 #[test]
+fn the_public_edge_application_backend_is_reached_over_https_and_never_plain_http() {
+    // A backend service defaults to HTTP when `protocol` is omitted, which
+    // would put the load balancer-to-origin hop in the clear while every
+    // other line of the module reads as secure. Cut the one backend service
+    // out and match its own attribute, not the string anywhere in the file.
+    let module = without_comments(&read(PUBLIC_EDGE));
+    let header = "resource \"google_compute_backend_service\" \"application\"";
+    let start = module
+        .find(header)
+        .unwrap_or_else(|| panic!("the public edge declares no `{header}`"));
+    let rest = &module[start + header.len()..];
+    let block = &rest[..rest.find("\nresource ").unwrap_or(rest.len())];
+    // Premise: the cut-out is the backend service, not an empty slice.
+    assert!(
+        block.contains("enable_cdn"),
+        "the extracted block is not the application backend service"
+    );
+    let protocols: Vec<&str> = block
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("protocol") && l.contains('='))
+        .collect();
+    assert_eq!(
+        protocols.len(),
+        1,
+        "expected one protocol line: {protocols:?}"
+    );
+    let value = protocols[0].split('=').nth(1).unwrap_or("").trim();
+    assert_eq!(
+        value, "\"HTTPS\"",
+        "the application backend must speak HTTPS"
+    );
+}
+
+#[test]
 fn every_public_edge_backend_block_carries_its_own_cloud_armor_attachment() {
     // The sibling test above matches `security_policy = ...` anywhere in the
     // file, so it passed while the static shell's backend bucket carried none:

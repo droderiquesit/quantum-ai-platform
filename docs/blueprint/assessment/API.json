@@ -391,9 +391,9 @@
       "infrastructure/terraform/modules/public-edge/main.tf:222-252",
       "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:82-115 the_application_identity_zone_may_be_fronted"
     ],
-    "gap": "Correct in config and asserted by a plan test, but never applied because no environment attaches a backend to the edge.",
+    "gap": "Config asserted by an acceptance test; never applied because no environment attaches a backend to the edge (external action).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -401,11 +401,11 @@
       "API-002"
     ],
     "blocked_by": "",
-    "verification": "No test asserts protocol = \"HTTPS\": public-edge.tftest.hcl::the_application_identity_zone_may_be_fronted asserts only the backend count and enable_cdn == false, and no terraform_plan.rs assertion reads the protocol.",
+    "verification": "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs::the_public_edge_application_backend_is_reached_over_https_and_never_plain_http (mutation: protocol HTTPS->HTTP failed it; restored). Still PARTIAL: no environment attaches a backend, so no real request has used it.",
     "work_item": "E14-public-edge-activation",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL kept. tested true -> false: the cited tftest run (public-edge.tftest.hcl:82-115) never reads google_compute_backend_service.application.protocol; nothing else asserts it. The attribute itself is at main.tf:230 (assessor cited :227). Left open 2026-10-04: needs the edge applied with a backend attached (external action)."
+    "notes": "verify: status PARTIAL kept. tested true -> false: the cited tftest run (public-edge.tftest.hcl:82-115) never reads google_compute_backend_service.application.protocol; nothing else asserts it. The attribute itself is at main.tf:230 (assessor cited :227). Left open 2026-10-04: needs the edge applied with a backend attached (external action). 2026-10-04: tested true, protocol now asserted by terraform_plan.rs."
   },
   {
     "id": "API-017",
