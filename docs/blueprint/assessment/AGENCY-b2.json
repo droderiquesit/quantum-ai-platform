@@ -146,15 +146,15 @@
   },
   {
     "id": "AGENCY-036",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::ComparisonDraft::build (backend/crates/services/qip-agency/src/comparison.rs) refuses at construction as the requirement states.",
     "evidence": [
-      "backend/crates/services/qip-opportunity-engine/src/opportunity.rs:67-77 (OpportunityRank: score, importance, novelty, confidence, cost — four axes, for research opportunities, not intervention candidates)",
-      "backend/crates/services/qip-twin/src/counterfactual.rs:48-71 (Alternative::DoNotTrade among nine priced alternatives — the in-tree precedent for carrying a no-action baseline beside candidates, compared on realised value only, not on the nine axes)"
+      "backend/crates/services/qip-agency/src/comparison.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_comparison_missing_any_of_the_nine_axes_is_refused_before_ranking"
     ],
-    "gap": "No structure compares intervention candidates (or a no-action baseline) on the nine named axes (expected causal effect, confidence, cost, capital usage, time-to-effect, reversibility, legal eligibility, conduct risk, downside). qip-opportunity-engine's OpportunityRank ranks research opportunities on four axes and has no reversibility, legal-eligibility or conduct-risk field, and it ranks what to investigate, not what intervention to take.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -162,11 +162,11 @@
       "AGENCY-034"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: each candidate's comparison record carries all nine axes, and a record missing any axis is refused before ranking.",
+    "verification": "cargo test -p qip-agency --test agency -- a_comparison_missing_any_of_the_nine_axes_is_refused_before_ranking (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16-candidate-comparison-record",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status unchanged (MISSING). Added qip-twin's DoNotTrade alternative as the precedent for the 'no-action baseline included' clause; it prices alternatives on value/regret alone and has no reversibility, legal-eligibility or conduct-risk axis."
+    "notes": "verify: status unchanged (MISSING). Added qip-twin's DoNotTrade alternative as the precedent for the 'no-action baseline included' clause; it prices alternatives on value/regret alone and has no reversibility, legal-eligibility or conduct-risk axis. | Library-level, integrated=false: No ranker exists yet; the refusal is at record construction so a future ranker taking Vec<Comparison> inherits it."
   },
   {
     "id": "AGENCY-037",
@@ -256,34 +256,37 @@
   },
   {
     "id": "AGENCY-041",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No GoalSpec type exists (zero matches for 'GoalSpec' in backend/crates).",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::GoalClass (eight variants) (backend/crates/services/qip-agency/src/goal.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/goal.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_goal_of_each_of_the_eight_classes_round_trips_through_serde_unchanged"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "None exists. Once built: a GoalSpec of each of the eight classes (financial, operational, research, product, liquidity, risk-reduction, information-acquisition, communications) constructs and round-trips through serde unchanged.",
+    "verification": "cargo test -p qip-agency --test agency -- a_goal_of_each_of_the_eight_classes_round_trips_through_serde_unchanged (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16-goalspec-contract",
     "tier": "T2",
     "size": "M",
-    "notes": "A pure-data contract type; buildable with serde/serde_json alone, no new dependency needed."
+    "notes": "A pure-data contract type; buildable with serde/serde_json alone, no new dependency needed. | Library-level, integrated=false: Contract only."
   },
   {
     "id": "AGENCY-042",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::InterventionPlan::plan authority check (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/runtime.rs:331-346 (AgentRuntime::authorise: the single per-identity capability check — an agent may use a facility only if its manifest independently grants it; nearest in-tree precedent for 'a lever is usable only if the acting identity holds that lever's authority', but agents carry no goal/outcome object for the permission to be separated from)",
-      "backend/crates/libs/qip-compliance/src/approval.rs (ApprovalChain::grant: human capital approvals — capital is granted only by named, freshly-credentialed humans, never by code; precedent for authority held independently of what the requester wants)"
+      "backend/crates/services/qip-agency/src/plan.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_plan_never_uses_a_lever_whose_authority_the_acting_identity_does_not_hold; a_prohibited_method_or_side_effect_makes_the_plan_infeasible"
     ],
-    "gap": "No lever, no acting-identity-authority record and no GoalSpec exist, so there is nothing that could separate 'wants an outcome' from 'may use this lever'. The nearest existing mechanism (qip_risk_engine::autonomy::AutonomyController::request_change) gates the platform's own autonomy level by operator identity, not a per-lever authority independent of goal utility.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -291,11 +294,11 @@
       "AGENCY-041"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: for generated GoalSpecs of arbitrarily high utility, the planner never emits a step using a lever whose recorded authority requirement the GoalSpec's acting identity does not hold.",
+    "verification": "cargo test -p qip-agency --test agency -- a_plan_never_uses_a_lever_whose_authority_the_acting_identity_does_not_hold a_prohibited_method_or_side_effect_makes_the_plan_infeasible (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16-lever-authority-separation",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status unchanged (MISSING). Evidence corrected: approval.rs was described as 'AutonomyController-adjacent operator authority checks for the autonomy ladder'; it is Control 4, the human capital-approval chain. Added the agent capability runtime as the closer structural precedent. Neither involves a GoalSpec, a lever or a planner, so no upgrade."
+    "notes": "verify: status unchanged (MISSING). Evidence corrected: approval.rs was described as 'AutonomyController-adjacent operator authority checks for the autonomy ladder'; it is Control 4, the human capital-approval chain. Added the agent capability runtime as the closer structural precedent. Neither involves a GoalSpec, a lever or a planner, so no upgrade. | Library-level, integrated=false: Authorities are supplied by the caller; not yet read from an identity service (AGENCY-017). Test uses a very large budget as the 'high utility' stand-in since GoalSpec has no utility field."
   },
   {
     "id": "AGENCY-043",
@@ -421,15 +424,15 @@
   },
   {
     "id": "AGENCY-048",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::EffectAttributionDraft::build (backend/crates/services/qip-agency/src/attribution.rs) refuses at construction as the requirement states.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:301 and backend/crates/services/qip-reasoning-engine/src/redteam.rs:525 (a 'competing explanation' concept exists for investment hypotheses — the closest naming precedent in the tree — but it is not attached to any causal-effect attribution of an executed action)",
-      "backend/crates/services/qip-twin/src/counterfactual.rs (CounterfactualEngine plans/settles trade-decision alternatives against a no-action-like control, the closest structural precedent for a no-action counterfactual, but scoped to trades, not interventions)"
+      "backend/crates/services/qip-agency/src/attribution.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- an_attribution_without_a_chain_confounders_rivals_or_confidence_is_refused"
     ],
-    "gap": "No EffectAttribution type exists anywhere in the tree (zero matches for 'EffectAttribution'). Nothing keeps a causal chain, confounder list, competing-explanations list and per-estimate confidence together as one contract.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -437,11 +440,11 @@
       "AGENCY-030"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: constructing an EffectAttribution without a causal chain, a confounder list, a competing-explanations list or a confidence value is refused.",
+    "verification": "cargo test -p qip-agency --test agency -- an_attribution_without_a_chain_confounders_rivals_or_confidence_is_refused (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16-effect-attribution-contract",
     "tier": "T2",
     "size": "M",
-    "notes": "Same work item as AGENCY-030's gap: this is the contract AGENCY-030's invariant is stated over."
+    "notes": "Same work item as AGENCY-030's gap: this is the contract AGENCY-030's invariant is stated over. | Library-level, integrated=false: Carries the four fields the check names; goal/intervention/action ids and per-horizon observations (notes) are not modelled; nothing produces one yet."
   },
   {
     "id": "AGENCY-049",

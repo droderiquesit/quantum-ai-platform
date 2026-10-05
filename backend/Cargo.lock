@@ -77,6 +77,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-agency"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "qip-agents"
 version = "0.1.0"
 dependencies = [
