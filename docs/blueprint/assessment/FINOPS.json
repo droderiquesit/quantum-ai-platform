@@ -213,14 +213,15 @@
   },
   {
     "id": "FINOPS-010",
-    "status": "MISSING",
-    "current": "nothing — no google_billing_budget resource exists anywhere under infrastructure/",
+    "status": "PARTIAL",
+    "current": "modules/observability/budget.tf declares google_billing_budget.monthly (750 USD, 50/70/90/100% CURRENT_SPEND thresholds, notification channels), opt-in via billing_budget_enabled (false by default; billing_account_id passed outside committed tfvars). Verified: terraform test -filter=tests/budget.tftest.hcl in modules/observability, 4 passed 0 failed.",
     "evidence": [
-      "rg -n 'google_billing_budget' infrastructure -g '*.tf' returns nothing"
+      "infrastructure/terraform/modules/observability/budget.tf",
+      "infrastructure/terraform/modules/observability/tests/budget.tftest.hcl"
     ],
-    "gap": "No spend guardrail is declared in code for any environment's project; a spend past any threshold is discovered on the invoice, not alerted.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The budget is declared but off in every environment (billing_budget_enabled = false, no billing account in committed tfvars), so no plan contains one; its notification target is not wired to FINOPS-018's anomaly path, which does not exist.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -445,9 +446,10 @@
       "infrastructure/terraform/modules/cicd/main.tf:180-216 (the infra identity exists so agents can tear expensive parts down 'to stop the meter'; prod stays behind the human-run bootstrap), 278-300 (qipInfraStorage custom role: storage.buckets.update and storage.buckets.delete present, storage.objects.delete absent), 230-265 (infra_roles: compute/run/pubsub/logging/monitoring admin)",
       ".github/workflows/infra.yml:44-48, 122-147 (workflow_dispatch only; environment options dev/test/stage), 210-216 (explicit prod refusal)",
       ".claude/hooks/guard-dangerous-command.py:87-108 (teardown, 'gcloud ... delete', 'gsutil rm' refused)",
-      "infrastructure/terraform/modules/data/main.tf:139-142 (event-archive retention_policy is_locked = false)"
+      "infrastructure/terraform/modules/data/main.tf:139-142 (event-archive retention_policy is_locked = false)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_terraform_grant_can_delete_or_drop_warehouse_tables_beyond_the_one_named_writer_role; a_billing_budget_notifies_and_never_carries_a_programmatic_action"
     ],
-    "gap": "The tested guard covers GCS object deletion only. Nothing scans for BigQuery, Bigtable or Spanner delete/truncate roles, and nothing scans for retention-update permissions. The agent-operated qip-infra-<env> identity is declared for every environment, prod included, because module cicd is unconditional. It holds storage.buckets.update, which can shorten or remove an unlocked retention policy such as the event-archive bucket's, and per-service admin roles that include deletion. The only thing keeping the agents' cost teardowns off prod is infra.yml's refusal, not the identity's grants. The guard hook matches patterns, so 'bq rm' and 'gcloud storage rm' pass it. No test asserts that a budget carries no programmatic action beyond notification; that is vacuous today because no budget exists.",
+    "gap": "The tested guard covers GCS object deletion only. Nothing scans for BigQuery, Bigtable or Spanner delete/truncate roles, and nothing scans for retention-update permissions. The agent-operated qip-infra-<env> identity is declared for every environment, prod included, because module cicd is unconditional. It holds storage.buckets.update, which can shorten or remove an unlocked retention policy such as the event-archive bucket's, and per-service admin roles that include deletion. The only thing keeping the agents' cost teardowns off prod is infra.yml's refusal, not the identity's grants. The guard hook matches patterns, so 'bq rm' and 'gcloud storage rm' pass it. A budget carrying no programmatic action is now asserted (a_billing_budget_notifies_and_never_carries_a_programmatic_action) and bigquery/bigtable/spanner admin roles are refused (no_terraform_grant_can_delete_or_drop_warehouse_tables_beyond_the_one_named_writer_role, mutation-verified, 109 passed in the infrastructure suite); the residual is roles/bigquery.dataEditor, which carries tables.delete and is granted to the data module's dataset writers, pinned to that one file but not removed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
