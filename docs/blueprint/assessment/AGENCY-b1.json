@@ -1,22 +1,31 @@
 [
   {
     "id": "AGENCY-001",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No GoalSpec, InterventionPlan, or Causal Agency & Intervention Engine type exists anywhere in backend/crates (rg for GoalSpec|InterventionPlan across backend/ returns zero hits). The ACT stage (qip-kernel/src/platform.rs:13272 stage_act / :13326 stage_act_orders) executes order sizing, sign-off and release for the strategy panel's own decisions; it is not goal-directed and has no budget/risk-envelope-bounded planning entry point.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::InterventionPlan::plan (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/plan.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_plan_within_budget_and_envelope_is_admitted_and_one_beyond_either_is_refused; a_bound_is_checked_against_every_branch_not_only_the_one_that_fires"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-003", "AGENCY-004", "AGENCY-005", "AGENCY-006", "AGENCY-012"],
+    "depends_on": [
+      "AGENCY-003",
+      "AGENCY-004",
+      "AGENCY-005",
+      "AGENCY-006",
+      "AGENCY-012"
+    ],
     "blocked_by": "",
-    "verification": "Must be written: a GoalSpec with a declared budget and risk envelope yields an InterventionPlan whose summed cost/exposure stay inside both; a goal reachable only by exceeding them yields no executable plan.",
+    "verification": "cargo test -p qip-agency --test agency -- a_plan_within_budget_and_envelope_is_admitted_and_one_beyond_either_is_refused a_bound_is_checked_against_every_branch_not_only_the_one_that_fires (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16",
     "tier": "T3",
     "size": "XL",
-    "notes": "Phase 10 (P3), the anchor requirement for the whole domain. Capital/market actions in any plan can be built only against the simulator per ADR 0099; that does not block building the planner itself. verify: status confirmed MISSING (rg for GoalSpec|InterventionPlan returns nothing in backend/, infrastructure/, frontend/, .github/); corrected the stage_act_orders line reference from :13323 to :13326."
+    "notes": "Phase 10 (P3), the anchor requirement for the whole domain. Capital/market actions in any plan can be built only against the simulator per ADR 0099; that does not block building the planner itself. verify: status confirmed MISSING (rg for GoalSpec|InterventionPlan returns nothing in backend/, infrastructure/, frontend/, .github/); corrected the stage_act_orders line reference from :13323 to :13326. | Library-level, integrated=false: No composition root builds a GoalSpec or calls the planner; it plans against a caller-supplied AffordanceGraph, not the live world model."
   },
   {
     "id": "AGENCY-002",
@@ -29,7 +38,11 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-008", "AGENCY-014"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-008",
+      "AGENCY-014"
+    ],
     "blocked_by": "",
     "verification": "Must be written: an EffectAttribution for an executed simulated intervention produces versioned updates to a named world model, causal-graph edge and action policy, each citing the attribution's ID.",
     "work_item": "E16",
@@ -39,60 +52,75 @@
   },
   {
     "id": "AGENCY-003",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No GoalSpec type exists. rg for GoalSpec across backend/crates returns zero hits, so there is no twelve-field typed contract and no refusal-on-missing-field constructor.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::GoalSpecDraft::build / GoalSpec (serde try_from) (backend/crates/services/qip-agency/src/goal.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/goal.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field; a_goal_document_missing_a_field_is_refused_on_deserialisation_not_defaulted"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Must be written: constructing a GoalSpec with any one of the twelve required fields absent is refused naming that field; the engine's planning entry point accepts no other input type.",
+    "verification": "cargo test -p qip-agency --test agency -- a_goal_missing_any_one_of_its_twelve_declarations_is_refused_naming_that_field a_goal_document_missing_a_field_is_refused_on_deserialisation_not_defaulted (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16",
     "tier": "T2",
     "size": "M",
-    "notes": "P0 as a canonical contract (Phase 0 exit criterion) even though the engine consuming it is Phase 10. Should follow the qip-contracts pattern already used for other typed refuse-don't-clamp contracts (e.g. qip-contracts::capital::CapitalEnvelope, qip-contracts::governance::Approval)."
+    "notes": "P0 as a canonical contract (Phase 0 exit criterion) even though the engine consuming it is Phase 10. Should follow the qip-contracts pattern already used for other typed refuse-don't-clamp contracts (e.g. qip-contracts::capital::CapitalEnvelope, qip-contracts::governance::Approval). | Library-level, integrated=false: The planner entry point InterventionPlan::plan takes only &GoalSpec; no kernel caller yet."
   },
   {
     "id": "AGENCY-004",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No action-affordance graph and no controllable/observable-only distinction exist. qip-world-model::causal::CausalGraph's edges carry mechanism, lag, strength and evidence but no controllability flag and no tool edge.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::AffordanceGraph::levers (backend/crates/services/qip-agency/src/affordance.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/affordance.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- levers_over_generated_graphs_are_only_controllable_variables_with_a_tool_edge"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-003", "AGENCY-012"],
+    "depends_on": [
+      "AGENCY-003",
+      "AGENCY-012"
+    ],
     "blocked_by": "",
-    "verification": "Must be written: for generated goals over generated graphs, every lever returned is a node marked controllable with at least one registered-tool edge, and observable-only variables never appear.",
+    "verification": "cargo test -p qip-agency --test agency -- levers_over_generated_graphs_are_only_controllable_variables_with_a_tool_edge (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16",
     "tier": "T3",
     "size": "M",
-    "notes": "Depends structurally on AGENCY-012's action-affordance graph existing first."
+    "notes": "Depends structurally on AGENCY-012's action-affordance graph existing first. | Library-level, integrated=false: Graph is hand-built; not fed from qip-world-model's CausalGraph. The is_some_and(controllable) filter is redundant with add_tool_edge's refusal (equivalent mutant), the tool-edge filter is the one the test kills."
   },
   {
     "id": "AGENCY-005",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No Intervention Planner and no candidate-set type exist, so there is no no-action baseline to include.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::CandidateSet::new (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/plan.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_candidate_set_needs_exactly_one_no_action_baseline_and_one_alternative"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-003"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-003"
+    ],
     "blocked_by": "",
-    "verification": "Must be written: for any accepted GoalSpec the candidate set has at least two members, exactly one the no-action baseline; a set without it is refused before simulation.",
+    "verification": "cargo test -p qip-agency --test agency -- a_candidate_set_needs_exactly_one_no_action_baseline_and_one_alternative (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16",
     "tier": "T2",
     "size": "S",
-    "notes": "Small once AGENCY-001/003 exist: mainly a refusal rule on the candidate-set constructor. verify: status confirmed MISSING. Adjacent and not credited: qip_twin::counterfactual::AlternativeMenu::standard (qip-twin/src/counterfactual.rs:134, :186) always includes Alternative::DoNotTrade, but that menu is priced after a decision was taken, not generated as a candidate set before simulation and selection, so it is the attribution half (AGENCY-008) and not the planning half."
+    "notes": "Small once AGENCY-001/003 exist: mainly a refusal rule on the candidate-set constructor. verify: status confirmed MISSING. Adjacent and not credited: qip_twin::counterfactual::AlternativeMenu::standard (qip-twin/src/counterfactual.rs:134, :186) always includes Alternative::DoNotTrade, but that menu is priced after a decision was taken, not generated as a candidate set before simulation and selection, so it is the attribution half (AGENCY-008) and not the planning half. | Library-level, integrated=false: No candidate generator exists; this is the validity gate a generator's output must pass."
   },
   {
     "id": "AGENCY-006",
@@ -105,7 +133,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-002"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-002"
+    ],
     "blocked_by": "",
     "verification": "Must be written: a selected plan carries simulation results from at least two competing world-model branches and one market/tick twin run; a candidate without them cannot be selected.",
     "work_item": "E16",
@@ -124,7 +155,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-026"],
+    "depends_on": [
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "Must be written: an architecture test lists every crate able to write to a network, channel, venue or configuration target and asserts each is reachable only through the tool registry; a call to an unregistered tool is refused.",
     "work_item": "E16",
@@ -151,7 +184,10 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-005"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-005"
+    ],
     "blocked_by": "",
     "verification": "cargo test -p qip-twin --test twin standing_aside_shows_positive_regret_on_a_loss_and_negative_on_a_win; cargo test -p qip-kernel --test platform_outcomes the_alternatives_to_a_trade_are_priced_and_stay_simulated (existing, market-action no-action control only). Must additionally be written: replaying a recorded episode in which the target moved by the same amount with and without the action yields an attributed-effect interval containing zero.",
     "work_item": "E16",
@@ -180,7 +216,11 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-003", "AGENCY-017", "AGENCY-026"],
+    "depends_on": [
+      "AGENCY-003",
+      "AGENCY-017",
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "Existing, for the order class only: cargo test -p qip-edge --test paper_boundary; --test feasibility; --test pricing a_net_opposite_the_cell_s_own_resting_order_is_refused_as_a_self_trade. Must be written: for each of the nine checks, an otherwise valid ActionIntent that fails only that check is refused with no adapter invoked, and an intent passing all nine is admitted.",
     "work_item": "E16",
@@ -199,7 +239,11 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-019", "AGENCY-020", "AGENCY-026"],
+    "depends_on": [
+      "AGENCY-019",
+      "AGENCY-020",
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "Must be written: every registered communication/outreach tool is bound to exactly one registered, disclosed identity and refuses content without factual-support references or a required disclosure; no tool can post as an identity absent from the registry.",
     "work_item": "E16",
@@ -234,22 +278,25 @@
   },
   {
     "id": "AGENCY-012",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No action-affordance graph schema exists. qip-world-model::causal::CausalGraph edges carry mechanism/lag/strength/evidence for propagation but record no observe/control flags, no tool-to-variable edges, no latency/cost, and no authority requirement per variable.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::AffordanceGraph::add_tool_edge (backend/crates/services/qip-agency/src/affordance.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/affordance.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_tool_edge_missing_a_declaration_or_on_an_observable_only_variable_is_refused"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Must be written: adding a tool-to-variable edge without latency/cost, side effects, dependencies or an authority requirement is refused; a variable marked observable-only can hold no tool edge.",
+    "verification": "cargo test -p qip-agency --test agency -- a_tool_edge_missing_a_declaration_or_on_an_observable_only_variable_is_refused (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16",
     "tier": "T2",
     "size": "M",
-    "notes": "P0 as a contract. GCP v2.1 places this graph in Spanner Graph (C4, not decided); the schema itself is a plain serde type and needs no store decision to exist."
+    "notes": "P0 as a contract. GCP v2.1 places this graph in Spanner Graph (C4, not decided); the schema itself is a plain serde type and needs no store decision to exist. | Library-level, integrated=false: Graph is an in-memory record; no Spanner/world-model federation store, no composition root."
   },
   {
     "id": "AGENCY-013",
@@ -262,7 +309,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-012"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-012"
+    ],
     "blocked_by": "",
     "verification": "Must be written: every InterventionPlan carries a do(action) chain naming intermediate states and target outcome; on a synthetic causal model with a confounder, the interventional estimate matches ground truth where the observational estimate does not.",
     "work_item": "E16",
@@ -281,7 +331,11 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-008", "AGENCY-009"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-008",
+      "AGENCY-009"
+    ],
     "blocked_by": "",
     "verification": "Must be written: in a simulated episode, each executed ActionIntent has exactly one EffectAttribution referencing its goal, plan and action IDs once its declared horizons have elapsed.",
     "work_item": "E16",
@@ -300,7 +354,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-002", "AGENCY-014"],
+    "depends_on": [
+      "AGENCY-002",
+      "AGENCY-014"
+    ],
     "blocked_by": "",
     "verification": "Must be written: trained on a replayed history in which one action class has a measured positive effect in regime A and none in regime B, the learned policy selects that class in A and no-action in B.",
     "work_item": "E16",
@@ -310,22 +367,27 @@
   },
   {
     "id": "AGENCY-016",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No InterventionPlan type exists to represent parallel, sequential, conditional or adaptive structure.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::PlanNode (Step/Sequence/Parallel/Conditional/Adaptive)::simulate (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/plan.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_conditional_step_runs_only_when_its_condition_holds_and_an_adaptive_one_switches"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001"],
+    "depends_on": [
+      "AGENCY-001"
+    ],
     "blocked_by": "",
-    "verification": "Must be written: the InterventionPlan type represents each of the four structures; in simulation a conditional step executes only when its recorded condition evaluates true.",
+    "verification": "cargo test -p qip-agency --test agency -- a_conditional_step_runs_only_when_its_condition_holds_and_an_adaptive_one_switches (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Library-level, integrated=false: simulate() selects steps; nothing executes them (no orchestrator, AGENCY-018)."
   },
   {
     "id": "AGENCY-017",
@@ -343,7 +405,10 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["AGENCY-003", "AGENCY-026"],
+    "depends_on": [
+      "AGENCY-003",
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "cargo test -p qip-compliance --test capital_approval a_grant_above_the_threshold_needs_two_different_people (existing, capital-grant class only). Must be written: an ActionIntent of a class that requires governance-signed authority is refused when only lower authority is present, and admitted once the signed authority is supplied.",
     "work_item": "E16",
@@ -362,7 +427,12 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-007", "AGENCY-017", "AGENCY-026"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-007",
+      "AGENCY-017",
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "Must be written: executing an approved plan in a test harness calls the policy/identity service before every adapter call; a plan step naming an unregistered or untyped adapter is refused.",
     "work_item": "E16",
@@ -381,7 +451,11 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-010", "AGENCY-026", "AGENCY-027"],
+    "depends_on": [
+      "AGENCY-010",
+      "AGENCY-026",
+      "AGENCY-027"
+    ],
     "blocked_by": "C1",
     "verification": "Must be written: the publishing adapter refuses a draft lacking source lineage or a passed factuality check; an admitted post is attributable to its registered identity and appears in the action journal.",
     "work_item": "E16",
@@ -400,7 +474,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-010", "AGENCY-026"],
+    "depends_on": [
+      "AGENCY-010",
+      "AGENCY-026"
+    ],
     "blocked_by": "C1",
     "verification": "Must be written: an outreach request naming an identity or channel absent from the approved registry is refused; one naming an approved pair is sent through the outreach adapter.",
     "work_item": "E16",
@@ -425,7 +502,9 @@
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["AGENCY-026"],
+    "depends_on": [
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "cargo test -p qip-data-finder --test legality a_research_only_licence_cannot_produce_a_source_usable_for_trading (existing); must additionally be written: a survey in a jurisdiction marked not-permitted is refused while a simulation launch is admitted.",
     "work_item": "E16",
@@ -448,7 +527,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-026"],
+    "depends_on": [
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "cargo test -p qip-kernel --test ledger a_user_whose_entitlement_grants_the_strategys_family_in_their_jurisdiction_can_be_funded (existing: a permitted availability change is applied and journaled). Must be written: a pricing action on a product Algorik does not own, or one without a governance permission, is refused.",
     "work_item": "E16",
@@ -467,7 +548,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-026"],
+    "depends_on": [
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "Must be written: an operational action whose target system is not in the owned-system registry is refused.",
     "work_item": "E16",
@@ -496,7 +579,11 @@
     "integrated": true,
     "deployable": false,
     "e2e": true,
-    "depends_on": ["AGENCY-001", "AGENCY-009", "AGENCY-017"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-009",
+      "AGENCY-017"
+    ],
     "blocked_by": "",
     "verification": "cargo test -p qip-compliance --test capital_approval (existing); cargo test -p qip-edge --test cell a_verified_envelope_admits_then_reduces_then_refuses_as_capital_is_used (existing, and it pins the reduction this row calls incorrect). Must be written: a hedge or collateral move exceeding its signed envelope is refused before any order or transfer object exists, and one inside it executes against the simulator.",
     "work_item": "E16",
@@ -523,7 +610,12 @@
     "integrated": true,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-001", "AGENCY-009", "AGENCY-011", "AGENCY-024"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-009",
+      "AGENCY-011",
+      "AGENCY-024"
+    ],
     "blocked_by": "",
     "verification": "existing GATE_LIVE_VENUE refusal tests: cargo test -p qip-edge --test paper_boundary. Must additionally be written: a quote or listing on a venue or instrument not marked permitted for the acting entity's jurisdiction is refused, and every admitted one has passed the market-conduct checks.",
     "work_item": "E16",
@@ -533,22 +625,25 @@
   },
   {
     "id": "AGENCY-026",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No action-tool registry exists. No type requires an identity, permission scope, disclosure policy, jurisdiction/channel policy, rate limits and rollback/stop controls to be declared before a tool can be invoked.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::ToolRegistry::register/invoke/stop (backend/crates/services/qip-agency/src/tools.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/tools.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_tool_missing_any_of_its_six_declarations_is_not_registered; a_tripped_rate_limit_or_stop_control_refuses_the_next_call"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Must be written: registering a tool with any one of the six declarations missing is refused; a tripped rate limit or stop control each refuses the next call to that adapter.",
+    "verification": "cargo test -p qip-agency --test agency -- a_tool_missing_any_of_its_six_declarations_is_not_registered a_tripped_rate_limit_or_stop_control_refuses_the_next_call (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16",
     "tier": "T2",
     "size": "L",
-    "notes": "qip_agents::capability::CapabilitySet and qip_agents::budget::BudgetLedger (backend/crates/libs/qip-agents/src/capability.rs, budget.rs) are the closest existing pattern in the repository — a typed capability-tier declaration and a pre-work-charged budget ledger for the eighteen investment analyst agents — but they govern read/compute/production/authority tiers for analysis agents, not identity/jurisdiction/channel/rollback declarations for external action tools, and nothing in that crate is reused by anything resembling an action adapter. Audit is AGENCY-027; the architecture-wide enforcement is AGENCY-007. verify: status confirmed MISSING. Adjacent and not credited: at the edge a venue Placer already sits behind a per-venue rate limit (§29.2 quote budget, qip-edge/tests/quoting.rs) and a stop control (mass cancel on halt, GATE_MASS_CANCEL), and data sources sit behind a registration identity record; none of these is a registry that refuses registration while any of the six declarations is missing."
+    "notes": "qip_agents::capability::CapabilitySet and qip_agents::budget::BudgetLedger (backend/crates/libs/qip-agents/src/capability.rs, budget.rs) are the closest existing pattern in the repository — a typed capability-tier declaration and a pre-work-charged budget ledger for the eighteen investment analyst agents — but they govern read/compute/production/authority tiers for analysis agents, not identity/jurisdiction/channel/rollback declarations for external action tools, and nothing in that crate is reused by anything resembling an action adapter. Audit is AGENCY-027; the architecture-wide enforcement is AGENCY-007. verify: status confirmed MISSING. Adjacent and not credited: at the edge a venue Placer already sits behind a per-venue rate limit (§29.2 quote budget, qip-edge/tests/quoting.rs) and a stop control (mass cancel on halt, GATE_MASS_CANCEL), and data sources sit behind a registration identity record; none of these is a registry that refuses registration while any of the six declarations is missing. | Library-level, integrated=false: Registry is not consulted by any adapter or composition root; no revocation path or immutable audit (AGENCY-027) here."
   },
   {
     "id": "AGENCY-027",
@@ -566,7 +661,13 @@
     "integrated": true,
     "deployable": true,
     "e2e": true,
-    "depends_on": ["AGENCY-001", "AGENCY-009", "AGENCY-014", "AGENCY-018", "AGENCY-026"],
+    "depends_on": [
+      "AGENCY-001",
+      "AGENCY-009",
+      "AGENCY-014",
+      "AGENCY-018",
+      "AGENCY-026"
+    ],
     "blocked_by": "",
     "verification": "cargo test -p qip-events --test backbone editing_stored_history_is_detected_by_the_chain (existing, proves the immutability half). Must additionally be written: replaying the action journal reconstructs every executed ActionIntent with its acting identity and tool.",
     "work_item": "E16",
@@ -585,7 +686,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-008", "AGENCY-013"],
+    "depends_on": [
+      "AGENCY-008",
+      "AGENCY-013"
+    ],
     "blocked_by": "",
     "verification": "Must be written: on synthetic panels with known injected treatment effects, each implemented estimator's interval covers the true effect at its nominal rate; experiment assignment is refused for a non-experimentable action class or jurisdiction.",
     "work_item": "E16",
@@ -604,7 +708,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["AGENCY-008", "AGENCY-014"],
+    "depends_on": [
+      "AGENCY-008",
+      "AGENCY-014"
+    ],
     "blocked_by": "",
     "verification": "Must be written: an EffectAttribution for a simulated communication intervention carries a separate estimate, with uncertainty, for each horizon its GoalSpec declares.",
     "work_item": "E16",
