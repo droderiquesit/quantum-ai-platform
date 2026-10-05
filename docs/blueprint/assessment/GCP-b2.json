@@ -48,30 +48,25 @@
   },
   {
     "id": "GCP-033",
-    "status": "PARTIAL",
-    "current": "Private Google Access (private_ip_google_access = true) is set on the trust-zones subnets, which are unconditional and so exist in dev, and on modules/network's console-egress subnet, which dev creates (console_egress_cidr = 10.0.16.0/26). It is also set on the execution-node subnet and the image-bake builder subnet, but those exist only when an environment declares a node or an image_bake_subnet_cidr, and dev declares neither (execution_nodes = {}; image_bake_subnet_cidr is commented out). modules/network unconditionally resolves googleapis.com to the restricted VIP through a private zone on the VPC. The Private Service Connect half (modules/connectivity's google_compute_global_address and global_forwarding_rule \"google_apis\") exists but is gated off by var.enable_private_service_connect, which defaults to false and no environment sets.",
+    "status": "COMPLETE",
+    "current": "Every google_compute_subnetwork declared in infrastructure/terraform (trust-zones zone, execution-node node, image-bake builder, network console_egress) sets private_ip_google_access = true, and modules/network resolves googleapis.com to the restricted VIP through a private zone. The Private Service Connect endpoint in modules/connectivity stays gated off (enable_private_service_connect) because it only matters behind an Interconnect (GCP-031/032, unordered); the requirement's check accepts PGA or PSC per subnet, so PGA on every subnet satisfies it.",
     "evidence": [
-      "infrastructure/terraform/modules/trust-zones/main.tf:208 (private_ip_google_access = true)",
-      "infrastructure/terraform/modules/network/main.tf:141 (console_egress subnet, private_ip_google_access = true; count on console_egress_cidr, set in dev)",
-      "infrastructure/terraform/modules/execution-node/main.tf:134 (private_ip_google_access = true; module for_each over execution_nodes, {} in dev)",
-      "infrastructure/terraform/modules/image-bake/main.tf:203 (private_ip_google_access = true; module count on image_bake_subnet_cidr, commented out in dev at infrastructure/environments/dev/terraform.tfvars:248)",
-      "infrastructure/terraform/modules/network/main.tf:88-110 (google_dns_managed_zone \"googleapis\" and the restricted-VIP record, unconditional)",
-      "infrastructure/terraform/modules/connectivity/main.tf:133,149 (PSC endpoint, gated off)",
-      "no test in backend/crates/tests/qip-acceptance/tests/ or any .tftest.hcl references private_ip_google_access or the restricted VIP"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs - every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access (walks every google_compute_subnetwork resource, asserts the exact attribute, asserts at least four were read; mutation: console_egress set to false made it fail naming the subnet)",
+      "infrastructure/terraform/modules/network/main.tf (googleapis private zone, restricted VIP)"
     ],
-    "gap": "Private Google Access is applied to every real subnet and is live in the applied dev project, but no named test proves it; the PSC endpoint that would cover a colocated cell on the far side of an Interconnect is disabled everywhere, consistent with GCP-031/032 both being unbuilt.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A test walking every subnet declaration in the committed Terraform and asserting private_ip_google_access == true for each, mirroring no_firewall_allow_rule_permits_the_whole_internet's file-scan pattern (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3521). Does not exist.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "The PGA half is real and running in algorik-dev today; the gap is proof (a test) and the PSC half, which depends on GCP-031's Interconnect existing to matter. verify: current and evidence corrected; status and flags kept. The row said the image-bake subnet carries PGA in the applied dev project, but that subnet is count-gated on image_bake_subnet_cidr, which dev leaves commented out, and the execution-node subnet likewise exists only with a node. The subnets that do carry PGA in dev are trust-zones' and the console-egress subnet (modules/network/main.tf:141), which the row had left out. The verifier re-ran the searches: no acceptance test or .tftest.hcl references private_ip_google_access or the restricted VIP, so tested=false stands."
+    "notes": "The PGA half is real and running in algorik-dev today; the gap is proof (a test) and the PSC half, which depends on GCP-031's Interconnect existing to matter. verify: current and evidence corrected; status and flags kept. The row said the image-bake subnet carries PGA in the applied dev project, but that subnet is count-gated on image_bake_subnet_cidr, which dev leaves commented out, and the execution-node subnet likewise exists only with a node. The subnets that do carry PGA in dev are trust-zones' and the console-egress subnet (modules/network/main.tf:141), which the row had left out. The verifier re-ran the searches: no acceptance test or .tftest.hcl references private_ip_google_access or the restricted VIP, so tested=false stands. Closed 2026-10-04: test added and mutation-verified. PSC half remains gated off pending GCP-031/032 (needs a partner circuit, an external action); not required by the check once every subnet carries PGA."
   },
   {
     "id": "GCP-034",
@@ -558,17 +553,14 @@
   },
   {
     "id": "GCP-054",
-    "status": "PARTIAL",
-    "current": "modules/public-edge declares google_compute_security_policy.edge with adaptive layer-7 DDoS protection, an optional geographic deny rule and a per-address rate_based_ban, followed by the default allow. It has no WAF rule: there is no preconfigured expression set such as sqli or xss, and the policy's own description is 'geographic refusal, then a per-address rate limit, then allow'. The policy is attached to the application backend service (main.tf:232). The static_shell backend bucket, the CDN-served backend a browser reaches first, has no edge_security_policy. Like GCP-053, the whole module plans to zero resources in every environment (hostnames = []).",
+    "status": "COMPLETE",
+    "current": "modules/public-edge's application Cloud Armor policy now carries blocking preconfigured WAF rules (sqli-v33-stable at priority 1500, xss-v33-stable at 1600, both deny(403), sensitivity 1), then the per-address rate_based_ban, then the geographic refusal and default allow, plus adaptive layer-7 DDoS protection. The application backend service is attached to it and the static_shell backend bucket now carries edge_security_policy pointing at a CLOUD_ARMOR_EDGE policy (geographic refusal, default allow; Google's edge policies support no WAF or rate limit). terraform validate and terraform test in the module pass (12 passed). Like GCP-053 the module plans to zero resources until an environment sets public_edge.hostnames.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:59-136 (google_compute_security_policy \"edge\": adaptive_protection_config, a geo deny, rate_based_ban, default allow; no WAF rule)",
-      "grep -rn -i 'evaluatePreconfigured|preconfigured_waf|owasp|sqli-v|xss-v' infrastructure/ -> no hits (neither public-edge nor iap-edge carries a WAF rule)",
-      "infrastructure/terraform/modules/public-edge/main.tf:232 (security_policy = google_compute_security_policy.edge[0].id, on the application backend service)",
-      "infrastructure/terraform/modules/public-edge/main.tf:168 (google_compute_backend_bucket \"static_shell\": no edge_security_policy)",
-      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:47 (asserts that the policy is created alongside the edge; read, not run)",
-      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:254 - the_public_edge_attaches_every_backend_to_the_cloud_armor_policy (despite its name, it asserts only that one attachment string, rate_limit_options and origin.region_code appear in the module; it passes with the backend bucket unprotected and with no WAF rule)"
+      "infrastructure/terraform/modules/public-edge/main.tf (google_compute_security_policy.edge WAF rules; google_compute_security_policy.static_shell_edge; edge_security_policy on google_compute_backend_bucket.static_shell)",
+      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs - the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy (per-block assertions; mutations: xss rule action deny->allow failed it, deleting the bucket's edge_security_policy failed it, both for the stated reason)",
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl (12 passed)"
     ],
-    "gap": "No WAF rule exists in either Cloud Armor policy in the tree (public-edge or iap-edge), so the WAF third of the requirement is missing outright. The static-shell backend bucket has no Armor policy attached. The module is enabled in no environment (hostnames = [] everywhere). The only test of the attachment is a source-text match that cannot see either defect.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -578,11 +570,11 @@
       "GCP-053"
     ],
     "blocked_by": "",
-    "verification": "A test asserting that the edge policy carries at least one preconfigured WAF rule and a rate-based rule, and that every backend service and backend bucket behind the edge carries a policy (security_policy or edge_security_policy). None exists; the_public_edge_attaches_every_backend_to_the_cloud_armor_policy covers only the rate limit and the application backend's attachment.",
+    "verification": "cargo test -p qip-acceptance --test terraform_plan the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy; terraform -chdir=infrastructure/terraform/modules/public-edge test",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL kept; current, evidence, gap and verification corrected; integrated true -> false. The row described the policy as 'WAF + rate limiting', but it has no WAF rule at all (SEC-048 records the same finding), and the static_shell backend bucket has no edge_security_policy (API-003 records the same). The verifier ran the_public_edge_attaches_every_backend_to_the_cloud_armor_policy and it passed, but its assertions are one attachment string, rate_limit_options and origin.region_code, so it cannot detect either gap. tested stays true only for the DDoS and rate-control parts. integrated is false because no environment sets public_edge.hostnames."
+    "notes": "verify: status PARTIAL kept; current, evidence, gap and verification corrected; integrated true -> false. The row described the policy as 'WAF + rate limiting', but it has no WAF rule at all (SEC-048 records the same finding), and the static_shell backend bucket has no edge_security_policy (API-003 records the same). The verifier ran the_public_edge_attaches_every_backend_to_the_cloud_armor_policy and it passed, but its assertions are one attachment string, rate_limit_options and origin.region_code, so it cannot detect either gap. tested stays true only for the DDoS and rate-control parts. integrated is false because no environment sets public_edge.hostnames. Closed 2026-10-04 as an infra-plan requirement. integrated stays false: no environment sets public_edge.hostnames (GCP-053), so nothing is applied; evaluatePreconfiguredWaf names were not exercised against the live API, only validated by terraform's schema."
   },
   {
     "id": "GCP-055",
