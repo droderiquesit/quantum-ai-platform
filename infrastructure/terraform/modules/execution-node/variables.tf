@@ -600,12 +600,25 @@ variable "create_egress_nat" {
     Whether this module creates the Cloud Router and NAT the node's egress
     leaves through. False by default.
 
-    §41.4 says Cloud NAT for egress, and `modules/network` already provisions
-    one — but a NAT is regional and that one covers all ranges in the primary
-    region only. So: leave this false when the node runs in the primary region,
-    because a second NAT covering the same subnetworks in the same region is a
-    conflicting configuration the API rejects at apply; set it true when the
-    node runs in a region that has no NAT of its own.
+    No other gateway carries this node, in the primary region or any other.
+    `modules/network` has no NAT at all, and the one `modules/trust-zones`
+    creates lists the zone subnetworks that declared external egress and
+    nothing else, so it never translates this node's subnetwork. With this
+    false the node therefore has no translated route to the internet: its
+    venue rules permit a destination nothing can reach. That is right for the
+    in-process simulated venue, which is the only venue a node runs today, and
+    it is the thing to change — deliberately, here — for a venue that is on
+    the public internet. The gateway this creates lists this node's
+    subnetwork alone, so the venue path and the zones' controlled-egress path
+    stay two gateways (SEC-016); `qip-acceptance`'s `security_controls` suite
+    refuses a gateway that names a subnetwork its own module does not declare.
+
+    This description said until 2026-10-04 that `modules/network` already
+    provisioned a NAT covering the primary region and that a second one there
+    would be refused at apply. `modules/network`'s own header says it has
+    none, so a primary-region node configured as that sentence advised had no
+    gateway and no route to any venue, and the description told its operator
+    it had both.
 
     False is also the closed default. With no NAT and no external address, the
     node's only routes off the machine are the ones the firewall rules below

@@ -1,15 +1,17 @@
 [
   {
     "id": "SEC-026",
-    "status": "MISSING",
-    "current": "nothing — no Event & Control Fabric and no producer-epoch fencing exist in the tree. qip_events::bus::EventBus (backend/crates/libs/qip-events/src/bus.rs) is an in-process, single-writer, synchronous queue with no producer instance, epoch or network write. Adjacent but not this control: the edge cell refuses a region-share payload carrying a lower sequence than the one it applied (qip_edge_region_share_applied_total{outcome=refused_lower_sequence}), which fences a stale control message at one consumer, not a stale producer at a P0 topic.",
+    "status": "COMPLETE",
+    "current": "qip_streaming::event_fabric::producer::ProducerTable (ADR 0100 §4) fences by producer epoch: init registers an instance's next epoch and fences every earlier one from that call, and admit refuses a lower epoch before it reads the sequence. Broker::produce admits every batch through it and Broker::init_producer exposes the registration, on every stream class — including the stream the committed catalogue declares p0_control (infrastructure/event-fabric/streams.local.json, control.local). This row said no fabric existed; that was written before ADR 0100's broker library landed.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/bus.rs:1-45 (module doc: synchronous, in-process, no producer/broker abstraction)",
-      "grep -rln fenc backend/crates/ finds no match touching a Fabric producer or topic"
+      "backend/crates/services/qip-streaming/src/event_fabric/producer.rs (ProducerTable::init, ::admit)",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs (Broker::produce, ::init_producer)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_control_fencing.rs::across_every_interleaving_of_two_controller_instances_the_p0_control_stream_accepts_no_write_below_the_latest_registered_epoch (all 56 order-preserving interleavings of two instances' register/write scripts against the real Broker on the catalogue's p0_control stream; mutations: dropping the epoch refusal in ProducerTable::admit failed it at the stale write, and init returning an epoch without recording it failed it at the successive-epochs premise; restored byte-for-byte)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs::a_second_producer_with_the_same_id_fences_the_first_and_none_of_its_later_records_appear"
     ],
-    "gap": "No fabric exists to fence a producer on. ADR 0100 (accepted 2026-09-25, nothing built by it) decides the first build in-tree on std TCP with no new crate: producer identity (producer_id, epoch), a new epoch fences the old one, and 'producer fencing' is one of its eight proving tests. So the semantics are buildable now under ADR 0002/0009; C2 blocks only mTLS and replication, neither of which this requirement needs.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -18,11 +20,11 @@
       "FABRIC-058"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Once FABRIC-001/FABRIC-058 land, the property test would drive two producer instances with different epochs against one P0 topic and assert the lower-epoch instance's writes are refused across every interleaving.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_control_fencing; cargo test -p qip-streaming --test event_fabric_producer --test event_fabric_broker",
     "work_item": "E03",
     "tier": "T4",
     "size": "XL",
-    "notes": "This is a Fabric-domain requirement scored under SEC because it names a security property (a superseded controller cannot act). It cannot be assessed independently of FABRIC-058's completion. verify: blocked_by C2 -> '' (status MISSING kept). ADR 0100 §4 builds producer-epoch fencing in-tree (qip-streaming::event_fabric) on std TCP without Tokio/QUIC/prost; the C2 attribution was wrong for this property. Re-checked with grep for event_fabric/producer_id/epoch fencing in backend/crates: no non-test implementation exists."
+    "notes": "This is a Fabric-domain requirement scored under SEC because it names a security property (a superseded controller cannot act). It cannot be assessed independently of FABRIC-058's completion. verify: blocked_by C2 -> '' (status MISSING kept). ADR 0100 §4 builds producer-epoch fencing in-tree (qip-streaming::event_fabric) on std TCP without Tokio/QUIC/prost; the C2 attribution was wrong for this property. Re-checked with grep for event_fabric/producer_id/epoch fencing in backend/crates: no non-test implementation exists. | Closed 2026-10-04 at the broker library. integrated and deployable stay false: no composition root calls the broker — qip-fabricd refuses to start until its configuration, health and archiver modules exist — so no deployed controller is fenced by anything yet. The fence is by epoch number, not by identity: an instance that stamps a higher epoch than it was handed is admitted, and refusing that is producer authentication (SEC-028, C2), not this requirement."
   },
   {
     "id": "SEC-027",
@@ -493,9 +495,10 @@
       "infrastructure/terraform/modules/evidence/main.tf (default_kms_key_name)",
       "infrastructure/terraform/modules/data/main.tf, infrastructure/terraform/modules/ai/main.tf (kms_key_name on their respective resources)",
       "test: the_evidence_bucket_is_versioned_and_retained (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4030) — asserts evidence.contains(\"default_kms_key_name\")",
-      "google_storage_bucket without CMEK: modules/cloudrun/main.tf:382 collector_config and :459 config_files, modules/image-bake/main.tf:134 payload, modules/egress-proxy/main.tf:83 bootstrap, modules/public-edge/main.tf:137 static_shell"
+      "google_storage_bucket without CMEK: modules/cloudrun/main.tf:382 collector_config and :459 config_files, modules/image-bake/main.tf:134 payload, modules/egress-proxy/main.tf:83 bootstrap, modules/public-edge/main.tf:137 static_shell",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key (mutations: the Secret Manager secrets' kms_key_name set to null failed it at the premise, and the training bucket's set to null failed it as an unrecorded unkeyed store; restored)"
     ],
-    "gap": "Only the evidence bucket's CMEK is asserted by a named test. The Secret Manager, data and ai CMEK wiring has none. Coverage is also incomplete: modules/registry (Artifact Registry) sets no kms_key_name, and five buckets set no encryption block at all (cloudrun collector_config and config_files, image-bake payload, egress-proxy bootstrap, public-edge static_shell). modules/data and modules/ai create 0 resources in every environment, so their CMEK settings have never met a real plan or apply.",
+    "gap": "Every store that names a customer-managed key is now held by one test, which also fails on any new store without one. The stores it records as unkeyed are wider than this row said: the five buckets already named (cloudrun collector_config and config_files, image-bake payload, egress-proxy bootstrap, public-edge static_shell), modules/registry's Artifact Registry repository, and three the row missed — the ADR 0102 fleet's bucket and its Artifact Registry repository (infrastructure/fleet/main.tf), and modules/data's Bigtable instance, whose cluster block sets no kms_key_name although this row's current text said it did. modules/data and modules/ai create 0 resources in every environment, so their CMEK settings have never met a real plan or apply.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -503,11 +506,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_evidence_bucket_is_versioned_and_retained -- --exact; secrets and evidence are both applied in algorik-dev.",
+    "verification": "cargo test -p qip-acceptance --test security_controls no_data_store_beyond_those_the_register_records_is_left_without_a_customer_managed_key; cargo test -p qip-acceptance --test infrastructure the_evidence_bucket_is_versioned_and_retained -- --exact; secrets and evidence are both applied in algorik-dev.",
     "work_item": "E13",
     "tier": "T1",
     "size": "S",
-    "notes": "'Reached from production' is true only for the secrets and evidence halves; data and ai are complete-but-unused Terraform paired with a documented Rust-side adapter gap. verify: status PARTIAL and flags kept. Corrected a mis-description of secrets/main.tf:86, which is the Pub/Sub topic's key, and added five buckets with no CMEK that the gap omitted. The requirement's check names 'every storage bucket'."
+    "notes": "'Reached from production' is true only for the secrets and evidence halves; data and ai are complete-but-unused Terraform paired with a documented Rust-side adapter gap. verify: status PARTIAL and flags kept. Corrected a mis-description of secrets/main.tf:86, which is the Pub/Sub topic's key, and added five buckets with no CMEK that the gap omitted. The requirement's check names 'every storage bucket'. | 2026-10-04: status kept; gap widened by three stores the walk found. Keying the nine needs a key per store class and the service agent's encrypter grant ahead of each (as modules/evidence does for the storage agent), across modules applied in dev; not attempted without a plan against that state."
   },
   {
     "id": "SEC-047",
@@ -586,9 +589,10 @@
       "infrastructure/terraform/modules/iap-edge/main.tf:142,153-154 same pattern",
       "test: a_reviewed_rate_limit_is_admitted_and_bans_rather_than_only_throttling (infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:199; infrastructure/terraform/modules/iap-edge/tests/iap-edge.tftest.hcl:230)",
       "test: a_rate_limit_of_zero_is_refused (public-edge.tftest.hcl:185; iap-edge.tftest.hcl:219)",
-      "test: the_public_edge_attaches_every_backend_to_the_cloud_armor_policy (backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:254) — asserts rate_limit_options is present on the attached policy"
+      "test: the_public_edge_attaches_every_backend_to_the_cloud_armor_policy (backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:254) — asserts rate_limit_options is present on the attached policy",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::every_internet_facing_cloud_armor_policy_bans_a_client_over_its_rate_with_429_counted_per_address (mutations: exceed_action deny(403) on public-edge and enforce_on_key ALL on iap-edge each failed it; restored)"
     ],
-    "gap": "Tested only at plan level, and only in part. iap-edge.tftest.hcl:230 asserts the priority-2000 rule's threshold and action = rate_based_ban. public-edge.tftest.hcl:199, despite its name, asserts only that one policy exists. terraform_plan.rs:254 asserts only the substring rate_limit_options. No test asserts exceed_action = deny(429) or per-IP keying, and the requirement's integration check has never run: over the limit gets 429 and a ban, under the limit is served. Neither module creates anything in any environment, and the project's Cloud Armor quota is zero (infra.yml run 71: \"Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally\"), so the rate limit has never protected a backend and cannot be applied without a quota grant.",
+    "gap": "What the rate rule does to a client is now test-pinned in both modules: a rate_based_ban and never a throttle, conform allow, exceed deny(429), counted per client address (enforce_on_key IP) over 60 seconds against the reviewed variable, with a ban no shorter than the interval. Remaining: the requirement's check is behavioural and has never run — over the limit gets 429 and a ban, under it is served — because neither module creates anything in any environment and the project's Cloud Armor quota is zero (infra.yml run 71: \"Quota 'SECURITY_POLICY_RULES' exceeded. Limit: 0.0 globally\"). And one backend cannot be rate-limited at all as built: the static shell's backend bucket takes only an edge-type policy (CLOUD_ARMOR_EDGE), which carries the geographic refusal and no rate rule.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -596,10 +600,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform test -filter=tests/public-edge.tftest.hcl (run a_reviewed_rate_limit_is_admitted_and_bans_rather_than_only_throttling); cargo test -p qip-acceptance --test terraform_plan the_public_edge_attaches_every_backend_to_the_cloud_armor_policy -- --exact.",
+    "verification": "cargo test -p qip-acceptance --test security_controls every_internet_facing_cloud_armor_policy_bans_a_client_over_its_rate_with_429_counted_per_address; terraform test -filter=tests/public-edge.tftest.hcl (not run here); cargo test -p qip-acceptance --test terraform_plan the_public_edge_attaches_every_backend_to_the_cloud_armor_policy -- --exact.",
     "work_item": "E14",
     "tier": "T0",
     "size": "S",
-    "notes": "Closing the gap needs a Cloud Armor quota grant, an environment setting hostnames/gitops_portal_hostname, and an observed 429. Those are a product and rollout decision plus an external quota request, not a code defect. verify: status PARTIAL kept; deployable true -> false (Cloud Armor quota 0, run 71). The gap was corrected because it said the control is 'well-tested at the module level', but the public-edge plan test named 'bans_rather_than_only_throttling' checks only that a policy exists. Ran cargo test -p qip-acceptance --test terraform_plan the_public_edge_attaches_every_backend_to_the_cloud_armor_policy: 'test result: ok. 1 passed'. terraform test was not run."
+    "notes": "Closing the gap needs a Cloud Armor quota grant, an environment setting hostnames/gitops_portal_hostname, and an observed 429. Those are a product and rollout decision plus an external quota request, not a code defect. verify: status PARTIAL kept; deployable true -> false (Cloud Armor quota 0, run 71). The gap was corrected because it said the control is 'well-tested at the module level', but the public-edge plan test named 'bans_rather_than_only_throttling' checks only that a policy exists. Ran cargo test -p qip-acceptance --test terraform_plan the_public_edge_attaches_every_backend_to_the_cloud_armor_policy: 'test result: ok. 1 passed'. terraform test was not run. | 2026-10-04: status kept. The configuration half is closed; the observed 429 waits on a Cloud Armor quota grant, which is an external request."
   }
 ]

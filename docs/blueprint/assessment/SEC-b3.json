@@ -36,7 +36,8 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3521 no_firewall_allow_rule_permits_the_whole_internet",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2608 every_subnet_in_the_network_is_covered_by_an_egress_deny (every subnet in network/trust-zones/execution-node/image-bake has a tag-targeted deny-egress below its allows)",
       "infrastructure/gitops/envs/dev/portal.yaml:76-93 (vpcAccess egress: PRIVATE_RANGES_ONLY -- internet-bound traffic bypasses the VPC)",
-      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2480-2485 (ALL_TRAFFIC asserted only for catalogue services inside every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held; the portal is outside the catalogue and unchecked)"
+      "backend/crates/tests/qip-acceptance/tests/gitops.rs:2480-2485 (ALL_TRAFFIC asserted only for catalogue services inside every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held; the portal is outside the catalogue and unchecked)",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::no_workload_beyond_the_two_the_register_records_can_reach_the_internet_outside_a_cloud_nat (the portal's PRIVATE_RANGES_ONLY egress is recorded as an open gap and any further workload outside the VPC path fails the test)"
     ],
     "gap": "One deployed platform workload's outbound traffic is not default-deny: the portal's PRIVATE_RANGES_ONLY egress sends every non-RFC1918 destination out through Cloud Run's own path, where no firewall rule applies -- the compromised-workload exfiltration path the requirement's rationale names, on the one internet-facing service. No test asserts that every Cloud Run manifest (portal included) routes ALL_TRAFFIC through its tagged interface, and none asserts tree-wide that every egress allow names a target (true today by inspection only).",
     "implemented": true,
@@ -50,7 +51,7 @@
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL. The VPC mechanism is complete and tested, but the portal (deployed in dev, INGRESS_TRAFFIC_ALL) uses PRIVATE_RANGES_ONLY egress, so its internet-bound traffic never meets any deny -- the whole requirement ('each network denies egress by default and allows only the named outbound flows its workloads need') is not met for that workload. Also corrected the note: dev is not free of external allows -- the root generates 40 GitHub egress rules from the management zone (sanctioned, named, tagged, so consistent with the requirement). Added the stronger every_subnet_in_the_network_is_covered_by_an_egress_deny test to evidence; the 3 cited tests were run and pass. | Applied in dev: 4 zones each get a real deny_egress/deny_ingress pair (8 firewall resources), and dev's permitted_paths/external_egress are empty, so nothing currently punches a hole in the default. No test drives real network traffic against the applied project (e2e=false); the evidence is plan-time/text-level."
+    "notes": "verify: downgraded COMPLETE -> PARTIAL. The VPC mechanism is complete and tested, but the portal (deployed in dev, INGRESS_TRAFFIC_ALL) uses PRIVATE_RANGES_ONLY egress, so its internet-bound traffic never meets any deny -- the whole requirement ('each network denies egress by default and allows only the named outbound flows its workloads need') is not met for that workload. Also corrected the note: dev is not free of external allows -- the root generates 40 GitHub egress rules from the management zone (sanctioned, named, tagged, so consistent with the requirement). Added the stronger every_subnet_in_the_network_is_covered_by_an_egress_deny test to evidence; the 3 cited tests were run and pass. | Applied in dev: 4 zones each get a real deny_egress/deny_ingress pair (8 firewall resources), and dev's permitted_paths/external_egress are empty, so nothing currently punches a hole in the default. No test drives real network traffic against the applied project (e2e=false); the evidence is plan-time/text-level. | 2026-10-04: the portal exception is now held by a test that fails on growth, and the same walk found a second workload outside every egress rule — the ADR 0102 fleet job, which has no vpc_access at all (SEC-012)."
   },
   {
     "id": "SEC-053",
@@ -361,7 +362,7 @@
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status unchanged (PARTIAL) but integrated true -> false (no environment enables public_edge, portal_edge or the GitOps gateway, so no Terraform an environment applies reaches this). Corrected 'attaches it to every backend service/bucket': the static_shell backend bucket has no edge_security_policy. Added that dev's portal and OpenObserve are internet-facing on run.app with no Cloud Armor, and fixed the attachment line (232, not 222). | Scored PARTIAL rather than BLOCKED because the Cloud Run form of the requirement is fully buildable today without any conflict-register item; only the named GKE clusters are C3-blocked."
+    "notes": "verify: status unchanged (PARTIAL) but integrated true -> false (no environment enables public_edge, portal_edge or the GitOps gateway, so no Terraform an environment applies reaches this). Corrected 'attaches it to every backend service/bucket': the static_shell backend bucket has no edge_security_policy. Added that dev's portal and OpenObserve are internet-facing on run.app with no Cloud Armor, and fixed the attachment line (232, not 222). | Scored PARTIAL rather than BLOCKED because the Cloud Run form of the requirement is fully buildable today without any conflict-register item; only the named GKE clusters are C3-blocked. | 2026-10-04 correction: the static shell's backend bucket does carry an edge policy now — google_compute_backend_bucket.static_shell sets edge_security_policy = google_compute_security_policy.edge_static (public-edge/main.tf), and terraform_plan.rs::the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy asserts it — so the first sentence of this row's gap is out of date. The rest stands: no environment enables an external load balancer, dev's portal and OpenObserve answer on run.app with no Cloud Armor in front, the GitOps Gateway carries no security policy, and the regional-GKE half needs C3."
   },
   {
     "id": "SEC-065",
@@ -490,14 +491,15 @@
   },
   {
     "id": "SEC-070",
-    "status": "PARTIAL",
-    "current": "modules/execution-node's instance template sets shielded_instance_config{ enable_secure_boot=true, enable_vtpm=true, enable_integrity_monitoring=true } unconditionally (main.tf:392-396). No Fabric VM exists anywhere (GCP-034 MISSING: no Fabric broker of any kind), so there is nothing to hold the other half of the requirement, and execution_nodes = {} in every environment means the Reflex half has never applied to a real instance.",
+    "status": "COMPLETE",
+    "current": "modules/execution-node's instance template sets shielded_instance_config{ enable_secure_boot=true, enable_vtpm=true, enable_integrity_monitoring=true } unconditionally (locate with `grep -n shielded_instance_config infrastructure/terraform/modules/execution-node/main.tf`; this cited main.tf:392-396 until 2026-10-04, by which time the block had moved). No Fabric VM exists anywhere (GCP-034 MISSING: no Fabric broker of any kind), so there is nothing to hold the other half of the requirement, and execution_nodes = {} in every environment means the Reflex half has never applied to a real instance. A tree-wide test now walks every VM definition under infrastructure/ (google_compute_instance, instance_template, region_instance_template) and every `gcloud compute instances create` or `instance-templates create` in a workflow, and refuses one without secure boot, vTPM and integrity monitoring — so a Fabric VM, or a second template, cannot be added unshielded.",
     "evidence": [
       "infrastructure/terraform/modules/execution-node/main.tf:392-396",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:661-700 the_execution_node_has_no_external_address_and_no_container_runtime (asserts all 3 shielded settings by literal match)",
-      "infrastructure/environments/dev/terraform.tfvars (execution_nodes = {})"
+      "infrastructure/environments/dev/terraform.tfvars (execution_nodes = {})",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::every_virtual_machine_the_repository_defines_is_shielded_with_secure_boot_vtpm_and_integrity_monitoring (mutations: enable_vtpm = false on the node template, and --shielded-vtpm removed from image.yml's builder, each failed it; restored)"
     ],
-    "gap": "execution_nodes = {} everywhere, so this configuration has never applied to a running instance; and no Fabric VM exists anywhere to configure at all.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -507,11 +509,11 @@
       "GCP-034"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_execution_node_has_no_external_address_and_no_container_runtime",
+    "verification": "cargo test -p qip-acceptance --test security_controls every_virtual_machine_the_repository_defines_is_shielded_with_secure_boot_vtpm_and_integrity_monitoring; cargo test -p qip-acceptance --test infrastructure the_execution_node_has_no_external_address_and_no_container_runtime",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status unchanged (PARTIAL); integrated true -> false because execution_nodes = {} in all four environments, so no environment enables the template (matches GCP-059's flags). Cited test passes (run 2026-09-25) and does assert all three shielded settings. | Identical finding to GCP-059, restated from the SEC domain; not a second, independent gap."
+    "notes": "verify: status unchanged (PARTIAL); integrated true -> false because execution_nodes = {} in all four environments, so no environment enables the template (matches GCP-059's flags). Cited test passes (run 2026-09-25) and does assert all three shielded settings. | Identical finding to GCP-059, restated from the SEC domain; not a second, independent gap. | Closed 2026-10-04 at configuration level. Not applied: execution_nodes = {} in every environment, and no Fabric VM is defined anywhere (qip-fabricd is in no workload catalogue), so the Fabric half holds as a refusal of an unshielded definition rather than as a running shielded broker. integrated and deployable stay false."
   },
   {
     "id": "SEC-071",

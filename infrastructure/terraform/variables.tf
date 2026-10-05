@@ -267,8 +267,11 @@ variable "execution_nodes" {
         the other half of the node — modules/execution-node/README.md.
       * `venues` is not guessed. It comes from the venue's own connectivity
         documentation, and in shadow mode the node still cannot reach them.
-      * `create_egress_nat` is true only where the node's region has no NAT
-        of its own; two NATs on one subnet in one region is an apply error.
+      * `create_egress_nat` is true only for a node whose venue is on the
+        public internet. Nothing else translates a node's subnetwork —
+        modules/network has no NAT and the zones' gateway lists zone
+        subnetworks only — so false leaves the node no route out, which is
+        what the simulated venue wants.
   EOT
 
   type = map(object({
