@@ -184,5 +184,8 @@ pub use plan::{
     LaneContext, LocationBalance, PrePositionMove, PrePositioningPlan, PrePositioningPlanner,
     PrePositioningRequest, Refusal, RefusalReason,
 };
-pub use settlement::{SettlementBook, SettlementCalendar, SettlementConvention, SettlementQuote};
+pub use settlement::{
+    DeadlineVerdict, SettlementBook, SettlementCalendar, SettlementConvention, SettlementQuote,
+    UndecidableReason,
+};
 pub use transfer::{FundingCurve, FxRates, ShortfallAsymmetry, TransferCost, TransferCostModel};

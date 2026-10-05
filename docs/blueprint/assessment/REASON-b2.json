@@ -363,7 +363,7 @@
       "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
       "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire"
     ],
-    "gap": "No chaos test runs cell passes with every reasoning service stopped and asserts that pass count, refusals and order flow are unchanged; the existing test performs one mesh tick against a dead centre. The dependency guard for qip-reasoning-engine is indirect, through the qip-ai anchor, and a future symbolic-reasoner crate that did not reach qip-ai would need its own named test.",
+    "gap": "No chaos test runs cell passes with every reasoning service stopped and asserts pass count, refusals and order flow unchanged. The dependency half is now closed by name: qip-acceptance architecture::no_edge_cell_can_reach_a_reasoning_crate asserts no edge crate reaches qip-reasoning-engine, qip-world-model or qip-optimization-engine (kernel anchor proves the walk sees them; mutation adding qip-world-model to qip-routing failed it). A future symbolic-reasoner crate needs adding to that list.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -373,7 +373,7 @@
       "REASON-026"
     ],
     "blocked_by": "",
-    "verification": "Run by the verifier, passing: cargo test -p qip-acceptance --test architecture no_edge_cell_can_reach_a_language_model no_edge_cell_can_reach_a_quantum_solver ('test result: ok. 2 passed'); cargo test -p qip-edge-node --test mesh a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (ok). Still needed: the chaos test over passes, and a no_edge_cell_can_reach_a_symbolic_reasoner test once such a crate exists.",
+    "verification": "cargo test -p qip-acceptance --test architecture no_edge_cell_can_reach_a_reasoning_crate",
     "work_item": "E01-edge-reasoning-boundary-test",
     "tier": "T1",
     "size": "S",

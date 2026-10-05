@@ -124,6 +124,49 @@ impl SettlementQuote {
     }
 }
 
+/// Whether an obligation's deadline was met, was missed, or cannot be decided.
+///
+/// `Err` from [`SettlementBook::calendar_for`] is a hard stop for a planner;
+/// for a deadline question it is an answer, and the answer is "undecidable",
+/// never a default date. A deadline reported met on an invented T+2 is a
+/// funding plan resting on a calendar nobody declared.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum DeadlineVerdict {
+    /// Funds were usable at or before the deadline, and that instant has passed.
+    Met {
+        /// The calendar the due instant was computed under.
+        calendar: String,
+        /// When the obligation fell due.
+        due: Timestamp,
+    },
+    /// Funds land after the deadline. Known the moment the instruction is
+    /// dated, not only once the deadline passes.
+    Missed {
+        /// The calendar the due instant was computed under.
+        calendar: String,
+        /// When the obligation falls due.
+        due: Timestamp,
+        /// How far past the deadline that is.
+        lateness: Duration,
+    },
+    /// No answer can be given, with the reason.
+    Undecidable(UndecidableReason),
+}
+
+/// Why a deadline cannot be judged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum UndecidableReason {
+    /// No calendar answers for the venue and region; the refusal text says why.
+    NoCalendar(String),
+    /// Due on time, but the due instant has not arrived, so "met" is premature.
+    NotYetDue {
+        /// The calendar the due instant was computed under.
+        calendar: String,
+        /// When the obligation falls due.
+        due: Timestamp,
+    },
+}
+
 /// Settlement days, cut-off times and when money becomes usable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SettlementCalendar {
@@ -392,6 +435,44 @@ impl SettlementBook {
                  built inconsistently"
             ))
         })
+    }
+
+    /// Judge an obligation instructed at `instructed_at` against `deadline`,
+    /// as seen at `now`.
+    ///
+    /// A venue with no calendar, or a lane keyed on the wrong jurisdiction, is
+    /// [`DeadlineVerdict::Undecidable`] carrying the refusal that names the
+    /// act clearing it; it is never given a default convention.
+    pub fn judge_deadline(
+        &self,
+        venue: &VenueId,
+        region: &Region,
+        instructed_at: Timestamp,
+        deadline: Timestamp,
+        now: Timestamp,
+    ) -> DeadlineVerdict {
+        let quoted = self
+            .calendar_for(venue, region)
+            .and_then(|calendar| calendar.quote(instructed_at));
+        let quote = match quoted {
+            Ok(q) => q,
+            Err(e) => {
+                return DeadlineVerdict::Undecidable(UndecidableReason::NoCalendar(e.to_string()));
+            }
+        };
+        let calendar = format!("{region} {}", quote.convention.as_str());
+        let due = quote.available_at;
+        if !quote.arrives_by(deadline) {
+            DeadlineVerdict::Missed {
+                calendar,
+                due,
+                lateness: quote.lateness(deadline),
+            }
+        } else if now < due {
+            DeadlineVerdict::Undecidable(UndecidableReason::NotYetDue { calendar, due })
+        } else {
+            DeadlineVerdict::Met { calendar, due }
+        }
     }
 
     /// Every venue assigned, with its jurisdiction, in venue order.
