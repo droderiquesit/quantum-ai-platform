@@ -118,6 +118,85 @@ impl GoalSpecDraft {
     }
 }
 
+impl GoalSpec {
+    /// AGENCY-035: split this goal into sub-goals, each a `GoalSpec` that
+    /// sits inside it.
+    ///
+    /// The failure prevented is a decomposition that launders authority: two
+    /// children each "within budget" that together spend it twice, or a child
+    /// acting as somebody the parent never named. A child inherits the
+    /// parent's acting identity when it declares none and the parent's
+    /// prohibitions always (it may add to them, never drop one); its budget
+    /// and envelope are its own declarations, and the sums over the children
+    /// must fit the parent's. Refused, never scaled down to fit.
+    pub fn decompose(&self, parts: Vec<GoalSpecDraft>) -> Result<Vec<GoalSpec>, Error> {
+        if parts.len() < 2 {
+            return Err(Error::invalid(
+                "a decomposition needs at least two sub-goals; one is the goal itself",
+            ));
+        }
+        let mut budget = Decimal::ZERO;
+        let mut envelope = Decimal::ZERO;
+        let mut children = Vec::with_capacity(parts.len());
+        for mut part in parts {
+            if part.acting_identity.is_none() {
+                part.acting_identity = Some(self.acting_identity.clone());
+            }
+            let mut child = part.build()?;
+            if child.acting_identity != self.acting_identity {
+                return Err(Error::denied(format!(
+                    "sub-goal acts as `{}`, outside its parent's identity `{}`",
+                    child.acting_identity, self.acting_identity
+                )));
+            }
+            if child.time_horizon_secs > self.time_horizon_secs {
+                return Err(Error::guard(
+                    "sub-goal horizon runs past its parent's; shorten it",
+                ));
+            }
+            if let Some(outside) = child
+                .jurisdictions
+                .iter()
+                .find(|j| !self.jurisdictions.contains(j))
+            {
+                return Err(Error::denied(format!(
+                    "sub-goal names jurisdiction `{outside}`, which its parent does not"
+                )));
+            }
+            for inherited in &self.prohibited_methods {
+                if !child.prohibited_methods.contains(inherited) {
+                    child.prohibited_methods.push(inherited.clone());
+                }
+            }
+            for inherited in &self.prohibited_side_effects {
+                if !child.prohibited_side_effects.contains(inherited) {
+                    child.prohibited_side_effects.push(inherited.clone());
+                }
+            }
+            budget = budget
+                .checked_add(child.budget)
+                .ok_or_else(|| Error::numeric("sub-goal budgets overflowed"))?;
+            envelope = envelope
+                .checked_add(child.risk_envelope)
+                .ok_or_else(|| Error::numeric("sub-goal risk envelopes overflowed"))?;
+            children.push(child);
+        }
+        if budget > self.budget {
+            return Err(Error::guard(format!(
+                "sub-goal budgets sum to {budget}, outside the parent's {}; lower one",
+                self.budget
+            )));
+        }
+        if envelope > self.risk_envelope {
+            return Err(Error::guard(format!(
+                "sub-goal risk envelopes sum to {envelope}, outside the parent's {}; lower one",
+                self.risk_envelope
+            )));
+        }
+        Ok(children)
+    }
+}
+
 impl TryFrom<GoalSpecDraft> for GoalSpec {
     type Error = Error;
     fn try_from(draft: GoalSpecDraft) -> Result<Self, Error> {

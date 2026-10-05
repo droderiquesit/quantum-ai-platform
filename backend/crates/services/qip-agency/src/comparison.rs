@@ -2,13 +2,15 @@
 //!
 //! A comparison that silently omits `downside` or `conduct_risk` ranks the
 //! dangerous option first. Records are only buildable with all nine, so
-//! nothing partial can reach a ranker (none exists yet; it would take
-//! `Vec<Comparison>` and so inherit the guarantee).
+//! nothing partial can reach the ranker: [`crate::plan::select`] takes a
+//! built `Comparison` on every proposal. It ranks on `expected_causal_effect`
+//! and refuses on `legally_eligible`; the other seven axes are recorded for
+//! the reader and weighed by nothing yet.
 
 use crate::required;
 use qip_core::{Decimal, Error};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ComparisonDraft {
     pub expected_causal_effect: Option<Decimal>,
     pub confidence: Option<Decimal>,

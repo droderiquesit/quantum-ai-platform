@@ -8,13 +8,20 @@
 //! simulated or executed, which is the structural form of "wanting an outcome
 //! grants no permission to act".
 //!
-//! Status: library only. No composition root constructs any of this yet, so
-//! the register rows it closes carry `integrated = false`.
+//! Status: one composition root reaches this crate. `qip agency shadow`
+//! (`qip-cli`) reads a request document and runs [`engine::run`] with no
+//! policy and an adapter that refuses, so the goal, graph, plan, ranking,
+//! gate and stage order are on a shipped path and nothing can act through
+//! it. [`tools`], [`memory`], [`attribution`] and [`autonomy`]'s widening
+//! and drift rules have no production caller; their register rows say so.
 
 pub mod affordance;
 pub mod attribution;
+pub mod autonomy;
 pub mod comparison;
+pub mod engine;
 pub mod goal;
+pub mod memory;
 pub mod plan;
 pub mod tools;
 

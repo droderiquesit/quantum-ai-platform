@@ -25,6 +25,9 @@ qip-storage.workspace = true
 qip-agents.workspace = true
 qip-risk.workspace = true
 qip-kernel.workspace = true
+# `qip agency shadow`: the agency engine's one composition root. Contracts and
+# a pure pass; it holds no adapter, and this crate hands it one that refuses.
+qip-agency.workspace = true
 # The HTTP server the live demonstration's three doubles are served by. Already
 # a dependency of this crate for the API's own types; `qip_api::http::Server` is
 # the platform's own HTTP/1.1 server, so the demonstration binds one rather than
