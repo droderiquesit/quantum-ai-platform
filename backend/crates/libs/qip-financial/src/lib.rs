@@ -22,6 +22,7 @@ pub mod category;
 pub mod constraints;
 pub mod costs;
 pub mod credit;
+pub mod derivative_permissions;
 pub mod extensions;
 pub mod history;
 pub mod identifiers;
