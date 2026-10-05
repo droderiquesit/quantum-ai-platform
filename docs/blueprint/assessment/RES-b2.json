@@ -660,17 +660,15 @@
   },
   {
     "id": "RES-058",
-    "status": "MISSING",
-    "current": "nothing. No producer identity, epoch or fencing exists (FABRIC-058 MISSING), and there is no broker. ADR 0100 §3-4 places what this requirement needs in the event fabric's first in-tree build: a static leader epoch persisted and bumped at every broker start, and (producer_id, epoch) producer identity with same-epoch dedup by sequence and payload hash, a new epoch fencing the old one, and sequences carried across epochs 'so a restarted node neither duplicates nor loses'.",
+    "status": "COMPLETE",
+    "current": "Broker::open bumps and persists the leader epoch at every start; on opening a partition Broker::recover_producers replays the durable batches through ProducerTable::restore, so after a restart a retry of an appended-but-unacknowledged batch is acknowledged at its original offset without a second append, a new producer incarnation receives a successor epoch, and the older epoch is fenced (Admission::FencedEpoch).",
     "evidence": [
-      "rg -in 'producer.*epoch|fenc' backend/crates --type rust (excluding tests) -> no fencing-epoch hit",
-      "backend/crates/libs/qip-transport/src/mesh.rs (no producer-id/epoch field)",
-      "docs/adr/0100-...-producer-retained-durability.md §3 (static leader epoch bumped at every start), §4 (producer identity, dedup, fencing)",
-      "docs/blueprint/assessment/FABRIC-b3.json FABRIC-058 (MISSING, buildable without a new dependency)"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs (recover_producers, called from partition_state before any produce is admitted)",
+      "backend/crates/services/qip-streaming/src/event_fabric/producer.rs (ProducerTable::restore)"
     ],
-    "gap": "No producer epoch, fencing or retry idempotence exists. Only a failover to a different replica needs replication, which ADR 0100 §3 leaves to C2 (RES-057); retry-by-epoch, dedup and fencing, tested across a produce whose acknowledgement is interrupted by a broker restart under a bumped leader epoch, are buildable in-tree.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -679,24 +677,22 @@
       "FABRIC-058"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_broker a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_still_fenced. Mutation: recover_producers call removed, the retry was appended again (offset 1, high watermark 2) and the test failed at its original-offset assertion; restored, 13 passed.",
     "work_item": "E03",
     "tier": "T4",
     "size": "L",
-    "notes": "The epoch-comparison logic alone (FABRIC-058) is buildable without a new dependency; what is C2-blocked is the broker failover this requirement's own verification method needs to inject. verify: BLOCKED(C2) -> MISSING, blocked_by cleared, work item E99 -> E03, depends_on FABRIC-045 -> FABRIC-015. The behaviour (epoch retry without loss or duplication, stale-epoch fencing) needs no refused crate and ADR 0100 §4 schedules it in the first build; only the cross-replica failover form waits on C2, and that is RES-057."
+    "notes": "Closed in RES round 2. Found a real defect: the producer table was in-memory and empty after a restart, so a retry was appended twice and a new incarnation was handed epoch 1 again. Failover to a different replica needs replication (RES-057, C2); the in-tree RF1 form of failover is a broker restart, which is what is proven. Library-complete, not served: qip-fabricd does not construct a Broker (integrated=false)."
   },
   {
     "id": "RES-059",
-    "status": "MISSING",
-    "current": "nothing. No consumer group or committed-offset concept exists, and there is no broker. ADR 0100 §4 puts consumer offsets in the ledger writer's durable state (balances, chain tails and consumer offsets in one DurableStore WriteBatch) and makes chain continuity per partition key, not a bare offset rule, the resume check.",
+    "status": "COMPLETE",
+    "current": "Broker::commit_offset stores a group's checkpoint in a durable store beside the partitions, refusing a rewind and an offset the partition has not reached; Broker::committed_offset serves it back after a restart, and fetch from committed+1 redelivers exactly the uncommitted tail.",
     "evidence": [
-      "rg -n 'committed_offset|consumer group' backend --type rust -> no hits",
-      "docs/adr/0100-...-producer-retained-durability.md §4 (consumer offsets in one WriteBatch with balances and chain tails)",
-      "docs/blueprint/assessment/FABRIC-b2.json FABRIC-045 (BLOCKED C2: the RF3 half only)"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs (commit_offset, committed_offset)"
     ],
-    "gap": "No committed-offset tracking exists. Resuming from committed offsets is buildable in-tree against the single-node broker and testable across a broker restart; only a failover to another replica needs RES-057's replication (C2).",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -704,11 +700,11 @@
       "FABRIC-015"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_broker a_group_committing_n_resumes_at_n_plus_one_after_a_broker_restart_and_a_fresh_consumer_can_replay_from_any_offset. Mutation: commit_offset's checkpoints.put removed, the test failed at the Some(4) assertion (left None); restored, 13 passed.",
     "work_item": "E03",
     "tier": "T4",
     "size": "L",
-    "notes": "verify: BLOCKED(C2) -> MISSING, blocked_by cleared, work item E99 -> E03. Committed-offset resume needs no refused crate and ADR 0100 §4 designs it; C2 blocks only the cross-replica failover, which RES-057 carries."
+    "notes": "Closed in RES round 2 against the existing FABRIC-016 test, which the register had not credited. Failover to a different replica needs replication (RES-057, C2); the in-tree RF1 form is a broker restart, which is what is proven. Library-complete, not served: qip-fabricd does not construct a Broker (integrated=false)."
   },
   {
     "id": "RES-060",
