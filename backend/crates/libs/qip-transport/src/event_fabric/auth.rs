@@ -242,7 +242,7 @@ impl IdentityTable {
     /// Refused, each naming the line number and never the line's content:
     /// a line that is not exactly two fields (a bare token is one field); a
     /// digest that is not 64 lowercase hex characters (a token is almost
-    /// always that); an identity outside `[A-Za-z0-9._-]` or longer than
+    /// always that); an identity outside `[A-Za-z0-9._:-]` or longer than
     /// [`MAXIMUM_IDENTITY_LENGTH`]; a repeated identity; a repeated digest,
     /// because two names for one token makes every request from it
     /// attributable to either; more than [`MAXIMUM_IDENTITIES`] entries; and a
@@ -422,11 +422,18 @@ fn check_identity(name: &str) -> std::result::Result<(), String> {
             "the identity is longer than {MAXIMUM_IDENTITY_LENGTH} characters"
         ));
     }
+    // `:` is admitted because the grant schema names a cell `reflex:<cell>`
+    // (`qip_events::event_fabric::catalogue`). Without it no identities file
+    // could name the identity a cell's grants are written against, and an
+    // enforcing broker would answer every cell `AclDenied` on a catalogue
+    // that visibly grants it.
     if !name
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':'))
     {
-        return Err("the identity may contain only letters, digits, `.`, `_` and `-`".to_string());
+        return Err(
+            "the identity may contain only letters, digits, `.`, `_`, `-` and `:`".to_string(),
+        );
     }
     Ok(())
 }

@@ -55,8 +55,8 @@ can reach.** That is a measured statement, not a caution:
 | `qip-fastbrain` | starts, loops, serves health (**ran**) | declared, not deployed | Same |
 | `qip-deepbrain` | starts, loops, serves health (**ran**) | declared, not deployed | Same |
 | `qip-edge-node` | starts with `QIP_VENUE_FEED=simulated` (**ran**) | `execution_nodes = {}`; ADR 0035 authorises one node, `newyork-1`, shadow mode | No boot image is baked, and nobody has chosen the node's capital allocation (`infrastructure/environments/README.md`) |
-| `qip-fabricd` | **refuses to start**, exit 1 (**ran**) | not a catalogue workload | Its `config`, `health` and `archiver` modules are doc-only stubs (ADR 0100); `docs/adr/0010-what-gets-deployed.md` excludes it from the image matrix |
-| `qip-ledgerd` | **refuses to start**, exit 1 (**ran**) | not a catalogue workload | Same reason |
+| `qip-fabricd` | refuses to start without its seven required settings, exit 1; starts and serves on loopback against the committed local catalogue (**ran** 2026-10-04) | not a catalogue workload | Where the broker runs is undecided (ADR 0099 C8); `docs/adr/0010-what-gets-deployed.md` excludes it from the image matrix. One broker, one disk, no replication (ADR 0100 section 3) |
+| `qip-ledgerd` | **refuses to start**, exit 1 (**ran**) | not a catalogue workload | Its `config`, `consumer` and `read_api` modules are doc-only stubs (ADR 0100); excluded from the image matrix by the same ADR |
 | `qip-web` | library only, no binary; the console pages are served by `qip-api` | n/a | n/a |
 | `qip` (the `qip-cli` binary) | runs (**ran**) | n/a | n/a |
 | Portal and landing (Next.js) | not run (no `node_modules` installed in this worktree) | manifests exist (`infrastructure/gitops/envs/dev/portal.yaml`), not deployed | Same as the services |

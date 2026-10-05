@@ -82,14 +82,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 
 /// The batch schema id of a spool batch bound for the P1 outcomes stream.
-pub const P1_BATCH_SCHEMA_ID: u32 = 1;
+pub const P1_BATCH_SCHEMA_ID: u32 = QosClass::P1Outcomes.batch_schema_id();
 
 /// The batch schema id of a spool batch bound for the P2 market-journal
 /// stream.
-pub const P2_BATCH_SCHEMA_ID: u32 = 2;
+pub const P2_BATCH_SCHEMA_ID: u32 = QosClass::P2MarketJournal.batch_schema_id();
 
 /// The only batch schema version this writer produces.
-pub const BATCH_SCHEMA_VERSION: u32 = 1;
+pub const BATCH_SCHEMA_VERSION: u32 = qip_events::event_fabric::policy::BATCH_SCHEMA_VERSION;
 
 /// The manifest key the session counter is committed under.
 const SESSION_KEY: &str = "outbox.session";

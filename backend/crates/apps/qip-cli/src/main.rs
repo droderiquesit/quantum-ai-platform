@@ -111,6 +111,12 @@ fn print_help() {
     println!("                    render the blueprint registers from their JSON sources,");
     println!("                    or exit 3 if a committed view is stale");
     println!("  event-fabric grant --fixture <path> --peer <loopback-address:port>");
+    println!(
+        "  event-fabric isolate --peer <loopback-address:port> --stream <name> --partition <n> --operator <identity> --reason <why>"
+    );
+    println!(
+        "  event-fabric release --peer <loopback-address:port> --stream <name> --partition <n> --operator <identity>"
+    );
     println!("                    sign the labelled slice fixture's grant and policy with");
     println!("                    the fixture key and publish them to a loopback broker's");
     println!("                    control stream. A fixture, not how grants are issued");

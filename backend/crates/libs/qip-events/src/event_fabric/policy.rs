@@ -80,7 +80,32 @@ impl QosClass {
             Self::P4Telemetry => AckProfile::None,
         }
     }
+
+    /// The numeric schema id a batch bound for a stream of this class
+    /// carries in its header: the class's position in ADR 0100 §5's table.
+    ///
+    /// Defined here, once, because three places need the same number and had
+    /// each written their own: the node's spool writer stamps it, the grant
+    /// command stamps it, and the broker registers it per declared stream and
+    /// refuses a batch naming any other (FABRIC-024). When the broker first
+    /// enforced that refusal behind a real listener, a writer whose constant
+    /// had drifted from the broker's table would have had every batch refused
+    /// with nothing near the writer saying why.
+    pub const fn batch_schema_id(&self) -> u32 {
+        match self {
+            Self::P0Control => 0,
+            Self::P1Outcomes => 1,
+            Self::P2MarketJournal => 2,
+            Self::P3Research => 3,
+            Self::P4Telemetry => 4,
+        }
+    }
 }
+
+/// The only batch schema version this build writes or registers, for every
+/// class. Each record's own `AnyEvent` names its topic and body version; this
+/// is the version of the batch header's declaration, not of any body.
+pub const BATCH_SCHEMA_VERSION: u32 = 1;
 
 /// CONTRACT-044/FABRIC-067: the acknowledgement a producer requires before it
 /// considers a record durable.

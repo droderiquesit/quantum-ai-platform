@@ -36,15 +36,17 @@ use std::sync::{Arc, Mutex};
 
 use qip_core::Clock;
 use qip_core::error::{Error, Result};
+use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_storage::{DurableStore, EngineConfig, KeyValueStore};
+use serde::{Deserialize, Serialize};
 
 use qip_events::event_fabric::codec::{Batch, ContentHash, LogicalTimestamp, stamp_broker};
 use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
 use qip_events::event_fabric::policy::{OverloadPolicy, StreamPolicy};
 use qip_events::event_fabric::schema_id::{Shape, check_compatible};
 
-use qip_transport::event_fabric::protocol::{FetchResponse, Metadata, ProduceAck};
+use qip_transport::event_fabric::protocol::{FetchResponse, Metadata, ProduceAck, Refusal};
 
 use super::partition::{self, PartitionLog};
 use super::producer::{Admission, ProducerTable, WINDOW_SIZE};
@@ -118,6 +120,9 @@ struct DeclaredStream {
 struct ProduceCursor {
     clock: PartitionClock,
     last_batch_hash: Option<ContentHash>,
+    /// When the active segment took its first batch, or `None` while it is
+    /// empty: what [`Broker::seal_aged`] measures a stream's seal age from.
+    active_since: Option<qip_core::Timestamp>,
 }
 
 #[derive(Debug)]
@@ -203,6 +208,59 @@ fn checkpoint_key(group: &str, stream: &str, partition: u32) -> Result<String> {
     Ok(format!("{group}|{stream}|{partition}"))
 }
 
+/// The metadata key holding one partition's isolation, while it is isolated.
+/// `|` cannot appear in a declared stream name's checkpoint key either, so
+/// the three parts cannot be confused with one another.
+fn isolation_key(stream: &str, partition: u32) -> String {
+    format!("isolated|{stream}|{partition}")
+}
+
+/// The metadata prefix every operator action is recorded under.
+const ADMIN_LOG_PREFIX: &str = "admin|";
+
+/// A partition an operator has parked (FABRIC-028): who, why, and the high
+/// watermark it was parked at. Held in the broker's metadata store, so a
+/// restart does not quietly lift an isolation somebody imposed on purpose.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Isolation {
+    pub operator: String,
+    pub reason: String,
+    pub at_offset: u64,
+}
+
+/// One operator action on a partition, as [`Broker::admin_log`] reads it
+/// back: an isolation or a release, attributed and in the order taken.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdminAction {
+    pub action: String,
+    pub stream: String,
+    pub partition: u32,
+    pub operator: String,
+    pub reason: String,
+    pub at_offset: u64,
+    pub at_ns: i64,
+}
+
+/// A produce this broker turned down for a reason the wire protocol names:
+/// the [`Refusal`] a producer acts on, beside the message [`Broker::produce`]
+/// has always answered with. The protocol handler sends the first; a caller
+/// inside the process reads the second.
+#[derive(Debug)]
+pub struct ProduceRefusal {
+    pub refusal: Refusal,
+    pub error: Error,
+}
+
+impl ProduceRefusal {
+    fn new(refusal: Refusal, error: Error) -> Self {
+        Self { refusal, error }
+    }
+}
+
+/// What [`Broker::produce_to`] answers when nothing failed: the
+/// acknowledgement, or the named refusal.
+pub type Produced = std::result::Result<ProduceAck, ProduceRefusal>;
+
 /// A bounded, per-`(producer_id, partition label)` window of recently
 /// assigned offsets, keyed the same way as
 /// [`super::producer::ProducerTable`]'s own internal table. Named as a type
@@ -233,6 +291,11 @@ pub struct Broker {
     /// directory's own constant gives: the leader epoch is a fact about the
     /// process, a checkpoint is a fact about a consumer.
     checkpoints: DurableStore,
+    /// The broker's own facts: the leader epoch, every partition isolation
+    /// in force and the log of operator actions (FABRIC-028). Kept open for
+    /// the broker's lifetime so an isolation is durable before the call that
+    /// imposed it returns.
+    metadata: DurableStore,
     /// What each `(stream, producer)` has spent in the current
     /// [`QUOTA_WINDOW_NS`] window: `(window_start_ns, bytes, messages)`.
     /// Entries from an older window are dropped whenever a new window
@@ -270,6 +333,7 @@ impl Broker {
             schemas: Mutex::new(BTreeMap::new()),
             recent_offsets: Mutex::new(BTreeMap::new()),
             checkpoints,
+            metadata: epoch_store,
             quota_spent: Mutex::new(BTreeMap::new()),
         })
     }
@@ -412,12 +476,62 @@ impl Broker {
     ///
     /// A verified [`Admission::Duplicate`] is acknowledged with the offset
     /// its original attempt received, without appending again.
-    pub fn produce(&self, stream: &str, key: &str, mut batch: Batch) -> Result<ProduceAck> {
+    pub fn produce(&self, stream: &str, key: &str, batch: Batch) -> Result<ProduceAck> {
         let partition_count = self.partition_count(stream)?;
         let partition = partition::partition_for(key, partition_count)?;
-        self.require_registered_schema(stream, batch.schema_id, batch.schema_version)?;
+        self.produce_to(stream, partition, batch)?
+            .map_err(|refused| refused.error)
+    }
+
+    /// Produce `batch` to a partition the caller names, answering a refusal
+    /// as the [`Refusal`] the wire protocol carries.
+    ///
+    /// This is [`Self::produce`]'s whole body; that method only routes a key
+    /// here and flattens the answer. It exists because the protocol's
+    /// `produce` route names a partition, not a key, and a producer acts on
+    /// which refusal it got: `OutOfOrderSequence` carries the sequence to
+    /// resend from, `Quota` how long to wait, `Fenced` that it must stop. A
+    /// handler that only had [`Self::produce`]'s prose could tell a producer
+    /// nothing but "no".
+    ///
+    /// Refused before anything else is read: a partition the stream does not
+    /// have, and a partition an operator has isolated (FABRIC-028). A
+    /// consumer group past the stream's lag limit stays an `Err` rather than
+    /// a [`Refusal`]: the protocol's closed set has no code for it, and a
+    /// transport-level failure is what makes the producer back off and try
+    /// again once the group has caught up.
+    pub fn produce_to(&self, stream: &str, partition: u32, mut batch: Batch) -> Result<Produced> {
+        let partition_count = self.partition_count(stream)?;
+        if partition >= partition_count {
+            return Err(Error::invalid(format!(
+                "stream '{stream}' has partitions 0 to {}; partition {partition} does not \
+                 exist, so route the key with partition_for before producing",
+                partition_count - 1
+            )));
+        }
+        if let Some(isolation) = self.isolation(stream, partition)? {
+            let error = Error::denied(format!(
+                "{stream}:{partition} is isolated by '{}' ({}); produce resumes when an \
+                 operator releases it",
+                isolation.operator, isolation.reason
+            ));
+            return Ok(Err(ProduceRefusal::new(
+                Refusal::Isolated {
+                    operator: isolation.operator,
+                    reason: isolation.reason,
+                },
+                error,
+            )));
+        }
+        if let Err(error) =
+            self.require_registered_schema(stream, batch.schema_id, batch.schema_version)
+        {
+            return Ok(Err(ProduceRefusal::new(Refusal::SchemaRefused, error)));
+        }
         self.refuse_when_a_group_lags(stream, partition)?;
-        self.charge_quota(stream, &batch)?;
+        if let Err(refused) = self.charge_quota(stream, &batch)? {
+            return Ok(Err(refused));
+        }
 
         let record_count = u64::try_from(batch.records.len()).map_err(|_| {
             Error::invalid("a batch carries more records than a u64 count can represent")
@@ -472,6 +586,14 @@ impl Broker {
                         )));
                     }
                     cursor.last_batch_hash = Some(ContentHash::sha256_of(&encoded));
+                    // The append may itself have sealed the segment by size,
+                    // in which case the active one is empty again and has no
+                    // age to measure.
+                    cursor.active_since = if state.log.active_batches() == 0 {
+                        None
+                    } else {
+                        cursor.active_since.or(Some(now))
+                    };
                     appended_offset
                 };
                 self.remember_offset(&batch.producer_id, &label, batch.base_sequence, base_offset);
@@ -484,6 +606,7 @@ impl Broker {
                     high_watermark,
                     archived_through,
                 )
+                .map(Ok)
             }
             Admission::Duplicate => {
                 let base_offset = self
@@ -505,27 +628,295 @@ impl Broker {
                     high_watermark,
                     archived_through,
                 )
+                .map(Ok)
             }
-            Admission::Conflict => Err(Error::denied(format!(
-                "producer '{}' sequence {} at {label} conflicts with a batch this broker already \
-                 accepted under the same epoch and sequence but a different payload",
-                batch.producer_id, batch.base_sequence
+            Admission::Conflict => Ok(Err(ProduceRefusal::new(
+                Refusal::SequenceConflict,
+                Error::denied(format!(
+                    "producer '{}' sequence {} at {label} conflicts with a batch this broker \
+                     already accepted under the same epoch and sequence but a different payload",
+                    batch.producer_id, batch.base_sequence
+                )),
             ))),
-            Admission::FencedEpoch { current_epoch } => Err(Error::denied(format!(
-                "producer '{}' epoch {} at {label} is fenced by epoch {current_epoch}",
-                batch.producer_id, batch.producer_epoch
+            Admission::FencedEpoch { current_epoch } => Ok(Err(ProduceRefusal::new(
+                Refusal::Fenced,
+                Error::denied(format!(
+                    "producer '{}' epoch {} at {label} is fenced by epoch {current_epoch}",
+                    batch.producer_id, batch.producer_epoch
+                )),
             ))),
-            Admission::OutsideWindow => Err(Error::denied(format!(
-                "producer '{}' sequence {} at {label} is behind this broker's bounded dedup \
-                 window and cannot be verified as a duplicate",
-                batch.producer_id, batch.base_sequence
+            Admission::OutsideWindow => Ok(Err(ProduceRefusal::new(
+                Refusal::SequenceBelowWindow,
+                Error::denied(format!(
+                    "producer '{}' sequence {} at {label} is behind this broker's bounded dedup \
+                     window and cannot be verified as a duplicate",
+                    batch.producer_id, batch.base_sequence
+                )),
             ))),
-            Admission::OutOfOrder { expected } => Err(Error::invalid(format!(
-                "producer '{}' sequence {} at {label} is ahead of the dense stream; the next \
-                 sequence this partition accepts is {expected}",
-                batch.producer_id, batch.base_sequence
+            Admission::OutOfOrder { expected } => Ok(Err(ProduceRefusal::new(
+                Refusal::OutOfOrderSequence { expected },
+                Error::invalid(format!(
+                    "producer '{}' sequence {} at {label} is ahead of the dense stream; the next \
+                     sequence this partition accepts is {expected}",
+                    batch.producer_id, batch.base_sequence
+                )),
             ))),
         }
+    }
+
+    /// The sequence `producer_id`'s dense stream at `(stream, partition)`
+    /// continues at: one past the last record this broker appended for it,
+    /// or zero if it has appended none. The answer a restarted producer
+    /// needs to carry its sequence across epochs (ADR 0100 §4), read from
+    /// the same table that will judge its next batch.
+    pub fn next_sequence(&self, stream: &str, partition: u32, producer_id: &str) -> Result<u64> {
+        // Opening the partition replays its log into the producer table, so
+        // the answer after a restart is what the log holds, not zero.
+        self.partition_state(stream, partition)?;
+        let label = partition_label(stream, partition);
+        let producers = self.producers.lock().unwrap_or_else(|e| e.into_inner());
+        match producers.last_sequence(producer_id, &label) {
+            Some(last) => last.checked_add(1).ok_or_else(|| {
+                Error::numeric(format!(
+                    "producer '{producer_id}' at {label} has used every sequence a u64 can \
+                     carry; retire it and issue a new producer id"
+                ))
+            }),
+            None => Ok(0),
+        }
+    }
+
+    /// FABRIC-028: park `(stream, partition)`. Every produce to it is
+    /// refused with [`Refusal::Isolated`] naming `operator` and `reason`
+    /// until [`Self::release`]; nothing is deleted and fetches keep working,
+    /// so the retained records stay readable while the partition is parked.
+    /// Durable before it returns and recorded in [`Self::admin_log`].
+    ///
+    /// Refuses an empty operator or reason (an isolation nobody can
+    /// attribute or explain is the incident, not the response to one) and a
+    /// partition that is already isolated, naming who holds it: a second
+    /// isolation would overwrite the first one's reason.
+    pub fn isolate(
+        &self,
+        stream: &str,
+        partition: u32,
+        operator: &str,
+        reason: &str,
+    ) -> Result<u64> {
+        if operator.trim().is_empty() || reason.trim().is_empty() {
+            return Err(Error::invalid(
+                "an isolation must name the operator imposing it and the reason; state both",
+            ));
+        }
+        let state = self.partition_state(stream, partition)?;
+        if let Some(held) = self.isolation(stream, partition)? {
+            return Err(Error::denied(format!(
+                "{stream}:{partition} is already isolated by '{}' ({}); release it before \
+                 isolating it again",
+                held.operator, held.reason
+            )));
+        }
+        let at_offset = state.log.high_water();
+        let isolation = Isolation {
+            operator: operator.to_string(),
+            reason: reason.to_string(),
+            at_offset,
+        };
+        self.record_admin("isolate", stream, partition, operator, reason, at_offset)?;
+        self.metadata.put(
+            &isolation_key(stream, partition),
+            serde_json::to_value(&isolation)?,
+        )?;
+        Ok(at_offset)
+    }
+
+    /// Lift an isolation, recording who lifted it. Refuses a partition that
+    /// is not isolated rather than reporting a release that changed nothing.
+    pub fn release(&self, stream: &str, partition: u32, operator: &str) -> Result<u64> {
+        if operator.trim().is_empty() {
+            return Err(Error::invalid(
+                "a release must name the operator lifting the isolation",
+            ));
+        }
+        let state = self.partition_state(stream, partition)?;
+        let Some(held) = self.isolation(stream, partition)? else {
+            return Err(Error::invalid(format!(
+                "{stream}:{partition} is not isolated; there is nothing to release"
+            )));
+        };
+        let at_offset = state.log.high_water();
+        self.record_admin(
+            "release",
+            stream,
+            partition,
+            operator,
+            &held.reason,
+            at_offset,
+        )?;
+        self.metadata.delete(&isolation_key(stream, partition))?;
+        Ok(at_offset)
+    }
+
+    /// The isolation in force on `(stream, partition)`, if any.
+    pub fn isolation(&self, stream: &str, partition: u32) -> Result<Option<Isolation>> {
+        match self.metadata.get(&isolation_key(stream, partition))? {
+            Some(value) => serde_json::from_value(value).map(Some).map_err(|e| {
+                Error::schema(format!(
+                    "the stored isolation of {stream}:{partition} does not decode: {e}"
+                ))
+            }),
+            None => Ok(None),
+        }
+    }
+
+    /// Every operator action this broker has recorded, oldest first.
+    pub fn admin_log(&self) -> Result<Vec<AdminAction>> {
+        let mut actions = Vec::new();
+        for key in self.metadata.keys_with_prefix(ADMIN_LOG_PREFIX)? {
+            let Some(value) = self.metadata.get(&key)? else {
+                continue;
+            };
+            actions.push(serde_json::from_value(value).map_err(|e| {
+                Error::schema(format!(
+                    "the stored operator action {key} does not decode: {e}"
+                ))
+            })?);
+        }
+        Ok(actions)
+    }
+
+    /// Append one operator action. Written before the state change it
+    /// describes, so after a crash between the two writes an isolation can
+    /// be in the log without being in force, and never the reverse: an
+    /// isolation in force that no record attributes.
+    fn record_admin(
+        &self,
+        action: &str,
+        stream: &str,
+        partition: u32,
+        operator: &str,
+        reason: &str,
+        at_offset: u64,
+    ) -> Result<()> {
+        let index = self.metadata.keys_with_prefix(ADMIN_LOG_PREFIX)?.len();
+        let entry = AdminAction {
+            action: action.to_string(),
+            stream: stream.to_string(),
+            partition,
+            operator: operator.to_string(),
+            reason: reason.to_string(),
+            at_offset,
+            at_ns: self.clock.now().as_nanos(),
+        };
+        // Zero-padded so the store's key order is the order taken.
+        self.metadata.put(
+            &format!("{ADMIN_LOG_PREFIX}{index:020}"),
+            serde_json::to_value(&entry)?,
+        )
+    }
+
+    /// Seal every open partition's active segment that has held a batch for
+    /// at least its stream's declared `seal_age_ms`, returning how many were
+    /// sealed.
+    ///
+    /// The segment log seals by size alone. Without this a batch on a quiet
+    /// partition is never sealed, so never archived, so `archived_through`
+    /// never passes it, and a P0 or P1 producer — which the SDK holds to a
+    /// quorum acknowledgement — waits on a grant or a fill that is durable
+    /// on the broker's disk and will never be reported safe. The seal
+    /// cadence was declared per stream in the catalogue and read by nothing.
+    ///
+    /// Takes each partition's produce lock for the seal, the same lock a
+    /// size-triggered seal already holds inside `produce_to`, so the two
+    /// cannot interleave.
+    pub fn seal_aged(&self) -> Result<u64> {
+        let open: Vec<((String, u32), Arc<PartitionState>)> = {
+            let partitions = self.partitions.lock().unwrap_or_else(|e| e.into_inner());
+            partitions
+                .iter()
+                .map(|(key, state)| (key.clone(), state.clone()))
+                .collect()
+        };
+        let now = self.clock.now();
+        let mut sealed = 0u64;
+        for ((stream, _), state) in open {
+            let seal_age_ns = i64::try_from(self.stream_policy(&stream)?.seal_age_ms())
+                .unwrap_or(i64::MAX)
+                .saturating_mul(1_000_000);
+            let mut cursor = state.cursor.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(since) = cursor.active_since else {
+                continue;
+            };
+            if now.as_nanos().saturating_sub(since.as_nanos()) < seal_age_ns {
+                continue;
+            }
+            if state.log.seal_active()? {
+                sealed += 1;
+            }
+            cursor.active_since = None;
+        }
+        Ok(sealed)
+    }
+
+    /// FABRIC-012: archive every sealed, not yet archived segment of every
+    /// partition of every archive-required stream, returning how many were
+    /// archived by this call.
+    ///
+    /// Meant to be called from a thread of its own. Nothing here holds the
+    /// produce path's locks while a segment's bytes are being uploaded:
+    /// `Archiver::archive` reads a sealed, immutable file and touches the
+    /// segment log only to read its seal and to set its archive mark. A
+    /// stalled object store therefore stalls this call and nothing else.
+    ///
+    /// The first failure is returned after every other partition has been
+    /// tried, so one partition's unreadable segment does not stop the rest
+    /// of the broker's history from being archived.
+    pub fn archive_sealed(&self, archiver: &Archiver) -> Result<u64> {
+        let declared: Vec<(String, u32, StreamPolicy)> = {
+            let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
+            declared
+                .iter()
+                .map(|(name, d)| (name.clone(), d.partition_count, d.policy.clone()))
+                .collect()
+        };
+        let mut archived = 0u64;
+        let mut first_failure = None;
+        for (stream, partition_count, policy) in declared {
+            if !policy.archive_required() {
+                continue;
+            }
+            let entitlements = BTreeSet::from([format!(
+                "{}:{}",
+                policy.entitlement().dataset(),
+                policy.entitlement().usage()
+            )]);
+            for partition in 0..partition_count {
+                let outcome = self.partition_state(&stream, partition).and_then(|state| {
+                    state
+                        .log
+                        .archive_sealed(archiver, &stream, partition, &entitlements)
+                });
+                match outcome {
+                    Ok(count) => archived += count,
+                    Err(error) => {
+                        first_failure.get_or_insert(error);
+                    }
+                }
+            }
+        }
+        match first_failure {
+            Some(error) => Err(error),
+            None => Ok(archived),
+        }
+    }
+
+    /// Every declared stream and its partition count, by name.
+    pub fn declared_streams(&self) -> BTreeMap<String, u32> {
+        let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
+        declared
+            .iter()
+            .map(|(name, d)| (name.clone(), d.partition_count))
+            .collect()
     }
 
     /// Assign `producer_id` its next epoch at `(stream, partition)`, fencing
@@ -711,7 +1102,11 @@ impl Broker {
     /// that backs off as told is not penalised twice. Runs before the
     /// producer table sees the batch: a producer over quota must not be
     /// able to consume sequence numbers it was never allowed to use.
-    fn charge_quota(&self, stream: &str, batch: &Batch) -> Result<()> {
+    fn charge_quota(
+        &self,
+        stream: &str,
+        batch: &Batch,
+    ) -> Result<std::result::Result<(), ProduceRefusal>> {
         let policy = self.stream_policy(stream)?;
         let messages = u64::try_from(batch.records.len())
             .map_err(|_| Error::invalid("a batch carries more records than a u64 can count"))?;
@@ -731,21 +1126,28 @@ impl Broker {
         let over_messages = entry.2.saturating_add(messages) > policy.message_quota_per_producer();
         if over_bytes || over_messages {
             let retry_after_ms = (window_start + QUOTA_WINDOW_NS - now) / 1_000_000;
-            return Err(Error::denied(format!(
+            let error = Error::denied(format!(
                 "producer '{}' is over its quota on stream '{stream}' ({} of {} bytes, {} of {}                  messages this second, this batch adds {bytes} and {messages}); retry after                  {retry_after_ms} ms",
                 batch.producer_id,
                 entry.1,
                 policy.byte_quota_per_producer(),
                 entry.2,
                 policy.message_quota_per_producer(),
+            ));
+            return Ok(Err(ProduceRefusal::new(
+                Refusal::Quota {
+                    retry_after_ms: u64::try_from(retry_after_ms).unwrap_or(0),
+                },
+                error,
             )));
         }
         entry.1 += bytes;
         entry.2 += messages;
-        Ok(())
+        Ok(Ok(()))
     }
 
-    fn partition_count(&self, stream: &str) -> Result<u32> {
+    /// How many partitions `stream` was declared with.
+    pub fn partition_count(&self, stream: &str) -> Result<u32> {
         let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
         declared
             .get(stream)
@@ -798,11 +1200,16 @@ impl Broker {
         };
         let log = PartitionLog::open(&self.data_dir, stream, partition, config)?;
         let last_batch_hash = recover_last_batch_hash(&log)?;
+        // A restart finds whatever the previous process left unsealed. Its
+        // age is unknown, so it is measured from now: late by at most one
+        // seal age, and never left unsealed for want of a next append.
+        let active_since = (log.active_batches() > 0).then(|| self.clock.now());
         let state = Arc::new(PartitionState {
             log,
             cursor: Mutex::new(ProduceCursor {
                 clock: PartitionClock::new(self.clock.now()),
                 last_batch_hash,
+                active_since,
             }),
         });
         let mut partitions = self.partitions.lock().unwrap_or_else(|e| e.into_inner());

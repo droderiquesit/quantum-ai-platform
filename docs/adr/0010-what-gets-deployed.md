@@ -17,7 +17,7 @@ in a build matrix.
 | `qip-edge-node` | `qip-edge-node` | yes | one cell's hot path, applied per cell by a runbook rather than by the pipeline |
 | `qip-cli` | `qip` | **no** | an operator's tool, run by a person |
 | `qip-web` | *none* | **no** | not a binary — a library `qip-api` links and renders from |
-| `qip-fabricd` | `qip-fabricd` | **no** | event fabric broker (ADR 0100); composition root unfinished, and GCP placement is undecided (ADR 0099 C8) |
+| `qip-fabricd` | `qip-fabricd` | **no** | event fabric broker (ADR 0100); GCP placement is undecided (ADR 0099 C8) |
 | `qip-ledgerd` | `qip-ledgerd` | **no** | ledger writer (ADR 0100); composition root unfinished, and GCP placement is undecided (ADR 0099 C8) |
 
 Deployed means all three of: an entry in the image matrix in
@@ -80,17 +80,29 @@ imaged or scheduled today, for a reason distinct from `qip-cli`'s and
 `qip-web`'s: this is not a decision that either binary should never deploy,
 only that it cannot yet.
 
-Each binary's `main.rs` refuses to start and exits non-zero, naming ADR 0100,
-because its composition-root modules — `qip-fabricd`'s `config`, `health` and
-`archiver`; `qip-ledgerd`'s `config`, `consumer`, `read_api` and `store` — are
-still doc-only stubs, each waiting on the packet named in its own module
-comment. A binary that cannot read configuration, prove a store writable or
-serve a request has no business in an image matrix or a catalogue entry: an
-image built from it would ship a process that exits the instant Cloud Run
-started it, and a catalogue entry would be a revision that never serves.
-Beyond that, *where* either binary runs is undecided — tracked as ADR 0099's
-conflict C8 — and `qip-ledgerd`'s own custody-separation argument in ADR 0100
-§2 is part of what that decision has to weigh.
+`qip-ledgerd`'s `main.rs` refuses to start and exits non-zero, naming ADR
+0100, because its composition-root modules — `config`, `consumer` and
+`read_api` — are still doc-only stubs, each waiting on the packet named in its
+own module comment. A binary that cannot read configuration, prove a store
+writable or serve a request has no business in an image matrix or a catalogue
+entry: an image built from it would ship a process that exits the instant
+Cloud Run started it, and a catalogue entry would be a revision that never
+serves.
+
+`qip-fabricd` was in the same state until 2026-10-04, when its composition
+root landed: it reads a configuration with no defaults in it, proves its data
+directory and its archive writable before binding either listener, and serves
+the event-fabric protocol and a separate health listener
+(`backend/crates/apps/qip-fabricd/tests/broker.rs` drives it over real
+sockets). That is one of the two conditions this record names under "What
+would make this wrong", and only one. The other has not moved: *where* either
+binary runs is undecided — tracked as ADR 0099's conflict C8 — and
+`qip-ledgerd`'s own custody-separation argument in ADR 0100 §2 is part of
+what that decision has to weigh. A broker is also a process with a disk, one
+writer and no replica (ADR 0100 §3); the Cloud Run shape every other imaged
+binary deploys in, which scales to zero and keeps nothing across a restart, is
+the one placement it certainly cannot take. So it stays excluded, for the
+placement reason alone.
 
 So both are on the exclusion lists `NOT_A_WORKLOAD` and
 `NOT_IN_THE_IMAGE_MATRIX` in `infrastructure.rs`, with this section as the

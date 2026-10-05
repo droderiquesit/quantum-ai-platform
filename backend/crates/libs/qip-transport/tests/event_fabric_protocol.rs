@@ -93,7 +93,10 @@ fn sample_success_response(route: Route) -> Response {
         Route::Metadata => Response::Metadata(
             Metadata::new("orders", 3, 7, 120, 80).expect("a coherent metadata answer"),
         ),
-        Route::ProducerInit => Response::ProducerInit(ProducerInitResponse { producer_epoch: 4 }),
+        Route::ProducerInit => Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 4,
+            next_sequence: 0,
+        }),
         Route::Produce => Response::Produce(
             ProduceAck::new("orders", 3, 100, 120, 80).expect("a coherent produce acknowledgement"),
         ),

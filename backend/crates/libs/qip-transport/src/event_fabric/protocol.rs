@@ -300,10 +300,22 @@ pub struct ProducerInitRequest {
 }
 
 /// `producers/init` response: the epoch now assigned, which fences any
-/// earlier one for the same `producer_id` on the same partition.
+/// earlier one for the same `producer_id` on the same partition, and the
+/// sequence the broker's dense stream for this producer continues at.
+///
+/// `next_sequence` is ADR 0100 §4's carry-over, told to the one party that
+/// has to act on it: "sequences carry over across epochs, so a restarted
+/// node neither duplicates nor loses". The broker's producer table has
+/// always applied that rule; this response once carried only the epoch, so a
+/// restarted producer stamped its first batch with sequence zero, which the
+/// table reads as a slot behind the stream it cannot verify, and the
+/// producer id was refused for good. Defaults to zero on decode, which is
+/// what a broker that has never seen this producer answers anyway.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProducerInitResponse {
     pub producer_epoch: u64,
+    #[serde(default)]
+    pub next_sequence: u64,
 }
 
 // --- produce ---------------------------------------------------------------

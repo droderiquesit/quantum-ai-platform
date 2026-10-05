@@ -170,7 +170,7 @@
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status unchanged (PARTIAL). deployable true -> false: MeshInbox is constructed only by qip-api's MeshBackbone, which main.rs builds only when QIP_MESH_CELLS is set, and no environment sets it; OutboundQueue is reached through MeshPublisher in qip-edge-node, and execution_nodes = {} everywhere. LocalQueue has no production caller, so the claim that it is reached from production was corrected."
+    "notes": "verify: status unchanged (PARTIAL). deployable true -> false: MeshInbox is constructed only by qip-api's MeshBackbone, which main.rs builds only when QIP_MESH_CELLS is set, and no environment sets it; OutboundQueue is reached through MeshPublisher in qip-edge-node, and execution_nodes = {} everywhere. LocalQueue has no production caller, so the claim that it is reached from production was corrected. | fabricd pass: a fabricd process now exists; its listener caps a request body at 8 MiB and sixty-four connections, the producer dedup window and quota table are bounded. There is still no pooled-buffer allocator and no broker-wide memory ceiling."
   },
   {
     "id": "FABRIC-064",
@@ -238,7 +238,7 @@
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "Assessment corrected from MISSING: the earlier text predates the Batcher. Remaining work: a producer wrapper that owns a flush thread, and a benchmark (FABRIC-029)."
+    "notes": "Assessment corrected from MISSING: the earlier text predates the Batcher. Remaining work: a producer wrapper that owns a flush thread, and a benchmark (FABRIC-029). | fabricd pass: unchanged. The Batcher still has no production caller; the SDK's Producer now advances its sequence by the record count, which is what makes a multi-record batch from a Batcher acceptable to the broker at all."
   },
   {
     "id": "FABRIC-067",
@@ -387,32 +387,33 @@
     "work_item": "E12",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags unchanged. Corrected the gap: it said export was document-shaped and pulled rather than pushed, but an OTLP/JSON push drain exists in qip-api (openobserve.rs). No environment enables it."
+    "notes": "verify: status and flags unchanged. Corrected the gap: it said export was document-shaped and pulled rather than pushed, but an OTLP/JSON push drain exists in qip-api (openobserve.rs). No environment enables it. | fabricd pass: the broker now exists and exposes qip_event_fabric_* series and a readiness body on its own listener. It has no OTLP export and no traces, and nothing scrapes it (not deployed)."
   },
   {
     "id": "FABRIC-073",
     "status": "PARTIAL",
-    "current": "Every central binary's health endpoint reads process state directly rather than consuming any event topic \u2014 structurally satisfying the underlying invariant \u2014 but no fabric-specific 'P4 Telemetry class' concept exists (FABRIC-057) and no chaos test proves the specific claim 'stop every broker and health still reports the outage' because there is no broker to stop. qip-fastbrain/src/health.rs and qip-deepbrain/src/health.rs serve /health, /ready, /metrics, /quiesce from in-process NodeStatus, not from a subscription.",
+    "current": "qip-fabricd serves health and /metrics from a listener of its own (refused at configuration if it is the protocol's), from state the composition root sets directly; its health module cannot name the broker or a stream. When the protocol listener stops, health answers 503 not_ready with serving=false and /metrics still answers.",
     "evidence": [
+      "backend/crates/apps/qip-fabricd/tests/broker.rs health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_stops (ran: ok; mutation: Running::stop_data_plane not clearing serving -> health answers 200 ready, restored)",
       "backend/crates/apps/qip-fastbrain/src/health.rs:13-20,144",
       "backend/crates/apps/qip-fastbrain/src/health.rs:366 (liveness_answers_two_hundred_for_a_node_that_is_merely_slow)",
       "backend/crates/apps/qip-api/src/routes.rs:1228,2563 (health(&platform) reads Platform fields directly)"
     ],
-    "gap": "No test specifically demonstrates that fabric health survives every broker stopping, because there is no broker and no P4 Telemetry class to be the 'never the primary health path' exception for.",
+    "gap": "The metric series do not themselves report the outage (there is no serving gauge; only the health body says so), the export is Prometheus exposition and not direct OpenTelemetry export, and the test stops the protocol listener inside a living process: a broker process that dies takes its health listener with it, and that outage is visible only as a failed probe. Nothing scrapes any of it (not deployed).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [
       "FABRIC-057"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-fastbrain liveness_answers_two_hundred_for_a_node_that_is_merely_slow proves liveness is independent of processing lag today; the broker-stop chaos test cannot be written until a broker exists.",
+    "verification": "cargo test -p qip-fabricd --test broker health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_stops",
     "work_item": "E12",
     "tier": "T1",
     "size": "S",
-    "notes": ""
+    "notes": "fabricd pass: gap rewritten; the broker and its separate health listener now exist."
   },
   {
     "id": "FABRIC-074",

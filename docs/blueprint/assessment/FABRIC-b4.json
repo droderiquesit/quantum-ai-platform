@@ -89,7 +89,7 @@
     "work_item": "E03",
     "tier": "T3",
     "size": "L",
-    "notes": ""
+    "notes": "fabricd pass: the broker now answers a metadata route (leader epoch, high watermark, archived_through per partition) from a serving process. There is still one broker at a configured address and no leader map to refresh."
   },
   {
     "id": "FABRIC-089",
@@ -609,7 +609,7 @@
     "work_item": "E13",
     "tier": "T3",
     "size": "L",
-    "notes": "Depends on ambient/development agents existing at all (E09), which the requirement's own notes place at master Phases 5-8."
+    "notes": "Depends on ambient/development agents existing at all (E09), which the requirement's own notes place at master Phases 5-8. | fabricd pass: a per-identity stream ACL is now enforced by the broker (FABRIC-018). Still missing: an ambient or development producer, and a catalogue rule refusing such an identity a grant above P3."
   },
   {
     "id": "FABRIC-111",

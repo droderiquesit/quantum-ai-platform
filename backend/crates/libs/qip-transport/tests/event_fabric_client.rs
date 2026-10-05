@@ -240,9 +240,15 @@ impl FabricTransport for FetchLoopTransport {
 #[test]
 fn a_producer_refused_for_an_epoch_it_no_longer_holds_does_not_latch_fenced() {
     let (transport, _calls, _last_request) = ScriptedTransport::new(vec![
-        Response::ProducerInit(ProducerInitResponse { producer_epoch: 1 }),
+        Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 1,
+            next_sequence: 0,
+        }),
         Response::Refused(Refusal::Fenced),
-        Response::ProducerInit(ProducerInitResponse { producer_epoch: 2 }),
+        Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 2,
+            next_sequence: 0,
+        }),
         Response::Produce(ProduceAck::new("orders", 0, 10, 20, 20).expect("a coherent ack")),
     ]);
     let mut producer = new_producer(Box::new(transport));
@@ -488,7 +494,10 @@ fn a_consumer_killed_after_committing_n_resumes_at_n_plus_one() {
 #[test]
 fn a_producer_runs_over_an_in_memory_transport_without_opening_a_socket() {
     let (transport, calls, _last_request) = ScriptedTransport::new(vec![
-        Response::ProducerInit(ProducerInitResponse { producer_epoch: 9 }),
+        Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 9,
+            next_sequence: 0,
+        }),
         Response::Produce(ProduceAck::new("orders", 0, 0, 5, 5).expect("a coherent ack")),
     ]);
     assert_eq!(

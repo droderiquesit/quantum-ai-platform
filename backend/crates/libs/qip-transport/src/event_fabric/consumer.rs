@@ -470,11 +470,15 @@ impl Consumer {
     /// or out of [`Self::pending`], so a caller reading [`Self::next_offset`]
     /// between two [`Self::fetch`] calls always sees where the *next*
     /// delivered batch (buffered or not) will pick up from.
+    ///
+    /// An offset names a batch, not a record: the segment log assigns one
+    /// per append, and the broker fetches, commits and archives in that
+    /// unit. This advanced by the batch's record count until the SDK was
+    /// first driven against the broker over a real listener, where a
+    /// three-record batch at offset 0 moved the consumer to offset 3 and the
+    /// batches at 1 and 2 were never delivered.
     fn advance_past(&mut self, batch: &Batch) -> Result<()> {
-        let records = u64::try_from(batch.records.len()).map_err(|_| {
-            Error::invalid("a fetched batch carries more records than a u64 can count")
-        })?;
-        self.next_offset = batch.base_offset.checked_add(records).ok_or_else(|| {
+        self.next_offset = batch.base_offset.checked_add(1).ok_or_else(|| {
             Error::invalid(format!(
                 "the next offset for {}:{} would overflow past base offset {}",
                 self.stream, self.partition, batch.base_offset

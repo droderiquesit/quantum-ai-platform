@@ -108,7 +108,8 @@ one.
 ## Fabric spool pressure
 
 **This playbook describes a design, not a system.** The event fabric's broker
-(`qip-fabricd`) refuses to start (**ran**, exit 1), the producer-side spool
+(`qip-fabricd`) starts and serves locally since 2026-10-04 but is deployed
+nowhere and nothing produces to it, the producer-side spool
 that would feed it is specified in ADR 0100 sections 3 and 6 but is not wired
 into `qip-edge-node` (the `event_fabric` module the ADR names is not in
 `backend/crates/apps/qip-edge-node/src/`), and no composition root builds a

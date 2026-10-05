@@ -35,6 +35,7 @@
 //! applied by a reader that holds no lock and so can afford to be wrong about
 //! a live tail, because it never touches it.
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -42,6 +43,7 @@ use std::path::{Path, PathBuf};
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256;
 use qip_events::event_fabric::codec::{Batch, DecodeOutcome};
+use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::{SegmentLog, SegmentLogConfig};
 
 /// The fixed byte length of a segment file's own header (magic + format
@@ -234,6 +236,43 @@ impl PartitionLog {
             .filter(|summary| summary.sealed)
             .map(|summary| summary.start_offset)
             .collect()
+    }
+
+    /// How many batches the active, not yet sealed segment holds.
+    pub fn active_batches(&self) -> u64 {
+        self.log
+            .segments()
+            .last()
+            .map_or(0, |active| active.end_offset - active.start_offset)
+    }
+
+    /// Seal the active segment now if it holds anything. See
+    /// [`SegmentLog::seal_active`].
+    pub fn seal_active(&self) -> Result<bool> {
+        self.log.seal_active()
+    }
+
+    /// Archive every sealed segment of this partition that is not archived
+    /// yet, oldest first, returning how many this call archived. Stops at
+    /// the first failure: `archived_through` only advances over an unbroken
+    /// run of archived segments, so archiving past a gap would cost an
+    /// upload and release nothing.
+    pub fn archive_sealed(
+        &self,
+        archiver: &Archiver,
+        stream: &str,
+        partition: u32,
+        entitlements: &BTreeSet<String>,
+    ) -> Result<u64> {
+        let mut archived = 0u64;
+        for start_offset in self.sealed_segment_starts() {
+            if self.log.is_archived(start_offset)? {
+                continue;
+            }
+            archiver.archive(&self.log, start_offset, stream, partition, entitlements)?;
+            archived += 1;
+        }
+        Ok(archived)
     }
 
     /// The highest offset below which every batch has been durably archived.

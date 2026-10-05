@@ -1,30 +1,42 @@
 //! Event fabric composition root's entry point.
 //!
 //! ADR 0100 assigns this binary the event-fabric broker's role: sole writer
-//! of every partition's batch chain, running its own clock for segment roll,
-//! retention and archive (ADR 0100 §2). Every composition root here reads
-//! configuration and refuses anything invalid, binds ports and proves
-//! storage writable *before* reporting healthy, and only then serves
-//! (`.claude/rules/architecture/00-boundaries.md`). This binary cannot do
-//! any of that honestly yet: `config`, `health` and `archiver` are doc-only
-//! stubs, each waiting on the packet named in its own module comment (see
-//! `lib.rs`). Serving on a configuration nobody validated, or acknowledging
-//! a write to a store nobody proved durable, is exactly the failure the
-//! composition-root order exists to close — so this process refuses outright
-//! rather than starting broken. `docs/adr/0010-what-gets-deployed.md` records
-//! why it is excluded from the image matrix and every workload catalogue
-//! until that changes.
+//! of every partition's batch chain, running its own clock for segment roll
+//! and archive (ADR 0100 §2). `qip_fabricd::start` is the composition and
+//! holds the order every composition root here holds to — configuration
+//! refused first, storage proven writable before a port is bound, serving
+//! last (`.claude/rules/architecture/00-boundaries.md`). This file reads the
+//! environment, calls it, and stops the process naming the reason when it
+//! refuses.
+//!
+//! This binary refused to start outright until its `config`, `health` and
+//! `archiver` modules existed, because serving on a configuration nobody
+//! validated is the failure that order exists to close. It now starts only
+//! on a configuration with no defaults in it. It is still not deployed:
+//! `docs/adr/0010-what-gets-deployed.md` keeps it out of the image matrix
+//! and every workload catalogue until its placement is decided (ADR 0099
+//! C8).
+
+use std::sync::Arc;
+
+use qip_core::SystemClock;
+use qip_fabricd::config::Config;
 
 fn main() {
-    eprintln!(
-        "qip-fabricd: refusing to start. ADR 0100 assigns this binary the \
-         event-fabric broker's role, sole writer of every partition's batch \
-         chain; its configuration, health and archiver modules are doc-only \
-         stubs pending the packets that fill them (see \
-         backend/crates/apps/qip-fabricd/src/lib.rs), so there is no \
-         validated configuration to read and no store proven writable. \
-         Serving on defaults nobody chose would violate the composition-root \
-         order every binary in this workspace holds to."
-    );
-    std::process::exit(1);
+    let started = Config::from_environment()
+        .and_then(|config| qip_fabricd::start(&config, Arc::new(SystemClock)));
+    match started {
+        Ok(running) => {
+            eprintln!(
+                "qip-fabricd: serving the event-fabric protocol on {} and health on {}",
+                running.address(),
+                running.health_address()
+            );
+            running.wait();
+        }
+        Err(error) => {
+            eprintln!("qip-fabricd: refusing to start. {error}");
+            std::process::exit(1);
+        }
+    }
 }

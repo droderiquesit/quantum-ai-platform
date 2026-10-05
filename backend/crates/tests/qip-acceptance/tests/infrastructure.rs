@@ -5629,10 +5629,11 @@ const NOT_A_WORKLOAD: &[(&str, &str)] = &[
     ),
     (
         "qip-fabricd",
-        "ADR 0100 assigns this binary the event-fabric broker role, but its \
-         composition-root modules (config, health, archiver) are doc-only \
-         stubs and the binary refuses to start; scheduling a process that \
-         exits immediately is not a workload. See \
+        "ADR 0100 assigns this binary the event-fabric broker role, and its \
+         composition root now serves, but where a broker with one disk, one \
+         writer and no replica runs is undecided (ADR 0099 C8); the Cloud \
+         Run shape the catalogue schedules keeps nothing across a restart \
+         and is the one placement it cannot take. See \
          docs/adr/0010-what-gets-deployed.md",
     ),
     (
@@ -5668,11 +5669,10 @@ const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[
     (
         "qip-fabricd",
         "qip-fabricd",
-        "ADR 0100 assigns the event-fabric broker role, but its \
-         composition-root modules are doc-only stubs and the binary refuses \
-         to start; an image built from it would ship a process that exits \
-         the instant Cloud Run started it. Excluded while its packets land \
-         and GCP placement waits on ADR 0099 C8. See \
+        "ADR 0100 assigns the event-fabric broker role and its composition \
+         root now serves, but an image is built to be scheduled somewhere \
+         and where this broker runs is undecided. Excluded while GCP \
+         placement waits on ADR 0099 C8. See \
          docs/adr/0010-what-gets-deployed.md",
     ),
     (

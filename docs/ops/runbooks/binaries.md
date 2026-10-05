@@ -218,16 +218,55 @@ snapshot is restored ([incidents](incidents.md#a-cell-is-halted)).
 
 ## qip-fabricd
 
-**Refuses to start, always.** Ran with no configuration: exit 1 and
-`qip-fabricd: refusing to start. ADR 0100 assigns this binary the event-fabric
-broker's role, sole writer of every partition's batch chain; its configuration,
-health and archiver modules are doc-only stubs ...`. It has no config keys,
-port, probe or metrics endpoint because it serves nothing. It is excluded from
-the image matrix and every workload catalogue (`docs/adr/0010-what-gets-deployed.md`).
-The producer-side spool, the stream catalogue
-(`infrastructure/event-fabric/streams.local.json`) and the segment library
-exist; the broker does not run. Do not deploy it and do not try to make it
-"just start": serving on defaults nobody chose is what the refusal prevents.
+**Starts on a complete configuration and on nothing less; not deployed.**
+The event fabric's single-node broker (ADR 0100). Ran with no configuration
+(**ran**, 2026-10-04): exit 1 and `qip-fabricd: refusing to start. invalid:
+QIP_EVENT_FABRIC_DATA_DIR is not set; set it to the directory partitions are
+stored in. The event fabric has no default for it`. Ran against the committed
+local catalogue on loopback (**ran**, same day): `serving the event-fabric
+protocol on 127.0.0.1:17100 and health on 127.0.0.1:17101`, `GET /healthz`
+answered 200 `"status":"ready"`, `/metrics` answered the `qip_event_fabric_*`
+series, a metadata request with an `operator` token answered 200 and one with
+no token answered 401. It is still excluded from the image matrix and every
+workload catalogue (`docs/adr/0010-what-gets-deployed.md`): where it runs is
+undecided (ADR 0099 C8). Do not deploy it.
+
+Seven settings are required and have no default (ADR 0100 section 5: nothing
+rests on a broker default); two are optional.
+
+| Variable | What it is |
+|---|---|
+| `QIP_EVENT_FABRIC_DATA_DIR` | partitions, the leader epoch, consumer checkpoints, isolations and the operator-action log |
+| `QIP_EVENT_FABRIC_CATALOGUE` | the stream catalogue: stream policies and grants. Re-read while running; a changed file that parses replaces the grants in force, and one that does not changes nothing and is reported on the health body as `catalogue_error` |
+| `QIP_EVENT_FABRIC_IDENTITIES_FILE` | one `<identity> <sha256 of its token>` per line. Digests, never tokens |
+| `QIP_EVENT_FABRIC_ARCHIVE_DIR` | where sealed segments are archived. A directory, refused if it is inside the data directory. The Cloud Storage adapter is not selectable here yet |
+| `QIP_EVENT_FABRIC_LISTEN` | the protocol listener, `/v1/event-fabric/...`, bearer token on every request |
+| `QIP_EVENT_FABRIC_HEALTH_LISTEN` | health and `/metrics`, on a listener of its own, refused if it is the protocol's |
+| `QIP_EVENT_FABRIC_PARTITIONS` | partitions per stream, 1 to 1024. Changing it on an existing data directory changes which partition every key routes to |
+| `QIP_EVENT_FABRIC_SEGMENT_BYTES` | optional: the size at which a segment is sealed |
+| `QIP_EVENT_FABRIC_HOUSEKEEPING_MS` | optional, default 1000: how often aged segments are sealed and archived and the catalogue is re-read |
+
+**What it is not.** One broker, one disk: no follower, no replication, no
+failover (ADR 0100 section 3). Plaintext TCP; the bearer token guards against
+misconfiguration, not an on-path reader. A stalled archive delays no append
+but stops `archived_through` advancing, so producers on a quorum
+acknowledgement stop being released: watch
+`qip_event_fabric_archive_lag_segments` and `archive_error` on the health
+body. **Restart.** The leader epoch is bumped and persisted at every start;
+partitions recover from their segments; an isolation an operator imposed
+(`admin/isolate`) survives the restart and has to be released.
+
+**Isolating a partition** (FABRIC-028), on the broker's own host — the
+operator token travels in plaintext, so the command refuses any peer that is
+not loopback:
+`qip event-fabric isolate --peer 127.0.0.1:<port> --stream <name> --partition <n> --operator <identity> --reason <why>`
+and `qip event-fabric release` with the same arguments less `--reason`. The
+token is read from the file `QIP_EVENT_FABRIC_OPERATOR_TOKEN_FILE` names and
+never from the variable itself; `--operator` must be the identity that token
+verifies as, and that identity needs an `admin` grant on the stream in the
+catalogue. Produce to the partition is refused naming the operator and the
+reason until it is released; nothing is deleted and it can still be read.
+One partition per command.
 
 ## qip-ledgerd
 

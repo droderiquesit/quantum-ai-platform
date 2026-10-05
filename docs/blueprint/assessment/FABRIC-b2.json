@@ -115,25 +115,27 @@
   },
   {
     "id": "FABRIC-034",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_transport::event_fabric::consumer::Consumer::subscribe moves the consumer onto a dedicated thread that fetches within its credit and delivers into a bounded channel; the caller blocks only in Subscription::recv. Each subscription has its own thread, so a slow subscriber backs its own fetch thread up against its own bounded channel and no other subscription.",
     "evidence": [
+      "backend/crates/apps/qip-fabricd/tests/broker.rs a_subscriber_receives_batches_appended_after_it_subscribed_without_fetching_itself (against the serving broker; ran: ok; mutation: the fetch thread returning instead of polling again when idle -> nothing appended later is delivered, restored)",
+      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs a_subscription_delivers_into_a_bounded_channel_and_a_slow_caller_back_pressures_the_fetch_thread",
       "backend/crates/libs/qip-transport/src/mesh.rs:1182 pub fn poll(&mut self, until: Timestamp) -> ...Vec<AnyEvent> -- an explicit pull API the caller must invoke",
       "grep -rn 'thread::spawn\\|fn subscribe(' backend/crates/libs/qip-transport/src/mesh.rs backend/crates/services/qip-streaming/src/*.rs -> no push-style subscription/callback registration found"
     ],
-    "gap": "The SDK offers only a caller-driven poll(until) API on RemoteSubscriber; there is no push-style delivery, not even the 'permitted shape' (a blocking subscription on a dedicated thread) the requirement's own notes describe as acceptable pending an async-runtime ADR.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need: a subscription registered on a topic that receives records via a callback/channel without the caller issuing fetches, backed by a dedicated OS thread (not an async runtime).",
+    "verification": "cargo test -p qip-fabricd --test broker a_subscriber_receives_batches; cargo test -p qip-transport --test event_fabric_client a_subscription_delivers",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "A thread-per-subscriber push wrapper around poll() is buildable today without a new dependency; true async subscriptions remain gated on reopening ADR 0099 C2 (tokio)."
+    "notes": "A thread-per-subscriber push wrapper around poll() is buildable today without a new dependency; true async subscriptions remain gated on reopening ADR 0099 C2 (tokio). | closed in the fabricd pass (the earlier MISSING predates Consumer::subscribe): this is the blocking-thread shape the requirement's own notes permit; an async subscription needs a runtime (ADR 0099 C2). integrated=false: no production consumer calls subscribe yet (qip-ledgerd is a stub). No delivery-time budget is asserted, only delivery in order without a caller-side fetch."
   },
   {
     "id": "FABRIC-035",
@@ -158,7 +160,7 @@
     "work_item": "E12",
     "tier": "T1",
     "size": "M",
-    "notes": "The in-tree OTel-compatible library already exists (ADR 0026/0028/0032's settled export path) -- this is wiring work against an existing crate, not a new dependency. verify: upgraded MISSING -> PARTIAL. The assessor missed qip-edge-node's MeshSeries, which turns the mesh link's produce/consume outcomes into counters served at /metrics and is covered by a named test; it is node-level, counters-only, carries no trace context, and runs only in qip-edge-node, so deployable=false."
+    "notes": "The in-tree OTel-compatible library already exists (ADR 0026/0028/0032's settled export path) -- this is wiring work against an existing crate, not a new dependency. verify: upgraded MISSING -> PARTIAL. The assessor missed qip-edge-node's MeshSeries, which turns the mesh link's produce/consume outcomes into counters served at /metrics and is covered by a named test; it is node-level, counters-only, carries no trace context, and runs only in qip-edge-node, so deployable=false. | fabricd pass: qip-fabricd records produce outcomes by stream and class, latency, refusals by reason, watermarks, archive lag and its leader epoch where the protocol handler answers, and serves them at /metrics (shown moving on a real request by qip-fabricd tests/broker.rs health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_stops). The SDK layer itself still emits nothing, there is no consume-side series, and no trace context crosses a hop."
   },
   {
     "id": "FABRIC-036",
@@ -210,27 +212,28 @@
   },
   {
     "id": "FABRIC-038",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "Structurally satisfied but unproven by a named test: `unsafe_code = \"forbid\"` at the workspace root (backend/Cargo.toml:164) rules out raw memory reinterpretation onto a socket, and every send path found (qip_transport::http, qip_streaming's StreamEnvelope via schema::EnvelopeWire) serialises through serde_json rather than any byte-level struct cast.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_wire_format.rs no_fabric_source_writes_a_native_layout_where_a_format_belongs (ran: ok; mutation: a to_ne_bytes call added to HttpTransport::call, test failed naming it, restored) and every_fabric_socket_write_carries_bytes_from_the_versioned_encoders (ran: ok; mutation: the SDK's request body built with format!(\"{request:?}\") instead of encode_request, test failed, restored)",
       "backend/Cargo.toml:164 unsafe_code = \"forbid\"",
       "backend/crates/services/qip-streaming/src/schema.rs (EnvelopeWire, ENVELOPE_SCHEMA_VERSION)",
       "grep -rn 'to_ne_bytes\\|from_ne_bytes\\|transmute' backend/crates/libs/qip-transport/src backend/crates/services/qip-streaming/src -> no results",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs -> no assertion found naming this specific property"
     ],
-    "gap": "No dedicated architecture test asserts 'every type written by the SDK's send path and the brokers' replication/mirror paths is a generated schema type encoded by the wire codec' -- the guarantee is structural (unsafe forbidden, everything observed goes through serde) but unproven by a named test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need an architecture-suite test scanning the send paths for anything but EnvelopeWire/schema-typed serialisation.",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_wire_format",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Cheapest of the 28 to close: the property already holds, it needs only a named acceptance test in backend/crates/tests/qip-acceptance/tests/architecture.rs."
+    "notes": "Cheapest of the 28 to close: the property already holds, it needs only a named acceptance test in backend/crates/tests/qip-acceptance/tests/architecture.rs. | closed in the fabricd pass: the test also asserts that no replication or mirror path exists (ADR 0100 section 3, C2 and C8), so the commit that adds one fails here until its send path is pinned."
   },
   {
     "id": "FABRIC-039",
@@ -281,20 +284,22 @@
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "M p38's FabricEnvelope (cited on verification in the source requirement) restates these among other fields the contract domain owns; not separately assessed here. verify: status PARTIAL kept; flags corrected from all-false to describe the 3-of-7 fields that do exist (occurred_at, recorded_at, region) -- present in non-test code, tested, and sealed on the Platform journal in deployable central binaries. Partition, leader epoch and HLC remain absent."
+    "notes": "M p38's FabricEnvelope (cited on verification in the source requirement) restates these among other fields the contract domain owns; not separately assessed here. verify: status PARTIAL kept; flags corrected from all-false to describe the 3-of-7 fields that do exist (occurred_at, recorded_at, region) -- present in non-test code, tested, and sealed on the Platform journal in deployable central binaries. Partition, leader epoch and HLC remain absent. | fabricd pass: qip-fabricd tests/broker.rs reads every batch back from two partitions written under four leader epochs and asserts dense offsets, a non-decreasing leader epoch and strictly increasing logical timestamps. Region is still not on the record or the response, and after a restart a partition's clock restarts from the wall clock and not from the last logged timestamp, so the HLC guarantee across a leader change rests on the wall clock not going backwards."
   },
   {
     "id": "FABRIC-041",
     "status": "PARTIAL",
     "current": "qip_transport's module doc states its delivery model plainly: 'at-least-once (never exactly-once) delivery' (lib.rs:30-43); qip_streaming::routing::RoutingClass::Hot (the only lossy, i.e. at-most-once-capable, path) is admitted only for topics qip_events::Topic::is_lossy_tolerable calls replaceable, gated at construction by RoutingClass::check.",
     "evidence": [
+      "backend/crates/apps/qip-fabricd/tests/broker.rs random_produce_fetch_and_restart_sequences_keep_offsets_dense_and_fetches_in_append_order (a consumer group whose members commit and are replaced is delivered every acknowledged offset at least once across four broker restarts)",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs a_broker_does_not_start_on_a_catalogue_that_gives_a_durable_class_an_at_most_once_profile (ran: ok; mutation: StreamPolicy::new no longer comparing the acknowledgement with the class's floor -> the broker starts, restored)",
       "backend/crates/libs/qip-transport/src/lib.rs:30-43",
       "backend/crates/services/qip-streaming/src/routing.rs:1-40 (RoutingClass::check refuses the venue-critical+durable combination and the reverse)",
       "backend/crates/services/qip-streaming/tests/routing.rs (8 tests) \u2014 'a venue-critical event routed durable is refused at construction, not at publish' per docs/architecture/current-state/services-data-world.json",
       "backend/crates/services/qip-streaming/src/envelope.rs:191,525 (RoutingClass::check runs at seal and decode; reached from qip-kernel Platform::journal_cycle)",
       "backend/crates/libs/qip-transport/tests/mesh.rs:454 a_poll_whose_response_is_lost_redelivers_rather_than_losing_frames (at-least-once to a consumer, mesh only)"
     ],
-    "gap": "At-least-once is the documented default and is not configurable away outside the Hot/local path, which is a real match for the rule's intent -- but the gate is keyed on 'lossy tolerable' (mainly venue-tick market data), not literally on a 'telemetry' topic class, and no topic-creation check refuses an at-most-once profile on a non-telemetry class by name.",
+    "gap": "At-least-once to a consumer group is now shown through the serving broker across restarts of the broker, the producer and the group's members, and a catalogue giving a durable class an at-most-once acknowledgement does not start a broker (topic creation is declaring it in that catalogue). What is not shown is the check's crash at arbitrary points: restarts here fall between operations, and a kill mid-write is proven only at the segment log's torn-tail recovery, not end to end on real processes (ADR 0100 section 8's harness has no suite yet).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -302,11 +307,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/services/qip-streaming/tests/routing.rs (8 tests); would additionally need a property test over producer/leader/consumer crashes asserting quorum-acknowledged durable-topic records are delivered at least once, plus a topic-creation refusal for at-most-once on a non-telemetry class.",
+    "verification": "cargo test -p qip-fabricd --test broker random_produce_fetch_and_restart a_broker_does_not_start_on_a_catalogue; cargo test -p qip-streaming --test routing",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's P4 telemetry scoping and this repository's 'lossy tolerable' scoping are related but not identical categories; FABRIC-047/048 is where that classification mismatch matters most. verify: status and flags kept. Clarified reach: the seal-time class gate is in the deployed Platform journal, but at-least-once delivery to a consumer exists only over the qip-transport mesh (RemoteSubscriber/CellDeltaReceiver), which no environment enables (QIP_MESH_CELLS unset, execution_nodes = {}); LocalQueue itself is never constructed outside tests."
+    "notes": "The requirement's P4 telemetry scoping and this repository's 'lossy tolerable' scoping are related but not identical categories; FABRIC-047/048 is where that classification mismatch matters most. verify: status and flags kept. Clarified reach: the seal-time class gate is in the deployed Platform journal, but at-least-once delivery to a consumer exists only over the qip-transport mesh (RemoteSubscriber/CellDeltaReceiver), which no environment enables (QIP_MESH_CELLS unset, execution_nodes = {}); LocalQueue itself is never constructed outside tests. | fabricd pass: gap narrowed."
   },
   {
     "id": "FABRIC-042",

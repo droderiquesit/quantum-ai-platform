@@ -713,9 +713,28 @@ impl SegmentLog {
         manifest_read(&self.directory, key)
     }
 
+    /// Seal the active segment now, whatever its size, if it holds at least
+    /// one batch. Returns whether it sealed anything.
+    ///
+    /// [`Self::append`] seals by size alone, so a quiet partition's last few
+    /// batches sat in an active segment that nothing would ever seal: never
+    /// archived, never reported in `archived_through`, and so never safe for
+    /// a producer on a quorum acknowledgement to release. A stream's seal
+    /// cadence is a time, and this is what lets the broker's own clock keep
+    /// it. An empty active segment is left alone rather than sealed: a seal
+    /// declaring zero records describes nothing, and the archive refuses it.
+    pub fn seal_active(&self) -> Result<bool> {
+        let mut writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        if writer.next_offset == writer.active_start_offset {
+            return Ok(false);
+        }
+        self.roll_locked(&mut writer)?;
+        Ok(true)
+    }
+
     /// Seal the active segment and open a new, empty one to receive the
     /// next append. Called with the writer lock already held, from
-    /// [`Self::append`] only.
+    /// [`Self::append`] and [`Self::seal_active`].
     fn roll_locked(&self, writer: &mut Writer) -> Result<()> {
         let start_offset = writer.active_start_offset;
         let record_count = writer.next_offset - start_offset;

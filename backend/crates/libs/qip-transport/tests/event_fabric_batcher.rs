@@ -72,6 +72,7 @@ impl FabricTransport for CountingTransport {
         match request {
             Request::ProducerInit(_) => Ok(Response::ProducerInit(ProducerInitResponse {
                 producer_epoch: 1,
+                next_sequence: 0,
             })),
             Request::Produce(_) => {
                 self.produces.fetch_add(1, Ordering::SeqCst);

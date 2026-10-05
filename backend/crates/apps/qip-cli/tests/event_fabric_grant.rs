@@ -116,6 +116,7 @@ impl FabricTransport for RecordingBroker {
         match request {
             Request::ProducerInit(_) => Ok(Response::ProducerInit(ProducerInitResponse {
                 producer_epoch: 1,
+                next_sequence: 0,
             })),
             Request::Produce(produce) => {
                 let base = self.written;
