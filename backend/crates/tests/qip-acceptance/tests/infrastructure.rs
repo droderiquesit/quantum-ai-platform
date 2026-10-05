@@ -1805,6 +1805,46 @@ fn the_unit_pins_the_node_onto_the_first_isolated_core_so_the_isolcpus_refusal_g
 }
 
 #[test]
+fn nothing_in_the_terraform_autoscales_the_execution_node_group() {
+    // Blueprint REFLEX-070. A Reflex node owns one venue shard and an open
+    // venue session; an autoscaler that adds a second instance creates two
+    // owners of one session, and one that removes an instance drops a live
+    // session mid-day. The group is sized by the operator's `execution_nodes`
+    // map and nothing else. Matched on resource *type* and with comments
+    // stripped, because the data module legitimately says "autoscaling_config"
+    // for Bigtable and this file's own comments say "autoscaler".
+    let node = without_comments(&read(NODE_MODULE));
+    assert!(
+        node.contains("resource \"google_compute_instance_group_manager\" \"node\""),
+        "{NODE_MODULE} no longer declares the node's instance group manager, so \
+         the absence asserted below guards a group that is not there"
+    );
+    let forbidden = [
+        "google_compute_autoscaler",
+        "google_compute_region_autoscaler",
+        "autoscaling_policy",
+    ];
+    let mut scanned = 0;
+    for path in files_with_extension("infrastructure", "tf") {
+        scanned += 1;
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for needle in forbidden {
+            assert!(
+                !text.contains(needle),
+                "{} contains `{needle}`; a node group that scales makes two owners of one \
+                 venue session or drops a live one (REFLEX-070). Size it through \
+                 `execution_nodes` instead",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        scanned > 20,
+        "only {scanned} .tf files were scanned; the walk is broken"
+    );
+}
+
+#[test]
 fn an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else() {
     // The most security-relevant rules in the configuration. A node holds the
     // whole hot path and decides without asking anyone; these rules are the
