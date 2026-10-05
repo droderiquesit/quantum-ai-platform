@@ -105,7 +105,14 @@ fn run() -> Result<()> {
     let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())
         .and_then(StorageSettings::require_authoritative)?;
     storage.preflight()?;
-    let archive = Arc::new(ChainArchive::open(storage.key_value("event-log")?)?);
+    // The same hand-over that archives the log seals the platform's own
+    // orders, fills and verdicts into the Tick/Internal Lake (TICK-065).
+    // Opened here, so a lake that cannot be opened stops the process rather
+    // than the first archived cycle.
+    let archive = Arc::new(
+        ChainArchive::open(storage.key_value("event-log")?)?
+            .with_outcome_lake(storage.blobs(qip_storage::lake::LAKE_NAMESPACE)?),
+    );
 
     // The universe this process sizes against, read and journaled before the
     // platform exists — see `load_universe` for why an unset path is a

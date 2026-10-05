@@ -100,7 +100,7 @@
     "work_item": "E08",
     "tier": "T1",
     "size": "M",
-    "notes": "LicensingClass (Public/Internal/Licensed/Restricted/Synthetic) already exists at the data-capture layer and is the natural source for this lineage once it is threaded through TrainingDataset -> Distillation -> ModelArtifact. verify: status MISSING kept. The nearest thing found is ModelCard.training_datasets, which names datasets but carries no entitlement, licence class or permitted run/use scope and has no empty-list refusal; recorded as evidence so the builder threads LicensingClass through it rather than adding a parallel field."
+    "notes": "LicensingClass (Public/Internal/Licensed/Restricted/Synthetic) already exists at the data-capture layer and is the natural source for this lineage once it is threaded through TrainingDataset -> Distillation -> ModelArtifact. verify: status MISSING kept. The nearest thing found is ModelCard.training_datasets, which names datasets but carries no entitlement, licence class or permitted run/use scope and has no empty-list refusal; recorded as evidence so the builder threads LicensingClass through it rather than adding a parallel field. Examined 2026-10-05 and left MISSING. What blocks a small closure: the manifest is the artifact. qip_ai::serving::ModelArtifact is deny_unknown_fields with a digest over its payload alone, so an entitlement list on it is an artifact-format change under ADR 0083, and a refusal to seal an empty list in ModelRegistry::promote_artifact refuses every promotion the tree makes today until the licensing class is threaded from the campaign's door through TrainingDataset, TrainedTeacher and central::models::register_fit (qip-training, qip-ai, qip-kernel, qip-deepbrain learning.rs) and through every promotion fixture. qip_storage::lake::Materialized::entitlements_read is the lineage a lake-fed training run would start from."
   },
   {
     "id": "TICK-005",
@@ -396,7 +396,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:360 (FeatureEngine constructed, nothing registered; grep standard_suite -> definition and doc example only)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8699-8720 (central spread/depth derivation from quotes)"
     ],
-    "gap": "No composition root ever calls .register() against a FeatureDefinition — `grep -rn standard_suite backend/crates` matches only the definition and its own doc example — so the deployed-shape engine's graph is permanently empty and evaluate() returns nothing; toxicity, cross-venue and lead/lag features are also absent from the twelve; qip-deepbrain's separate training-time catalogue (qip_simulation_engine::harness::bar_catalogue) shares no code with this one, so what a strategy trains against and what it could evaluate live are two independent implementations.",
+    "gap": "The catalogue half is wired and the engine half is not. qip_edge_node::standard_engine_and_catalogue registers standard_suite into an engine and declares the same keys in a catalogue, and StrategyInstaller::compile compiles every plan against that catalogue (strategies.rs), so a plan naming microprice now compiles. But main.rs still hands assemble() `FeatureEngine::new(MarketState::default(), ..)` with nothing registered, so the deployed-shape cell evaluates no feature a compiled strategy reads; only tests/features.rs builds a node with the registered engine. The binary does not know its instruments at start-up, and a grep of qip-edge/src/cell.rs finds no accessor through which a suite could be registered into the cell's engine after assembly, so closing it means either instruments in NodeConfig or a registration seam on Cell at plan install. Toxicity, cross-venue and lead/lag features are also absent from the twelve; qip-deepbrain's training-time catalogue (qip_simulation_engine::harness::bar_catalogue) shares no code with this one.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -408,19 +408,23 @@
     "work_item": "E06",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status PARTIAL kept; rewrote current because 'Cell::work calls engine.ingest/evaluate' was offered as integration evidence although the graph is empty; integrated stays true only on the strength of the central spread/depth derivation. Cleared blocked_by external:billing: registering the suite and adding toxicity/lead-lag/cross-venue features is in-tree work."
+    "notes": "verify: status PARTIAL kept; rewrote current because 'Cell::work calls engine.ingest/evaluate' was offered as integration evidence although the graph is empty; integrated stays true only on the strength of the central spread/depth derivation. Cleared blocked_by external:billing: registering the suite and adding toxicity/lead-lag/cross-venue features is in-tree work. Re-examined 2026-10-05: the previous gap ('grep standard_suite matches only the definition') was stale; the remaining seam is main.rs:361 and is a change to the edge cell, not a small one."
   },
   {
     "id": "TICK-017",
     "status": "PARTIAL",
-    "current": "Determinism is demonstrated piecewise: qip-orderbook's byte-identical-snapshot test (TICK-015), qip-cli's journal replay ('a_clean_journal_replays_into_three_identical_registries_and_the_run_exits_zero', tests/replay.rs) which replays the platform's own decision EventLog, and qip-market-ingestion's ReplayAdapter/Tape which replay already-decoded SensedRecords under a release-instant discipline (tape.rs).",
+    "current": "The chain is now replayed whole, from venue bytes: qip-acceptance tests/tick_replay.rs decodes a recorded ITCH 5.0 session (qip-protocols), sequences it (qip-sequencing, with a packet out of order, a duplicate, a halt and resume, and a two-packet hole that never fills), rebuilds the book with qip_orderbook::replay and simulates a marketable order each way against it after every event. Two replays from the bytes produce identical event order, per-event nanosecond stamps, book state after every event, simulated fills and integrity flags; a replay resumed from a VenueCheckpoint taken after the first print reaches the same book states and fills; and the digest of the whole record is pinned, so every host that runs the suite recomputes it. Determinism also remains demonstrated piecewise (TICK-015, qip-cli's journal replay, ReplayAdapter/Tape). Writing the test found two defects in what the replay carries, below.",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::replaying_one_recorded_session_of_venue_bytes_twice_and_from_a_checkpoint_reproduces_every_event_book_fill_and_flag",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_and_not_the_intent (asserts the defect; fails when it is fixed)",
+      "backend/crates/edge/qip-orderbook/src/replay.rs:84 (replay: any Reset closes the period and resynchronises the book)",
+      "backend/crates/edge/qip-sequencing/src/tracker.rs (the abandoned gap's reset is stamped with the first missing sequence)",
+      "backend/crates/libs/qip-core/src/time.rs (Serialize for Timestamp writes to_rfc3339, which prints milliseconds)",
       "backend/crates/apps/qip-cli/tests/replay.rs (journal replay to identical registries)",
-      "backend/crates/services/qip-market-ingestion/src/replay.rs (ReplayAdapter)",
-      "backend/crates/edge/qip-orderbook/tests/replay.rs:21",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:366 (ReplayAdapter::open in non-test code); backend/crates/apps/qip-api/src/feed.rs:328 (TapeFeed)"
+      "backend/crates/edge/qip-orderbook/tests/replay.rs (TICK-015)"
     ],
-    "gap": "No single test replays raw venue-native bytes through decode -> sequence -> book -> fill and checks identical output digests across two runs or two hosts, as the requirement's own verification asks; qip-cli's replay exercises the decision journal, not a market-tick replay; ReplayAdapter replays SensedRecords, not venue-native wire bytes, so it never exercises qip-protocols' decoders.",
+    "gap": "Two defects, both found by replaying a session rather than a stage, and one thing this lane could not do. (1) The integrity flag depends on how many packets were lost together. The sequencer stamps the reset for an abandoned gap with the first missing sequence, and qip_orderbook::replay reads every Reset as a venue's completed rebuild: it closes the period and resynchronises on the spot. After a two-packet hole the next packet is not contiguous with the reset, a period opens and never closes, and every later book edit is withheld. After a one-packet hole the next packet is contiguous, no period opens, every step is flagged reliable, and a simulated buy of 450 is filled 111 against a book rebuilt from nothing. Telling a venue's snapshot reset from the cell's own declaration of loss needs the canonical schema (MessageBody::Reset) to say who declared it, or replay to stop treating a reset with no snapshot behind it as a rebuild; the second contradicts qip-orderbook's a_reset_closes_the_period_and_the_messages_after_it_are_reliable_again, so it is a decision and not a patch. (2) A checkpoint that has been stored does not resume to the same state. qip_core::Timestamp serialises to the millisecond (1704153600000005000 ns round-trips through serde_json as 1704153600000000000), VenueCheckpoint carries the last print's venue time and the last update time, and a venue-native session is stamped in nanoseconds. The test's checkpoint arm is therefore held in memory; through serde_json it fails on unmodified code. Making the serialised form lossless changes what every hash over a sub-millisecond timestamp is computed from across the workspace. (3) 'Once more on a different host' is a pinned digest every host recomputes, not a second host in one run. Nothing in a composition root replays venue-native bytes: qip_orderbook::replay has no non-test caller, and the production replay (ReplayAdapter in qip-deepbrain) replays SensedRecords.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -431,11 +435,11 @@
       "TICK-015"
     ],
     "blocked_by": "",
-    "verification": "A new end-to-end determinism test composing qip-protocols + qip-sequencing + qip-orderbook over one recorded session, run twice.",
+    "verification": "cargo test -p qip-acceptance --test tick_replay: 'test result: ok. 3 passed; 0 failed'. Mutations against the determinism test, each restored byte-for-byte by sha256 and re-run green: a snapshot digest that differs from call to call ('book states differ'); a checkpoint restore that forgets the trade count ('a replay resumed from a checkpoint reached different books'; this one SURVIVED the first version of the test, whose checkpoint was taken before anything had traded, and the checkpoint was moved past the first print with a premise asserting it holds a trade); a deterministic change to the sequencer's gap label and a decoder stamping every event one microsecond late (both 'the replay digest moved'; the second needed the per-event nanosecond stamps added to the digest, because the events alone serialise to the millisecond); a replay that flags nothing ('a book edit after the unrecovered hole was replayed as reliable'). The known-gap test was verified the other way: a mutation that stops a reset making the next packet contiguous failed it with 'a one-packet hole is now flagged'.",
     "work_item": "E06",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: set integrated true: the SensedRecord replay (ReplayAdapter) is opened from qip-deepbrain's main.rs:366 and the tape from qip-api feed.rs:328, both non-test composition-root code; the qip-cli journal replay is also a composition root. Status PARTIAL kept: none replays venue-native bytes with book checkpoints and integrity flags, and nothing compares digests across hosts."
+    "notes": "Advanced 2026-10-05, not closed. The requirement's check is replay digests and identical integrity flags; the digests hold and the flags are wrong for a one-packet hole, so COMPLETE would be false. Both defects also qualify earlier closures: TICK-040 (downgraded, see its row) and TICK-041 (note added). The Timestamp precision is a qip-core fact with consequences outside this domain (any persisted edge record stamped below a millisecond) and wants its own lane."
   },
   {
     "id": "TICK-018",
@@ -590,7 +594,7 @@
     "work_item": "E06",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status PARTIAL kept; added the MarketSimulator condition set as the nearest generator of synthetic liquidity droughts and venue outages. Confirmed no ScenarioPack/SyntheticEpisode type exists."
+    "notes": "verify: status PARTIAL kept; added the MarketSimulator condition set as the nearest generator of synthetic liquidity droughts and venue outages. Confirmed no ScenarioPack/SyntheticEpisode type exists. Examined 2026-10-05 and left PARTIAL. A ScenarioPack/SyntheticEpisode type over MarketSimulator's conditions with a lake refusal is a library with no caller: stage_simulate's capacity probe and the stress library are what production runs, both in qip-kernel, and nothing trains on a synthetic episode. Building the type without a generator in a composition root would be code that merely exists."
   },
   {
     "id": "TICK-024",
@@ -646,12 +650,14 @@
   {
     "id": "TICK-026",
     "status": "MISSING",
-    "current": "No Tick Lake exists to read replay input from (see TICK-025). qip-simulation-engine's replay/backtest reads from caller-supplied in-memory bars/series, not from a manifest of durable store partitions; qip-market-ingestion's ReplayAdapter reads from a caller-given file path, with no manifest-of-partitions concept or refusal when no manifest is given.",
+    "current": "The lake side now exists and the replay side does not use it. qip_storage::lake has a stored Manifest of segments, Lake::materialize(manifest, granted entitlements) that reads only the manifest's segments, withholds those under an entitlement the job lacks and fails on a checksum mismatch, and since TICK-065 a production writer for the internal class. qip-deepbrain's replay still opens one caller-given file (ReplayAdapter::open, main.rs) or a tape, and qip-simulation-engine reads caller-supplied bars.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/replay.rs (ReplayAdapter::open reads one path, no manifest concept)",
-      "backend/crates/services/qip-simulation-engine (no Tick Lake reader)"
+      "backend/crates/libs/qip-storage/src/lake.rs (Manifest, Lake::write_manifest, Lake::materialize)",
+      "backend/crates/libs/qip-storage/tests/lake.rs::a_job_granted_one_entitlement_reads_only_that_partition_and_reports_it",
+      "backend/crates/services/qip-market-ingestion/src/replay.rs (ReplayAdapter::open reads one path)",
+      "backend/crates/apps/qip-deepbrain/src/main.rs (the replay source is QIP_REPLAY_PATH or a tape, never a manifest)"
     ],
-    "gap": "No manifest-driven Tick Lake reader exists, and nothing refuses to start a replay job given no manifest, because there is no manifest concept at all.",
+    "gap": "No replay job takes a manifest: ReplayAdapter has no constructor over Lake::materialize and nothing refuses to start a replay given no manifest. It cannot be closed by a reader alone, because no composition root writes market history to the lake (TICK-007, TICK-025: market events are consumed and discarded by declared policy, ADR 0089), so a manifest route would read segments only a test had written.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -665,7 +671,7 @@
     "work_item": "E06",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Re-examined 2026-10-05 and left MISSING: the row said there was 'no manifest concept at all', which stopped being true when qip_storage::lake landed, so current and gap are rewritten; no replay reads the lake, so the status stands. Blocked on the market write path (TICK-025), which needs ADR 0089's retention rows changed."
   },
   {
     "id": "TICK-027",

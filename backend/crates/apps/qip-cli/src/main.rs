@@ -320,7 +320,12 @@ fn cycle(count: u64) -> Result<()> {
         return Err(Error::invalid("run between 1 and 1000 cycles"));
     }
     let settings = storage()?;
-    let archive = archive(&settings)?;
+    // The one command here that runs the platform and hands its log over, so
+    // the one that seals what the cycles did into the Tick/Internal Lake, as
+    // every root that archives does (TICK-065). The commands that only read
+    // the archive open no lake.
+    let archive =
+        archive(&settings)?.with_outcome_lake(settings.blobs(qip_storage::lake::LAKE_NAMESPACE)?);
     let mut platform = platform()?;
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     for _ in 0..count {

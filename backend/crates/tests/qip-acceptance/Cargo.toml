@@ -61,6 +61,13 @@ qip-feature-dag.workspace = true
 qip-strategy.workspace = true
 qip-arbitrage.workspace = true
 qip-edge.workspace = true
+# `tick_replay.rs` replays a recorded session from venue-native bytes, which
+# is the one place the suite needs the wire decoders themselves: decode,
+# sequence, book and fill are each deterministic in their own crate's tests,
+# and TICK-017's claim is about the chain, which none of them can see whole.
+# In-tree, and already linked through `qip-edge`; the workspace's
+# two-dependency rule is untouched.
+qip-protocols.workspace = true
 
 # Blueprint §30.2's path router, for `path_router.rs`. The suite already
 # reaches `qip-arbitrage`; the assertion that a cycle the search found is
