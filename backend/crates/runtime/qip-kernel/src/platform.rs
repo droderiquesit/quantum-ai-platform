@@ -19255,6 +19255,55 @@ mod decide_tests {
     }
 
     #[test]
+    fn a_fill_that_gapped_past_the_pre_trade_assumption_is_charged_at_the_price_it_filled_at() {
+        // RISK-007. The pre-trade check sizes an order at the price it
+        // expects; the venue fills at the price it gives. If the book were
+        // charged the assumed notional, a gap through the cap would read as a
+        // book inside its limits and the post-trade monitor would continue.
+        let mut platform = shared_cause_platform();
+        let now = Timestamp::from_secs(1_760_000_000);
+        let quantity = Decimal::from_int(10_000);
+        let assumed = Decimal::from_int(80);
+        let filled = Decimal::from_int(115);
+
+        // The premise: at the assumed price the order is 800,000 of a
+        // ten-million book, 0.08 against the 0.10 position-weight cap, so the
+        // pre-trade verdict is a pass and nothing is even warning (0.085). Without it
+        // the breach below could be a cap that fires on everything.
+        let mut assumed_book = shared_cause_platform();
+        assumed_book
+            .aggregates
+            .apply_fill(DESK_STRATEGY, "GAP", &BTreeMap::new(), quantity * assumed)
+            .expect("aggregated");
+        assert!(!breaches(&assumed_book.risk_state(), "position-weight"));
+
+        // The fill, through the same two calls the fill-capture path makes.
+        let moved =
+            platform
+                .capital
+                .apply_fill("GAP", Side::Buy, filled, quantity, Decimal::ZERO, now);
+        assert_eq!(moved, quantity * filled, "the book is charged the fill");
+        platform.aggregate_fill("GAP", moved);
+
+        let post_trade = platform.risk_state();
+        assert!(
+            blocks(&post_trade, "position-weight"),
+            "1,150,000 filled against 10,000,000 is 0.115, past the 0.10 cap, and the \
+             post-trade state did not see it: {:?}",
+            LimitSet::conservative_default().check(&post_trade).breaches
+        );
+        let level = platform.autonomy.level();
+        let action = platform
+            .monitor
+            .observe(&post_trade, "platform", level, now);
+        assert_eq!(
+            action.as_str(),
+            "reduce_only",
+            "the monitor must act on the fill's breach: {action:?}"
+        );
+    }
+
+    #[test]
     fn the_per_causal_driver_limit_can_actually_fire() {
         // Blueprint §25.3's per-causal-driver row is the level the section
         // calls new and calls the concentration that ends firms, and it was
