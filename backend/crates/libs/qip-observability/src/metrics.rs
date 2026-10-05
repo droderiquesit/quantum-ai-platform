@@ -827,6 +827,9 @@ pub mod names {
     pub const STAGE_RUNS: &str = "qip_stage_runs_total";
     pub const STAGE_DURATION_MS: &str = "qip_stage_duration_milliseconds";
     pub const STAGE_PROBLEMS: &str = "qip_stage_problems_total";
+    /// Level shifts the platform found in its own telemetry (OBS-003), labelled
+    /// `series`, bounded by the source-file literals the kernel feeds.
+    pub const TELEMETRY_ANOMALIES: &str = "qip_telemetry_anomalies_total";
     /// Entries in the platform's own hash-chained event log. A gauge rather
     /// than a counter: it is the length of a log, not a rate of appends, and
     /// an operator asking whether the chain is growing wants the length.

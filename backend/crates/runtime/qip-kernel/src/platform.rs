@@ -554,6 +554,9 @@ pub struct Platform {
     /// would be evaluated over one cycle whatever window the objective
     /// declares. The ledger bounds itself instead.
     objectives: crate::blueprint_objectives::ObjectiveLedger,
+    /// Tails of the series the cycle records about itself, searched for level
+    /// shifts as each point arrives (OBS-003).
+    self_watch: crate::self_watch::SelfWatch,
     /// Each limit's firing history, keyed by the limit's configured name and
     /// seeded with every name in the boot set at assembly — a rule that never
     /// fires must still have a row for its silence to be measured against.
@@ -989,6 +992,9 @@ pub struct Platform {
 /// wrong rather than that the bound is tight. That is why the overflow is a
 /// refusal on the record and not a quiet eviction: evicting the oldest pending
 /// action drops exactly the one whose ex-date is nearest.
+/// The series name the cycle feeds its own duration under (OBS-003).
+pub const CYCLE_DURATION_SERIES: &str = "cycle_duration_ms";
+
 const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 
 /// How many recent proposals the platform keeps in memory.
@@ -4498,6 +4504,7 @@ impl Platform {
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             objectives: crate::blueprint_objectives::ObjectiveLedger::new(),
+            self_watch: crate::self_watch::SelfWatch::new(),
             rule_activity,
             orders_submitted: 0,
             open_proposals,
@@ -4772,6 +4779,10 @@ impl Platform {
         metrics.describe(
             names::CYCLE_DURATION_MS,
             "wall time for one full cycle, on the injected clock",
+        );
+        metrics.describe(
+            names::TELEMETRY_ANOMALIES,
+            "level shifts found in the platform's own telemetry, by series",
         );
         metrics.describe(
             names::STAGE_RUNS,
@@ -8229,6 +8240,54 @@ impl Platform {
         crate::blueprint_objectives::assess(&self.objectives, now)
     }
 
+    /// Feed one point of a series the platform records about itself to the
+    /// level-shift detector and, for a shift not reported before, count it on
+    /// `qip_telemetry_anomalies_total` and return the sentence for the LEARN
+    /// record. A non-finite point is returned as a problem too, rather than
+    /// dropped: a source emitting NaN is itself the finding.
+    pub fn watch_own_series(
+        &mut self,
+        series: &'static str,
+        at: Timestamp,
+        value: f64,
+    ) -> Option<String> {
+        match self.self_watch.observe(series, at, value) {
+            Ok(Some(anomaly)) => {
+                self.telemetry
+                    .metrics
+                    .count(names::TELEMETRY_ANOMALIES, labels([("series", series)]));
+                Some(format!(
+                    "telemetry level shift in `{}` between {} and {} ({:.1} noise-scales); \
+                     look at what deployed or changed in that window",
+                    anomaly.series,
+                    anomaly.window_start.as_secs(),
+                    anomaly.window_end.as_secs(),
+                    anomaly.score
+                ))
+            }
+            Ok(None) => None,
+            Err(error) => Some(format!(
+                "the self-watch refused a sample of `{series}`: {}",
+                error.message()
+            )),
+        }
+    }
+
+    /// Points the self-watch holds for `series`.
+    pub fn watched_points(&self, series: &str) -> usize {
+        self.self_watch.len(series)
+    }
+
+    /// Whether a promotion to `plane` may proceed on this process's own error
+    /// budgets (OBS-028). See [`crate::blueprint_objectives::release_decision`].
+    pub fn release_decision(
+        &self,
+        plane: &str,
+        now: Timestamp,
+    ) -> qip_observability::aiops::ReleaseDecision {
+        crate::blueprint_objectives::release_decision(&self.objectives, plane, now)
+    }
+
     pub fn autonomy_mut(&mut self) -> &mut AutonomyController {
         &mut self.autonomy
     }
@@ -9160,11 +9219,18 @@ impl Platform {
                 );
             }
         }
-        self.telemetry.metrics.observe_latency_ms(
-            names::CYCLE_DURATION_MS,
-            labels([]),
-            self.context.now().since(started_at).as_nanos() as f64 / 1_000_000.0,
-        );
+        let cycle_ms = self.context.now().since(started_at).as_nanos() as f64 / 1_000_000.0;
+        self.telemetry
+            .metrics
+            .observe_latency_ms(names::CYCLE_DURATION_MS, labels([]), cycle_ms);
+        // OBS-003: the cycle's own duration is searched for a level shift no
+        // static threshold names. The problem rides the LEARN stage like every
+        // other review's, since LEARN is what would notice a slowdown.
+        if let Some(problem) = self.watch_own_series(CYCLE_DURATION_SERIES, now, cycle_ms)
+            && let Some(learn) = report.stages.last_mut()
+        {
+            learn.problems.push(problem);
+        }
         // The gauge the `qip_kill_switch_tripped` alert policy queries. Set on
         // every cycle rather than only when it changes: a gauge written once at
         // the moment of a trip goes stale the instant the scrape interval
