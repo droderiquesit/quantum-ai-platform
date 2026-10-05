@@ -423,6 +423,85 @@ fn a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_i
     Ok(())
 }
 
+#[test]
+fn a_cell_whose_centre_has_stopped_makes_the_same_decision_as_one_still_served_and_differs_only_by_the_stated_narrowing()
+-> Result<()> {
+    // ARCH-026: the Cognitive Core is never the hot-path trader. Two cells
+    // identical in every local respect; one is re-served a fresh payload
+    // before each pass, the other is served once and then the centre stops.
+    // The failure this prevents is a cell that, with the centre gone, either
+    // stops deciding or decides something else — a different venue, side or
+    // price — which would make the centre a participant in the order decision
+    // rather than the source of a bound on it. What may differ is the size,
+    // by §6.2's multiplier and by nothing else.
+    let (mut served, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let (mut orphaned, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    served.apply_policy(fresh_policy(1, t(100))?, t(100))?;
+    orphaned.apply_policy(fresh_policy(1, t(100))?, t(100))?;
+    let first = work(&mut served, t(100))?;
+    assert_eq!(
+        first.orders.len(),
+        1,
+        "the premise is a cell that decides something: {:?}",
+        first.refusals
+    );
+    assert_eq!(
+        work(&mut orphaned, t(100))?.orders,
+        first.orders,
+        "the two cells differ before the centre has stopped, so nothing below compares like \
+         with like"
+    );
+
+    // The centre keeps one cell served and falls silent to the other.
+    served.apply_policy(fresh_policy(2, t(500))?, t(500))?;
+    let with_centre = work(&mut served, t(500))?;
+    let without_centre = work(&mut orphaned, t(500))?;
+
+    let narrowed = orphaned.narrowing(t(500)).sizing_multiplier();
+    assert_eq!(served.narrowing(t(500)).sizing_multiplier(), d("1"));
+    assert_eq!(
+        narrowed,
+        d("0.375"),
+        "the premise is that the centre's silence has aged the orphaned cell's payload"
+    );
+
+    assert_eq!(with_centre.orders.len(), 1, "{:?}", with_centre.refusals);
+    assert_eq!(
+        without_centre.orders.len(),
+        1,
+        "the cell stopped deciding when the centre did: {:?}",
+        without_centre.refusals
+    );
+    let (kept, lost) = (&with_centre.orders[0], &without_centre.orders[0]);
+    assert_eq!(
+        (
+            &lost.strategy,
+            &lost.object_id,
+            &lost.venue,
+            lost.side,
+            lost.price
+        ),
+        (
+            &kept.strategy,
+            &kept.object_id,
+            &kept.venue,
+            kept.side,
+            kept.price
+        ),
+        "losing the centre changed what the cell decided, not only how much"
+    );
+    assert_eq!(
+        Some(lost.quantity),
+        kept.quantity.checked_mul(narrowed),
+        "the size differs by something other than the §6.2 multiplier"
+    );
+    assert_eq!(
+        without_centre.refusals, with_centre.refusals,
+        "losing the centre refused something a served cell admitted"
+    );
+    Ok(())
+}
+
 // --- signals, orders, netting and crossing ----------------------------------
 
 #[test]

@@ -1,0 +1,213 @@
+{
+  "about": "The workload register (ARCH-070): one entry per workload this repository's infrastructure declares, naming who owns its state, what it speaks to upstream and downstream, how it scales and what it does when a dependency is gone. A workload is a Cloud Run entry in infrastructure/terraform/catalogue.tf, a RunService manifest under infrastructure/gitops/envs/<env>/, or a Terraform module that declares a machine, a cluster or a serving endpoint. qip-acceptance's manifest_wiring suite derives that set from the tree and fails when it and this file disagree in either direction, when an entry leaves an attribute empty, or when a scaling model contradicts the instance bounds a manifest carries. Instance counts are deliberately not repeated here: the catalogue and the manifests hold them. Every statement names the file it was read from; a statement about a deployment describes what the configuration says, and nothing here is evidence that anything is running.",
+  "workloads": [
+    {
+      "workload": "api",
+      "runtime": "cloud-run",
+      "declared_by": "infrastructure/terraform/catalogue.tf",
+      "state_owner": "The process itself, and nothing durable. QIP_STORAGE_TARGET is var.storage_target, whose default is memory and which no environment's tfvars overrides, so the event-log archive, the trial book and the connector journal live in the instance's memory and do not outlive it (infrastructure/terraform/variables.tf, storage_target).",
+      "upstream": [
+        {
+          "peer": "portal, as the console's service account, the entry's only invoker",
+          "protocol": "HTTPS to the service; REST and server-sent events over HTTP/1.1 in the binary"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "the egress proxy sidecar on loopback, for Google APIs",
+          "protocol": "plaintext HTTP/1.1 to the sidecar and TLS from it; attached, and nothing in qip-api calls through it yet (catalogue.tf, egress_proxy)"
+        },
+        {
+          "peer": "execution nodes, over the cell mesh",
+          "protocol": "the in-tree HTTP/1.1 mesh (ADR 0011); unwired, because QIP_MESH_CELLS is unset and no listener is built (catalogue.tf header)"
+        }
+      ],
+      "scaling": {
+        "model": "request-scaled",
+        "detail": "The one workload that scales horizontally, between the catalogue's instance floor and ceiling; it cycles only when asked and serves stateless reads otherwise (docs/operations/scaling-and-availability.md)."
+      },
+      "degraded_mode": "With more than one instance the rate-limit counters and the cell registry are per process: a caller's real allowance multiplies and a console may call a cell stale that is not, which is a degradation of display and not of risk arithmetic (docs/operations/scaling-and-availability.md). With no mesh configured /api/v1/mesh answers available: false. A replaced instance starts from an empty store."
+    },
+    {
+      "workload": "fastbrain",
+      "runtime": "cloud-run",
+      "declared_by": "infrastructure/terraform/catalogue.tf",
+      "state_owner": "The process itself. It opens the event log and runs the cycle on its own clock; with var.storage_target at its default of memory the hash-chained log is held in the one instance's memory (catalogue.tf, fastbrain; variables.tf, storage_target).",
+      "upstream": [
+        {
+          "peer": "nothing calls it: no scheduler and no invoker; Cloud Run's probe reads /health",
+          "protocol": "HTTP/1.1 GET on the health port"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "none: it carries no egress proxy by decision (ADR 0008), and var.market_data_connector is null in every environment, so it runs the synthetic exchange in-process",
+          "protocol": "none"
+        }
+      ],
+      "scaling": {
+        "model": "singleton",
+        "detail": "Exactly one instance, always. A second would run the same cycle and append to the same hash-chained log, which is the fork the chain exists to detect; a floor of one because nothing requests it, so a retired instance is a stopped cycle (catalogue.tf, always_on_justification)."
+      },
+      "degraded_mode": "No standby exists and no leader election is implemented (docs/operations/scaling-and-availability.md). A lost instance is a stopped cycle until Cloud Run starts its replacement, which begins from an empty in-memory log. A live autonomy ceiling stops the process at start-up rather than being lowered to paper."
+    },
+    {
+      "workload": "deepbrain",
+      "runtime": "cloud-run",
+      "declared_by": "infrastructure/terraform/catalogue.tf",
+      "state_owner": "The process itself. It opens the event log and runs the intelligence loop on its own clock; with var.storage_target at its default of memory the hash-chained log is held in the one instance's memory (catalogue.tf, deepbrain; variables.tf, storage_target).",
+      "upstream": [
+        {
+          "peer": "nothing calls it: no scheduler and no invoker; Cloud Run's probe reads /health",
+          "protocol": "HTTP/1.1 GET on the health port"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "the egress proxy sidecar on loopback, for a data connector or a language-model provider where a root variable names one; var.deepbrain_connector is null in every environment",
+          "protocol": "plaintext HTTP/1.1 to the sidecar and TLS from it"
+        }
+      ],
+      "scaling": {
+        "model": "singleton",
+        "detail": "Exactly one instance, always, for the fast brain's reason: two writers of one hash-chained log fork it, and nothing requests the service. It is scaled vertically, by the entry's cpu and memory (docs/operations/scaling-and-availability.md)."
+      },
+      "degraded_mode": "A cycle slower than its interval is recorded as an overrun and not as a fault, and three consecutive failed cycles report the node unready (backend/crates/apps/qip-deepbrain/src/config.rs, DEFAULT_FAILURE_TOLERANCE). With no language-model provider configured every reasoning run narrates through templates. A lost instance is a stopped loop until its replacement starts from an empty in-memory log."
+    },
+    {
+      "workload": "portal",
+      "runtime": "cloud-run",
+      "declared_by": "infrastructure/gitops/envs/dev/portal.yaml",
+      "state_owner": "None of the platform's. It runs no Rust binary, holds no trading and no risk logic, and renders what qip-api decided (.claude/rules/domains/frontend.md). The only material it holds is mounted as files: its session secret and the viewer token it presents to the API (portal.yaml).",
+      "upstream": [
+        {
+          "peer": "an operator's browser",
+          "protocol": "HTTPS to the service's run.app URL, behind Identity-Aware Proxy, whose service agent is the only invoker (ADR 0094, ADR 0095)"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "api",
+          "protocol": "HTTPS REST and server-sent events to QIP_API_BASE_URL, with the viewer bearer token read from a file"
+        }
+      ],
+      "scaling": {
+        "model": "request-scaled",
+        "detail": "Scales to zero between requests, under the ceiling its manifest carries; it holds no state that a second instance could fork (portal.yaml)."
+      },
+      "degraded_mode": "With the API unreachable it has nothing to render and it changes nothing, because the console has no control that submits an order. Were Identity-Aware Proxy not enabled on the service, Cloud Run's own IAM check would refuse every request: a console nobody can reach, never one anybody can (portal.yaml header)."
+    },
+    {
+      "workload": "openobserve",
+      "runtime": "cloud-run",
+      "declared_by": "infrastructure/terraform/catalogue.tf",
+      "state_owner": "OpenObserve's own local-mode store on the instance's disk (ZO_LOCAL_MODE=true, ZO_LOCAL_MODE_STORAGE=disk). The manifest mounts no volume, so what it holds does not outlive the instance (infrastructure/gitops/envs/dev/openobserve.yaml).",
+      "upstream": [
+        {
+          "peer": "nobody today: the ingress admits only a load balancer that has not been built, and invokers.yaml names no invoker on this service",
+          "protocol": "HTTPS through Identity-Aware Proxy on that load balancer, once it exists (ADR 0033)"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "none",
+          "protocol": "none"
+        }
+      ],
+      "scaling": {
+        "model": "request-scaled",
+        "detail": "Scales to zero between requests, under the ceiling its manifest carries (openobserve.yaml). A vendored image with its own lifecycle, instantiated outside the catalogue's for_each (ADR 0028)."
+      },
+      "degraded_mode": "Reachable by nobody until its front door is built, which is the failure direction ADR 0033 chose. No catalogue entry and no manifest sets QIP_OPENOBSERVE_URL, so nothing exports to it and its loss removes a dashboard and no decision."
+    },
+    {
+      "workload": "execution-node",
+      "runtime": "compute-engine",
+      "declared_by": "infrastructure/terraform/modules/execution-node",
+      "state_owner": "The node itself. Books, features and risk state are held in the qip-edge-node process and rebuilt from the feed on a restart; the hash-chained journal is its own engine store at /var/lib/qip/journal on the boot disk (modules/execution-node/templates/startup.sh.tftpl).",
+      "upstream": [
+        {
+          "peer": "the centre: signed policy payloads, capital envelopes and halts",
+          "protocol": "the in-tree HTTP/1.1 mesh, polled by the node (ADR 0011); unwired while QIP_MESH_CELLS is unset on the API"
+        },
+        {
+          "peer": "the venue feed",
+          "protocol": "the simulated feed, in-process (QIP_VENUE_FEED=simulated; any other value stops the process, ADR 0003)"
+        },
+        {
+          "peer": "the operator's halt flag",
+          "protocol": "a file polled on the node's own filesystem (QIP_HALT_FLAG_PATH)"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "the venue gateway",
+          "protocol": "the simulated gateway, in-process; in shadow mode no venue egress rule and no venue-credential binding exist"
+        },
+        {
+          "peer": "the journal store",
+          "protocol": "local filesystem writes through the engine store"
+        },
+        {
+          "peer": "the egress proxy unit on loopback",
+          "protocol": "plaintext HTTP/1.1 to 127.0.0.1 and TLS from the proxy"
+        }
+      ],
+      "scaling": {
+        "model": "fixed-per-cell",
+        "detail": "Zero or one machine per entry in execution_nodes, which every environment leaves empty; a replacement surges one, proves it and retires the old, because a standing pair is two machines trading one cell's envelope (modules/execution-node/variables.tf, node_count)."
+      },
+      "degraded_mode": "With the centre unreachable it keeps deciding within its last signed envelope (ADR 0008) and narrows size by the degradation multiplier as policy slots go stale. A journal that cannot be shipped is reported, held and shipped when the store returns, and the node keeps serving. An unreadable halt flag halts it."
+    },
+    {
+      "workload": "gitops-control-plane",
+      "runtime": "gke-autopilot",
+      "declared_by": "infrastructure/terraform/modules/gitops-control-plane",
+      "state_owner": "This repository. The desired state is infrastructure/gitops/envs/<env>/ and the cluster holds no platform state; its etcd holds the two GitHub App private keys as Kubernetes Secrets, encrypted with a key in the environment's own ring (modules/gitops-control-plane/main.tf header).",
+      "upstream": [
+        {
+          "peer": "this Git repository, read by Argo CD and Kargo",
+          "protocol": "HTTPS, authenticated as GitHub Apps"
+        },
+        {
+          "peer": "workflows",
+          "protocol": "the fleet's Connect gateway, which is a Google API call and not a route into the VPC"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "Google Cloud APIs",
+          "protocol": "HTTPS, as Config Connector's service account, which creates every Cloud Run revision (ADR 0036 decision 5)"
+        }
+      ],
+      "scaling": {
+        "model": "managed-autopilot",
+        "detail": "One GKE Autopilot cluster per environment that sets gitops_enabled, running three controllers and no qip-* image; there is no node pool to size."
+      },
+      "degraded_mode": "With the cluster stopped or unreachable nothing reconciles: no revision is created and none is changed. No trading binary runs on it and none calls it. The reconciler half of the deployment path has never run in any environment (docs/operations/deployment-path.md)."
+    },
+    {
+      "workload": "ai",
+      "runtime": "vertex-ai",
+      "declared_by": "infrastructure/terraform/modules/ai",
+      "state_owner": "None in use. The module declares a Vertex AI metadata store and a serving endpoint only where enable_vertex_ai is true, and it is false in every environment's tfvars.",
+      "upstream": [
+        {
+          "peer": "none: qip-training's Vertex port has no client, no credential and no egress path (modules/ai/main.tf header)",
+          "protocol": "none"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "none",
+          "protocol": "none"
+        }
+      ],
+      "scaling": {
+        "model": "disabled",
+        "detail": "Declared behind a flag no environment sets; nothing is provisioned."
+      },
+      "degraded_mode": "Absent by default. Training runs in-process in qip_training::local and needs none of it, so its absence degrades nothing."
+    }
+  ]
+}

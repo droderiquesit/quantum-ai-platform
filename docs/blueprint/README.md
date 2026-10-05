@@ -43,6 +43,11 @@ PDF ever disagree, the PDF is the source. Check them with
 - [`traceability-matrix.md`](traceability-matrix.md) — one row per requirement:
   target, current implementation, status, gap, dependency, priority,
   verification and work item.
+- [`v12-completeness-targets.md`](v12-completeness-targets.md) — the ten
+  COMPLETE TARGET items of v12.0 §31.1, each with the requirements that carry
+  it and their status, rendered from `v12-completeness-targets.json` and the
+  assessment. A target has no status of its own: it reads COMPLETE only when
+  every requirement it cites is COMPLETE and tested (ARCH-074).
 
 ## Requirement IDs
 

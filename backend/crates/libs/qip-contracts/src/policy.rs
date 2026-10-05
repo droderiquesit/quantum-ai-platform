@@ -692,6 +692,51 @@ impl PolicyPayload {
         state
     }
 
+    /// The long-horizon knowledge items whose value in this copy differs from
+    /// `global`'s (ARCH-009).
+    ///
+    /// The items are the three with a §6.2 capability — belief priors, the
+    /// episodic digest and the causal digest — which are exactly the slots
+    /// that carry the centre's knowledge rather than an operating bound. The
+    /// comparison is on the value and never on `produced_at`: the same
+    /// knowledge re-published a minute later is a fresher copy, not a
+    /// different one, and counting it would make every payload a divergence
+    /// and the record of one worthless.
+    ///
+    /// It reports and decides nothing. Which copy wins is not this function's
+    /// to say: the centre's does, at the cell's application seam, by the swap
+    /// that already replaces a payload whole.
+    ///
+    /// The match has no wildcard, for the reason [`PolicyItem`] gives: a
+    /// fourteenth item does not compile here until somebody says whether it
+    /// is knowledge, rather than being silently left out of the record.
+    pub fn knowledge_divergence(&self, global: &Self) -> Vec<PolicyItem> {
+        PolicyItem::all()
+            .into_iter()
+            .filter(|item| match item {
+                PolicyItem::BeliefPriors => {
+                    self.belief_priors.value() != global.belief_priors.value()
+                }
+                PolicyItem::EpisodicDigest => {
+                    self.episodic_digest.value() != global.episodic_digest.value()
+                }
+                PolicyItem::CausalDigest => {
+                    self.causal_digest.value() != global.causal_digest.value()
+                }
+                PolicyItem::TrainedModels
+                | PolicyItem::CompiledPlan
+                | PolicyItem::RegimeState
+                | PolicyItem::CapitalGrants
+                | PolicyItem::CycleWhitelist
+                | PolicyItem::RiskEnvelope
+                | PolicyItem::InventoryTargets
+                | PolicyItem::FeasibilityConstraints
+                | PolicyItem::AdversaryProfiles
+                | PolicyItem::Dispositions => false,
+            })
+            .collect()
+    }
+
     /// The bytes the signature is taken over.
     ///
     /// Sequence, cell, window, halt flag, and a digest of every slot — so a

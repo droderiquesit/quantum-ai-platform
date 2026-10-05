@@ -2411,6 +2411,24 @@ impl Cell {
         self.policy.as_ref().map(VerifiedPolicy::sequence)
     }
 
+    /// The long-horizon knowledge items whose value in the copy this cell
+    /// serves differs from `global`'s (ARCH-009); empty for a cell holding no
+    /// payload, which has no copy to disagree with.
+    ///
+    /// Read-only, and the one question about the held copy this type
+    /// answers: [`Self::apply_policy`] asks it before the swap to journal
+    /// what the swap resolved, and anything auditing a cell against the
+    /// centre's payload asks it afterwards and expects nothing back.
+    pub fn knowledge_divergence_from(
+        &self,
+        global: &qip_contracts::policy::PolicyPayload,
+    ) -> Vec<qip_contracts::policy::PolicyItem> {
+        self.policy
+            .as_ref()
+            .map(|held| held.payload().knowledge_divergence(global))
+            .unwrap_or_default()
+    }
+
     /// Apply a verified halt command.
     ///
     /// Engage-only and idempotent: there is no release command, because
@@ -2503,6 +2521,14 @@ impl Cell {
         let halting = verified.halted() || releasing_too_early;
         let sequence = verified.sequence();
         let was_halted = self.policy_halted;
+        // ARCH-009: what this cell's copy of long-horizon knowledge disagrees
+        // with the centre about, read before the swap below destroys the
+        // copy. The centre's version wins — that is the swap — and the
+        // disagreement is journaled beside it, because a cell that sized on a
+        // belief the centre had already left is otherwise indistinguishable
+        // from one that was simply re-sent what it held.
+        let replaced = self.policy_sequence();
+        let diverged = self.knowledge_divergence_from(verified.payload());
         let narrowed: Vec<String> = verified
             .payload()
             .narrowing(now)
@@ -2521,6 +2547,19 @@ impl Cell {
             },
             now,
         );
+        if let (Some(replaced), false) = (replaced, diverged.is_empty()) {
+            self.journal.record(
+                Decision::KnowledgeReconciled {
+                    sequence,
+                    replaced,
+                    items: diverged
+                        .iter()
+                        .map(|item| item.as_str().to_string())
+                        .collect(),
+                },
+                now,
+            );
+        }
         if releasing_too_early {
             self.journal.record(
                 Decision::Refused {

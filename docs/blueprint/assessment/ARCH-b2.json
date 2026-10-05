@@ -26,7 +26,7 @@
   },
   {
     "id": "ARCH-026",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The structural half holds and is tested. The Lane 0 crates (qip-edge and qip-edge-node) reach no cognitive crate: their transitive workspace dependencies (computed from cargo metadata) contain no qip-ai, qip-reasoning-engine, qip-investment-agents, qip-agents, qip-world-model, qip-training, qip-evolution, qip-lifecycle, qip-learning-engine, qip-kernel or qip-twin. architecture.rs's no_edge_cell_can_reach_a_language_model asserts qip-ai is unreachable from every edge crate, and because every one of those cognitive crates itself reaches qip-ai, that single assertion transitively excludes them all. qip-fastbrain additionally refuses at start-up to host any agent holding call_language_model (qip-fastbrain/src/roster.rs clear_agents). qip-cost-router's Determinism::Required arm (router.rs select/determined) returns a type that cannot name a model rung.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:715 no_edge_cell_can_reach_a_language_model (transitive; anchors on qip-reasoning-engine reaching qip-ai)",
@@ -37,9 +37,13 @@
       "backend/crates/services/qip-cost-router/tests/cost_router.rs:307 a_decision_that_must_be_deterministic_cannot_be_routed_to_any_model_tier",
       "backend/crates/apps/qip-fastbrain/src/roster.rs clear_agents + tests an_agent_that_may_call_a_language_model_is_refused_rather_than_hosted",
       "backend/crates/libs/qip-contracts/src/degradation.rs:10-14 (the edge cell sizes every pass by DegradationState::sizing_multiplier over centre-published cognitive-capability freshness)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:869 (synchronous exchange with the central plane) before :888 (run_pass), same thread"
+      "backend/crates/apps/qip-edge-node/src/main.rs:869 (synchronous exchange with the central plane) before :888 (run_pass), same thread",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs a_cell_whose_centre_has_stopped_makes_the_same_decision_as_one_still_served_and_differs_only_by_the_stated_narrowing",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs the_lane_zero_set_is_exactly_what_the_reflex_node_compiles (no Lane 2 or Lane 3 crate, qip-data-finder and qip-opportunity-engine included, is in the node's closure)"
     ],
-    "gap": "The requirement's second verification clause -- a chaos run with the Cognitive Core stopped leaving the hot path's decisions unchanged -- has no test, and would not pass as literally stated: by design (blueprint §6.2, qip-contracts/src/degradation.rs) the cell narrows its sizing multiplier as the centre-published causal-graph / episodic-memory / belief-state rows go stale, so stopping the centre changes sizes (never the call path). The requirement check needs clarifying ('no call' vs 'unchanged decisions') and a chaos test written for whichever is meant. Also see ARCH-043: qip-edge-node runs a blocking exchange with the central plane on the pass thread before each pass, so a stopped centre also delays passes. The architecture test proves absence of qip-ai as a proxy for 'the Cognitive Core', which is not a named crate set (ARCH-027); qip-data-finder ('request new data') and qip-opportunity-engine do not reach qip-ai and so are not covered by it. Lane 0 runs only in qip-edge-node, which is deployed nowhere (execution_nodes = {}).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -47,11 +51,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture no_edge_cell_can_reach_a_language_model; cargo test -p qip-cost-router; cargo test -p qip-fastbrain roster. Missing: a chaos test that stops the central plane during a qip-edge-node paper session and asserts the pass keeps deciding (with the §6.2 narrowing stated as the expected change).",
+    "verification": "cargo test -p qip-edge --test telemetry a_cell_whose_centre (mutation 1: not applying the degradation multiplier failed it, 100 against 37.5; mutation 2: returning from the pass when the multiplier is below one failed it with no order; both restored, passed). cargo test -p qip-edge-node --test pass a_cell_; cargo test -p qip-acceptance --test architecture --test lane_placement.",
     "work_item": "E04",
     "tier": "T1",
     "size": "S",
-    "notes": "No crate literally named a 'Cognitive Core' exists yet (that is ARCH-027's gap), so this is proven against its closest analogue, qip-ai/qip-reasoning-engine, and against qip-cost-router's type-level Determinism guarantee. No chaos run exists that 'stops the Cognitive Core' because nothing runtime-dependent exists to stop -- the structural absence of the dependency edge is a stronger guarantee than a chaos test would be, not a weaker one. qip-edge-node itself is undeployed (execution_nodes={} everywhere) but the property holds at the dependency-graph level regardless of deployment. verify: downgraded COMPLETE -> PARTIAL, deployable true -> false, work_item '' -> E04, tier T0 -> T1. The dependency-graph half is COMPLETE-quality and was confirmed (cargo metadata reachability + the transitive qip-ai test). But (1) the requirement's own chaos clause is untested and contradicted by the §6.2 degradation the edge applies to centre-fed cognitive rows; (2) the edge node serialises a blocking central-plane exchange ahead of each pass (ARCH-043); (3) Lane 0 is only qip-edge-node, which no environment deploys, so deployable cannot be true. Line refs corrected to the fn lines."
+    "notes": "No crate literally named a 'Cognitive Core' exists yet (that is ARCH-027's gap), so this is proven against its closest analogue, qip-ai/qip-reasoning-engine, and against qip-cost-router's type-level Determinism guarantee. No chaos run exists that 'stops the Cognitive Core' because nothing runtime-dependent exists to stop -- the structural absence of the dependency edge is a stronger guarantee than a chaos test would be, not a weaker one. qip-edge-node itself is undeployed (execution_nodes={} everywhere) but the property holds at the dependency-graph level regardless of deployment. verify: downgraded COMPLETE -> PARTIAL, deployable true -> false, work_item '' -> E04, tier T0 -> T1. The dependency-graph half is COMPLETE-quality and was confirmed (cargo metadata reachability + the transitive qip-ai test). But (1) the requirement's own chaos clause is untested and contradicted by the §6.2 degradation the edge applies to centre-fed cognitive rows; (2) the edge node serialises a blocking central-plane exchange ahead of each pass (ARCH-043); (3) Lane 0 is only qip-edge-node, which no environment deploys, so deployable cannot be true. Line refs corrected to the fn lines. Round 3: COMPLETE on a stated reading of the chaos clause. 'Decisions unchanged' cannot hold literally, because the blueprint's own section 6.2 narrows size as centre-fed rows go stale. What is proven instead is the stronger and narrower statement: with the centre stopped the cell places the same order — same strategy, instrument, venue, side and price, the same refusals — and its size differs by the section 6.2 multiplier and by nothing else; and where no slot has yet aged, a severed centre changes nothing at all (the node-level control comparison). The structural half no longer rests on qip-ai as a proxy: the lane register's Lane 0 set is the node's compiled closure and holds no cognitive crate. The blocking exchange ahead of each pass is ARCH-043's row. deployable stays false (no node deployed, C8)."
   },
   {
     "id": "ARCH-027",
@@ -336,7 +340,7 @@
     "work_item": "E10",
     "tier": "T1",
     "size": "S",
-    "notes": "This is ADR 0006, already a standing decision; the structural half is solid, the enforcement-at-promotion half is the gap. verify: e2e true -> false: e2e.rs section 9 calls SolverBenchmark directly inside the test, crossing no process or stage, and does not exercise the requirement's promotion refusal. Corrected the method name (there is no beats_baseline; it is measured_advantage) and added the ComputeRouter per-solve margin rule the assessor missed."
+    "notes": "This is ADR 0006, already a standing decision; the structural half is solid, the enforcement-at-promotion half is the gap. verify: e2e true -> false: e2e.rs section 9 calls SolverBenchmark directly inside the test, crossing no process or stage, and does not exercise the requirement's promotion refusal. Corrected the method name (there is no beats_baseline; it is measured_advantage) and added the ComputeRouter per-solve margin rule the assessor missed. Round 3: not closed. ADR 0006's decision is the per-solve rule, which holds; a capability-level promotion run (which instances, what margin, where the record lives) is new architecture and needs an ADR. Note that qip-cli's --config can deserialise quantum_enabled = true, so PlatformConfig is a production path that attaches the simulated provider with no capability gate."
   },
   {
     "id": "ARCH-038",
@@ -494,9 +498,11 @@
       "backend/crates/edge/qip-edge/src/journal.rs (module doc; MemoryMirror :608, FileMirror :627)",
       "backend/crates/apps/qip-edge-node/src/main.rs:848-857 (flush failure reported, node keeps serving), :888 (run_pass after flush)",
       "backend/crates/apps/qip-edge-node/src/mirror.rs:144 (StoreMirror)",
-      "backend/crates/edge/qip-edge/tests/cell.rs:398 mirror_batches_chain_onto_each_other_across_flushes (normal flushing only)"
+      "backend/crates/edge/qip-edge/tests/cell.rs:398 mirror_batches_chain_onto_each_other_across_flushes (normal flushing only)",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns (a failing store: passes continue, the journal is held and catches up)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/mirror.rs FabricMirror (the non-blocking Mirror; not constructed by main.rs)"
     ],
-    "gap": "There is no distinct 'Fabric' separate from the cell's local journal and store (see ARCH-028), so the requirement's chaos check -- stop every Fabric broker, observe unchanged latency, observe the journal buffer and catch up -- cannot be performed as stated. No test exercises a failing mirror while passes continue, nor measures pass latency with the journal destination stalled; the flush is synchronous on the pass thread, so a stalled store would stall the next pass. The mesh tests previously cited here concern the cell<->centre link, not the Fabric, and they show bounded blocking of the work-loop thread, not non-blocking behaviour.",
+    "gap": "A store that fails is now tested: passes continue with unchanged decisions, the journal is held chained in memory, and it ships whole when the store returns. A store that stalls is not: main.rs still flushes through StoreMirror synchronously on the pass thread, so a stalled destination stalls the next pass, and no test measures pass latency against one. The non-blocking seam exists (qip-edge-node::event_fabric::mirror::FabricMirror, proven by event_fabric_outbox.rs ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped) and is constructed by no composition root; wiring it is the ADR 0100 slice programme's packet (docs/implementation/packets/slice.json). There is still no Fabric distinct from the cell's local journal and store (ARCH-028).",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -506,11 +512,11 @@
       "ARCH-028"
     ],
     "blocked_by": "",
-    "verification": "No named test demonstrates the property. Needed: a qip-edge-node test with a store that fails or stalls, asserting passes keep running at unchanged latency and that the held journal ships once the store returns.",
+    "verification": "cargo test -p qip-edge-node --test pass a_cell_whose (the failing-store half). Needed: main.rs flushing through FabricMirror, and a test that a stalled spool writer leaves pass latency unchanged.",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: tested true -> false. The only cited tests were mesh-uplink tests, which are about a different path and demonstrate the uplink BLOCKS the work loop (bounded), contradicting the row's 'mesh uplink is likewise non-blocking'. No test shows the hot path surviving a journal-destination outage. Recorded that the node's flush is synchronous before each pass."
+    "notes": "verify: tested true -> false. The only cited tests were mesh-uplink tests, which are about a different path and demonstrate the uplink BLOCKS the work loop (bounded), contradicting the row's 'mesh uplink is likewise non-blocking'. No test shows the hot path surviving a journal-destination outage. Recorded that the node's flush is synchronous before each pass. Round 3: advanced, still PARTIAL. Blocked on wiring the ADR 0100 outbox into qip-edge-node's main.rs, which belongs to the slice programme and not to an ARCH closure."
   },
   {
     "id": "ARCH-045",
@@ -535,7 +541,7 @@
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: NEEDS-VALIDATION -> PARTIAL, tested false -> true. Constituent tests exist (managed targets refuse at preflight; no edge crate reaches qip-ai; no third-party crate), so 'no test' was wrong; but the requirement is not wholly met, because the reflex binary links in-tree BigQuery and Cloud Storage clients through qip-storage::gcp. Corrected the evidence: storage_target (variables.tf:365-383) is the central workloads' setting; the node's target is fixed at engine in its startup template."
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL, tested false -> true. Constituent tests exist (managed targets refuse at preflight; no edge crate reaches qip-ai; no third-party crate), so 'no test' was wrong; but the requirement is not wholly met, because the reflex binary links in-tree BigQuery and Cloud Storage clients through qip-storage::gcp. Corrected the evidence: storage_target (variables.tf:365-383) is the central workloads' setting; the node's target is fixed at engine in its startup template. Round 3: not closed. The literal dependency check needs the gcp, redis and managed adapters out of the crate the node links (a qip-storage feature or a second crate with an ADR-sized provider split); a source-level 'never constructs them' test would reinterpret the check rather than meet it."
   },
   {
     "id": "ARCH-046",

@@ -204,3 +204,100 @@ fn a_source_that_is_not_an_array_is_refused_rather_than_skipped() {
         error.message()
     );
 }
+
+// --- ARCH-074: the v12.0 completeness targets --------------------------------
+
+const TARGETS: &str = "docs/blueprint/v12-completeness-targets.json";
+
+/// The rendered targets view's rows, as `(cited cell, scored cell)` in order.
+fn target_rows(root: &Root) -> Vec<(String, String)> {
+    let sources = load(root.path()).expect("sources load");
+    let view = render_views(&sources)
+        .into_iter()
+        .find(|view| view.path.ends_with("v12-completeness-targets.md"))
+        .expect("a targets list renders a targets view")
+        .text;
+    view.lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| # "))
+        .map(|line| {
+            let cells: Vec<&str> = line.split(" | ").collect();
+            (cells[2].to_string(), cells[3].to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn a_completeness_target_is_scored_complete_only_when_every_requirement_it_cites_is_complete_and_tested()
+ {
+    // The failure this prevents: a target reading COMPLETE because somebody
+    // typed it, or because one of the rows it rests on was marked complete
+    // with no test under it. A target has no status field at all; what it is
+    // scored from is below, and each of the three ways to fall short is here.
+    let root = Root::new("targets");
+    three_requirements(&root);
+    root.put(
+        "docs/blueprint/assessment/LEDGER.json",
+        r#"[{"id":"LEDGER-001","status":"COMPLETE","tested":true},
+            {"id":"LEDGER-002","status":"COMPLETE","tested":false},
+            {"id":"LEDGER-003","status":"PARTIAL","tested":true}]"#,
+    );
+    root.put(
+        TARGETS,
+        r#"[{"target":"rests on evidence","requirements":["LEDGER-001"]},
+            {"target":"rests on a row nobody tested","requirements":["LEDGER-001","LEDGER-002"]},
+            {"target":"rests on a row that is not finished","requirements":["LEDGER-001","LEDGER-003"]}]"#,
+    );
+    let rows = target_rows(&root);
+    // Premise: three targets rendered, each citing the status it was given.
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0].0, "LEDGER-001: COMPLETE");
+    assert_eq!(
+        rows[1].0,
+        "LEDGER-001: COMPLETE; LEDGER-002: COMPLETE (untested)"
+    );
+    assert_eq!(rows[2].0, "LEDGER-001: COMPLETE; LEDGER-003: PARTIAL");
+
+    assert_eq!(rows[0].1, "COMPLETE");
+    assert_eq!(
+        rows[1].1, "OPEN (1 of 2 complete)",
+        "a row marked complete with no test under it counted toward a target"
+    );
+    assert_eq!(rows[2].1, "OPEN (1 of 2 complete)");
+}
+
+#[test]
+fn a_completeness_target_that_cites_nothing_or_a_requirement_nobody_holds_is_refused_rather_than_rendered()
+ {
+    // A row with no evidence under it is a target scored on its own text.
+    let root = Root::new("targets-refused");
+    three_requirements(&root);
+    root.put(
+        TARGETS,
+        r#"[{"target":"cites a ghost","requirements":["LEDGER-009"]}]"#,
+    );
+    let error = load(root.path()).expect_err("an unknown requirement id must be refused");
+    assert!(
+        error.message().contains("LEDGER-009"),
+        "the refusal names the id: {}",
+        error.message()
+    );
+
+    root.put(TARGETS, r#"[{"target":"cites nothing","requirements":[]}]"#);
+    assert!(
+        load(root.path()).is_err(),
+        "a target citing no requirement was accepted"
+    );
+
+    // And the admitting half: the same list citing a real id loads.
+    root.put(
+        TARGETS,
+        r#"[{"target":"cites a row","requirements":["LEDGER-001"]}]"#,
+    );
+    assert_eq!(
+        target_rows(&root),
+        [(
+            "LEDGER-001: UNASSESSED".to_string(),
+            "OPEN (0 of 1 complete)".to_string()
+        )]
+    );
+}

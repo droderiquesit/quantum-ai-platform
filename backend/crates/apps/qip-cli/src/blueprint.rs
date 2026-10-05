@@ -10,6 +10,13 @@
 //! - the current-state map, `docs/architecture/current-state/*.json`, is
 //!   rendered to `docs/architecture/current-state.md`.
 //!
+//! A fourth view has no source of its own beyond a list of citations:
+//! `docs/blueprint/v12-completeness-targets.json` names, for each of the ten
+//! COMPLETE TARGET items of blueprint v12.0 §31.1, the requirements that
+//! carry it, and `docs/blueprint/v12-completeness-targets.md` is rendered
+//! from that list and the assessment. A target has no status of its own to
+//! edit — see [`target_score`] — which is the point of it (ARCH-074).
+//!
 //! This exists so that nobody edits a view by hand. A hand-edited view
 //! drifts from its source silently, and nineteen status documents came to
 //! disagree with each other that way before 2026-09-07. The matrix is
@@ -142,6 +149,9 @@ pub struct Sources {
     pub assessment: BTreeMap<String, Value>,
     /// Current-state groups in file-name order, if the map exists.
     pub current_state: Option<CurrentState>,
+    /// The v12.0 §31.1 completeness targets and the requirements each cites,
+    /// in the blueprint's order; empty where the list does not exist.
+    pub completeness_targets: Vec<Value>,
 }
 
 /// The current-state map: one summary per group and the records of each group.
@@ -168,6 +178,11 @@ const STATE_DIR: &str = "docs/architecture/current-state";
 const REQ_MD: &str = "docs/blueprint/requirements.md";
 const MATRIX_MD: &str = "docs/blueprint/traceability-matrix.md";
 const STATE_MD: &str = "docs/architecture/current-state.md";
+/// Deliberately beside the two register directories and not inside either:
+/// [`load`] reads every `*.json` under them as requirements or assessment
+/// rows, and this is neither.
+const TARGETS_JSON: &str = "docs/blueprint/v12-completeness-targets.json";
+const TARGETS_MD: &str = "docs/blueprint/v12-completeness-targets.md";
 
 /// Read every source under `root`.
 ///
@@ -220,10 +235,39 @@ pub fn load(root: &Path) -> Result<Sources> {
     } else {
         None
     };
+    let targets_path = root.join(TARGETS_JSON);
+    let completeness_targets = if targets_path.is_file() {
+        read_array(&targets_path)?
+    } else {
+        Vec::new()
+    };
+    // A target that cites nothing, or cites an id the catalogue does not
+    // hold, is refused here rather than rendered: it would otherwise appear
+    // in the view as a row with no evidence under it, which is a target
+    // scored on its own text — the one thing the view exists to prevent.
+    for target in &completeness_targets {
+        let cited = strings(&target["requirements"]);
+        if text(&target["target"]).is_empty() || cited.is_empty() {
+            return Err(Error::schema(format!(
+                "{TARGETS_JSON} holds a target with no text or no cited requirement; a \
+                 completeness target is scored from the requirements that carry it, so name \
+                 at least one requirement id for it"
+            )));
+        }
+        for id in cited {
+            if !requirements.iter().any(|r| text(&r["id"]) == id) {
+                return Err(Error::schema(format!(
+                    "{TARGETS_JSON} cites {id}, which is not a requirement under {REQ_DIR}; \
+                     cite an id the catalogue holds, or add the requirement first"
+                )));
+            }
+        }
+    }
     Ok(Sources {
         requirements,
         assessment,
         current_state,
+        completeness_targets,
     })
 }
 
@@ -243,6 +287,12 @@ pub fn render_views(sources: &Sources) -> Vec<View> {
         views.push(View {
             path: STATE_MD,
             text: render_current_state(state),
+        });
+    }
+    if !sources.completeness_targets.is_empty() {
+        views.push(View {
+            path: TARGETS_MD,
+            text: render_completeness(&sources.completeness_targets, &sources.assessment),
         });
     }
     views
@@ -632,6 +682,79 @@ fn render_matrix(requirements: &[Value], assessment: &BTreeMap<String, Value>) -
                 cell(&text(&a["work_item"])),
             ));
         }
+    }
+    lines.join("\n") + "\n"
+}
+
+/// How a completeness target is scored from the requirements it cites, each
+/// given as `(status, tested)`.
+///
+/// `COMPLETE` only when every cited requirement is `COMPLETE` **and** tested.
+/// The second half is the rule ARCH-074 names: a row somebody marked
+/// complete with no test under it is text, and a target that inherited its
+/// score from such a row would be scored on text alone. Anything else is
+/// `OPEN`, with the count that says how far.
+///
+/// A target has no status field for this to be read from instead. That is
+/// deliberate: a status that can be typed is a status that can be typed
+/// ahead of the evidence.
+pub fn target_score(cited: &[(String, bool)]) -> String {
+    let complete = cited
+        .iter()
+        .filter(|(status, tested)| status == "COMPLETE" && *tested)
+        .count();
+    if !cited.is_empty() && complete == cited.len() {
+        "COMPLETE".to_string()
+    } else {
+        format!("OPEN ({complete} of {} complete)", cited.len())
+    }
+}
+
+fn render_completeness(targets: &[Value], assessment: &BTreeMap<String, Value>) -> String {
+    let mut lines: Vec<String> = vec![
+        "# Blueprint v12.0 completeness targets".into(),
+        String::new(),
+        "Generated by `qip blueprint render` from".into(),
+        "`docs/blueprint/v12-completeness-targets.json` and".into(),
+        "`docs/blueprint/assessment/*.json`. **Do not edit by hand.**".into(),
+        String::new(),
+        "Blueprint v12.0 §31.1 lists ten COMPLETE TARGET items. Each is scored here from".into(),
+        "the requirements that carry it and from nothing else: a target is COMPLETE only".into(),
+        "when every requirement it cites is COMPLETE and tested, so none is scored on text".into(),
+        "alone (ARCH-074). A target has no status of its own to edit; change a cited".into(),
+        "requirement's assessment, with its evidence, and render again.".into(),
+        String::new(),
+        "| # | Target (v12.0 §31.1) | Cited requirement: status | Scored | Reading |".into(),
+        "|---|---|---|---|---|".into(),
+    ];
+    for (index, target) in targets.iter().enumerate() {
+        let mut cited = Vec::new();
+        let mut shown = Vec::new();
+        for id in strings(&target["requirements"]) {
+            let row = assessment.get(&id);
+            let status = row
+                .map(|row| text(&row["status"]))
+                .filter(|status| !status.is_empty())
+                .unwrap_or_else(|| "UNASSESSED".to_string());
+            let tested = row.is_some_and(|row| row["tested"] == Value::Bool(true));
+            // Said where it is read: a COMPLETE that does not count has to
+            // look different from one that does.
+            let untested = if status == "COMPLETE" && !tested {
+                " (untested)"
+            } else {
+                ""
+            };
+            shown.push(format!("{id}: {status}{untested}"));
+            cited.push((status, tested));
+        }
+        lines.push(format!(
+            "| {} | {} | {} | {} | {} |",
+            index + 1,
+            cell(&text(&target["target"])),
+            cell(&shown.join("; ")),
+            target_score(&cited),
+            cell(&text(&target["reading"])),
+        ));
     }
     lines.join("\n") + "\n"
 }

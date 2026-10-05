@@ -235,7 +235,8 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::ReconciliationRequired { .. }
         | Decision::VenueReconciled { .. }
         | Decision::VenueChosen { .. }
-        | Decision::DispositionIntent { .. } => false,
+        | Decision::DispositionIntent { .. }
+        | Decision::KnowledgeReconciled { .. } => false,
     }
 }
 

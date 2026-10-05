@@ -2869,3 +2869,260 @@ fn production_records(sources: &[std::path::PathBuf], name: &str) -> bool {
                 .is_ok_and(|text| text.contains(&format!("names::{name}")))
     })
 }
+
+// ---------------------------------------------------------------------------
+// ARCH-070: the workload register
+// ---------------------------------------------------------------------------
+
+/// The machine-readable register of every workload the infrastructure
+/// declares: who owns its state, what it speaks to, how it scales, and what
+/// it does when a dependency is gone.
+const WORKLOAD_REGISTER: &str = "infrastructure/workload-register.json";
+const TERRAFORM_MODULES: &str = "infrastructure/terraform/modules";
+
+/// The resource types that *are* a running workload rather than something a
+/// workload uses: a service, a machine, a cluster, a serving endpoint. Each
+/// is a type this tree already declares or once declared; a new kind of
+/// runtime is added here in the change that introduces it, and until it is,
+/// the root-level check below is what keeps one from arriving unregistered
+/// by the side door.
+const WORKLOAD_RESOURCES: [&str; 5] = [
+    "google_cloud_run_v2_service",
+    "google_compute_instance_template",
+    "google_compute_instance_group_manager",
+    "google_container_cluster",
+    "google_vertex_ai_endpoint",
+];
+
+/// The scaling models an entry may name. Two of them are claims about a
+/// Cloud Run service's instance bounds, which the manifests carry, so those
+/// two are held to the manifests below and not taken on the register's word.
+const SCALING_MODELS: [&str; 5] = [
+    "request-scaled",
+    "singleton",
+    "fixed-per-cell",
+    "managed-autopilot",
+    "disabled",
+];
+
+/// Whether `text` declares a resource that is itself a running workload.
+fn declares_a_workload(text: &str) -> bool {
+    without_comments(text).lines().any(|line| {
+        WORKLOAD_RESOURCES
+            .iter()
+            .any(|kind| line.starts_with(&format!("resource \"{kind}\" ")))
+    })
+}
+
+/// The workload a `RunService` document deploys: its `metadata.name` with
+/// the `qip-<env>-` prefix every manifest here carries removed.
+fn run_service_workload(environment: &str, file: &str, document: &str) -> String {
+    let prefix = format!("  name: qip-{environment}-");
+    document
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .unwrap_or_else(|| {
+            panic!("{file} holds a RunService not named qip-{environment}-<workload>")
+        })
+        .trim()
+        .to_string()
+}
+
+/// Every workload the tree declares, with the file or directory that
+/// declares it. Three sources, because a workload reaches this repository
+/// three ways: an entry in the Cloud Run catalogue, a `RunService` manifest
+/// (the portal and OpenObserve have one and no catalogue entry), and a
+/// Terraform module that declares a machine, a cluster or an endpoint.
+fn declared_workloads() -> BTreeMap<String, String> {
+    let mut declared = BTreeMap::new();
+    for (name, _) in catalogue_workloads() {
+        declared.insert(name, CATALOGUE.to_string());
+    }
+    for environment in ENVIRONMENTS {
+        for (file, document) in run_service_documents(environment) {
+            let name = run_service_workload(environment, &file, &document);
+            declared.entry(name).or_insert(file);
+        }
+    }
+    let modules = repository_root().join(TERRAFORM_MODULES);
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let text = std::fs::read_to_string(&path).expect("readable");
+        if !declares_a_workload(&text) {
+            continue;
+        }
+        let module = path
+            .strip_prefix(&modules)
+            .ok()
+            .and_then(|inside| inside.components().next())
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} declares a workload resource outside {TERRAFORM_MODULES}; this walk \
+                     names a workload by its module, so a root-level one has no name to be \
+                     registered under. Move it into a module, or teach this walk its name",
+                    path.display()
+                )
+            });
+        declared
+            .entry(module.clone())
+            .or_insert(format!("{TERRAFORM_MODULES}/{module}"));
+    }
+    declared
+}
+
+/// A field of a register entry as trimmed text; empty when absent or not a
+/// string, so one assertion covers "missing", "blank" and "the wrong type".
+fn stated<'a>(entry: &'a serde_json::Value, field: &str) -> &'a str {
+    entry[field].as_str().map_or("", str::trim)
+}
+
+#[test]
+fn every_workload_the_infrastructure_declares_has_a_complete_entry_in_the_workload_register() {
+    // v2.1 §27 (ARCH-070): every workload documents its state owner, its
+    // upstream and downstream protocol, its scaling model and its degraded
+    // mode. The failure this prevents is the one the catalogue could not see:
+    // it recorded scaling and ingress for three Cloud Run entries, said
+    // nothing about state or degradation, and left the execution node, the
+    // control-plane cluster, the portal and OpenObserve out entirely — so
+    // the workloads an incident is most likely to be about were the ones
+    // with nothing written down.
+    let declared = declared_workloads();
+    // Premise: each of the three sources was actually reached. A walk that
+    // found nothing would leave an empty register "complete".
+    for (expected, source) in [
+        ("api", "the Cloud Run catalogue"),
+        ("portal", "a RunService manifest with no catalogue entry"),
+        ("execution-node", "a Terraform module declaring a machine"),
+    ] {
+        assert!(
+            declared.contains_key(expected),
+            "the walk did not find `{expected}` through {source}; it is not reaching that \
+             source, and every check below would pass on what is left: {declared:?}"
+        );
+    }
+
+    let register: serde_json::Value =
+        serde_json::from_str(&read(WORKLOAD_REGISTER)).expect("the register is JSON");
+    let entries = register["workloads"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{WORKLOAD_REGISTER} has no `workloads` list"));
+    let mut registered: BTreeMap<String, &serde_json::Value> = BTreeMap::new();
+    for entry in entries {
+        let name = stated(entry, "workload").to_string();
+        assert!(
+            !name.is_empty(),
+            "{WORKLOAD_REGISTER} has an entry with no `workload` name"
+        );
+        assert!(
+            registered.insert(name.clone(), entry).is_none(),
+            "{WORKLOAD_REGISTER} registers `{name}` twice; two entries for one workload are \
+             two answers to who owns its state"
+        );
+    }
+
+    for (name, source) in &declared {
+        assert!(
+            registered.contains_key(name),
+            "{source} declares the workload `{name}` and {WORKLOAD_REGISTER} has no entry for \
+             it. Add one stating its state owner, its upstream and downstream protocol, its \
+             scaling model and its degraded mode"
+        );
+    }
+    for name in registered.keys() {
+        assert!(
+            declared.contains_key(name),
+            "{WORKLOAD_REGISTER} registers `{name}`, which nothing under infrastructure/ \
+             declares; an entry for a workload that does not exist is documentation of nothing"
+        );
+    }
+
+    for (name, entry) in &registered {
+        for field in ["runtime", "declared_by", "state_owner", "degraded_mode"] {
+            assert!(
+                !stated(entry, field).is_empty(),
+                "the register entry for `{name}` does not state its `{field}`"
+            );
+        }
+        let declared_by = stated(entry, "declared_by");
+        assert!(
+            repository_root().join(declared_by).exists(),
+            "the register entry for `{name}` says it is declared by {declared_by}, which does \
+             not exist"
+        );
+        for direction in ["upstream", "downstream"] {
+            let peers = entry[direction].as_array().map_or(&[][..], Vec::as_slice);
+            assert!(
+                !peers.is_empty(),
+                "the register entry for `{name}` states no `{direction}`; a workload with \
+                 none says so in an entry whose peer and protocol are `none`, so that silence \
+                 is never mistaken for an answer"
+            );
+            for peer in peers {
+                assert!(
+                    !stated(peer, "peer").is_empty() && !stated(peer, "protocol").is_empty(),
+                    "the register entry for `{name}` has an `{direction}` entry missing its \
+                     peer or its protocol: {peer}"
+                );
+            }
+        }
+        let model = stated(&entry["scaling"], "model");
+        assert!(
+            SCALING_MODELS.contains(&model),
+            "the register entry for `{name}` names the scaling model `{model}`, which is not \
+             one of {SCALING_MODELS:?}"
+        );
+        assert!(
+            !stated(&entry["scaling"], "detail").is_empty(),
+            "the register entry for `{name}` names a scaling model and does not say why"
+        );
+    }
+
+    // The two Cloud Run models are claims about instance bounds, and the
+    // manifests are where the bounds live. Held to every environment's
+    // manifest, so the register cannot call a service a singleton that a
+    // reconciler would run four of.
+    let mut on_cloud_run = BTreeSet::new();
+    for environment in ENVIRONMENTS {
+        for (file, document) in run_service_documents(environment) {
+            let name = run_service_workload(environment, &file, &document);
+            let bound = |key: &str| -> u64 {
+                document
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix(key))
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or_else(|| panic!("{file} carries no numeric `{key}`"))
+            };
+            let (floor, ceiling) = (bound("minInstanceCount:"), bound("maxInstanceCount:"));
+            let expected = match (floor, ceiling) {
+                (1, 1) => "singleton",
+                (0, _) => "request-scaled",
+                _ => panic!(
+                    "{file} carries instance bounds {floor} to {ceiling}, which is neither a \
+                     singleton nor scaled from zero; the register has no model for that, and \
+                     one is added deliberately rather than inferred here"
+                ),
+            };
+            assert_eq!(
+                stated(&registered[&name]["scaling"], "model"),
+                expected,
+                "{file} runs `{name}` between {floor} and {ceiling} instances, and the \
+                 register calls its scaling something else"
+            );
+            on_cloud_run.insert(name);
+        }
+    }
+    assert!(
+        on_cloud_run.len() >= 3,
+        "only {} workloads had a manifest to hold their scaling model to; the walk is not \
+         reaching the manifests",
+        on_cloud_run.len()
+    );
+    for (name, entry) in &registered {
+        let model = stated(&entry["scaling"], "model");
+        assert!(
+            on_cloud_run.contains(name) || !["singleton", "request-scaled"].contains(&model),
+            "the register calls `{name}` {model}, which is a claim about a Cloud Run \
+             service's instance bounds, and no RunService manifest exists to hold it to"
+        );
+    }
+}

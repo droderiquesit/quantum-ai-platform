@@ -79,6 +79,7 @@ Rules: `.claude/rules/domains/infrastructure.md`.
 | `egress/` | The one Envoy bootstrap and the vendored-images list the pipeline mirrors and attests — ten images now, eight of them the control plane's |
 | `event-fabric/` | `streams.local.json`, the committed stream catalogue for the event fabric's first local slice (ADR 0100 §5, §7): four streams with every policy field declared, and the grants that are the P0 control stream's ACL. Runtime configuration beside `egress/envoy.yaml`'s precedent, and the single source of seal age and peak byte rate. No Terraform references it yet (C8). `qip-acceptance`'s `event_fabric_catalogue` suite holds its contents |
 | `docker/` | Image definitions |
+| `workload-register.json` | One entry per workload this directory declares — a catalogue entry, a `RunService` manifest, or a module declaring a machine, a cluster or an endpoint — stating its state owner, its upstream and downstream protocol, its scaling model and its degraded mode (ARCH-070). Not read by Terraform. `qip-acceptance`'s `manifest_wiring` suite derives the workload set from the tree and fails when the two disagree in either direction, or when a scaling model contradicts a manifest's instance bounds; a new workload needs its entry in the same change |
 
 There is one Kubernetes cluster here, and it runs controllers. ADR 0024
 retired the runtime that scheduled the platform's binaries as Pods; ADR 0036
