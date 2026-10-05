@@ -928,3 +928,92 @@ fn redemption_frequency_drives_liquidity_horizon() {
     assert_eq!(RedemptionFrequency::Quarterly.days_to_liquidity(), 90);
     assert!(RedemptionFrequency::Locked.days_to_liquidity() > 1000);
 }
+
+fn commodity_object(
+    ctx: &Context,
+    now: Timestamp,
+    symbol: &str,
+    kind: InstrumentType,
+    price: &str,
+    underlying: Option<ObjectId>,
+) -> FinancialObject {
+    let mut builder =
+        FinancialObject::builder(ctx.ids().generate(now), symbol, kind, fixture_liquidity())
+            .venue("XNYM")
+            .price(Decimal::parse(price).unwrap())
+            .provenance(Provenance::synthetic("test", now));
+    if let Some(id) = underlying {
+        builder = builder
+            .extension(Extension::Future(FutureDetails {
+                underlying_object_id: id.as_str().to_string(),
+                expiry: Timestamp::from_civil(2026, 12, 20),
+                contract_size: Decimal::from_int(1000),
+                tick_size: dec!("0.01"),
+                tick_value: Decimal::from_int(10),
+                initial_margin: Decimal::from_int(6000),
+                maintenance_margin: Decimal::from_int(5000),
+                settlement: SettlementStyle::Physical,
+                contract_month_index: 1,
+            }))
+            .underlying(id);
+    }
+    builder.build(now).expect("valid commodity object")
+}
+
+#[test]
+fn a_commodity_future_resolves_to_its_spot_both_ways_and_basis_is_the_price_difference() {
+    // The failure: an underlying id that names nothing, so a basis is taken
+    // against a phantom spot and a physical holding cannot find its hedge.
+    let (ctx, now) = ctx();
+    let spot = commodity_object(
+        &ctx,
+        now,
+        "WTI",
+        InstrumentType::CommoditySpot,
+        "80.00",
+        None,
+    );
+    let future = commodity_object(
+        &ctx,
+        now,
+        "CLZ6",
+        InstrumentType::CommodityFuture,
+        "82.50",
+        Some(spot.object_id.clone()),
+    );
+    let orphan = commodity_object(
+        &ctx,
+        now,
+        "CLF7",
+        InstrumentType::CommodityFuture,
+        "83.00",
+        Some(ObjectId::from_string("obj-unregistered".to_string())),
+    );
+    let (spot_id, future_id, orphan_id) = (
+        spot.object_id.clone(),
+        future.object_id.clone(),
+        orphan.object_id.clone(),
+    );
+    let mut universe = Universe::new();
+    universe.insert(spot).unwrap();
+    universe.insert(future).unwrap();
+    universe.insert(orphan).unwrap();
+    // Premise: the universe holds all three, so the refusals below are about
+    // the link and not about a missing object.
+    assert_eq!(universe.len(), 3);
+
+    assert_eq!(universe.underlying_of(&future_id).unwrap().symbol, "WTI");
+    let hedges: Vec<_> = universe.derivatives_of(&spot_id);
+    assert_eq!(
+        hedges.iter().map(|o| o.symbol.as_str()).collect::<Vec<_>>(),
+        vec!["CLZ6"],
+        "only the future that names the spot hedges it"
+    );
+    assert_eq!(universe.basis(&future_id).unwrap(), dec!("2.50"));
+    assert!(universe.underlying_of(&orphan_id).is_err());
+    assert!(universe.basis(&orphan_id).is_err());
+    assert!(
+        universe.underlying_of(&spot_id).is_err(),
+        "a spot has no underlying"
+    );
+}

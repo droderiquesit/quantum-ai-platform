@@ -2182,3 +2182,42 @@ fn a_settled_balance_is_reported_out_and_the_report_is_not_a_way_back_in() -> Re
     );
     Ok(())
 }
+
+#[test]
+fn a_conversion_books_two_legs_at_the_recorded_rate_and_a_missing_rate_is_refused() -> Result<()> {
+    // The failure: a conversion that defaulted a missing rate to parity, or
+    // credited the target currency before the source could pay for it.
+    // Premise: the book holds exactly a hundred dollars and no euros.
+    let alice = user("alice");
+    let mut ledger = ledger();
+    enrol(&mut ledger, "alice", "1000")?;
+    clear(&mut ledger, "alice")?;
+    ledger.fund(&alice, &strategy(), dec!("100"), now())?;
+    let settled = |l: &UserLedger, c| l.balance(&alice, &strategy(), c).map(|b| b.settled());
+    assert_eq!(settled(&ledger, Currency::USD), Some(dec!("100")));
+    assert_eq!(settled(&ledger, Currency::EUR), None);
+
+    let (usd, eur) = (Currency::USD, Currency::EUR);
+    let unrated = ledger.convert(&alice, &strategy(), usd, eur, dec!("40"), None, now());
+    assert!(unrated.is_err(), "no rate is refused, not defaulted");
+    assert_eq!(settled(&ledger, usd), Some(dec!("100")));
+    assert_eq!(settled(&ledger, eur), None);
+
+    let rate = Some(dec!("0.9"));
+    let overdrawn = ledger.convert(&alice, &strategy(), usd, eur, dec!("101"), rate, now());
+    assert!(overdrawn.is_err());
+    assert_eq!(
+        settled(&ledger, eur),
+        None,
+        "an unfunded leg credits nothing"
+    );
+
+    let booked = ledger.convert(&alice, &strategy(), usd, eur, dec!("40"), rate, now())?;
+    assert_eq!(
+        (booked.debited, booked.credited, booked.rate),
+        (dec!("40"), dec!("36"), dec!("0.9"))
+    );
+    assert_eq!(settled(&ledger, usd), Some(dec!("60")));
+    assert_eq!(settled(&ledger, eur), Some(dec!("36")));
+    Ok(())
+}

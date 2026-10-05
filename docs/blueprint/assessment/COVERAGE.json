@@ -27,8 +27,8 @@
   },
   {
     "id": "COVERAGE-002",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::transfer::FxRates::{new,with_rate,to_base,convert} (backend/crates/services/qip-capital-fabric/src/transfer.rs:246-306), constructed in production at backend/crates/runtime/qip-kernel/src/platform.rs:18033.",
+    "status": "COMPLETE",
+    "current": "qip_capital::ledger::UserLedger::convert (backend/crates/services/qip-capital/src/ledger/book.rs) books one currency conversion inside a user's strategy book as two linked legs (debit of the source currency, credit of the target at debited*rate) returned as a qip_capital::ledger::Conversion carrying rate and time. A missing, non-positive or same-currency conversion and an unfunded source are refused with the book unchanged. FxRates (qip-capital-fabric) remains the budget-arithmetic converter.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/transfer.rs:281-292 (to_base refuses an unpriced currency rather than assuming parity)",
       "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:1403 an_unpriced_currency_is_refused_rather_than_assumed_to_be_at_parity",
@@ -36,23 +36,24 @@
       "grep -rn 'struct.*Leg\\b' backend/crates/services/qip-capital-fabric/src backend/crates/libs/qip-portfolio/src -- no match",
       "backend/crates/runtime/qip-kernel/src/platform.rs:18021-18033 pre_position (the one production FxRates is FxRates::new(Currency::USD) with no other rate, so every non-USD conversion on that path is refused; reached from DECIDE via plan_pre_positioning)",
       "backend/crates/services/qip-capital/src/ledger/book.rs:93 (UserLedger holds cash per Currency but exposes no conversion operation between two balances)",
-      "backend/crates/edge/qip-arbitrage/src/pricing.rs:131 PricedConversion (an edge arbitrage pricing of a conversion edge against a book, not a ledger booking)"
+      "backend/crates/edge/qip-arbitrage/src/pricing.rs:131 PricedConversion (an edge arbitrage pricing of a conversion edge against a book, not a ledger booking)",
+      "backend/crates/services/qip-capital/tests/user_ledger.rs a_conversion_books_two_legs_at_the_recorded_rate_and_a_missing_rate_is_refused"
     ],
-    "gap": "FxRates::convert refuses an unpriced currency instead of defaulting one (the safety property the requirement names), but nothing books a conversion as two linked ledger legs at a recorded rate and time -- FxRates only produces a converted Decimal for internal budget/limit arithmetic, and no ConversionEvent/leg type exists anywhere in qip-portfolio or qip-capital-fabric.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [
       "COVERAGE-001"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric --test capital_fabric an_unpriced_currency_is_refused_rather_than_assumed_to_be_at_parity proves the refusal half; no test exists for a two-leg conversion booking because no such booking exists.",
+    "verification": "cargo test -p qip-capital --test user_ledger a_conversion (1 passed); mutations: crediting at parity failed on credited 40 vs 36, defaulting a missing rate to one failed 'no rate is refused, not defaulted'; restored, 1 passed",
     "work_item": "E05-two-leg-conversion-booking",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status and flags unchanged. Re-searched for a two-leg booking under other names (Conversion, FxConversion, conversion_rate, Posting, JournalEntry, LedgerEntry): the only multi-currency ledger (qip-capital UserLedger) has per-currency balances and no conversion, and qip-arbitrage's PricedConversion is edge pricing, not booking. Added those as evidence; the refusal half stands as the assessor graded it."
+    "notes": "Ledger-level closure. No composition root or kernel path calls UserLedger::convert yet, so integrated is false; the rate is an input supplied by the caller (FxRates would be the source) and no event is journaled for the conversion."
   },
   {
     "id": "COVERAGE-003",
@@ -241,8 +242,8 @@
   },
   {
     "id": "COVERAGE-010",
-    "status": "PARTIAL",
-    "current": "A forward-only reference exists and is enforced: FinancialObject.underlying_object_id: Option<ObjectId> (backend/crates/libs/qip-financial/src/object.rs:36, set by the builder's .underlying at :333) is required on every derivative type, CommodityFuture included (asset_class.rs:277), and validation refuses one without it (object.rs:186-188); FutureDetails also carries an underlying_object_id string (extensions.rs:404). Nothing reads either field outside qip-financial's own object/extension code, so the reference is never resolved against the Universe, there is no reverse lookup from a spot or physical instrument to its futures, and no futures-minus-spot basis is computed. The edge carries adjacent but unconnected ideas: qip-routing's EdgeClass::Basis ('spot against perpetual, future, tokenised or ETF form', path.rs:155-157) is supplied by the caller rather than derived from any registry link, and qip-arbitrage's graph describes 'a future against spot' as a one-component synthetic edge (graph.rs:17-21) with no fixture that uses a future.",
+    "status": "COMPLETE",
+    "current": "qip_financial::universe::Universe::{underlying_of, derivatives_of, basis} (backend/crates/libs/qip-financial/src/universe.rs) resolve a derivative's required underlying_object_id against the universe (refusing an unset or unregistered one), answer the reverse lookup from a spot to the futures naming it in object-id order, and compute basis as futures price less spot price, refusing a currency mismatch.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/object.rs:36 (underlying_object_id on every FinancialObject)",
       "backend/crates/libs/qip-financial/src/object.rs:186-188 ('{} requires an underlying' for any is_derivative() type; CommodityFuture is one, asset_class.rs:277)",
@@ -251,9 +252,10 @@
       "backend/crates/libs/qip-financial/tests/object_model.rs:219 a_derivative_without_an_underlying_is_rejected (exercises the required-underlying rule on an Option only; no commodity future and no resolution)",
       "backend/crates/edge/qip-routing/src/path.rs:155-157 EdgeClass::Basis (caller-supplied), backend/crates/edge/qip-arbitrage/src/graph.rs:17-21 (future-against-spot described, not fixtured) -- both edge-only",
       "grep -rin 'basis' backend/crates/libs/qip-financial backend/crates/services -- no futures-to-spot basis computation",
-      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 (AssetClass::Commodity is one of the four classes the registry refuses at assembly)"
+      "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs:694-714 (AssetClass::Commodity is one of the four classes the registry refuses at assembly)",
+      "backend/crates/libs/qip-financial/tests/object_model.rs a_commodity_future_resolves_to_its_spot_both_ways_and_basis_is_the_price_difference"
     ],
-    "gap": "Only the forward half of the link exists, as a required but unresolved id: nothing checks that a commodity future's underlying names a registered spot or physical instrument, nothing answers 'which futures hedge this physical holding', and no basis is computed from a future and its underlying. No test builds a commodity future and its physical underlying together. The Commodity class is also refused at Platform assembly, so none of this can reach a running process.",
+    "gap": "",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -263,11 +265,11 @@
       "COVERAGE-009"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial --test object_model a_derivative_without_an_underlying_is_rejected proves the generic required-underlying rule on an Option; no test resolves a commodity future to its spot/physical underlying in either direction or computes basis, because no code does.",
+    "verification": "cargo test -p qip-financial --test object_model a_commodity_future (1 passed); mutations: swapping the basis operands failed (-2.5 vs 2.5), widening derivatives_of to every derivative-bearing object failed the hedge list assertion; restored, 1 passed",
     "work_item": "E05-commodity-future-spot-link",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: MISSING -> PARTIAL (upgrade), implemented true, tested/integrated/deployable false. The assessor cited only FutureDetails' string field and missed the top-level FinancialObject.underlying_object_id, which validation requires on every derivative including CommodityFuture (object.rs:186) -- a real, enforced forward reference. PARTIAL rather than MISSING because that half of 'linked' exists in non-test code; tested false because the only test of the rule uses an Option and nothing resolves the link or computes basis; not integrated because AssetClass::Commodity is refused at assembly."
+    "notes": "Library-level closure. No kernel or composition-root path calls these Universe methods yet, so integrated is false; the commodity-valuation carry (COVERAGE-011) and registering AssetClass::Commodity in the shipped registry (COVERAGE-009) remain separate gaps."
   },
   {
     "id": "COVERAGE-011",

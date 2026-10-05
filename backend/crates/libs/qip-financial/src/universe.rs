@@ -190,6 +190,55 @@ impl Universe {
             .map(|k| ObjectId::from_string(k.clone()))
     }
 
+    /// The instrument a derivative references, resolved against this universe.
+    ///
+    /// Refuses a derivative with no underlying and one whose underlying is not
+    /// registered here: an id that names nothing is the link the requirement
+    /// (COVERAGE-010) exists to refuse, since a basis computed against a
+    /// phantom spot is a number nobody can check.
+    pub fn underlying_of(&self, id: &ObjectId) -> Result<&FinancialObject> {
+        let derivative = self.require(id)?;
+        let underlying = derivative.underlying_object_id.as_ref().ok_or_else(|| {
+            Error::invalid(format!(
+                "{} references no underlying; link it before asking for one",
+                derivative.symbol
+            ))
+        })?;
+        self.get(underlying).ok_or_else(|| {
+            Error::not_found(format!(
+                "{} references {underlying}, which is not registered; register the underlying \
+                 or the link resolves to nothing",
+                derivative.symbol
+            ))
+        })
+    }
+
+    /// Every derivative that references `underlying`, in object-id order: the
+    /// reverse of [`Self::underlying_of`], so a physical holding can be related
+    /// to the futures that hedge it.
+    pub fn derivatives_of(&self, underlying: &ObjectId) -> Vec<&FinancialObject> {
+        self.objects
+            .values()
+            .filter(|o| o.underlying_object_id.as_ref() == Some(underlying))
+            .collect()
+    }
+
+    /// Futures price less the price of its resolved underlying.
+    ///
+    /// Refused when the two quote in different currencies: subtracting a euro
+    /// price from a dollar price yields a number with no unit.
+    pub fn basis(&self, future: &ObjectId) -> Result<qip_core::Decimal> {
+        let derivative = self.require(future)?;
+        let underlying = self.underlying_of(future)?;
+        if derivative.currency != underlying.currency {
+            return Err(Error::invalid(format!(
+                "{} quotes in {} and its underlying {} in {}; convert before taking a basis",
+                derivative.symbol, derivative.currency, underlying.symbol, underlying.currency
+            )));
+        }
+        Ok(derivative.price - underlying.price)
+    }
+
     pub fn of_type(&self, instrument_type: InstrumentType) -> Vec<&FinancialObject> {
         self.objects
             .values()
