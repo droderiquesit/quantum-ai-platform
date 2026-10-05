@@ -298,6 +298,23 @@ impl RevisionRecord {
     }
 }
 
+/// The marker a failed re-fetch leaves against an extent (DATA-008).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Unretrievable {
+    reason: String,
+    since: Timestamp,
+}
+
+impl Unretrievable {
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    pub const fn since(&self) -> Timestamp {
+        self.since
+    }
+}
+
 /// What recording a reference found.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LedgerOutcome {
@@ -339,6 +356,11 @@ pub struct ReferenceLedger {
     entries: BTreeMap<ExtentKey, DataReference>,
     /// Revisions caught, oldest first, bounded by `revision_bound`.
     revisions: VecDeque<RevisionRecord>,
+    /// Extents whose source stopped answering, with why and since when
+    /// (DATA-008). Bounded with `entries`: a marker is dropped when its
+    /// reference is evicted, because a marker for an extent nothing derives
+    /// from marks no knowledge.
+    unretrievable: BTreeMap<ExtentKey, Unretrievable>,
     /// References evicted to stay within `bound`, over the ledger's life.
     /// A number, so "the ledger is full" is a fact a test or a cycle line can
     /// state rather than one inferred from a count that stopped rising.
@@ -369,6 +391,7 @@ impl ReferenceLedger {
             order: VecDeque::new(),
             entries: BTreeMap::new(),
             revisions: VecDeque::new(),
+            unretrievable: BTreeMap::new(),
             evicted: 0,
         })
     }
@@ -381,6 +404,7 @@ impl ReferenceLedger {
             order: VecDeque::new(),
             entries: BTreeMap::new(),
             revisions: VecDeque::new(),
+            unretrievable: BTreeMap::new(),
             evicted: 0,
         }
     }
@@ -462,6 +486,10 @@ impl ReferenceLedger {
     /// log already holds. Bounded exactly as `record` is.
     pub fn restore_reference(&mut self, reference: DataReference) {
         let key = ExtentKey::of(&reference);
+        // A reference is a fetch that succeeded, so the extent is retrievable
+        // again; leaving the marker would tell a consumer the evidence is
+        // gone while the ledger holds bytes served this instant.
+        self.unretrievable.remove(&key);
         if let Some(held) = self.entries.get_mut(&key) {
             *held = reference;
             return;
@@ -470,6 +498,7 @@ impl ReferenceLedger {
             match self.order.pop_front() {
                 Some(oldest) => {
                     self.entries.remove(&oldest);
+                    self.unretrievable.remove(&oldest);
                     self.evicted = self.evicted.saturating_add(1);
                 }
                 // The order and the entries cannot disagree — every insert
@@ -503,6 +532,62 @@ impl ReferenceLedger {
             locator: locator.to_string(),
             period,
         })
+    }
+
+    /// Record that a re-fetch of an extent this ledger holds a reference to
+    /// failed outright — withdrawn, embargoed, gone — rather than returning
+    /// different bytes (DATA-008).
+    ///
+    /// The reference, and so everything derived from it, is kept: the point
+    /// of the requirement is that knowledge outlives its source. What
+    /// changes is that a consumer asking [`Self::unretrievable`] learns the
+    /// evidence can no longer be re-checked, instead of reading a ledger that
+    /// is indistinguishable from one whose source was merely never polled
+    /// again. Refused for an extent the ledger holds no reference to, since
+    /// nothing was derived from it to mark, and for an empty reason, which
+    /// would leave a marker nobody can act on.
+    pub fn mark_unretrievable(
+        &mut self,
+        source_id: &str,
+        locator: &str,
+        period: DataPeriod,
+        reason: &str,
+        at: Timestamp,
+    ) -> Result<()> {
+        let key = ExtentKey {
+            source_id: source_id.to_string(),
+            locator: locator.to_string(),
+            period,
+        };
+        if reason.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "a re-fetch of `{source_id}` at {locator} is recorded as failed with no reason;                  state why the source no longer answers"
+            )));
+        }
+        if !self.entries.contains_key(&key) {
+            return Err(Error::invalid(format!(
+                "the ledger holds no reference to `{source_id}` at {locator} for that period, so                  there is no derived knowledge to mark as no longer re-fetchable; record the                  reference first"
+            )));
+        }
+        self.unretrievable.insert(
+            key,
+            Unretrievable {
+                reason: reason.to_string(),
+                since: at,
+            },
+        );
+        Ok(())
+    }
+
+    /// Why and since when `reference`'s extent can no longer be re-fetched,
+    /// if a re-fetch has failed since it was last served.
+    pub fn unretrievable(&self, reference: &DataReference) -> Option<&Unretrievable> {
+        self.unretrievable.get(&ExtentKey::of(reference))
+    }
+
+    /// Every extent marked no longer re-fetchable, in extent order.
+    pub fn unretrievable_extents(&self) -> impl Iterator<Item = (&ExtentKey, &Unretrievable)> {
+        self.unretrievable.iter()
     }
 
     /// Every revision caught, oldest first.
@@ -708,6 +793,72 @@ mod tests {
             "the ledger must keep what the source now serves"
         );
         assert_eq!(ledger.revisions().count(), 1);
+        Ok(())
+    }
+
+    /// A source that stops answering leaves the knowledge standing and marks
+    /// it, and a later successful fetch clears the mark. A re-fetch for an
+    /// extent nothing was derived from, or with no reason, is refused.
+    ///
+    /// Mutated by deleting the `self.unretrievable.insert(` call in
+    /// `mark_unretrievable` — confirmed the marker assertion then fails, then
+    /// restored; and by deleting the `self.unretrievable.remove(&key)` in
+    /// `restore_reference` — confirmed the recovery assertion then fails.
+    #[test]
+    fn a_source_that_stops_answering_leaves_its_knowledge_marked_not_re_fetchable() -> Result<()> {
+        let mut ledger = ReferenceLedger::bounded();
+        let held = reference("synthetic-exchange", "bars://AAA", now(), b"one")?;
+        ledger.record(held.clone(), now());
+        assert!(
+            ledger.unretrievable(&held).is_none(),
+            "premise: a freshly served extent is not marked"
+        );
+        let period = DataPeriod::instant(now());
+        let gone_at = now().saturating_add(Duration::from_secs(600));
+
+        assert!(
+            ledger
+                .mark_unretrievable("synthetic-exchange", "bars://ZZZ", period, "404", gone_at)
+                .is_err(),
+            "an extent nothing was derived from has nothing to mark"
+        );
+        assert!(
+            ledger
+                .mark_unretrievable("synthetic-exchange", "bars://AAA", period, "  ", gone_at)
+                .is_err(),
+            "a marker with no reason is one nobody can act on"
+        );
+        assert_eq!(ledger.unretrievable_extents().count(), 0);
+
+        ledger.mark_unretrievable("synthetic-exchange", "bars://AAA", period, "404", gone_at)?;
+        let marker = ledger.unretrievable(&held);
+        assert_eq!(marker.map(Unretrievable::reason), Some("404"));
+        assert_eq!(marker.map(Unretrievable::since), Some(gone_at));
+        assert_eq!(
+            ledger
+                .get("synthetic-exchange", "bars://AAA", period)
+                .map(DataReference::content_hash),
+            Some(held.content_hash()),
+            "the knowledge's own reference survives the loss of its source"
+        );
+
+        let back = gone_at.saturating_add(Duration::from_secs(600));
+        ledger.record(
+            DataReference::of_generated(
+                &descriptor("synthetic-exchange"),
+                "bars://AAA",
+                ["AAA".to_string()],
+                period,
+                SourceSchema::from_fields([("close".to_string(), FieldType::Number)]),
+                b"one",
+                back,
+            )?,
+            back,
+        );
+        assert!(
+            ledger.unretrievable(&held).is_none(),
+            "a fetch that succeeded again clears the marker"
+        );
         Ok(())
     }
 
