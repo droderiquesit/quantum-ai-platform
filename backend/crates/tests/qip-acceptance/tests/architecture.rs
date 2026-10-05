@@ -755,6 +755,45 @@ fn no_edge_cell_can_reach_a_language_model() {
 }
 
 #[test]
+fn no_edge_cell_can_reach_a_historical_data_reader() {
+    // REFLEX-007: the hot path reads no Tick Lake, archive or replay store.
+    // No Tick Lake crate exists yet, so this is asserted of the crates that
+    // hold or replay history today (ingestion, streaming, training, the
+    // learning engine, the twin and the world model, the data finder); the
+    // day a lake reader lands it joins `READERS`. It does not cover a read
+    // through `qip-storage`, which the node links for its journal mirror --
+    // that gap is stated in the register rather than papered over here.
+    const READERS: [&str; 7] = [
+        "qip-market-ingestion",
+        "qip-streaming",
+        "qip-training",
+        "qip-learning-engine",
+        "qip-twin",
+        "qip-world-model",
+        "qip-data-finder",
+    ];
+    let graph = dependency_graph();
+    assert_named_crates_exist(&graph, READERS);
+    // Anchor: the kernel composes history-bearing services, so if it reaches
+    // none of the readers the walk is blind and the absences prove nothing.
+    let from_kernel = reachable_from(&graph, "qip-kernel");
+    assert!(
+        READERS.iter().any(|reader| from_kernel.contains(*reader)),
+        "the kernel reaches no historical reader, so the walk is not working"
+    );
+    for crate_name in edge_crates() {
+        let reachable = reachable_from(&graph, &crate_name);
+        for reader in READERS {
+            assert!(
+                !reachable.contains(reader),
+                "the edge crate {crate_name} can reach {reader}, a historical data reader; \
+                 the hot path must decide from in-memory state only"
+            );
+        }
+    }
+}
+
+#[test]
 fn only_the_edge_cell_itself_holds_an_order_manager() {
     // A cell is a composition root, and like the kernel it is the one place
     // the pieces are allowed to meet. A protocol decoder, an order book, a
