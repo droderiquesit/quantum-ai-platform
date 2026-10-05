@@ -594,25 +594,25 @@
   },
   {
     "id": "TICK-024",
-    "status": "NEEDS-VALIDATION",
-    "current": "The intended split holds in the workspace dependency graph today: qip-edge-node's Cargo.toml has no dependency on qip-simulation-engine, qip-training, qip-twin or qip-world-model (confirmed by grep), so replay/training/fusion workloads cannot reach the reflex-node binary by construction. But 'Lane 3'/'Cognitive Slow' has no name or type anywhere in the code, and no acceptance test asserts the separation.",
+    "status": "COMPLETE",
+    "current": "The split holds in the dependency graph and is now enforced: qip-acceptance tests/lane_placement.rs replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node asserts that qip-simulation-engine, qip-training, qip-twin and qip-world-model are each registered Lane 3 in docs/architecture/lane-placement.md (the deployment map placing each workload) and are absent from the normal-dependency closure of qip-edge-node, after asserting the closure is non-trivial.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/Cargo.toml — no qip-simulation-engine/qip-training/qip-twin/qip-world-model dependency",
-      "rg -ni \"lane 3|cognitive.slow|time.lane\" backend/crates -> only a doc-string in qip-cli/src/blueprint.rs"
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs::replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node",
+      "docs/architecture/lane-placement.md rows for qip-simulation-engine, qip-training, qip-twin, qip-world-model (Lane 3)"
     ],
-    "gap": "No architecture test enforces the separation going forward, so a future change could add the dependency with nothing to catch it; there is no explicit lane-placement map for historical tick replay/training/fusion workloads.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A new architecture test asserting no crates/apps/qip-edge-node dependency on qip-simulation-engine/qip-training/qip-twin/qip-world-model.",
+    "verification": "cargo test -p qip-acceptance --test lane_placement (4 passed). Mutation 1: registering qip-twin as Lane 2 failed with 'qip-twin must be registered as Lane 3'. Mutation 2: adding qip-twin to qip-edge-node's Cargo.toml failed with 'qip-edge-node links qip-simulation-engine'. Both restored byte-for-byte; 4 passed.",
     "work_item": "E01",
     "tier": "T0",
     "size": "S",
-    "notes": "Cheap to close: the invariant already holds, it only needs a test."
+    "notes": "Mutation-verified. Lane 3 here is the register's lane, not a deployed service: nothing is deployed (execution_nodes = {})."
   },
   {
     "id": "TICK-025",
