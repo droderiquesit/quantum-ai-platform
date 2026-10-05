@@ -23,6 +23,19 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+/// The fewest legs a cycle has. One conversion cannot close (MESH-010).
+pub const MIN_CYCLE_EDGES: usize = 2;
+
+/// The most legs any cycle may have, whatever is configured (MESH-010).
+///
+/// The blueprint's ceiling on the product, not a tuning value: the maximum in
+/// force is [`SearchSettings::max_cycle_edges`], which a deployment sets and
+/// [`SearchSettings::validate`] refuses above this. A leg here is a
+/// conversion, one edge of the cycle, which is what the blueprint's graph
+/// counts; a synthetic conversion that fans out into several component orders
+/// is still one leg of the cycle.
+pub const MAX_CYCLE_EDGES: usize = 20;
+
 /// How hard to look, and how much rounding noise to tolerate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SearchSettings {
@@ -34,10 +47,12 @@ pub struct SearchSettings {
     /// threshold here that looked like a profitability filter would quietly
     /// become one.
     pub min_log_gain_f64: f64,
-    /// Longest cycle considered.
+    /// Longest cycle accepted: the maximum leg count in force.
     ///
     /// Long cycles are found by the same algorithm and are almost never
-    /// executable: every extra leg is another chance to be left half-on.
+    /// executable: every extra leg is another chance to be left half-on. A
+    /// cycle longer than this is not dropped and not shortened: [`search`]
+    /// hands it back as over-length so the scan can refuse it by name.
     pub max_cycle_edges: usize,
     /// Most candidates returned from one scan.
     pub max_candidates: usize,
@@ -50,6 +65,47 @@ impl Default for SearchSettings {
             max_cycle_edges: 4,
             max_candidates: 32,
         }
+    }
+}
+
+impl SearchSettings {
+    /// Refuse a maximum in force outside the two to twenty legs a cycle has.
+    ///
+    /// Called where the maximum is read from configuration. A value above the
+    /// ceiling is refused rather than lowered to it: a deployment that asked
+    /// for thirty legs and silently got twenty would be running a limit
+    /// nobody chose.
+    pub fn validate(&self) -> Result<()> {
+        if !(MIN_CYCLE_EDGES..=MAX_CYCLE_EDGES).contains(&self.max_cycle_edges) {
+            return Err(Error::invalid(format!(
+                "a maximum of {} legs per cycle is outside the {MIN_CYCLE_EDGES} to \
+                 {MAX_CYCLE_EDGES} a cycle may have; set it within that range",
+                self.max_cycle_edges
+            )));
+        }
+        Ok(())
+    }
+
+    /// Whether a cycle of `legs` legs may be accepted under the maximum in
+    /// force, with a refusal that names the limit it broke.
+    ///
+    /// The one place the length rule is stated, so the scan's refusal and a
+    /// unit check of the boundary cannot disagree about where it sits.
+    pub fn admit_length(&self, legs: usize) -> Result<()> {
+        if legs < MIN_CYCLE_EDGES {
+            return Err(Error::invalid(format!(
+                "a cycle of {legs} leg(s) cannot close; a cycle has at least {MIN_CYCLE_EDGES}"
+            )));
+        }
+        if legs > self.max_cycle_edges {
+            return Err(Error::invalid(format!(
+                "a cycle of {legs} legs exceeds the maximum of {} in force; it is refused whole \
+                 and never shortened to fit, so raise the configured maximum (to at most \
+                 {MAX_CYCLE_EDGES}) or leave it refused",
+                self.max_cycle_edges
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -118,16 +174,41 @@ impl ExactConfirmation {
 /// cycle where there is only a tie.
 const RELAX_TOLERANCE: f64 = 1e-15;
 
+/// What one search found: the cycles worth pricing, and the ones it will
+/// not hand on because they are longer than the maximum in force.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchOutcome {
+    /// Cycles within the maximum, in descending order of log gain.
+    pub candidates: Vec<PathCandidate>,
+    /// Cycles the search found that have more legs than
+    /// [`SearchSettings::max_cycle_edges`], whole and unshortened.
+    ///
+    /// Kept so the scan can refuse each one by name (MESH-010). Until this
+    /// existed the search dropped them, and a market whose only cycle was one
+    /// leg too long read exactly like a market with no cycle in it. Bounded
+    /// at [`SearchSettings::max_candidates`] like the candidates are.
+    pub over_length: Vec<PathCandidate>,
+}
+
+/// Search the graph for cycles whose rates multiply to more than one.
+///
+/// [`search`] with the over-length cycles left out, for a caller that only
+/// prices. A caller that has to account for what was refused wants
+/// [`search`].
+pub fn search_candidates(graph: &ArbitrageGraph, settings: &SearchSettings) -> Vec<PathCandidate> {
+    search(graph, settings).candidates
+}
+
 /// Search the graph for cycles whose rates multiply to more than one.
 ///
 /// Bellman-Ford over `-ln(rate)`, run repeatedly: each round extracts the
 /// cycles it can reach, then excludes their edges so the next round finds a
 /// different one. Returned in descending order of log gain, which is an
 /// examination order and not a ranking anyone should act on.
-pub fn search_candidates(graph: &ArbitrageGraph, settings: &SearchSettings) -> Vec<PathCandidate> {
+pub fn search(graph: &ArbitrageGraph, settings: &SearchSettings) -> SearchOutcome {
     let node_count = graph.node_count();
     if node_count == 0 || graph.edge_count() == 0 {
-        return Vec::new();
+        return SearchOutcome::default();
     }
 
     // Endpoints and weights, resolved once. An edge whose venue is shut, or
@@ -159,6 +240,7 @@ pub fn search_candidates(graph: &ArbitrageGraph, settings: &SearchSettings) -> V
 
     let mut excluded = vec![false; graph.edge_count()];
     let mut found: Vec<PathCandidate> = Vec::new();
+    let mut over_length: Vec<PathCandidate> = Vec::new();
     let mut seen: Vec<Vec<usize>> = Vec::new();
 
     for _ in 0..settings.max_candidates {
@@ -175,6 +257,22 @@ pub fn search_candidates(graph: &ArbitrageGraph, settings: &SearchSettings) -> V
                     excluded[*edge] = true;
                 }
                 progressed = true;
+                // And keep it, whole, for the scan to refuse by name. It is
+                // held to the same gain floor a candidate is, so a consistent
+                // market does not report every long loop in it as refused.
+                let canonical = canonicalise(&cycle);
+                let log_gain_f64: f64 = canonical.iter().map(|edge| -weights[*edge]).sum();
+                if over_length.len() < settings.max_candidates
+                    && !log_gain_f64.is_nan()
+                    && log_gain_f64 > settings.min_log_gain_f64
+                    && !over_length.iter().any(|kept| kept.edges == canonical)
+                {
+                    over_length.push(PathCandidate {
+                        kind: graph.classify(&canonical),
+                        edges: canonical,
+                        log_gain_f64,
+                    });
+                }
                 continue;
             }
             let canonical = canonicalise(&cycle);
@@ -210,7 +308,11 @@ pub fn search_candidates(graph: &ArbitrageGraph, settings: &SearchSettings) -> V
             .then_with(|| a.edges.cmp(&b.edges))
     });
     found.truncate(settings.max_candidates);
-    found
+    over_length.sort_by(|a, b| a.edges.cmp(&b.edges));
+    SearchOutcome {
+        candidates: found,
+        over_length,
+    }
 }
 
 /// Recompute a candidate's payoff multiple in exact arithmetic.

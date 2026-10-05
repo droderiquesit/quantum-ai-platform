@@ -84,21 +84,31 @@ use qip_core::time::Duration;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The most edges one composition may carry.
+/// The most edges one composition may carry: the engine's ceiling of twenty.
 ///
 /// §30.1 indexes "every cycle of length 2–4 the whitelist permits" and the
-/// background sweep may surface longer ones, so this is not four. It is a
-/// bound on the working set rather than a statement about what is
-/// profitable: a composition past this is a graph walk that escaped, and
-/// routing it would spend the pass budget deciding how to execute something
-/// no planner will size.
-pub const MAX_COMPOSITION_EDGES: usize = 8;
+/// background sweep may surface longer ones, so this is not four. It was
+/// eight, a figure this module chose for itself as a bound on the working
+/// set, and that made the maximum leg count a compile-time fact of the
+/// router: a desk configured for a nine-leg cycle could find one and never
+/// route it, and the blueprint's two-to-twenty range stopped at eight
+/// whatever anybody configured (MESH-010).
+///
+/// The maximum *in force* is now configuration, and it is the scanner's:
+/// `qip_arbitrage::search::SearchSettings::max_cycle_edges`, which refuses a
+/// longer cycle by name before it is priced. This constant is the other
+/// layer, and deliberately not the same one. It is the ceiling no
+/// configuration can move, held by the type every route goes through, so a
+/// desk built past twenty by something that skipped the composition root's
+/// validation still routes nothing longer. It is the engine's constant
+/// rather than a second literal so the two layers cannot drift apart.
+pub const MAX_COMPOSITION_EDGES: usize = qip_arbitrage::search::MAX_CYCLE_EDGES;
 
 /// The fewest edges a cycle can have.
 ///
 /// Two: a synthetic against the components that replicate it is the
 /// shortest real cycle in this platform's graph. One edge cannot close.
-pub const MIN_COMPOSITION_EDGES: usize = 2;
+pub const MIN_COMPOSITION_EDGES: usize = qip_arbitrage::search::MIN_CYCLE_EDGES;
 
 /// A region a venue sits in.
 ///

@@ -26,11 +26,16 @@
 //!
 //! # What bounds it
 //!
-//! Three explicit numbers, every one refused at zero. The search's own
-//! `max_candidates` and `max_cycle_edges` bound how many cycles one scan can
-//! propose and how long each may be; [`ArbitrageDesk::new`] refuses a search
-//! setting with either at zero, because a scanner that proposes nothing is a
-//! desk that reads as quiet rather than as misconfigured. The desk's own cap,
+//! Three explicit numbers, every one refused where it would propose nothing.
+//! The search's own `max_candidates` and `max_cycle_edges` bound how many
+//! cycles one scan can propose and how long each may be;
+//! [`ArbitrageDesk::new`] refuses `max_candidates` at zero and
+//! `max_cycle_edges` below two, the fewest legs a cycle can have, because a
+//! scanner that proposes nothing is a desk that reads as quiet rather than
+//! as misconfigured. `max_cycle_edges` is the maximum leg count in force
+//! (MESH-010): a cycle past it is refused by the scan under
+//! `arbitrage_scan_length`, naming the limit, and a desk built past the
+//! engine's ceiling of twenty is still held to it by the path router. The desk's own cap,
 //! `max_cycles_per_pass`, bounds how many surviving opportunities the cell
 //! will commit in one pass, and every opportunity past it is refused and
 //! counted rather than dropped. Per-pass allocation is therefore bounded by
@@ -55,7 +60,9 @@
 
 use crate::envelope::VerifiedEnvelope;
 use qip_arbitrage::graph::EdgeKind;
-use qip_arbitrage::{ArbitrageGraph, LiquiditySource, OpportunityScanner, ScanReport, SizePolicy};
+use qip_arbitrage::{
+    ArbitrageGraph, LiquiditySource, MIN_CYCLE_EDGES, OpportunityScanner, ScanReport, SizePolicy,
+};
 use qip_contracts::capital::Utilisation;
 use qip_contracts::message::BookSide;
 use qip_contracts::signal::StrategyId;
@@ -161,11 +168,12 @@ impl ArbitrageDesk {
             )));
         }
         let search = scanner.search_settings();
-        if search.max_candidates == 0 || search.max_cycle_edges == 0 {
-            return Err(Error::invalid(
-                "the search proposes nothing: max_candidates and max_cycle_edges must both be \
-                 positive, or the desk is quiet by construction",
-            ));
+        if search.max_candidates == 0 || search.max_cycle_edges < MIN_CYCLE_EDGES {
+            return Err(Error::invalid(format!(
+                "the search proposes nothing: max_candidates must be positive and \
+                 max_cycle_edges at least {MIN_CYCLE_EDGES}, the fewest legs a cycle can \
+                 have, or the desk is quiet by construction"
+            )));
         }
         if max_cycles_per_pass == 0 {
             return Err(Error::invalid(

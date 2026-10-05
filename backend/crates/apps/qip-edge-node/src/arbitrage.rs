@@ -23,6 +23,19 @@
 //! scan under a narrowed multiplier, and a desk installed to do nothing is a
 //! desk an operator reads as working.
 //!
+//! # What the whitelist left out is said, not repaired
+//!
+//! The graph holds an edge for every conversion the whitelist names and for
+//! nothing else, so a market the cell holds a book for and the whitelist does
+//! not mention is invisible to the desk — and was invisible to the operator
+//! too, because nothing compared the two. At installation the desk's graph is
+//! now checked against the cell's own registry of what can be traded, every
+//! book it holds on both of its sides ([`registry_from_books`]), and each side
+//! with no edge is reported in the installation's outcome (MESH-023). It is
+//! reported and never added: the whitelist is the centre's signed permission,
+//! and an edge built because a book exists would trade a conversion nobody
+//! permitted.
+//!
 //! # What is fixed here rather than shipped
 //!
 //! The cap on cycles per pass and the leg validity are constants of this
@@ -30,11 +43,23 @@
 //! wait at the venue; neither is a fact the centre knows better than the
 //! node that sends the orders, and shipping them would put two claims about
 //! the same bound in two places.
+//!
+//! # What is configuration: the most legs a cycle may have
+//!
+//! [`MAX_LEGS_VARIABLE`] sets the maximum leg count in force (MESH-010). It
+//! was not configuration at all: the desk was built on
+//! `SearchSettings::default()` and the path router held a compile-time
+//! eight, so the figure a deployment ran was whatever two crates happened
+//! to say. It is read once, at start-up, by [`parse_max_legs`], which
+//! refuses a value outside two to twenty rather than lowering it to the
+//! ceiling — a node asked for thirty legs that quietly ran twenty would be
+//! running a limit nobody chose. Unset is the engine's default, the figure
+//! every node ran before the variable existed.
 
 use qip_arbitrage::graph::VenueFacts;
 use qip_arbitrage::{
-    ArbitrageGraph, EdgeAssumptions, Node, OpportunityScanner, PlanSettings, SearchSettings,
-    SizePolicy,
+    ArbitrageGraph, EdgeAssumptions, MAX_CYCLE_EDGES, MIN_CYCLE_EDGES, Node, OpportunityScanner,
+    PlanSettings, SearchSettings, SizePolicy, TradableRegistry,
 };
 use qip_contracts::degradation::StrategyClass;
 use qip_contracts::policy::CycleWhitelist;
@@ -51,8 +76,13 @@ use std::collections::BTreeMap;
 /// it. Unset is a node that installs no desk, and says so.
 pub const STRATEGY_VARIABLE: &str = "QIP_ARBITRAGE_STRATEGY";
 
+/// The environment variable setting the most legs a cycle may have. Unset
+/// is the engine's default; anything outside two to twenty stops the
+/// process.
+pub const MAX_LEGS_VARIABLE: &str = "QIP_ARBITRAGE_MAX_LEGS";
+
 /// How many surviving cycles one pass may commit. Small on purpose: every
-/// cycle is up to four legs the cell cannot unwind, and the next pass finds
+/// cycle is several legs the cell cannot unwind, and the next pass finds
 /// what this one refused if it is still there.
 pub const MAX_CYCLES_PER_PASS: usize = 4;
 
@@ -66,9 +96,43 @@ pub const LEG_VALIDITY: Duration = Duration::from_secs(30);
 /// sized past what one pass should ever send, whatever the envelope holds.
 const PLAN_BUDGET: &str = "50000";
 
+/// How many gaps one log line names before it says how many more there are.
+/// The outcome itself carries every one; this bounds a line, not the report.
+const GAPS_NAMED_IN_A_LINE: usize = 8;
+
 /// The most conversions a whitelist may carry. The graph is walked on every
 /// pass; a whitelist past this is not a whitelist but a market.
 pub const MAX_CONVERSIONS: usize = 256;
+
+/// The search settings the desk runs under, from [`MAX_LEGS_VARIABLE`].
+///
+/// `None` or blank is unset and yields the engine's defaults. A value is a
+/// whole number of legs from two to twenty; anything else is refused naming
+/// the variable, never corrected. The range is the engine's own
+/// (`SearchSettings::validate`), so this function and the scan that enforces
+/// the maximum cannot disagree about where the ceiling is.
+pub fn parse_max_legs(value: Option<&str>) -> Result<SearchSettings> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(SearchSettings::default());
+    };
+    let max_cycle_edges = value.parse::<usize>().map_err(|_| {
+        Error::invalid(format!(
+            "configuration: {MAX_LEGS_VARIABLE}={value} is not a whole number of legs; write a \
+             number from {MIN_CYCLE_EDGES} to {MAX_CYCLE_EDGES}"
+        ))
+    })?;
+    let settings = SearchSettings {
+        max_cycle_edges,
+        ..SearchSettings::default()
+    };
+    settings.validate().map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {MAX_LEGS_VARIABLE}={value} is refused: {}",
+            error.message()
+        ))
+    })?;
+    Ok(settings)
+}
 
 /// Build the graph a whitelist describes, against the venues this cell may
 /// trade.
@@ -149,6 +213,22 @@ pub fn graph_from_whitelist(
     Ok(graph)
 }
 
+/// The cell's own registry of what can be traded: every book it holds, on
+/// both of its sides.
+///
+/// Read from the cell's books rather than from the whitelist on purpose. The
+/// graph is built from the whitelist, so a registry built from it too would
+/// agree with the graph by construction and could never report anything.
+/// The books come from the venue's feed, which is a different source and the
+/// one that knows what is actually listed.
+pub fn registry_from_books(cell: &Cell) -> TradableRegistry {
+    cell.liquidity()
+        .iter()
+        .fold(TradableRegistry::new(), |registry, state| {
+            registry.with_market(state.venue().clone(), state.object_id().clone())
+        })
+}
+
 /// The sizes a whitelist names, refusing a start instrument it leaves
 /// unsized.
 pub fn sizes_from_whitelist(whitelist: &CycleWhitelist) -> Result<SizePolicy> {
@@ -173,19 +253,38 @@ pub fn sizes_from_whitelist(whitelist: &CycleWhitelist) -> Result<SizePolicy> {
     Ok(sizes)
 }
 
-/// Assemble the desk a whitelist describes, funded by `envelope`.
+/// Assemble the desk a whitelist describes, funded by `envelope`, under the
+/// engine's default search settings.
 pub fn desk_from_whitelist(
     whitelist: &CycleWhitelist,
     venues: &[VenueId],
     strategy: StrategyId,
     envelope: VerifiedEnvelope,
 ) -> Result<ArbitrageDesk> {
+    desk_from_whitelist_with(
+        whitelist,
+        venues,
+        strategy,
+        envelope,
+        SearchSettings::default(),
+    )
+}
+
+/// Assemble the desk a whitelist describes, funded by `envelope`, under the
+/// search settings this node was configured with.
+pub fn desk_from_whitelist_with(
+    whitelist: &CycleWhitelist,
+    venues: &[VenueId],
+    strategy: StrategyId,
+    envelope: VerifiedEnvelope,
+    search: SearchSettings,
+) -> Result<ArbitrageDesk> {
     let graph = graph_from_whitelist(whitelist, venues)?;
     let sizes = sizes_from_whitelist(whitelist)?;
     let budget = Decimal::parse(PLAN_BUDGET)
         .ok_or_else(|| Error::invalid("the plan budget literal is not a decimal"))?;
     let scanner = OpportunityScanner::new(
-        SearchSettings::default(),
+        search,
         EdgeAssumptions::default(),
         PlanSettings::with_budget(budget),
     );
@@ -213,8 +312,13 @@ pub enum Installation {
     Degraded,
     /// No verified grant for the desk's strategy has arrived.
     NoEnvelope,
-    /// Installed, with this many trade edges.
+    /// Installed, with this many trade edges, and every side of every book
+    /// the cell holds has one.
     Installed(usize),
+    /// Installed, and the cell holds books the graph cannot see: each label
+    /// is one side of one market with no edge, so no cycle through it can be
+    /// found. Reported rather than repaired — see the module comment.
+    InstalledWithGaps { edges: usize, gaps: Vec<String> },
     /// The whitelist or the cell refused, and the envelope is kept for a
     /// whitelist that does not.
     Refused(String),
@@ -223,7 +327,10 @@ pub enum Installation {
 impl Installation {
     /// Whether an operator needs to look.
     pub const fn is_quiet(&self) -> bool {
-        !matches!(self, Self::Installed(_) | Self::Refused(_))
+        !matches!(
+            self,
+            Self::Installed(_) | Self::InstalledWithGaps { .. } | Self::Refused(_)
+        )
     }
 
     pub fn describe(&self) -> String {
@@ -234,6 +341,25 @@ impl Installation {
             Self::Degraded => "the cell is degraded and a desk would not scan".to_string(),
             Self::NoEnvelope => "no verified grant for the desk's strategy has arrived".to_string(),
             Self::Installed(edges) => format!("installed with {edges} trade edge(s)"),
+            Self::InstalledWithGaps { edges, gaps } => {
+                let named: Vec<&str> = gaps
+                    .iter()
+                    .take(GAPS_NAMED_IN_A_LINE)
+                    .map(String::as_str)
+                    .collect();
+                let more = gaps.len().saturating_sub(named.len());
+                format!(
+                    "installed with {edges} trade edge(s); {} tradable conversion(s) this cell \
+                     holds a book for have no edge, so no cycle through them can be found: {}{}",
+                    gaps.len(),
+                    named.join(", "),
+                    if more == 0 {
+                        String::new()
+                    } else {
+                        format!(" and {more} more")
+                    }
+                )
+            }
             Self::Refused(reason) => format!("refused: {reason}"),
         }
     }
@@ -250,6 +376,9 @@ pub struct ArbitrageInstaller {
     strategy: StrategyId,
     venues: Vec<VenueId>,
     envelope: Option<VerifiedEnvelope>,
+    /// What the desk it installs will search under: the maximum leg count
+    /// in force, above all.
+    search: SearchSettings,
 }
 
 impl ArbitrageInstaller {
@@ -258,7 +387,22 @@ impl ArbitrageInstaller {
             strategy,
             venues,
             envelope: None,
+            search: SearchSettings::default(),
         }
+    }
+
+    /// Install the desk under these search settings rather than the
+    /// engine's defaults. The composition root passes what
+    /// [`parse_max_legs`] read.
+    #[must_use]
+    pub fn with_search(mut self, search: SearchSettings) -> Self {
+        self.search = search;
+        self
+    }
+
+    /// The most legs a cycle of the desk this installs may have.
+    pub fn max_legs(&self) -> usize {
+        self.search.max_cycle_edges
     }
 
     pub fn strategy(&self) -> &StrategyId {
@@ -307,18 +451,33 @@ impl ArbitrageInstaller {
         let Some(envelope) = self.envelope.clone() else {
             return Installation::NoEnvelope;
         };
-        let desk =
-            match desk_from_whitelist(&whitelist, &self.venues, self.strategy.clone(), envelope) {
-                Ok(desk) => desk,
-                Err(error) => return Installation::Refused(error.message().to_string()),
-            };
+        let desk = match desk_from_whitelist_with(
+            &whitelist,
+            &self.venues,
+            self.strategy.clone(),
+            envelope,
+            self.search,
+        ) {
+            Ok(desk) => desk,
+            Err(error) => return Installation::Refused(error.message().to_string()),
+        };
         let edges = desk.graph().edge_count();
+        // Read before the desk moves into the cell: what the cell can trade
+        // against what the graph can see.
+        let coverage = desk.graph().coverage(&registry_from_books(cell));
         match cell.install_arbitrage(desk) {
             Ok(()) => {
                 // Spent: the desk holds it now, and `renew_capital` replaces
                 // it from here on as it does any strategy's.
                 self.envelope = None;
-                Installation::Installed(edges)
+                if coverage.is_complete() {
+                    Installation::Installed(edges)
+                } else {
+                    Installation::InstalledWithGaps {
+                        edges,
+                        gaps: coverage.gap_labels(),
+                    }
+                }
             }
             Err(error) => Installation::Refused(error.message().to_string()),
         }

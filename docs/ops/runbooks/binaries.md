@@ -193,6 +193,7 @@ not a funding).
 | `QIP_HALT_FLAG_PATH` | polled halt flag, absolute path | unset: broadcast halt only, said at start |
 | `QIP_MESH_PEER`, `QIP_MESH_SEED` | the centre | unset: the cell publishes nothing, receives no capital and stops when its envelope expires (**ran**) |
 | `QIP_ARBITRAGE_STRATEGY`, `QIP_DEFAULT_PRICING`, `QIP_STRATEGY_PLAN_PATH`, `QIP_REPRICE`, `QIP_CROSS_REGION_MIRROR_PATH` | desk, strategy pricing, plan, requote threshold, cross-region mirror | each unset one is announced as "awaiting" (**ran**) |
+| `QIP_ARBITRAGE_MAX_LEGS` | the most legs an arbitrage cycle may have, 2 to 20; a longer cycle is refused under `arbitrage_scan_length`. A value outside the range, or the variable without `QIP_ARBITRAGE_STRATEGY`, stops the process (exit 78) | unset: 4, announced at start when a desk is configured; the template writes 4 (**ran** by `tests/max_legs_config.rs`, which starts the binary) |
 | `QIP_STORAGE_TARGET`, `QIP_STORAGE_ROOT` | journal destination | memory; the template uses `engine` at `/var/lib/qip/journal` (**repo**) |
 | `QIP_MIRROR_PATH` | retired | stops the process, naming the replacement |
 

@@ -9534,6 +9534,10 @@ fn region_hold_id_for_cycle(pass: u64, cycle_id: &str) -> String {
 
 const fn scan_gate(stage: RejectionStage) -> &'static str {
     match stage {
+        // A cycle longer than the maximum leg count in force (MESH-010).
+        // Its own literal, so "the desk found a cycle and it was too long"
+        // is a series an operator can tell from "the desk found nothing".
+        RejectionStage::Length => "arbitrage_scan_length",
         RejectionStage::Unsized => "arbitrage_scan_unsized",
         RejectionStage::ExactArithmetic => "arbitrage_scan_exact_arithmetic",
         RejectionStage::Unpriceable => "arbitrage_scan_unpriceable",

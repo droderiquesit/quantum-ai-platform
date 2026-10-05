@@ -32,7 +32,7 @@
     "work_item": "E11",
     "tier": "T3",
     "size": "XL",
-    "notes": "Flagged NEW_DEPENDENCY in the requirement, but the existing centre-cell spine achieves authenticated delivery over plaintext HTTP/1.1 plus HMAC-signed envelopes (ADR 0002's permitted in-tree hashing) with no new crate; the same pattern is plausibly reusable peer-to-peer, so BLOCKED-by-C2 is not asserted here without a concrete design showing otherwise. | Protocol rules now exist in qip_mesh::peer (epoch, fencing, FIRE, bounds); still MISSING end to end because there is no peer transport (MESH-038 blocked on a dependency record) and no cell wiring."
+    "notes": "Flagged NEW_DEPENDENCY in the requirement, but the existing centre-cell spine achieves authenticated delivery over plaintext HTTP/1.1 plus HMAC-signed envelopes (ADR 0002's permitted in-tree hashing) with no new crate; the same pattern is plausibly reusable peer-to-peer, so BLOCKED-by-C2 is not asserted here without a concrete design showing otherwise. | Protocol rules now exist in qip_mesh::peer (epoch, fencing, FIRE, bounds); still MISSING end to end because there is no peer transport (MESH-038 blocked on a dependency record) and no cell wiring. | round 3: blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries; the peer transport itself is MESH-038 (BLOCKED)."
   },
   {
     "id": "MESH-002",
@@ -59,7 +59,7 @@
     "work_item": "E11",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status and flags confirmed (Cell::work reached from qip-edge-node run_pass; region.rs:304 and cross_region.rs:1307 tests exist). Added the edge-node unreachable-centre test and the serve-loop ordering as evidence; no status change."
+    "notes": "verify: status and flags confirmed (Cell::work reached from qip-edge-node run_pass; region.rs:304 and cross_region.rs:1307 tests exist). Added the edge-node unreachable-centre test and the serve-loop ordering as evidence; no status change. | round 3: the chaos check needs a peer link to sever: blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries. What holds today is structural, and since this round guarded: qip-acceptance's mesh_lane suite refuses any Lane 0 crate that depends on qip-mesh or names a coordination type."
   },
   {
     "id": "MESH-003",
@@ -113,7 +113,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: two cited tests were given at tests/reservation.rs and tests/region_table.rs but live inline in src/reservation.rs (634, 731) -- paths corrected; wiring corrected to with_unfunded_region (lib.rs:152); gap now names the missing inventory reservation. Status PARTIAL and flags unchanged."
+    "notes": "verify: two cited tests were given at tests/reservation.rs and tests/region_table.rs but live inline in src/reservation.rs (634, 731) -- paths corrected; wiring corrected to with_unfunded_region (lib.rs:152); gap now names the missing inventory reservation. Status PARTIAL and flags unchanged. | round 3: inventory reservation and tying the cell's capital ledger to an epoch need the cell to take part in an epoch (MESH-047); PeerEndpoint::reserve_own_legs now reserves a node's legs whole or not at all at library level, against ReservationBook and not the cell's ledger."
   },
   {
     "id": "MESH-005",
@@ -163,7 +163,7 @@
     "work_item": "E11",
     "tier": "T3",
     "size": "L",
-    "notes": ""
+    "notes": "round 3: blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries."
   },
   {
     "id": "MESH-007",
@@ -188,7 +188,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "Host clock discipline (chrony/PTP) is an infrastructure decision outside this repository's scope; the in-tree work is the measured-offset export and the exclusion gate. | Left PARTIAL: clock-offset admission and offset gauge not built; needs a measured-offset source from a real peer link."
+    "notes": "Host clock discipline (chrony/PTP) is an infrastructure decision outside this repository's scope; the in-tree work is the measured-offset export and the exclusion gate. | Left PARTIAL: clock-offset admission and offset gauge not built; needs a measured-offset source from a real peer link. | round 3: a measured offset needs a live peer link to measure against (MESH-038, BLOCKED) and a process to export the gauge from (MESH-047)."
   },
   {
     "id": "MESH-008",
@@ -217,7 +217,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: two cited tests were given at tests/decomposition.rs but are inline in src/decomposition.rs (399, 418) -- corrected; the assessor missed qip_execution_engine::multileg::LegGroup, an unwind state machine that is implemented and tested but not integrated -- added to current/evidence/gap; arbitrage.rs quote is at 46-51, not 52-57. Status PARTIAL and flags unchanged (integrated=true holds only for the resize transition)."
+    "notes": "verify: two cited tests were given at tests/decomposition.rs but are inline in src/decomposition.rs (399, 418) -- corrected; the assessor missed qip_execution_engine::multileg::LegGroup, an unwind state machine that is implemented and tested but not integrated -- added to current/evidence/gap; arbitrage.rs quote is at 46-51, not 52-57. Status PARTIAL and flags unchanged (integrated=true holds only for the resize transition). | round 3: wiring qip_execution_engine::multileg::LegGroup into Cell::place_cycle changes what a cell does with a stranded leg (it halts today) in the highest-consequence path, an EXEC decision needing its own record; hedge and reroute transitions exist nowhere."
   },
   {
     "id": "MESH-009",
@@ -247,15 +247,26 @@
   },
   {
     "id": "MESH-010",
-    "status": "PARTIAL",
-    "current": "Two length controls exist. qip_arbitrage::search::SearchSettings::max_cycle_edges (backend/crates/edge/qip-arbitrage/src/search.rs:41,50,171) silently excludes over-length cycles from the search (never truncated, but never reported either); qip-edge-node uses the default of 4 (SearchSettings::default() in qip-edge-node/src/arbitrage.rs:187). Downstream, qip_routing::path::Composition::cycle (backend/crates/edge/qip-routing/src/path.rs:95,101,335-350) refuses a composition under MIN_COMPOSITION_EDGES (2) or over MAX_COMPOSITION_EDGES (8) with a message naming the limit, and Cell::work records that refusal under the path-router gate with no leg sent.",
+    "status": "COMPLETE",
+    "current": "The maximum leg count in force is configuration, never above 20, and a cycle past it is refused whole. qip-edge-node reads QIP_ARBITRAGE_MAX_LEGS at start-up (qip_edge_node::arbitrage::parse_max_legs, called from NodeConfig::from_env in main.rs): unset is the engine default of 4, a value outside 2 to 20 stops the process with exit 78 naming the variable rather than being lowered to the ceiling, the variable without QIP_ARBITRAGE_STRATEGY is refused, and the maximum in force is announced. It reaches the desk through ArbitrageInstaller::with_search. qip_arbitrage::search states the range once (MIN_CYCLE_EDGES = 2, MAX_CYCLE_EDGES = 20, SearchSettings::validate, SearchSettings::admit_length); qip_arbitrage::search::search hands a cycle longer than max_cycle_edges back whole in SearchOutcome::over_length instead of dropping it, and OpportunityScanner::scan refuses each under RejectionStage::Length with a message naming the limit, which Cell::scan_cycles records through Cell::refuse under the gate literal arbitrage_scan_length. qip_routing::path::MAX_COMPOSITION_EDGES is the engine's ceiling of 20 (it was a compile-time 8), the layer that still refuses a desk built past the ceiling. The execution node's startup template writes QIP_ARBITRAGE_MAX_LEGS=4.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/search.rs:41,50,171",
-      "backend/crates/edge/qip-edge/src/arbitrage.rs:164-167 (ArbitrageDesk::new refuses max_cycle_edges==0)",
-      "backend/crates/edge/qip-routing/src/path.rs:95 (pub const MAX_COMPOSITION_EDGES: usize = 8), :101 (MIN_COMPOSITION_EDGES = 2) and :335-350 (refusals naming the limit)",
-      "backend/crates/edge/qip-edge/tests/path_assignment.rs:621 a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reaches_the_gateway (9 edges refused with 'exceeds the 8', nothing placed; 8 edges admitted)"
+      "backend/crates/edge/qip-arbitrage/src/search.rs (MIN_CYCLE_EDGES, MAX_CYCLE_EDGES, SearchSettings::validate, SearchSettings::admit_length, SearchOutcome, search)",
+      "backend/crates/edge/qip-arbitrage/src/scan.rs (RejectionStage::Length; the over-length loop in OpportunityScanner::scan)",
+      "backend/crates/edge/qip-edge/src/cell.rs (scan_gate: RejectionStage::Length => \"arbitrage_scan_length\")",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs (ArbitrageDesk::new refuses max_cycle_edges below MIN_CYCLE_EDGES)",
+      "backend/crates/edge/qip-routing/src/path.rs (MAX_COMPOSITION_EDGES = qip_arbitrage::search::MAX_CYCLE_EDGES)",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs (MAX_LEGS_VARIABLE, parse_max_legs, ArbitrageInstaller::with_search)",
+      "backend/crates/apps/qip-edge-node/src/main.rs (NodeConfig::from_env reads MAX_LEGS_VARIABLE; the installer is built with .with_search(config.arbitrage_search))",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl (QIP_ARBITRAGE_MAX_LEGS=4)",
+      "backend/crates/edge/qip-arbitrage/tests/leg_limit.rs -- with_the_maximum_at_twenty_cycles_of_two_and_twenty_legs_are_accepted_and_one_and_twenty_one_are_refused",
+      "backend/crates/edge/qip-arbitrage/tests/leg_limit.rs -- with_the_maximum_at_five_a_six_leg_candidate_is_refused_naming_the_limit_and_is_not_shortened_to_fit",
+      "backend/crates/edge/qip-arbitrage/tests/leg_limit.rs -- a_configured_maximum_outside_two_to_twenty_is_refused_and_never_lowered_to_the_ceiling",
+      "backend/crates/edge/qip-edge/tests/path_assignment.rs -- with_the_maximum_at_five_a_six_leg_cycle_is_refused_by_the_scan_naming_the_limit_and_no_leg_reaches_the_gateway",
+      "backend/crates/edge/qip-edge/tests/path_assignment.rs -- a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reaches_the_gateway (21 edges refused naming 20, 20 admitted)",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs -- the_configured_maximum_leg_count_is_refused_outside_two_to_twenty_and_unset_is_the_engine_default; a_node_configured_for_two_legs_refuses_the_three_leg_cycle_its_desk_finds_naming_the_limit",
+      "backend/crates/apps/qip-edge-node/tests/max_legs_config.rs -- the_binary_announces_the_configured_maximum_and_refuses_one_above_twenty_or_one_with_no_desk (starts the real binary)"
     ],
-    "gap": "The in-force maximum is a compile-time constant of 8, not configuration, so 9-to-20-leg cycles cannot be routed at all and the requirement's '2 and 20 accepted, 21 refused' check fails at 20; the search-level max_cycle_edges is configurable but drops over-length candidates without a refusal message and has no ceiling of 20 enforced on it; no test covers the 1/2 lower boundary through the cell.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -263,11 +274,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-edge/tests/path_assignment.rs::a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reaches_the_gateway proves refusal-not-truncation at the 8/9 boundary with a message naming the limit. Making the maximum configuration (never above 20) and a unit test at max=20 (2 and 20 accepted, 1 and 21 refused) and max=5 (6 refused, nothing sent) is the remaining work.",
+    "verification": "cargo test -p qip-arbitrage --test leg_limit; cargo test -p qip-edge --test path_assignment; cargo test -p qip-edge-node --test arbitrage --test max_legs_config. Mutation-verified, each restored byte-for-byte: dropping the over-length cycle silently as before, letting it through to be priced, never validating the configured maximum, moving the boundary by one, the installer ignoring the configured settings, main not reading the variable, main not handing it to the installer, accepting a limit with no desk, and raising the router's ceiling past 20 each failed the named test.",
     "work_item": "E11",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: the assessor missed qip_routing's MAX_COMPOSITION_EDGES=8 refusal and its boundary test, and wrongly said no test exercises a length boundary -- current/evidence/gap/verification rewritten; the real gap is that the ceiling is a hard-coded 8, below the required 20. Status PARTIAL and flags unchanged."
+    "notes": "verify: the assessor missed qip_routing's MAX_COMPOSITION_EDGES=8 refusal and its boundary test, and wrongly said no test exercises a length boundary -- current/evidence/gap/verification rewritten; the real gap is that the ceiling is a hard-coded 8, below the required 20. Status PARTIAL and flags unchanged. | round 3: A leg is one conversion, one edge of the cycle, which is what the blueprint's graph counts; a synthetic conversion that fans out into component orders is still one leg. The node-level test proves the configured value reaches the desk's scan; that an over-length cycle sends nothing is proven at the cell in path_assignment.rs, where the premise is a six-leg ring that is really sent at a maximum of six. Deployable stays false: no execution node exists in any environment."
   },
   {
     "id": "MESH-011",
@@ -293,7 +304,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "L",
-    "notes": "Physical and event representations are explicitly out of scope before master Phase 7 per the requirement's own notes."
+    "notes": "Physical and event representations are explicitly out of scope before master Phase 7 per the requirement's own notes. | round 3: blocked on MESH-024: Node has no representation dimension to cross."
   },
   {
     "id": "MESH-012",
@@ -318,18 +329,22 @@
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "round 3: ten per-edge attributes including a tax/duty estimate and a probability of fill need a valuation-model decision (ADR); blocked on a fill-probability model: none exists in the tree, and choosing one (a measured per-venue fill ratio or a book-survival model) changes which cycles the desk accepts, which is a valuation decision for an ADR and not for one lane."
   },
   {
     "id": "MESH-013",
-    "status": "MISSING",
-    "current": "nothing. rg for 'Lane 0', 'Lane 1', TimeLane, time_lane across backend/crates returns zero matches; there is no message registry and no lane concept anywhere in the tree.",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::MeshFunction is the registry: the five functions blueprint section 4 names (peer reflex messages, opportunity tokens, distributed reservations, multi-leg coordination, hedge/unwind commands), each placed by MeshFunction::lane in Lane::CoordinatedFast (Lane 1) through a match with no wildcard arm. PeerMessage::function maps every wire kind (Token, Reserved, Declined, Fire, Fill, Unwind) onto one of the five, again exhaustively, so a new kind does not compile until it is placed. The static check is qip-acceptance's mesh_lane suite: it compares the registry's lane with the qip-mesh row of docs/architecture/lane-placement.md and fails when any Lane 0 crate depends on qip-mesh or names qip_mesh or a coordination type (PeerMessage, OpportunityEpoch, PeerEndpoint, ReservationOutcome, MeshFunction) outside a comment. A function cannot be awaited by code that cannot name it.",
     "evidence": [
-      "rg -il 'Lane 0|Lane 1|TimeLane|time_lane' backend/crates --type rust -> no matches"
+      "backend/crates/services/qip-mesh/src/peer.rs (Lane, MeshFunction, MeshFunction::lane, PeerMessage::function, PeerMessage::lane)",
+      "docs/architecture/lane-placement.md (qip-mesh row, lane 1; the paragraph naming the registry and the suite)",
+      "backend/crates/services/qip-mesh/tests/peer_guarantees.rs -- each_of_the_five_coordination_functions_is_registered_in_lane_one_and_every_message_kind_belongs_to_one",
+      "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs -- the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_one_to_await_it; a_word_is_matched_as_an_identifier_and_a_comment_is_not_a_use",
+      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs -- no_fast_lane_crate_depends_on_a_slower_lane_crate (the dependency half, already in force)"
     ],
-    "gap": "No message/command registry exists to place the five named functions in a lane, and four of the five functions themselves (peer reflex messages, opportunity tokens, distributed reservations, hedge/unwind commands) do not exist yet either (MESH-001, MESH-004, MESH-005, MESH-008).",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -340,11 +355,11 @@
       "MESH-008"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: a registry mapping each of the five message/command kinds to Lane 1, and a static check that no Lane 0 code path awaits any of them.",
+    "verification": "cargo test -p qip-mesh --test peer_guarantees each_of_the_five; cargo test -p qip-acceptance --test mesh_lane. Mutation-verified, each restored byte-for-byte: placing hedge/unwind in Lane 0, mapping the Fill kind onto another function, giving a Lane 0 crate a dependency on qip-mesh, naming qip_mesh::peer::PeerMessage in a Lane 0 source file, and moving the qip-mesh row to another lane each failed the named test.",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "round 3: Integrated stays false: the registry classifies a protocol no process runs yet (see MESH-047). The hedge half of hedge/unwind commands has no wire kind, only Unwind does (MESH-008); the exhaustive match in PeerMessage::function is what forces a lane decision when one is added."
   },
   {
     "id": "MESH-014",
@@ -371,7 +386,7 @@
     "work_item": "E06",
     "tier": "T3",
     "size": "XL",
-    "notes": "verify: searched for a missed implementation; found only fragments (deterministic scan, simulator execute_plan over generic ExecutionPlans, qip-orderbook/tests/replay.rs for book replay) -- none replays a multi-leg arbitrage cycle from the log. Recorded as evidence; status MISSING kept."
+    "notes": "verify: searched for a missed implementation; found only fragments (deterministic scan, simulator execute_plan over generic ExecutionPlans, qip-orderbook/tests/replay.rs for book replay) -- none replays a multi-leg arbitrage cycle from the log. Recorded as evidence; status MISSING kept. | round 3: needs a replay engine over the cell journal for multi-leg cycles (XL); nothing smaller closes it."
   },
   {
     "id": "MESH-015",
@@ -395,7 +410,7 @@
     "work_item": "E11",
     "tier": "T3",
     "size": "M",
-    "notes": ""
+    "notes": "round 3: blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries."
   },
   {
     "id": "MESH-016",
@@ -419,7 +434,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "Depends on the in-tree Fabric broker (epic E03) landing first, not only on MESH-001. verify: status MISSING confirmed -- no broker code exists under backend/crates/libs or services. ADR 0100 (committed d864dab8) now decides the fabric's first build as an in-tree single-node broker on std TCP; that is a decision, not code, and it gives this requirement its Fabric side to separate from once built."
+    "notes": "Depends on the in-tree Fabric broker (epic E03) landing first, not only on MESH-001. verify: status MISSING confirmed -- no broker code exists under backend/crates/libs or services. ADR 0100 (committed d864dab8) now decides the fabric's first build as an in-tree single-node broker on std TCP; that is a decision, not code, and it gives this requirement its Fabric side to separate from once built. | round 3: blocked on a process to host qip_mesh::peer: qip-edge-node is Lane 0 and qip-acceptance's lane_placement and mesh_lane suites refuse it a dependency on qip-mesh, and a regional Mesh-agent binary (MESH-047) is an ADR 0010 deployment decision with gitops and infrastructure binary-list entries; the durable Fabric broker half is qip-fabricd, which refuses to start."
   },
   {
     "id": "MESH-017",
@@ -467,7 +482,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: the row's tested=true rested on 'journal.rs's own tests', which do not exist (0 #[test] in journal.rs); tested kept true only on the basis of the polled-halt tests (qip-edge-node/tests/halt.rs), which demonstrate a control path independent of the spine; the claim that control has no path independent of the mesh was wrong (halt flag, dark-region wire) -- corrected. Status PARTIAL kept."
+    "notes": "verify: the row's tested=true rested on 'journal.rs's own tests', which do not exist (0 #[test] in journal.rs); tested kept true only on the basis of the polled-halt tests (qip-edge-node/tests/halt.rs), which demonstrate a control path independent of the spine; the claim that control has no path independent of the mesh was wrong (halt flag, dark-region wire) -- corrected. Status PARTIAL kept. | round 3: the chaos test needs a peer link to sever (MESH-047) and a Fabric for the journal to reach (qip-fabricd refuses to start)."
   },
   {
     "id": "MESH-019",
@@ -494,7 +509,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: the assessor missed qip_arbitrage::plan's residual-after-first-leg budget and revert-aware prefunding, the strongest reached evidence for this row -- added; decomposition test path corrected to inline src/decomposition.rs:399. Status PARTIAL and flags unchanged."
+    "notes": "verify: the assessor missed qip_arbitrage::plan's residual-after-first-leg budget and revert-aware prefunding, the strongest reached evidence for this row -- added; decomposition test path corrected to inline src/decomposition.rs:399. Status PARTIAL and flags unchanged. | round 3: needs a valuation outcome set with per-state probabilities: blocked on a fill-probability model: none exists in the tree, and choosing one (a measured per-venue fill ratio or a book-survival model) changes which cycles the desk accepts, which is a valuation decision for an ADR and not for one lane."
   },
   {
     "id": "MESH-020",
@@ -522,7 +537,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "LIVE_CAPITAL and COST flags on this requirement mean only the paper/simulated form is in scope here; carrying out a real pre-position is out of scope for this repository per the paper-trading boundary. verify: status PARTIAL and flags confirmed (pre_positioning is reached from Platform::stage_decide -> plan_pre_positioning, platform.rs:13228). Added the cell-side evidence that legs draw on held inventory and the fact that no producer of InventoryTargets exists; no status change."
+    "notes": "LIVE_CAPITAL and COST flags on this requirement mean only the paper/simulated form is in scope here; carrying out a real pre-position is out of scope for this repository per the paper-trading boundary. verify: status PARTIAL and flags confirmed (pre_positioning is reached from Platform::stage_decide -> plan_pre_positioning, platform.rs:13228). Added the cell-side evidence that legs draw on held inventory and the fact that no producer of InventoryTargets exists; no status change. | round 3: needs a centre-side producer for the InventoryTargets policy slot, which central/whitelist.rs refuses to fill: kernel work outside this lane's crates."
   },
   {
     "id": "MESH-021",
@@ -577,16 +592,18 @@
   },
   {
     "id": "MESH-023",
-    "status": "PARTIAL",
-    "current": "qip_arbitrage::graph::ArbitrageGraph::{add_trade,add_transfer,add_synthetic} (backend/crates/edge/qip-arbitrage/src/graph.rs:351-419) represent every conversion added to the graph as a directed ConversionEdge, structurally validated at construction (graph.rs:461-538). At the composition root, qip-edge-node's graph_from_whitelist (qip-edge-node/src/arbitrage.rs:81-148) turns each whitelisted conversion into exactly one directed trade edge and refuses the whole whitelist, naming the entry, when any conversion cannot become an edge -- refused, never skipped.",
+    "status": "COMPLETE",
+    "current": "Every conversion a registry marks tradable either has its directed edge or is reported as a gap. qip_arbitrage::coverage::TradableRegistry holds what can be traded, one direction per entry (one side of one market's book at one venue, or one instrument moved from one venue to another), and ArbitrageGraph::coverage sorts every entry into covered or gap with no third outcome: an edge for one side of a book does not cover the other side. At the composition root, qip_edge_node::arbitrage::registry_from_books builds the registry from the books the cell holds (a source that is not the whitelist the graph is built from), ArbitrageInstaller::install checks the desk's graph against it, and a book side with no edge is returned as Installation::InstalledWithGaps, which is not quiet, so the tick logs the count and the labels. graph_from_whitelist still turns every whitelisted conversion into exactly one directed edge and refuses the whole whitelist when one cannot become an edge.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:287-419 (add_edge/add_trade/add_transfer/add_synthetic)",
-      "backend/crates/edge/qip-arbitrage/src/graph.rs:461-538 (Self::validate, structural refusals -- no test asserts any of these refusals)",
-      "backend/crates/apps/qip-edge-node/src/arbitrage.rs:81-148 (graph_from_whitelist)",
-      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs:152 the_node_installs_a_desk_from_the_payloads_whitelist_once_capital_for_it_has_arrived (asserts 'the three conversions are the three edges')",
-      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs:207 a_whitelist_naming_a_venue_outside_the_configured_list_is_refused_and_installs_nothing"
+      "backend/crates/edge/qip-arbitrage/src/coverage.rs (Tradable, TradableRegistry, Coverage, ArbitrageGraph::coverage)",
+      "backend/crates/apps/qip-edge-node/src/arbitrage.rs (registry_from_books; Installation::InstalledWithGaps; the coverage check in ArbitrageInstaller::install)",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs (MeshTick::is_quiet: a desk outcome starting \"installed\" is logged by the serve loop)",
+      "backend/crates/edge/qip-arbitrage/tests/coverage.rs -- every_conversion_a_registry_marks_tradable_has_its_directed_edge_or_is_reported_as_a_gap_and_none_is_skipped (300 generated registries of trades and transfers)",
+      "backend/crates/edge/qip-arbitrage/tests/coverage.rs -- an_edge_for_one_side_of_a_book_does_not_cover_the_other_side_or_another_venue",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs -- a_book_side_the_whitelist_gives_no_edge_is_reported_at_installation_and_a_whitelist_that_covers_every_side_reports_none",
+      "backend/crates/apps/qip-edge-node/tests/arbitrage.rs -- the_node_installs_a_desk_from_the_payloads_whitelist_once_capital_for_it_has_arrived; a_whitelist_naming_a_venue_outside_the_configured_list_is_refused_and_installs_nothing"
     ],
-    "gap": "The whitelist is a per-desk permission list, not a registry of what is tradable, and each entry becomes one edge in one direction -- nothing adds the reverse direction a conversion can also be traded in, transfers and synthetics are never produced from it, and nothing cross-checks a tradable-instrument registry against the graph and reports a tradable conversion with no edge as a gap. The registry-fixture property check is unimplemented.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -594,11 +611,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "qip-edge-node tests/arbitrage.rs:152 proves every whitelisted conversion becomes a directed edge at the composition root, and :207 proves a bad entry refuses the whole list; qip-arbitrage tests exercise directed trade/transfer/synthetic edges through cycle detection, but no test asserts graph.rs's validate refusals. A property test against a registry fixture asserting every tradable conversion has a directed edge in each tradable direction, with a named gap report for any that don't, is the remaining work.",
+    "verification": "cargo test -p qip-arbitrage --test coverage; cargo test -p qip-edge-node --test arbitrage a_book_side_the_whitelist. Mutation-verified, each restored byte-for-byte: an edge for one side covering the other, a conversion with no edge being skipped instead of reported, a transfer one way covering the way back, the venue not being compared, the installer never reporting a gap, and the cell's registry being one side of each book each failed the named test.",
     "work_item": "E02",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: verification claimed tests exercise edge 'validation extensively' -- no test hits any graph.rs validate refusal message (rg), so that claim was removed; the assessor missed the composition-root whitelist-to-edge installer and its tests -- added. Status PARTIAL and flags unchanged."
+    "notes": "verify: verification claimed tests exercise edge 'validation extensively' -- no test hits any graph.rs validate refusal message (rg), so that claim was removed; the assessor missed the composition-root whitelist-to-edge installer and its tests -- added. Status PARTIAL and flags unchanged. | round 3: A gap is reported and never repaired: the whitelist is the centre's signed permission, and an edge added because a book exists would trade a conversion nobody permitted. So the graph a deployed desk runs holds an edge for every tradable conversion only when the centre's whitelist names every one; where it does not, installation says which. The registry type covers transfers and the property test generates them, but no production registry at a cell names one, because a cell's registry is its books; there is no synthetic entry because a synthetic is assembled from trades."
   },
   {
     "id": "MESH-024",
@@ -622,6 +639,6 @@
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: tested=true was paired with a verification text saying no test proves node distinctness; tested kept true on the transfer test, which genuinely exercises the venue half of identity, and evidence/verification now say so. Status PARTIAL kept."
+    "notes": "verify: tested=true was paired with a verification text saying no test proves node distinctness; tested kept true on the transfer test, which genuinely exercises the venue half of identity, and evidence/verification now say so. Status PARTIAL kept. | round 3: making Node a five-component identity changes every Node::new caller across qip-edge, qip-routing, qip-world-model, qip-kernel and the acceptance suites (more than sixty call sites in twenty-three files): not a change to land from one parallel lane."
   }
 ]

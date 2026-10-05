@@ -43,6 +43,7 @@
 //! it that way. There is no runtime check because there is nothing to check —
 //! the call does not exist to be made.
 
+use qip_arbitrage::SearchSettings;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -52,7 +53,9 @@ use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::region::RegionOutlook;
 use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
-use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
+use qip_edge_node::arbitrage::{
+    ArbitrageInstaller, MAX_LEGS_VARIABLE, STRATEGY_VARIABLE, parse_max_legs,
+};
 use qip_edge_node::cross_region::{CrossRegionMirror, MIRROR_VARIABLE, no_declaration_line};
 use qip_edge_node::dark::DarkRegionWire;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
@@ -147,6 +150,11 @@ struct NodeConfig {
     /// runs one. `None` installs no desk and is named in the production
     /// requirements — see `qip_edge_node::arbitrage`.
     arbitrage_strategy: Option<StrategyId>,
+    /// What the desk searches under, the maximum leg count in force above
+    /// all (MESH-010). The engine's defaults when `QIP_ARBITRAGE_MAX_LEGS`
+    /// is unset; a value outside two to twenty stops the process — see
+    /// `qip_edge_node::arbitrage::parse_max_legs`.
+    arbitrage_search: SearchSettings,
     /// The feed the pass loop prices from. `None` is a node that runs no
     /// pass at all — announced, never defaulted — and the only `Some` is the
     /// simulator; see `qip_edge_node::feed` for why a live feed is refused
@@ -263,6 +271,15 @@ impl NodeConfig {
             Ok(value) if !value.trim().is_empty() => Some(StrategyId::new(value.trim())),
             _ => None,
         };
+        let max_legs = std::env::var(MAX_LEGS_VARIABLE).ok();
+        let arbitrage_search = parse_max_legs(max_legs.as_deref())?;
+        if max_legs.is_some_and(|value| !value.trim().is_empty()) && arbitrage_strategy.is_none() {
+            return Err(Error::invalid(format!(
+                "configuration: {MAX_LEGS_VARIABLE} is set and {STRATEGY_VARIABLE} is not; a \
+                 node with no desk scans no cycle, and a leg limit nothing consults reads as a \
+                 control. Set {STRATEGY_VARIABLE} or unset {MAX_LEGS_VARIABLE}"
+            )));
+        }
         let feed = FeedChoice::from_env()?;
         let pricing = parse_pricing(std::env::var(PRICING_VARIABLE).ok().as_deref())?;
         let plan_path = match std::env::var(PLAN_VARIABLE) {
@@ -301,6 +318,7 @@ impl NodeConfig {
             halt_flag,
             region_wire,
             arbitrage_strategy,
+            arbitrage_search,
             feed,
             pricing,
             plan_path,
@@ -572,10 +590,10 @@ fn run() -> Result<()> {
     // It holds nothing until a grant arrives over the mesh and installs
     // nothing until a whitelist does, so a node with no peer can never grow
     // a desk — which is right, since neither input can reach it.
-    let mut installer = config
-        .arbitrage_strategy
-        .clone()
-        .map(|strategy| ArbitrageInstaller::new(strategy, config.venues.clone()));
+    let mut installer = config.arbitrage_strategy.clone().map(|strategy| {
+        ArbitrageInstaller::new(strategy, config.venues.clone())
+            .with_search(config.arbitrage_search)
+    });
     // The plan's installer, always: it holds the grants for strategies the
     // plan will name and deploys them once a fresh, verified payload names
     // a plan whose bytes are at the configured path. With no pricing or no
@@ -593,6 +611,16 @@ fn run() -> Result<()> {
         requoter.is_some(),
     ) {
         println!("qip-edge-node: awaiting {requirement}");
+    }
+    // The maximum leg count in force, said out loud when there is a desk to
+    // hold it to: a limit an operator has to infer from the absence of long
+    // cycles is a limit nobody can check against what they configured.
+    if let Some(installer) = &installer {
+        println!(
+            "qip-edge-node: arbitrage cycles of at most {} legs ({MAX_LEGS_VARIABLE}); a longer \
+             one is refused under arbitrage_scan_length",
+            installer.max_legs()
+        );
     }
     if let Some(flag) = &config.halt_flag {
         println!(
