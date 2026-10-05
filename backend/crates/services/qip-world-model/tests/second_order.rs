@@ -15,6 +15,7 @@
 // fails the test rather than being unwrapped past; the assertions inside are
 // the point of the test and are not a panic in production code.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::BTreeSet;
 
@@ -73,8 +74,9 @@ fn supply_chain() -> KnowledgeGraph {
                 Relationship::new(from, to, kind, 1.0, "fixture"),
                 at(0),
                 at(0),
+                0.9,
             )
-            .with_confidence(0.9),
+            .unwrap(),
         );
     }
     graph

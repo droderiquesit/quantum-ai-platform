@@ -5,6 +5,7 @@
 //! was believed at that moment — not with what is believed now.
 
 use qip_core::Timestamp;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -82,20 +83,53 @@ pub struct Fact {
 }
 
 impl Fact {
-    pub fn new(relationship: Relationship, valid_from: Timestamp, recorded_at: Timestamp) -> Self {
-        Self {
+    /// A belief about the world, stated with the confidence it is held at.
+    ///
+    /// Refused rather than defaulted or clamped (WORLD-008, WORLD-056). This
+    /// constructor once took no confidence and stamped `1.0`, and its
+    /// `with_confidence` clamped, so a news fact with no stated confidence was
+    /// stored as certain and a broken estimator's `2.0` read as certainty;
+    /// `NAN.clamp(0.0, 1.0)` is `NAN`, so the one value a clamp most needed
+    /// to stop passed straight through. A confidence or relationship weight
+    /// outside `[0, 1]` (NaN included) and an empty source are each a caller
+    /// bug the caller must fix at its origin.
+    pub fn new(
+        relationship: Relationship,
+        valid_from: Timestamp,
+        recorded_at: Timestamp,
+        confidence: f64,
+    ) -> Result<Self> {
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(Error::invalid(format!(
+                "fact `{}` was stated with confidence {confidence}, which is not a finite \
+                 value in [0, 1] -- state the confidence the claim is held at; a missing \
+                 one is not 1.0",
+                relationship.key()
+            )));
+        }
+        if !(0.0..=1.0).contains(&relationship.weight) {
+            return Err(Error::invalid(format!(
+                "relationship `{}` has weight {}, which is not a finite value in [0, 1] -- \
+                 fix the weight at its source rather than relying on it being clamped",
+                relationship.key(),
+                relationship.weight
+            )));
+        }
+        if relationship.source.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "relationship `{}` names no source -- cite the reference the claim can be \
+                 fetched from again",
+                relationship.key()
+            )));
+        }
+        Ok(Self {
             relationship,
             valid_from,
             valid_to: None,
             recorded_at,
             retracted_at: None,
-            confidence: 1.0,
-        }
-    }
-
-    pub fn with_confidence(mut self, confidence: f64) -> Self {
-        self.confidence = confidence.clamp(0.0, 1.0);
-        self
+            confidence,
+        })
     }
 
     pub fn valid_until(mut self, until: Timestamp) -> Self {

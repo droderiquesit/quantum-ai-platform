@@ -421,18 +421,20 @@ fn walk() -> Result<Journey> {
         &mapping.canonical_symbol,
         known_at,
     ));
-    world.relate(
-        Relationship::new(
-            entity_id.as_str(),
-            OBJECT,
-            RelationshipKind::Issues,
-            1.0,
-            FEED,
-        ),
-        valid_at,
-        known_at,
-        0.99,
-    );
+    world
+        .relate(
+            Relationship::new(
+                entity_id.as_str(),
+                OBJECT,
+                RelationshipKind::Issues,
+                1.0,
+                FEED,
+            ),
+            valid_at,
+            known_at,
+            0.99,
+        )
+        .unwrap();
     // The known-time stage 2 established, not the bar's close: this bar came
     // over a wire and the platform learned it a quarter of a second later.
     world.absorb_bar(&bar, known_at);

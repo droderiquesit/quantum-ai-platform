@@ -14554,9 +14554,9 @@ impl Platform {
             authorities
                 .iter()
                 .map(|authority| world.record_resolution_source(authority))
-                .collect::<BTreeSet<String>>()
-                .len()
-        });
+                .collect::<Result<BTreeSet<String>>>()
+                .map(|recorded| recorded.len())
+        })?;
 
         // Meta-learning, at the one instant the platform knows whether a claim
         // held: which *class* of claim was right, in which regime. Until this
@@ -26056,8 +26056,9 @@ mod second_order_exposure_tests {
                         Relationship::new(from, to, kind, 1.0, "fixture"),
                         known_from(),
                         known_from(),
+                        0.9,
                     )
-                    .with_confidence(0.9),
+                    .unwrap(),
                 );
             }
         });
