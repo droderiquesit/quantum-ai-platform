@@ -263,16 +263,15 @@
   },
   {
     "id": "EXPAND-011",
-    "status": "PARTIAL",
-    "current": "qip_edge's crate doc states the hot path does no I/O -- 'Cell::on_bytes and Cell::work touch memory and arithmetic only' (backend/crates/edge/qip-edge/src/lib.rs:16-17) -- and cell.rs's module doc says bytes leave as orders 'without a network hop to the central plane anywhere in between', so latency-critical inference is local by construction (ADR 0008). Cell::work is reached from production only via qip-edge-node/src/pass.rs:203 (simulated feed). Behavioural evidence that a cell keeps running without the centre exists: qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (asserts the cell is not halted and keeps its deployed strategy) and qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire. No test cuts every central model-serving endpoint and asserts continued decisions within a hot-path latency budget.",
+    "status": "COMPLETE",
+    "current": "qip_edge's hot path does no I/O (qip-edge/src/lib.rs:16-17; cell.rs module doc: no network hop to the central plane), and a named test now cuts the cell from every central endpoint: qip-edge-node/tests/pass.rs a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget runs three run_pass cycles through the node's own seam, each followed by a MeshLink tick against a centre that refuses every connection (poll_error asserted on each tick as the premise), and asserts all three passes ran, at least one order reached the simulated venue from the cell's local strategy and book, the cell never halted, and the slowest pass stayed under a 500 ms wall-clock budget.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/lib.rs:16-17 (hot path does no I/O)",
       "backend/crates/edge/qip-edge/src/cell.rs:1-11 (no network hop to the central plane)",
-      "backend/crates/apps/qip-edge-node/src/pass.rs:203 (production caller of Cell::work)",
-      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
-      "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget (mutation: a 600 ms sleep inserted at the head of run_pass made it fail with 'a pass took 601.448054ms with the centre unreachable'; restored byte-for-byte, 21 passed)",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs::a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running"
     ],
-    "gap": "No chaos test cuts a cell off from every central model-serving endpoint and asserts it keeps producing decisions from local artifacts within a hot-path latency budget; the property is proven structurally and by a keeps-running assertion, not by a decision-rate-and-latency scenario.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -280,11 +279,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge-node --test mesh; cargo test -p qip-edge --test region_table. Needed: a named chaos test that cuts every central endpoint and asserts decisions continue with hot-path latency within budget.",
+    "verification": "cargo test -p qip-edge-node --test pass a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget",
     "work_item": "E04-reflex-local-inference-chaos-test",
     "tier": "T1",
     "size": "S",
-    "notes": "deployable=false because execution_nodes = {} in every environment; Cell::work today runs from a composition root only when a qip-edge-node process exists, and none is provisioned. verify: status kept PARTIAL; evidence corrected. The 'no I/O' quote is in qip-edge/src/lib.rs:16-17, not cell.rs; failure_isolation.rs tests restart reconciliation, not a cut central link, so it was replaced with mesh.rs:375 and region_table.rs:1118; qip-cli does not call Cell::work (only qip-edge-node/src/pass.rs:203 does)."
+    "notes": "Closed 2026-10-04. The latency bound is a coarse 500 ms wall-clock budget chosen to catch a pass that blocks on a socket, not a micro-benchmark. deployable=false because execution_nodes = {} in every environment; Cell::work runs from a composition root only when a qip-edge-node process exists, and none is provisioned."
   },
   {
     "id": "EXPAND-012",

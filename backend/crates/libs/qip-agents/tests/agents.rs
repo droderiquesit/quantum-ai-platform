@@ -28,6 +28,19 @@ fn now() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
 
+/// The research shape with a competency boundary declared, since a manifest
+/// that declares none is refused (EXPAND-053). Tests that want the bare
+/// shape call `AgentManifest::research` directly.
+fn researcher(
+    id: impl Into<String>,
+    name: impl Into<String>,
+    purpose: impl Into<String>,
+    reviewed_at: Timestamp,
+) -> AgentManifest {
+    AgentManifest::research(id, name, purpose, reviewed_at)
+        .with_competencies(vec!["test fixture scope".to_string()])
+}
+
 fn run_id(n: u64) -> AgentRunId {
     AgentRunId::from_string(format!("run-{n}"))
 }
@@ -93,7 +106,7 @@ fn a_delegated_grant_cannot_exceed_its_delegator() {
 
 #[test]
 fn a_research_agent_cannot_be_granted_order_submission() {
-    let manifest = AgentManifest::research("macro", "Macro", "reads the world", now())
+    let manifest = researcher("macro", "Macro", "reads the world", now())
         .with_capability(Capability::SubmitOrder);
     let error = manifest.validate().unwrap_err();
     assert!(
@@ -104,8 +117,49 @@ fn a_research_agent_cannot_be_granted_order_submission() {
 }
 
 #[test]
+fn a_specialist_without_a_declared_competency_boundary_is_refused_and_one_with_it_is_admitted() {
+    // EXPAND-053. Asserting the premise first: the manifest below is valid
+    // in every other respect, so the refusal is the competency rule and not
+    // some other one that happens to fire on a bare fixture.
+    let declared = AgentManifest::research("macro", "Macro", "reads the world", now())
+        .with_competencies(vec!["macro regime".to_string()]);
+    assert!(
+        declared.validate().is_ok(),
+        "premise: a boundary is admitted"
+    );
+
+    let undeclared = AgentManifest::research("macro", "Macro", "reads the world", now());
+    let error = undeclared.validate().unwrap_err();
+    assert!(
+        error.message().contains("no competency boundary"),
+        "unexpected message: {}",
+        error.message()
+    );
+
+    // A list of blanks declares nothing and passes a bare emptiness check.
+    let blank = AgentManifest::research("macro", "Macro", "reads the world", now())
+        .with_competencies(vec!["  ".to_string()]);
+    assert!(blank.validate().is_err());
+
+    // And the roster's review reports it as an invalid manifest, so a
+    // roster carrying one does not pass governance.
+    let flagged = Roster::from_manifests(vec![undeclared]).review(now());
+    assert!(
+        flagged
+            .iter()
+            .any(|f| f.rule == "manifest-valid" && f.detail.contains("no competency boundary")),
+        "{flagged:?}"
+    );
+    let clean = Roster::from_manifests(vec![declared]).review(now());
+    assert!(
+        clean.iter().all(|f| f.rule != "manifest-valid"),
+        "premise: a declared boundary raises no manifest finding: {clean:?}"
+    );
+}
+
+#[test]
 fn proposing_and_approving_cannot_be_the_same_agent() {
-    let manifest = AgentManifest::research("pm", "PM", "builds the book", now())
+    let manifest = researcher("pm", "PM", "builds the book", now())
         .with_role(AgentRole::Construction)
         .with_capability(Capability::ProposeTrade)
         .with_capability(Capability::ApproveProposal);
@@ -115,7 +169,7 @@ fn proposing_and_approving_cannot_be_the_same_agent() {
 
 #[test]
 fn a_proposer_cannot_hold_the_veto_that_checks_it() {
-    let manifest = AgentManifest::research("pm", "PM", "builds the book", now())
+    let manifest = researcher("pm", "PM", "builds the book", now())
         .with_role(AgentRole::Construction)
         .with_capability(Capability::ProposeTrade)
         .with_capability(Capability::VetoProposal);
@@ -132,7 +186,7 @@ fn no_agent_may_change_its_own_autonomy_level() {
         AgentRole::Execution,
         AgentRole::Coordination,
     ] {
-        let manifest = AgentManifest::research("any", "Any", "does a thing", now())
+        let manifest = researcher("any", "Any", "does a thing", now())
             .with_role(role)
             .with_capabilities(CapabilitySet::of([Capability::ChangeAutonomyLevel]));
         let error = manifest.validate().unwrap_err();
@@ -145,11 +199,11 @@ fn no_agent_may_change_its_own_autonomy_level() {
 
 #[test]
 fn only_a_control_agent_may_trigger_the_kill_switch() {
-    let research = AgentManifest::research("macro", "Macro", "reads the world", now())
+    let research = researcher("macro", "Macro", "reads the world", now())
         .with_capability(Capability::TriggerKillSwitch);
     assert!(research.validate().is_err());
 
-    let control = AgentManifest::research("risk", "Risk", "says no", now())
+    let control = researcher("risk", "Risk", "says no", now())
         .with_role(AgentRole::Control)
         .with_capabilities(
             CapabilitySet::read_only()
@@ -161,7 +215,7 @@ fn only_a_control_agent_may_trigger_the_kill_switch() {
 
 #[test]
 fn an_execution_agent_may_not_originate_the_theses_it_trades() {
-    let manifest = AgentManifest::research("exec", "Execution", "works orders", now())
+    let manifest = researcher("exec", "Execution", "works orders", now())
         .with_role(AgentRole::Execution)
         .with_capabilities(
             CapabilitySet::read_only()
@@ -179,8 +233,8 @@ fn an_execution_agent_may_not_originate_the_theses_it_trades() {
 
 #[test]
 fn an_adversarial_agent_challenges_rather_than_publishes() {
-    let manifest = AgentManifest::research("red", "Red Team", "attacks theses", now())
-        .with_role(AgentRole::Adversarial);
+    let manifest =
+        researcher("red", "Red Team", "attacks theses", now()).with_role(AgentRole::Adversarial);
     // The research constructor grants PublishHypothesis; the adversarial role
     // must reject it.
     assert!(
@@ -194,18 +248,18 @@ fn an_adversarial_agent_challenges_rather_than_publishes() {
 
 #[test]
 fn an_agent_without_a_purpose_or_an_owner_does_not_validate() {
-    let mut manifest = AgentManifest::research("macro", "Macro", "reads the world", now());
+    let mut manifest = researcher("macro", "Macro", "reads the world", now());
     manifest.purpose = "  ".to_string();
     assert!(manifest.validate().is_err());
 
-    let mut manifest = AgentManifest::research("macro", "Macro", "reads the world", now());
+    let mut manifest = researcher("macro", "Macro", "reads the world", now());
     manifest.owner = String::new();
     assert!(manifest.validate().is_err());
 }
 
 #[test]
 fn an_expired_authorisation_is_not_authorisation() {
-    let manifest = AgentManifest::research("macro", "Macro", "reads the world", now());
+    let manifest = researcher("macro", "Macro", "reads the world", now());
     let within = now().saturating_add(Duration::from_days(80));
     let beyond = now().saturating_add(Duration::from_days(100));
     assert!(manifest.authorisation(within).is_ok());
@@ -215,12 +269,11 @@ fn an_expired_authorisation_is_not_authorisation() {
 
 #[test]
 fn delegation_must_name_a_delegate_and_not_be_self_referential() {
-    let mut manifest = AgentManifest::research("macro", "Macro", "reads the world", now());
+    let mut manifest = researcher("macro", "Macro", "reads the world", now());
     manifest.escalation = EscalationPolicy::Delegate;
     assert!(manifest.validate().is_err());
 
-    let manifest =
-        AgentManifest::research("macro", "Macro", "reads the world", now()).escalating_to("macro");
+    let manifest = researcher("macro", "Macro", "reads the world", now()).escalating_to("macro");
     assert!(
         manifest
             .validate()
@@ -454,7 +507,7 @@ impl Agent for Overreaching {
 
 #[test]
 fn a_gated_facility_cannot_be_reached_without_its_capability() {
-    let manifest = AgentManifest::research("overreach", "Overreach", "tries", now())
+    let manifest = researcher("overreach", "Overreach", "tries", now())
         .with_capabilities(CapabilitySet::of([Capability::ReadMarketData]));
     let agent = Overreaching {
         manifest,
@@ -478,9 +531,11 @@ fn a_gated_facility_cannot_be_reached_without_its_capability() {
 
 #[test]
 fn a_granted_facility_is_reachable_and_charged() {
-    let manifest = AgentManifest::research("reader", "Reader", "reads", now()).with_capabilities(
-        CapabilitySet::of([Capability::ReadPortfolio, Capability::PublishHypothesis]),
-    );
+    let manifest =
+        researcher("reader", "Reader", "reads", now()).with_capabilities(CapabilitySet::of([
+            Capability::ReadPortfolio,
+            Capability::PublishHypothesis,
+        ]));
     let agent = Overreaching {
         manifest,
         portfolio: Gated::new(
@@ -525,7 +580,7 @@ impl Agent for Trivial {
 #[test]
 fn an_expired_agent_is_refused_before_it_runs() {
     let agent = Trivial {
-        manifest: AgentManifest::research("trivial", "Trivial", "does little", now()),
+        manifest: researcher("trivial", "Trivial", "does little", now()),
     };
     let host = AgentHost::new(3);
     let late = now().saturating_add(Duration::from_days(120));
@@ -540,7 +595,7 @@ fn an_expired_agent_is_refused_before_it_runs() {
 #[test]
 fn an_agent_cannot_be_briefed_on_a_time_it_has_not_reached() {
     let agent = Trivial {
-        manifest: AgentManifest::research("trivial", "Trivial", "does little", now()),
+        manifest: researcher("trivial", "Trivial", "does little", now()),
     };
     let future = AgentBrief::new(
         "what happens tomorrow",
@@ -557,13 +612,13 @@ fn an_agent_cannot_be_briefed_on_a_time_it_has_not_reached() {
 #[test]
 fn the_run_record_pins_the_manifest_it_ran_under() {
     let agent = Trivial {
-        manifest: AgentManifest::research("trivial", "Trivial", "does little", now()),
+        manifest: researcher("trivial", "Trivial", "does little", now()),
     };
     let host = AgentHost::new(3);
     let first = host.run(&agent, &brief(), now(), lineage(), run_id(5));
 
     let widened = Trivial {
-        manifest: AgentManifest::research("trivial", "Trivial", "does little", now())
+        manifest: researcher("trivial", "Trivial", "does little", now())
             .with_capability(Capability::RunSimulation),
     };
     let second = host.run(&widened, &brief(), now(), lineage(), run_id(6));
@@ -600,7 +655,7 @@ impl Agent for Chatty {
 
 #[test]
 fn an_agent_that_runs_out_of_budget_escalates_rather_than_lying() {
-    let manifest = AgentManifest::research("chatty", "Chatty", "talks a lot", now())
+    let manifest = researcher("chatty", "Chatty", "talks a lot", now())
         .with_capability(Capability::CallLanguageModel);
     let agent = Chatty { manifest };
     let model = Arc::new(DeterministicModel::new());
@@ -661,7 +716,7 @@ fn a_failure_unrelated_to_an_earlier_exhausted_budget_is_not_reported_as_an_esca
         tokens: 0,
         cost_micros: 0,
     };
-    let manifest = AgentManifest::research("misleading", "Misleading", "fails oddly", now())
+    let manifest = researcher("misleading", "Misleading", "fails oddly", now())
         .with_capabilities(CapabilitySet::of([Capability::ReadPortfolio]))
         .with_budget(budget);
     let agent = MisleadingFailure {
@@ -693,17 +748,17 @@ fn a_failure_unrelated_to_an_earlier_exhausted_budget_is_not_reported_as_an_esca
 // --- roster governance ------------------------------------------------------
 
 fn viable_roster() -> Roster {
-    let analyst = AgentManifest::research("macro", "Macro", "reads the world", now())
-        .with_owner("investment-research");
-    let red = AgentManifest::research("red-team", "Red Team", "attacks conclusions", now())
+    let analyst =
+        researcher("macro", "Macro", "reads the world", now()).with_owner("investment-research");
+    let red = researcher("red-team", "Red Team", "attacks conclusions", now())
         .with_role(AgentRole::Adversarial)
         .with_capabilities(CapabilitySet::read_only().with(Capability::ChallengeHypothesis))
         .with_owner("independent-review");
-    let pm = AgentManifest::research("pm", "Portfolio Manager", "builds the book", now())
+    let pm = researcher("pm", "Portfolio Manager", "builds the book", now())
         .with_role(AgentRole::Construction)
         .with_capabilities(CapabilitySet::read_only().with(Capability::ProposeTrade))
         .with_owner("portfolio-management");
-    let risk = AgentManifest::research("risk", "Risk", "says no", now())
+    let risk = researcher("risk", "Risk", "says no", now())
         .with_role(AgentRole::Control)
         .with_capabilities(
             CapabilitySet::read_only()
@@ -711,7 +766,7 @@ fn viable_roster() -> Roster {
                 .with(Capability::TriggerKillSwitch),
         )
         .with_owner("risk-management");
-    let exec = AgentManifest::research("execution", "Execution", "works orders", now())
+    let exec = researcher("execution", "Execution", "works orders", now())
         .with_role(AgentRole::Execution)
         .with_capabilities(
             CapabilitySet::read_only()
@@ -771,8 +826,8 @@ fn risk_and_trading_cannot_be_owned_by_the_same_team() {
 
 #[test]
 fn an_escalation_cycle_is_caught() {
-    let a = AgentManifest::research("a", "A", "first", now()).escalating_to("b");
-    let b = AgentManifest::research("b", "B", "second", now()).escalating_to("a");
+    let a = researcher("a", "A", "first", now()).escalating_to("b");
+    let b = researcher("b", "B", "second", now()).escalating_to("a");
     let findings = Roster::from_manifests(vec![a, b]).review(now());
     assert!(
         findings
@@ -784,7 +839,7 @@ fn an_escalation_cycle_is_caught() {
 
 #[test]
 fn an_escalation_to_a_missing_agent_is_caught() {
-    let a = AgentManifest::research("a", "A", "first", now()).escalating_to("nobody");
+    let a = researcher("a", "A", "first", now()).escalating_to("nobody");
     let findings = Roster::from_manifests(vec![a]).review(now());
     assert!(
         findings
@@ -795,8 +850,8 @@ fn an_escalation_to_a_missing_agent_is_caught() {
 
 #[test]
 fn duplicate_agent_ids_are_caught() {
-    let a = AgentManifest::research("a", "A", "first", now());
-    let b = AgentManifest::research("a", "A again", "second", now());
+    let a = researcher("a", "A", "first", now());
+    let b = researcher("a", "A again", "second", now());
     let findings = Roster::from_manifests(vec![a, b]).review(now());
     assert!(findings.iter().any(|f| f.rule == "unique-id"));
 }
@@ -981,9 +1036,11 @@ fn a_gate_on_an_upstream_shows_what_the_upstream_has_written_and_a_cold_gate_doe
 
     // The premise: before any write both gates agree, so a later difference
     // is the write and not the wiring.
-    let manifest = AgentManifest::research("reader", "Reader", "reads", now()).with_capabilities(
-        CapabilitySet::of([Capability::ReadPortfolio, Capability::PublishHypothesis]),
-    );
+    let manifest =
+        researcher("reader", "Reader", "reads", now()).with_capabilities(CapabilitySet::of([
+            Capability::ReadPortfolio,
+            Capability::PublishHypothesis,
+        ]));
     let host = AgentHost::new(11);
     let read = |gate: Gated<MarketFeed>, n: u64| -> f64 {
         let agent = Reader {
@@ -1020,7 +1077,7 @@ fn an_upstream_does_not_relax_the_gate_it_feeds() {
     // capability check, the charge and the audit entry are still the only way
     // through, whether or not something upstream can write the slot.
     let upstream = Upstream::new(MarketFeed { last: 100.0 });
-    let manifest = AgentManifest::research("reader", "Reader", "reads", now())
+    let manifest = researcher("reader", "Reader", "reads", now())
         .with_capabilities(CapabilitySet::of([Capability::ReadMarketData]));
     let agent = Reader {
         manifest,

@@ -2215,3 +2215,83 @@ fn binding_the_simulated_feed_states_instant_settlement_for_the_venue_it_drives(
     );
     Ok(())
 }
+
+/// A peer address nothing listens on: bind to learn a free port, then drop
+/// the listener so every connect is refused, which is what a cut link to the
+/// centre looks like from the cell's side.
+fn severed_centre() -> Result<String> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|error| qip_core::error::Error::io(error.to_string()))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| qip_core::error::Error::io(error.to_string()))?;
+    Ok(format!("http://{address}"))
+}
+
+#[test]
+fn a_cell_cut_off_from_the_centre_keeps_deciding_from_local_artifacts_within_the_pass_budget()
+-> Result<()> {
+    // ADR 0008 and EXPAND-011: the reflex path is local. Every pass here is
+    // followed by a mesh tick against a centre that refuses every
+    // connection, the only route a cell has to any central endpoint, and the
+    // pass must neither wait on it nor stop deciding. A generous wall-clock
+    // budget is deliberate: a pass that blocked on a socket timeout would
+    // cost seconds, not milliseconds, so the bound catches that failure
+    // without being a flaky micro-benchmark.
+    const PASS_BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+    let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
+    gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
+    gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
+    let mut link = qip_edge_node::mesh::MeshLink::connect_with(
+        &qip_edge_node::mesh::MeshSettings {
+            cell: CELL.to_string(),
+            region: REGION.to_string(),
+            peer: severed_centre()?,
+            seed: 3,
+        },
+        b"pass-test-mesh-key",
+        Arc::new(qip_core::ManualClock::new(t(0))),
+        Arc::new(qip_transport::RecordingSleeper::new()),
+    )?;
+
+    let mut stats = PassStats::default();
+    let mut slowest = std::time::Duration::ZERO;
+    let mut last_report = WorkReport::default();
+    for second in 10..13 {
+        let started = std::time::Instant::now();
+        let outcome = run_pass(
+            &mut node.cell,
+            &mut gateway,
+            &mut feed,
+            None,
+            &mut stats,
+            t(second),
+        )?;
+        slowest = slowest.max(started.elapsed());
+        let PassOutcome::Ran { report, .. } = outcome else {
+            panic!("a cell cut off from the centre stopped running: {outcome:?}");
+        };
+        last_report = *report;
+        let tick = link.exchange(&mut node.cell, &last_report, t(second));
+        assert!(
+            tick.poll_error.is_some(),
+            "the premise is a centre that cannot be reached: {tick:?}"
+        );
+    }
+
+    assert_eq!(
+        stats.passes, 3,
+        "a pass was skipped while the centre was gone"
+    );
+    assert!(
+        stats.orders >= 1,
+        "no decision reached the venue from local artifacts: {last_report:?}"
+    );
+    assert!(gateway.submitted_count() >= 1);
+    assert!(!node.cell.is_halted(), "losing the centre halted the cell");
+    assert!(
+        slowest < PASS_BUDGET,
+        "a pass took {slowest:?} with the centre unreachable"
+    );
+    Ok(())
+}

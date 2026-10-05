@@ -38,11 +38,20 @@
 //!   its own homework, exactly as the foundry would if it scored its own
 //!   candidates.
 
-use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry};
+use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ResourceBudget};
 use qip_core::error::{Error, Result};
 use qip_core::{ModelId, Timestamp};
 use qip_training::local::{SkillPolicy, TrainedTeacher};
 use std::collections::BTreeMap;
+
+/// The ceiling a fitted in-tree model is admitted under: one inference in a
+/// millisecond and a megabyte resident. A declared limit rather than a
+/// measurement, recorded so the serving layer has a number to hold the
+/// model to. Nothing in the registry enforces it.
+pub const DEFAULT_RESOURCE_BUDGET: ResourceBudget = ResourceBudget {
+    max_inference_micros: 1_000,
+    max_memory_bytes: 1_048_576,
+};
 
 /// What registering a fit produced.
 #[derive(Clone, Debug, PartialEq)]
@@ -122,6 +131,13 @@ pub fn register_fit(
     )
     .with_features(teacher.feature_names().to_vec())
     .with_training_data(vec![teacher.dataset().to_string()])
+    // The bar the verdict above is measured against, by name, so the card
+    // says what the model was meant to beat and not only what it scored.
+    .with_benchmark(format!(
+        "holdout R-squared over the mean predictor on {}",
+        teacher.dataset()
+    ))
+    .with_resource_budget(DEFAULT_RESOURCE_BUDGET)
     .with_purpose(format!(
         "learned function fitted on {}, held out on its last {} observations",
         teacher.dataset(),

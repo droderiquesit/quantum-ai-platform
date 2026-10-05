@@ -171,7 +171,8 @@ fn an_agent_that_has_read_a_hostile_page_still_cannot_reach_a_model_or_the_marke
         "Suborned Analyst",
         "reads filings and publishes a thesis",
         now(),
-    );
+    )
+    .with_competencies(vec!["reading filings".to_string()]);
     assert!(
         !manifest
             .capabilities

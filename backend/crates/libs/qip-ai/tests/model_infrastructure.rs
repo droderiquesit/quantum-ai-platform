@@ -924,3 +924,111 @@ fn a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference
     // a change of model.
     assert!(registry.promote_artifact(&first, now()).is_ok());
 }
+
+// --- benchmarks, budgets and rollback ancestry (EXPAND-038) --------------------
+
+use qip_ai::registry::ResourceBudget;
+
+fn successor_card(version: &str) -> ModelCard {
+    let mut card = ModelCard::new(
+        ModelId::from_string(format!("MDL-{version}")),
+        "regime-classifier",
+        version,
+        "quant-research",
+        now(),
+    )
+    .with_features(vec![
+        "realised_volatility".into(),
+        "term_structure_slope".into(),
+    ])
+    .with_training_data(vec!["synthetic-market-2020-2025".into()])
+    .with_benchmark("accuracy over the volatility-threshold rule on held-out-2025")
+    .with_resource_budget(ResourceBudget {
+        max_inference_micros: 500,
+        max_memory_bytes: 65_536,
+    });
+    card.evaluations.push(EvaluationRecord {
+        evaluated_at: now(),
+        dataset: "held-out-2025".into(),
+        metrics: BTreeMap::from([
+            ("accuracy".to_string(), 0.9),
+            ("expected_calibration_error".to_string(), 0.03),
+        ]),
+        passed: true,
+    });
+    card
+}
+
+#[test]
+fn a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_artifact() {
+    let mut registry = ModelRegistry::new();
+    let parent = successor_card("2.1.0");
+    let parent_artifact = artifact_for(&parent, 0.1);
+    registry.register(parent);
+    registry.promote_artifact(&parent_artifact, now()).unwrap();
+
+    let child = successor_card("2.2.0");
+    let child_artifact = artifact_for(&child, 0.2);
+    assert_ne!(parent_artifact.digest, child_artifact.digest, "premise");
+    registry.register(child);
+    registry.promote_artifact(&child_artifact, now()).unwrap();
+    registry.retire("regime-classifier@2.1.0", now()).unwrap();
+    registry
+        .record_rollback_parent(
+            "regime-classifier@2.2.0",
+            &["regime-classifier@2.1.0".to_string()],
+        )
+        .unwrap();
+
+    // All six attributes are on the record.
+    let card = registry.get("regime-classifier@2.2.0").unwrap();
+    assert!(!card.training_datasets.is_empty(), "datasets");
+    assert!(!card.features.is_empty(), "features");
+    assert!(
+        card.latest_evaluation()
+            .unwrap()
+            .metrics
+            .contains_key("expected_calibration_error"),
+        "calibration"
+    );
+    assert_eq!(card.benchmarks.len(), 1, "benchmarks");
+    assert_eq!(card.resource_budget.unwrap().max_inference_micros, 500);
+    assert_eq!(
+        card.rollback_parent.as_deref(),
+        Some("regime-classifier@2.1.0"),
+        "rollback ancestry"
+    );
+
+    // Rolling back resolves to the recorded parent and the bytes it carried.
+    let restored = registry.rollback("regime-classifier@2.2.0", now()).unwrap();
+    assert_eq!(restored.reference(), "regime-classifier@2.1.0");
+    assert_eq!(restored.stage, ModelStage::Production);
+    assert_eq!(
+        restored.artifact_digest.as_deref(),
+        Some(parent_artifact.digest.as_str())
+    );
+    assert_eq!(
+        registry.get("regime-classifier@2.2.0").unwrap().stage,
+        ModelStage::Retired
+    );
+}
+
+#[test]
+fn a_model_with_no_recorded_parent_cannot_be_rolled_back() {
+    let mut registry = ModelRegistry::new();
+    let card = successor_card("2.1.0");
+    let artifact = artifact_for(&card, 0.1);
+    registry.register(card);
+    registry.promote_artifact(&artifact, now()).unwrap();
+
+    let error = registry
+        .rollback("regime-classifier@2.1.0", now())
+        .unwrap_err();
+    assert_eq!(error.code(), "denied");
+    assert!(error.message().contains("no parent"), "{error}");
+    assert_eq!(
+        registry.get("regime-classifier@2.1.0").unwrap().stage,
+        ModelStage::Production,
+        "a refused rollback retired the model"
+    );
+}

@@ -432,6 +432,15 @@ pub enum PromotionOutcome {
         /// The best incumbent's error on the same rows, where one stood.
         incumbent_rmse: Option<f64>,
         holdout_rows: usize,
+        /// The baseline this promotion beat, by name (EXPAND-055): the
+        /// strongest production incumbent's reference where one stood, and
+        /// otherwise the held-out mean predictor that the skill bar's
+        /// R-squared is measured against. Recorded on the promotion itself
+        /// so a reader never has to infer what "better" meant.
+        baseline: String,
+        /// The declared benchmark: the subject's held-out tail, its row
+        /// count and the metric, so the comparison can be re-run.
+        benchmark: String,
     },
     /// The candidate stays at development stage, and why.
     NotPromoted { reference: String, reason: String },
@@ -462,9 +471,11 @@ impl PromotionOutcome {
                 candidate_rmse,
                 incumbent_rmse,
                 holdout_rows,
+                baseline,
+                benchmark,
             } => format!(
                 "promoted {reference} as {} (rmse {candidate_rmse:.6} on {holdout_rows} held-out \
-                 row(s){}), {}, {}",
+                 row(s); beat baseline {baseline} on {benchmark}{}), {}, {}",
                 published.file_name,
                 match incumbent_rmse {
                     Some(rmse) => format!(" against the incumbent's {rmse:.6}"),
@@ -879,6 +890,7 @@ impl LearningDesk {
             .map(ModelCard::reference)
             .collect();
         let mut best_incumbent: Option<f64> = None;
+        let mut baseline_name = "the held-out mean predictor (skill bar)".to_string();
         for incumbent in &incumbents {
             let Some(held) = self.promoted_artifacts.get(incumbent) else {
                 return not_promoted(format!(
@@ -918,6 +930,9 @@ impl LearningDesk {
                     rows.len()
                 ));
             }
+            if best_incumbent.is_none_or(|best| incumbent_rmse < best) {
+                baseline_name.clone_from(incumbent);
+            }
             best_incumbent =
                 Some(best_incumbent.map_or(incumbent_rmse, |best| best.min(incumbent_rmse)));
         }
@@ -950,6 +965,12 @@ impl LearningDesk {
             candidate_rmse,
             incumbent_rmse: best_incumbent,
             holdout_rows: rows.len(),
+            baseline: baseline_name,
+            benchmark: format!(
+                "rmse on the {} held-out row(s) of {}",
+                rows.len(),
+                candidate.subject
+            ),
         }))
     }
 
@@ -1602,6 +1623,9 @@ mod tests {
             incumbent_rmse,
             distilled,
             displaced,
+            baseline,
+            benchmark,
+            holdout_rows,
             ..
         } = &first
         else {
@@ -1612,6 +1636,24 @@ mod tests {
         };
         assert_eq!(reference, &first_reference);
         assert_eq!(*incumbent_rmse, None, "there was no incumbent to score");
+        // EXPAND-055: the record itself says what was beaten and on what.
+        // With no incumbent the baseline named is the mean predictor the
+        // skill bar's R-squared is measured against, not a blank.
+        assert!(
+            baseline.contains("mean predictor"),
+            "the promotion does not name its baseline: {baseline}"
+        );
+        assert!(
+            *holdout_rows > 0
+                && benchmark.contains(&format!("{holdout_rows} held-out row(s)"))
+                && benchmark.contains(subject().as_str()),
+            "the promotion does not name its benchmark: {benchmark}"
+        );
+        assert!(
+            first.describe().contains(baseline.as_str()),
+            "the round line omits the baseline: {}",
+            first.describe()
+        );
         assert!(displaced.is_empty());
         assert_eq!(
             desk.registry().get(&first_reference).map(|card| card.stage),
@@ -1708,6 +1750,66 @@ mod tests {
             1,
             "a refused promotion was recorded"
         );
+
+        // A candidate fitted on a larger window is scored beside the
+        // incumbent on its own held-out rows.
+        let bigger = super::tests_support::learnable(1_200);
+        desk.maybe_learn(&subject(), &bigger, REGIME, 3, at())?
+            .ok_or_else(|| Error::not_found("the third round"))?;
+        let third = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate from the third round"))?;
+        let PromotionOutcome::Promoted {
+            baseline,
+            benchmark,
+            incumbent_rmse,
+            candidate_rmse,
+            ..
+        } = &third
+        else {
+            return Err(Error::invalid(format!(
+                "a strictly better candidate was not promoted: {}",
+                third.describe()
+            )));
+        };
+        assert_eq!(
+            baseline, &first_reference,
+            "the record names a baseline other than the incumbent it beat"
+        );
+        assert!(
+            benchmark.contains("held-out row(s)") && benchmark.contains(subject().as_str()),
+            "{benchmark}"
+        );
+        assert!(
+            incumbent_rmse.is_some_and(|held| *candidate_rmse < held),
+            "premise: the candidate's error is strictly below the incumbent's"
+        );
+        // EXPAND-038: the promotion that displaced the incumbent recorded it
+        // as the rollback parent, and the card carries the benchmark and
+        // budget it was registered with; a rollback on a copy of the
+        // registry returns the incumbent under the bytes it was promoted with.
+        let third_reference = third.reference().to_string();
+        let third_card = desk
+            .registry()
+            .get(&third_reference)
+            .ok_or_else(|| Error::not_found("the third card"))?;
+        assert_eq!(
+            third_card.rollback_parent.as_deref(),
+            Some(first_reference.as_str())
+        );
+        assert!(!third_card.benchmarks.is_empty() && third_card.resource_budget.is_some());
+        let incumbent_digest = desk
+            .registry()
+            .get(&first_reference)
+            .and_then(|card| card.artifact_digest.clone());
+        assert!(
+            incumbent_digest.is_some(),
+            "premise: the incumbent holds a digest"
+        );
+        let mut scratch = desk.registry().clone();
+        let restored = scratch.rollback(&third_reference, at())?;
+        assert_eq!(restored.reference(), first_reference);
+        assert_eq!(restored.artifact_digest, incumbent_digest);
 
         // And nothing without skill reaches the provider at all.
         let mut fresh = learning_desk();

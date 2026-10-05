@@ -241,6 +241,12 @@ impl Platform {
         for reference in displaced {
             scratch.retire(reference, now)?;
         }
+        // EXPAND-038: the promotion records what it displaced as the rollback
+        // parent, on the same scratch, so the record that says a model went
+        // live and the record of where to go back to are one write or none.
+        // Done after the retirements and from the pre-retirement deploy
+        // times, which retire does not touch.
+        scratch.record_rollback_parent(&artifact.reference, displaced)?;
         let record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,

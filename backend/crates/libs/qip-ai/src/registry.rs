@@ -93,6 +93,30 @@ pub struct ModelCard {
     /// is the state every card was in before ADR 0083.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_digest: Option<String>,
+    /// The named benchmarks and baselines this model is judged against,
+    /// kept apart from `evaluations` (the measured results) so a reader can
+    /// tell what the model was *meant* to beat from what it scored
+    /// (EXPAND-038).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benchmarks: Vec<String>,
+    /// The resource ceiling the model is admitted under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_budget: Option<ResourceBudget>,
+    /// The reference this card displaced when it was promoted, recorded so a
+    /// rollback has one unambiguous place to go back to. `None` for a card
+    /// that displaced nothing, which therefore cannot be rolled back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_parent: Option<String>,
+}
+
+/// A declared ceiling on what a model may consume. A ceiling set at
+/// admission, not a measurement: enforcing it is the serving layer's job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceBudget {
+    /// Wall-clock microseconds one inference may take.
+    pub max_inference_micros: u64,
+    /// Bytes of memory the loaded model may hold.
+    pub max_memory_bytes: u64,
 }
 
 /// A digest-named artifact, ready for a composition root to write.
@@ -139,7 +163,20 @@ impl ModelCard {
             evaluation_validity: Duration::from_days(90),
             limitations: Vec::new(),
             artifact_digest: None,
+            benchmarks: Vec::new(),
+            resource_budget: None,
+            rollback_parent: None,
         }
+    }
+
+    pub fn with_benchmark(mut self, benchmark: impl Into<String>) -> Self {
+        self.benchmarks.push(benchmark.into());
+        self
+    }
+
+    pub const fn with_resource_budget(mut self, budget: ResourceBudget) -> Self {
+        self.resource_budget = Some(budget);
+        self
     }
 
     pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
@@ -339,6 +376,77 @@ impl ModelRegistry {
             file_name: format!("{}.json", artifact.digest),
             contents,
         })
+    }
+
+    /// Record which of the references a promotion displaced is the one to
+    /// return to. With several displaced, the most recently deployed is the
+    /// parent: it is what production was running immediately beforehand.
+    /// A no-op for an empty `displaced`, because a first promotion has no
+    /// parent and must not be given one.
+    pub fn record_rollback_parent(&mut self, reference: &str, displaced: &[String]) -> Result<()> {
+        let mut parent: Option<(&String, i64)> = None;
+        for candidate in displaced {
+            let card = self.get(candidate).ok_or_else(|| {
+                Error::not_found(format!("displaced model {candidate} is not registered"))
+            })?;
+            let at = card.deployed_at.unwrap_or(card.created_at).as_nanos();
+            if parent.is_none_or(|(_, best)| at >= best) {
+                parent = Some((candidate, at));
+            }
+        }
+        let Some((parent, _)) = parent else {
+            return Ok(());
+        };
+        let parent = parent.clone();
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        card.rollback_parent = Some(parent);
+        Ok(())
+    }
+
+    /// Roll a production model back to the reference it displaced: the model
+    /// is retired and its recorded parent returns to production under the
+    /// artifact digest it was promoted with. Returns the parent.
+    ///
+    /// Refused, before anything changes, for a model that is not in
+    /// production, one that recorded no parent (nothing to go back to, and
+    /// guessing would be rolling back to a model nobody chose), or a parent
+    /// that holds no artifact digest, because a rollback that cannot say
+    /// which bytes it restores is not a rollback.
+    pub fn rollback(&mut self, reference: &str, at: Timestamp) -> Result<&ModelCard> {
+        let card = self
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if card.stage != ModelStage::Production {
+            return Err(Error::denied(format!(
+                "{reference} is in {:?}, not production; only a production model is rolled back",
+                card.stage
+            )));
+        }
+        let Some(parent) = card.rollback_parent.clone() else {
+            return Err(Error::denied(format!(
+                "{reference} recorded no parent when it was promoted, so there is nothing to \
+                 roll back to; promote a known-good version instead"
+            )));
+        };
+        let held = self.get(&parent).ok_or_else(|| {
+            Error::not_found(format!("the recorded parent {parent} is not registered"))
+        })?;
+        if held.artifact_digest.is_none() {
+            return Err(Error::denied(format!(
+                "the recorded parent {parent} holds no artifact digest, so a rollback could \
+                 not say which bytes it restores"
+            )));
+        }
+        self.retire(reference, at)?;
+        let restored = self
+            .get_mut(&parent)
+            .ok_or_else(|| Error::not_found(format!("the recorded parent {parent} vanished")))?;
+        restored.stage = ModelStage::Production;
+        restored.deployed_at = Some(at);
+        restored.retired_at = None;
+        Ok(restored)
     }
 
     /// Retire a model. Anything referencing it afterwards is rejected.
