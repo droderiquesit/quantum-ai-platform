@@ -146,6 +146,34 @@ fn the_lane_zero_set_is_exactly_what_the_reflex_node_compiles() {
     );
 }
 
+/// TICK-024: historical tick replay, training, representation learning and
+/// fusion are Lane 3 workloads. The failure this prevents: a convenience
+/// dependency from the reflex binary on one of them compiles replay or
+/// training code into the hot path, and nothing else here names those four.
+#[test]
+fn replay_training_and_world_model_crates_are_lane_three_and_absent_from_the_reflex_node() {
+    let register = register();
+    let graph = workspace();
+    let compiled = closure("qip-edge-node", &graph);
+    // Premise: the closure is real, so absence below is not vacuous.
+    assert!(compiled.contains("qip-edge"), "closure is {compiled:?}");
+    for slow in [
+        "qip-simulation-engine",
+        "qip-training",
+        "qip-twin",
+        "qip-world-model",
+    ] {
+        let (lane, _) = register
+            .get(slow)
+            .unwrap_or_else(|| panic!("{slow} has no row in the lane register"));
+        assert_eq!(*lane, 3, "{slow} must be registered as Lane 3");
+        assert!(
+            !compiled.contains(slow),
+            "qip-edge-node links {slow}: move the work to a Lane 3 service, not the hot binary"
+        );
+    }
+}
+
 #[test]
 fn no_fast_lane_crate_depends_on_a_slower_lane_crate() {
     let register = register();
