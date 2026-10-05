@@ -24,6 +24,8 @@ fn limits() -> PeerLimits {
     PeerLimits {
         max_frame: 4096,
         ttl_ceiling: ceiling(),
+        max_clock_offset: Duration::from_millis(5),
+        max_fan_out: 2,
     }
 }
 fn at(ms: i64) -> Timestamp {
@@ -72,6 +74,7 @@ fn reserved(e: &OpportunityEpoch, l: &str, seq: u64) -> Vec<u8> {
 }
 fn endpoint_with(e: &OpportunityEpoch) -> PeerEndpoint {
     let mut ep = PeerEndpoint::new("americas", limits());
+    ep.observe_clock_offset(0);
     ep.receive(&token(e), at(0)).unwrap();
     ep
 }

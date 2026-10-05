@@ -286,6 +286,14 @@ pub fn decode(frame: &[u8], max_frame: usize) -> Result<PeerMessage> {
 pub struct PeerLimits {
     pub max_frame: usize,
     pub ttl_ceiling: Duration,
+    /// Largest clock offset, in either direction, at which this node may join
+    /// or act on a distributed epoch (MESH-007). An epoch TTL is only the same
+    /// instant in every region while offsets stay inside this.
+    pub max_clock_offset: Duration,
+    /// Most peers one update may be sent to (MESH-041). Exceeding it is
+    /// refused, never truncated: a silently shortened recipient list leaves a
+    /// participant acting on an epoch nobody told it about.
+    pub max_fan_out: usize,
 }
 
 /// A frame the endpoint refused, kept so a refusal is journaled and never
@@ -334,6 +342,9 @@ pub struct PeerEndpoint {
     limits: PeerLimits,
     opportunities: BTreeMap<String, OpportunityState>,
     refusals: Vec<Refusal>,
+    /// Measured offset of this node's clock from the reference, in nanoseconds.
+    /// `None` until something measures it, and `None` is refused, not zero.
+    clock_offset_nanos: Option<i64>,
 }
 
 impl PeerEndpoint {
@@ -343,7 +354,70 @@ impl PeerEndpoint {
             limits,
             opportunities: BTreeMap::new(),
             refusals: Vec::new(),
+            clock_offset_nanos: None,
         }
+    }
+
+    /// Record the latest measured offset of this node's clock (MESH-007).
+    pub fn observe_clock_offset(&mut self, offset_nanos: i64) {
+        self.clock_offset_nanos = Some(offset_nanos);
+    }
+
+    /// Forget that the offset is known, as when the measurement goes stale.
+    pub fn clear_clock_offset(&mut self) {
+        self.clock_offset_nanos = None;
+    }
+
+    fn clock_in_bound(&self) -> std::result::Result<(), Rejected> {
+        let bound = self.limits.max_clock_offset.as_nanos();
+        match self.clock_offset_nanos {
+            None => Err((
+                "clock_unknown",
+                "this node's clock offset is unknown; measure it before joining an epoch".into(),
+            )),
+            Some(o) if o.unsigned_abs() > bound.unsigned_abs() => Err((
+                "clock_out_of_bound",
+                format!("clock offset {o} ns is beyond the {bound} ns bound; resynchronise first"),
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Drop every opportunity whose epoch has expired. The mesh keeps nothing
+    /// past its usefulness (MESH-017): afterwards a late frame finds no epoch
+    /// and is refused, not replayed from a retained copy.
+    pub fn forget_expired(&mut self, now: Timestamp) {
+        self.opportunities.retain(|_, s| now < s.epoch.expires_at());
+    }
+
+    /// Opportunities currently held.
+    pub fn held_opportunities(&self) -> usize {
+        self.opportunities.len()
+    }
+
+    /// The peers an update for `opportunity` goes to: the other nodes that
+    /// hold a leg of it, never every node (MESH-041). Refused when that set
+    /// exceeds `max_fan_out`.
+    pub fn recipients(&self, opportunity: &str) -> Result<Vec<String>> {
+        let st = self
+            .opportunities
+            .get(opportunity)
+            .ok_or_else(|| Error::denied(format!("no epoch held for `{opportunity}`")))?;
+        let peers: BTreeSet<&str> = st
+            .epoch
+            .legs
+            .iter()
+            .map(|l| l.node.as_str())
+            .filter(|n| *n != self.node)
+            .collect();
+        if peers.len() > self.limits.max_fan_out {
+            return Err(Error::denied(format!(
+                "update for `{opportunity}` would reach {} peers, over the fan-out bound of {};                  split the opportunity rather than broadcasting it",
+                peers.len(),
+                self.limits.max_fan_out
+            )));
+        }
+        Ok(peers.into_iter().map(str::to_string).collect())
     }
 
     /// Every refusal so far, oldest first.
@@ -515,6 +589,7 @@ impl PeerEndpoint {
         epoch: OpportunityEpoch,
         now: Timestamp,
     ) -> std::result::Result<(), Rejected> {
+        self.clock_in_bound()?;
         epoch
             .validate(self.limits.ttl_ceiling)
             .map_err(|e| ("invalid_epoch", e.to_string()))?;
@@ -554,6 +629,9 @@ impl PeerEndpoint {
     /// fits the bound the epoch declared. Returns the frame to send peers.
     pub fn declare_fire(&mut self, opportunity: &str, now: Timestamp) -> Result<Vec<u8>> {
         let max = self.limits.max_frame;
+        if let Err((_, reason)) = self.clock_in_bound() {
+            return Err(Error::denied(reason));
+        }
         let st = self
             .opportunities
             .get_mut(opportunity)
@@ -597,6 +675,9 @@ impl PeerEndpoint {
         now: Timestamp,
         gate: &dyn Fn(&EpochLeg) -> Result<()>,
     ) -> Result<()> {
+        if let Err((_, reason)) = self.clock_in_bound() {
+            return Err(Error::denied(reason));
+        }
         let st = self
             .opportunities
             .get_mut(opportunity)

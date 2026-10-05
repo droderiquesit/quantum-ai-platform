@@ -167,14 +167,15 @@
   },
   {
     "id": "MESH-007",
-    "status": "MISSING",
-    "current": "nothing. rg for clock_offset, ClockOffset, clock_sync and 'synchronized clock' across backend/crates returns zero matches; no measured-offset type, no exclusion-from-epoch logic, and no exported offset gauge exist.",
+    "status": "PARTIAL",
+    "current": "qip_mesh::peer::PeerEndpoint::observe_clock_offset records a measured offset; a node whose offset is unknown or beyond PeerLimits::max_clock_offset (either sign) refuses to install a token, declare FIRE or send a leg, journaled as clock_unknown / clock_out_of_bound (backend/crates/services/qip-mesh/src/peer.rs). Nothing measures the offset yet.",
     "evidence": [
-      "rg -il 'clock_offset|ClockOffset|clock_sync' backend/crates --type rust -> no matches"
+      "backend/crates/services/qip-mesh/tests/peer_rules.rs -- a_node_whose_clock_offset_is_unknown_or_beyond_the_bound_does_not_join_an_epoch",
+      "backend/crates/services/qip-mesh/tests/peer_rules.rs -- a_node_whose_clock_drifts_out_of_bound_after_joining_neither_fires_nor_sends"
     ],
-    "gap": "No measured clock offset, no configured bound, no exclusion of an out-of-bound node from a distributed epoch, and no opportunity epoch (MESH-005 is only partial) for a TTL to be measured against across regions in the first place.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The exclusion gate exists and is mutation-verified, but no source measures a real offset (needs a live peer link, MESH-038) and no offset gauge is exported; host clock discipline is infrastructure.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -183,7 +184,7 @@
       "MESH-005"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: a chaos test skewing one paper node's measured offset past a configured bound and asserting exclusion from new distributed epochs while in-bound nodes keep coordinating.",
+    "verification": "cargo test -p qip-mesh --test peer_rules (mutation-verified: removing the install check and the fire check each failed the named test). Remaining: measured-offset source and gauge.",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
@@ -422,15 +423,14 @@
   },
   {
     "id": "MESH-017",
-    "status": "MISSING",
-    "current": "nothing, because the peer Reflex Mesh itself does not exist (MESH-001). The closest existing analogue, qip_transport::MeshPublisher (the centre-cell spine), is explicitly NOT ephemeral: it holds a durable dead-letter spool for undelivered envelopes (qip-mesh's spine.rs notes an_envelope_to_a_cell_that_is_down_stays_in_the_spool_rather_than_being_lost).",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::PeerEndpoint holds nothing durable and, via forget_expired, drops an epoch at its expiry; a later frame for it is refused as unknown_opportunity, not replayed (backend/crates/services/qip-mesh/src/peer.rs).",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/spine.rs:29 (module doc: this direction is spooled) and backend/crates/services/qip-mesh/tests/spine.rs:389 an_envelope_to_a_cell_that_is_down_stays_in_the_spool_rather_than_being_lost",
-      "backend/crates/edge/qip-edge/tests/mesh.rs:601 a_delta_for_a_peer_that_is_not_listening_is_dead_lettered_rather_than_blocking_forever"
+      "backend/crates/services/qip-mesh/tests/peer_rules.rs -- an_expired_epoch_is_forgotten_and_a_late_frame_for_it_is_refused_not_replayed"
     ],
-    "gap": "Nothing exists to be ephemeral or not. Note for whoever builds MESH-001: reusing the existing MeshPublisher pattern uncritically would violate this requirement, since that pattern is deliberately durable (a dead-letter spool), which is the opposite of MESH-017's 'no persistent log or offsets.'",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -438,11 +438,11 @@
       "MESH-001"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: a restarted peer receives none of the messages sent before it went down, and a completed paper cycle reconstructs from the Fabric journal alone.",
+    "verification": "cargo test -p qip-mesh --test peer_rules (mutation-verified: changing the expiry comparison to keep an epoch at its expiry instant failed it; restored byte-for-byte and the suite passes).",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: the spool test was cited as living in src/spine.rs; it is in tests/spine.rs:389 -- path corrected. Status MISSING confirmed."
+    "notes": "verify: the spool test was cited as living in src/spine.rs; it is in tests/spine.rs:389 -- path corrected. Status MISSING confirmed. | Library-level rule in qip_mesh with no transport: no cell composition root calls it yet (integrated=false); the peer transport is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-018",
