@@ -4323,6 +4323,77 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     );
 }
 
+#[test]
+fn no_terraform_grant_can_delete_or_drop_warehouse_tables_beyond_the_one_named_writer_role() {
+    // FINOPS-019: a cost response must never delete production state, and an
+    // identity that holds a delete-capable role is one bad automation away from
+    // doing it. The object-store half is pinned above; this is the BigQuery,
+    // Bigtable and Spanner half. `roles/bigquery.dataEditor` also carries
+    // `bigquery.tables.delete` and is granted to the data module's dataset
+    // writers; that residual is named here so it is visible rather than
+    // allowed by silence, and it may not spread to any other file.
+    let mut scanned = 0usize;
+    let mut editor_files = Vec::new();
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        scanned += 1;
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for role in [
+            "roles/bigquery.admin",
+            "roles/bigquery.dataOwner",
+            "roles/bigtable.admin",
+            "roles/spanner.admin",
+            "roles/spanner.databaseAdmin",
+        ] {
+            assert!(
+                !content.contains(&format!("\"{role}\"")),
+                "{} grants {role}, which can delete or drop production data",
+                path.display()
+            );
+        }
+        if content.contains("\"roles/bigquery.dataEditor\"") {
+            editor_files.push(path.display().to_string());
+        }
+    }
+    assert!(
+        scanned > 10,
+        "the scan found {scanned} Terraform files; the glob is wrong"
+    );
+    assert_eq!(
+        editor_files.len(),
+        1,
+        "roles/bigquery.dataEditor (can delete tables) appears in {editor_files:?}; only the \
+         data module's dataset writers may hold it"
+    );
+    assert!(
+        editor_files[0].ends_with("modules/data/main.tf"),
+        "{editor_files:?}"
+    );
+}
+
+#[test]
+fn a_billing_budget_notifies_and_never_carries_a_programmatic_action() {
+    // FINOPS-019: a budget that publishes to a topic a function listens on is a
+    // budget that can act. Until FINOPS-018's anomaly path is built and reviewed,
+    // a budget may alert people and do nothing else.
+    let mut budgets = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        if !content.contains("resource \"google_billing_budget\"") {
+            continue;
+        }
+        budgets += 1;
+        assert!(
+            !content.contains("pubsub_topic"),
+            "{} routes a budget to a Pub/Sub topic, which is a programmatic action",
+            path.display()
+        );
+    }
+    assert!(
+        budgets >= 1,
+        "no google_billing_budget was found; the test guards nothing"
+    );
+}
+
 // --- capacity (FINOPS-002) ---------------------------------------------------
 
 /// The first resource type among `types` that a Terraform file declares.
