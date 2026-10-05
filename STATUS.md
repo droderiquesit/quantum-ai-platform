@@ -6,13 +6,10 @@ Phase 0 complete bar Review Board re-check of the revised ADR 0101; Phase 1 foun
 Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 
 ## Measured so far
-- Blueprint newest: v12.0 (51 pp) plus GCP v3.0 (30 pp), already held in `docs/blueprint/source/`.
-- Register: 31 requirement domains from v11.6, traceability matrix exists.
-- ADR 0101 body written and linked (`24af6bae`); `docs/SYSTEM_MAP.md` and `docs/MASTER_ROADMAP.md` (93 items, 10 streams) committed. Branch pushed.
-- Integrated tree, 2026-10-04: `cargo test --workspace --no-fail-fast` exit 0, 493 `test result:` lines, 6502 passed, 0 failed, 0 ignored; fmt clean; clippy 0 warnings or errors (now with `unwrap_used`/`expect_used` denied); dependency policy and secret scan pass.
-- Batch 1 merged: repoint to `algorik-platform-dev`, unwrap/expect lint, lib socket guard test, opt-in Terraform billing budget, v12 requirement entries (1601 requirements rendered), two ARB reviews of ADR 0101 and its revision (19 of 20 items applied, 1 rejected).
-- clippy 0 warnings, fmt clean, dependency policy and secret scan pass (docs/ops/hermes-baseline-2026-10-04.md).
-- Cost: billing is disabled on `algorik-dev`; spend is 0 by construction.
+- Register, 2026-10-05 after merging round 1 (31 lanes) and round 2 (31 lanes): 232 complete, 707 partial, 410 missing, 166 blocked, 86 unscored of 1601. Most closures are library-level (`integrated=false`): tested code no production path calls yet.
+- Integrated tree: `cargo test --workspace --no-fail-fast` exit 0, 544 `test result:` lines, 6873 passed, 0 failed, 0 ignored (after fixing two merge-time failures: `qip-agency` had no lane; an ambient type had been wired into the order-path kernel and was reverted).
+- Blueprint of record in direction: v12.0 and GCP v3.0 (ADR 0101). 1,601 requirements, 31 domains.
+- Nothing of the platform itself is deployed; no market data is ingested from a real source; the portal has not been run this session.
 
 ## Agent fleet in GCP (ADR 0102)
 - Running in `algorik-platform-dev` (2026-10-04/05): repository `fleet`, bucket `algorik-platform-dev-fleet`, service account `fleet-worker` (aiplatform.user + its own bucket only), and the Cloud Run Job `fleet` (`Apply complete! Resources: 1 added`), image `worker@sha256:18ca55ee...` pushed to the repository.
