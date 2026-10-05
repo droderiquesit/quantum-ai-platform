@@ -2,7 +2,7 @@
   {
     "id": "SEC-001",
     "status": "PARTIAL",
-    "current": "qip_edge::policy::{VerifiedPolicy::verify, VerifiedHalt::verify} and qip_edge::envelope::VerifiedEnvelope::verify (backend/crates/edge/qip-edge/src/policy.rs:34-70,96-131, src/envelope.rs) recompute an HMAC-SHA256 over the payload against the cell's own key and refuse an unsigned, altered, or wrong-cell payload; Cell::apply_policy/apply_halt (src/cell.rs:2054,2111) take only the verified type, and qip-edge-node's mesh.rs calls them at the inbound seam (backend/crates/apps/qip-edge-node/src/mesh.rs:423,428).",
+    "current": "qip_edge::policy::{VerifiedPolicy::verify, VerifiedHalt::verify} and qip_edge::envelope::VerifiedEnvelope::verify (backend/crates/edge/qip-edge/src/policy.rs:34-70,96-131, src/envelope.rs) recompute an HMAC-SHA256 over the payload against the cell's own key and refuse an unsigned, altered, or wrong-cell payload; Cell::apply_policy/apply_halt (src/cell.rs:2054,2111) take only the verified type, and qip-edge-node's mesh.rs calls them at the inbound seam (backend/crates/apps/qip-edge-node/src/mesh.rs:423,428). A peer protocol now exists beside the downward path as a library with no transport (qip_mesh::peer): its decode refuses a frame of kind policy, policy_pack, capital_grant or any of four pack kinds, naming the signed centre path. downward_signed_path.rs drives both ends at once: with a peer endpoint holding a live epoch on the node, a policy the centre really signed is refused when a peer carries it, a signed halt in a peer frame is refused as no message the protocol reads, the downward path still refuses an unsigned, altered, re-keyed or foreign-cell policy and a re-keyed halt, and a signed policy and halt still apply. The same suite pins what makes 'there is no other way to obtain one' true of VerifiedPolicy, VerifiedHalt and VerifiedEnvelope: private fields, no Deserialize or Default derive, one construction per verify, Cell::apply_policy/apply_halt taking only the verified types, and qip-mesh neither depending on qip-edge nor naming the activation seam.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/policy.rs:34-70,96-131",
       "backend/crates/edge/qip-edge/src/envelope.rs:35-60",
@@ -10,9 +10,12 @@
       "an_unsigned_envelope_cannot_become_a_verified_one (backend/crates/edge/qip-edge/tests/cell.rs:69)",
       "tampering_with_any_bound_invalidates_the_signature (backend/crates/edge/qip-edge/tests/cell.rs:95)",
       "a_policy_payload_verifies_only_with_the_right_key_cell_and_bytes (backend/crates/edge/qip-edge/tests/cell.rs:723)",
-      "the_application_layer_signs_nothing_but_the_centres_policy_and_halt (backend/crates/tests/qip-acceptance/tests/api_boundary.rs:460)"
+      "the_application_layer_signs_nothing_but_the_centres_policy_and_halt (backend/crates/tests/qip-acceptance/tests/api_boundary.rs:460)",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::with_a_peer_epoch_live_on_the_node_a_policy_or_halt_reaches_the_cell_only_down_the_verified_path (mutations: striking policy and policy_pack from DOWNWARD_ONLY, and skipping the MAC comparison in VerifiedPolicy::verify, each failed it; restored)",
+      "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs::nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_grant_and_the_peer_protocol_cannot_name_one (mutations: a Deserialize derive on VerifiedPolicy, a second constructor, and a pub field on VerifiedHalt each failed it; restored)",
+      "backend/crates/services/qip-mesh/src/peer.rs (DOWNWARD_ONLY, decode)"
     ],
-    "gap": "Verification is symmetric HMAC-SHA256 (ADR 0043 §2): whoever can verify a pack can also mint one, so a compromised cell is also a forger, not just a reader. The v11.6 additions this requirement is specifically about — peer Reflex messaging, distributed reservations, opportunity tokens, cross-region outcome/state exchange — do not exist anywhere in the tree (no OpportunityToken, PeerReflex or cross-cell-outcome type found), so no test demonstrates the downward signed path still holds once those channels are live; the claim is unfalsified rather than falsified.",
+    "gap": "Verification is symmetric HMAC-SHA256 under a key the cell shares with the centre (ADR 0043 §2): whoever can verify a pack can also mint one, so a compromised cell is also a forger. Asymmetric signing (ADR 0043 §4, proposed) needs a KMS client, TLS and a verification crate, each under its own dependency record. The peer channel this requirement is about exists only as a protocol library: no transport carries it (MESH-038, blocked on a dependency record), no composition root holds a PeerEndpoint, and cross-region outcome and state exchange does not exist (MESH-006), so 'with the peer mesh and cross-region exchange enabled' is demonstrated against the endpoint, not against a running mesh.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -20,11 +23,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing: backend/crates/edge/qip-edge/tests/cell.rs::an_unsigned_envelope_cannot_become_a_verified_one, ::tampering_with_any_bound_invalidates_the_signature, ::a_policy_payload_verifies_only_with_the_right_key_cell_and_bytes. Needed: a test that constructs a peer/cross-region channel alongside the downward path and re-asserts VerifiedPolicy/VerifiedHalt still refuse an unsigned or foreign-cell payload with that channel active.",
+    "verification": "cargo test -p qip-acceptance --test downward_signed_path (2 tests); backend/crates/edge/qip-edge/tests/cell.rs::an_unsigned_envelope_cannot_become_a_verified_one, ::tampering_with_any_bound_invalidates_the_signature, ::a_policy_payload_verifies_only_with_the_right_key_cell_and_bytes. Needed: asymmetric control signing (ADR 0043 §4), and the same assertion against a peer transport once MESH-038 has one.",
     "work_item": "E13",
     "tier": "T2",
     "size": "M",
-    "notes": "deployable=false because Cell::apply_policy/apply_halt are reached only inside qip-edge-node, and execution_nodes = {} in every environment's tfvars, so no deployed process exercises this path today. verify: status kept. Evidence spot-checked and present (policy.rs:39,100; envelope.rs:37; cell.rs:2054,2111; qip-edge-node mesh.rs:421-428; tests cell.rs:69,95,723). One correction to the gap: a cross-region construct does exist - backend/crates/apps/qip-edge-node/src/cross_region.rs (the §31.1 mirror arrangement, tests/cross_region.rs) - but it is a local declaration file read at start-up, not a peer or cross-region message channel, so no channel exists beside the downward path and nothing tests the downward path with one active."
+    "notes": "deployable=false because Cell::apply_policy/apply_halt are reached only inside qip-edge-node, and execution_nodes = {} in every environment's tfvars, so no deployed process exercises this path today. verify: status kept. Evidence spot-checked and present (policy.rs:39,100; envelope.rs:37; cell.rs:2054,2111; qip-edge-node mesh.rs:421-428; tests cell.rs:69,95,723). One correction to the gap: a cross-region construct does exist - backend/crates/apps/qip-edge-node/src/cross_region.rs (the §31.1 mirror arrangement, tests/cross_region.rs) - but it is a local declaration file read at start-up, not a peer or cross-region message channel, so no channel exists beside the downward path and nothing tests the downward path with one active. | 2026-10-04: the test the row asked for exists, and status stays PARTIAL on the symmetric key and the unbuilt transport. A halt is not in DOWNWARD_ONLY: a peer frame naming one is refused as an unknown message rather than by name, which the new test asserts as a refusal without asserting its wording."
   },
   {
     "id": "SEC-002",
@@ -78,17 +81,22 @@
   },
   {
     "id": "SEC-004",
-    "status": "PARTIAL",
-    "current": "api_boundary.rs asserts that qip-api and qip-web have no direct shipped dependency edge on the ten forbidden crates and that qip-web has no in-workspace edge at all; gitops.rs pins the portal's secrets to the session secret and the viewer token (PORTAL_SECRETS) and its only invoker to IAP's service agent; console_route.rs pins the console as the API's only invoker. The portal reaches qip-api only via direct VPC egress (modules/network console_egress subnet, ADR 0018).",
+    "status": "COMPLETE",
+    "current": "api_boundary.rs asserts that qip-api and qip-web have no direct shipped dependency edge on the ten forbidden crates and that qip-web has no in-workspace edge at all; gitops.rs pins the portal's secrets to the session secret and the viewer token (PORTAL_SECRETS) and its only invoker to IAP's service agent; console_route.rs pins the console as the API's only invoker. The portal reaches qip-api only via direct VPC egress (modules/network console_egress subnet, ADR 0018). browser_reach.rs now enumerates, from the console's source and the packages it bundles: every host the code names (five; three dialled — the metadata server, Google's IAP key set and Identity Platform — each confined to one module under lib/server/); every environment value it reads; the two credentials it holds (QIP_API_TOKEN and ALGORIK_SESSION_SECRET, read by secretFromEnvironment from lib/server/ only); the one NEXT_PUBLIC value compiled into the bundle (the environment's name); which files may import a server module (route handlers and one server component, never a \"use client\" file); and that every browser-side fetch calls the console's own /api/ routes. It also holds the gateway's redaction of cells[].address on /mesh and /system/status — the one execution-node address the API serves — and that the public site fetches nothing and reads one public URL.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/api_boundary.rs:47-58 (FORBIDDEN_CRATES), 99-136 (dependency_graph reads direct edges only)",
       "the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate (backend/crates/tests/qip-acceptance/tests/api_boundary.rs:275)",
       "the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs (backend/crates/tests/qip-acceptance/tests/gitops.rs:4832)",
       "the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may (backend/crates/tests/qip-acceptance/tests/console_route.rs:349)",
       "backend/crates/runtime/qip-kernel/Cargo.toml (qip-kernel ships edges to qip-capital, qip-execution-engine, qip-chain, qip-capital-fabric)",
-      "infrastructure/terraform/modules/network/main.tf:130-238 (console_egress subnet)"
+      "infrastructure/terraform/modules/network/main.tf:130-238 (console_egress subnet)",
+      "backend/crates/tests/qip-acceptance/tests/browser_reach.rs::the_console_names_no_host_beyond_the_five_listed_here_and_none_is_a_key_a_secret_store_or_a_ledger_store (mutation: a Secret Manager access URL bound in the gateway route failed it; restored)",
+      "backend/crates/tests/qip-acceptance/tests/browser_reach.rs::the_console_reads_two_credentials_from_server_modules_and_compiles_none_into_the_browser_bundle (mutations: a third credential QIP_CAPITAL_ENVELOPE_KEY read in the gateway route, and a NEXT_PUBLIC_QIP_API_TOKEN read in a component, each failed it; restored)",
+      "backend/crates/tests/qip-acceptance/tests/browser_reach.rs::no_browser_side_file_imports_a_server_module_or_fetches_anything_but_this_consoles_own_routes (mutations: a client component importing lib/server/upstream, and one fetching a variable destination, each failed it; restored)",
+      "backend/crates/tests/qip-acceptance/tests/browser_reach.rs::the_gateway_strips_a_cells_address_from_both_bodies_that_carry_one_and_the_stream_carries_none (mutation: the /mesh redaction entry removed failed it; restored)",
+      "backend/crates/tests/qip-acceptance/tests/browser_reach.rs::the_public_site_fetches_nothing_and_reads_one_public_url_and_no_credential (mutations: a fetch and a second variable in lib/site.js each failed it; restored)"
     ],
-    "gap": "The cited crate-graph test reads direct edges only: qip-api depends on qip-kernel, which ships edges to qip-capital, qip-execution-engine, qip-chain and qip-capital-fabric, so the API binary the portal's gateway calls links those crates transitively and 'cannot reach' is not what the test proves. The same process holds the capital-envelope/trust-root key (api.yaml mounts QIP_CAPITAL_ENVELOPE_KEY_FILE) and signs policy and halts. The acceptance test the requirement names - one enumeration of every network destination and credential the portal bundle and its session can use, asserting none is a KMS key, secret, ledger-store endpoint or execution-node address - does not exist; the property is assembled from three partial tests, none of which enumerates what the browser bundle itself dials. The portal and API revisions are created only by Config Connector, whose control plane is suspended in dev (ADR 0093).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -96,11 +104,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing: api_boundary.rs::the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate (direct edges), gitops.rs::the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs, console_route.rs::the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may. Needed: one acceptance test enumerating every destination the portal bundle and server dial and every credential its session holds, asserting none is a key, secret, ledger-store endpoint or node address; and either a transitive crate check or a recorded argument for why qip-api linking the kernel's capital/execution crates is acceptable.",
+    "verification": "cargo test -p qip-acceptance --test browser_reach (5 tests); with api_boundary.rs::the_application_layer_depends_on_no_execution_venue_capital_or_edge_crate, gitops.rs::the_portal_is_reachable_only_behind_its_iap_edge_and_holds_only_what_it_needs, console_route.rs::the_console_reaches_the_api_as_a_named_invoker_and_nothing_else_may",
     "work_item": "E15",
     "tier": "T1",
     "size": "S",
-    "notes": "No dedicated test enumerates that no KMS key or Secret Manager secret is ever granted to the portal/api identity; the crate-graph test is the strongest evidence found. verify: COMPLETE -> PARTIAL; deployable true -> false. The only cited test checks direct Cargo edges (dependency_graph takes each package's own dependency list), and qip-api reaches qip-capital/qip-execution-engine/qip-chain/qip-capital-fabric through qip-kernel, so 'cannot reach' was overstated. The enumerating acceptance test the requirement's verification names does not exist; the assessor's own note conceded the crate graph was the strongest evidence found."
+    "notes": "No dedicated test enumerates that no KMS key or Secret Manager secret is ever granted to the portal/api identity; the crate-graph test is the strongest evidence found. verify: COMPLETE -> PARTIAL; deployable true -> false. The only cited test checks direct Cargo edges (dependency_graph takes each package's own dependency list), and qip-api reaches qip-capital/qip-execution-engine/qip-chain/qip-capital-fabric through qip-kernel, so 'cannot reach' was overstated. The enumerating acceptance test the requirement's verification names does not exist; the assessor's own note conceded the crate graph was the strongest evidence found. | Closed 2026-10-04. Read this before relying on it. The browser bundle holds no credential and names no host. The console *server* holds two secrets of its own, mounted from Secret Manager — its session key and the platform token — and neither is the platform's key material or reaches the bundle. qip-api links the kernel's capital and execution crates transitively and holds the capital-envelope key; the recorded argument (browser_reach.rs module doc) is that the API is the kernel's composition root, so a browser's reach is bounded by what the API serves to its one invoker, not by what it links. The console renders the API's ledger views by design; what is excluded is the ledger store's endpoint, which neither the console nor the bundle names. Not demonstrated: a deployed console (Config Connector suspended, ADR 0093), and the portal's Playwright suites were not run in this change. deployable stays false. The lists are source-text enumerations: a destination assembled at run time from a response body would not be seen."
   },
   {
     "id": "SEC-005",
@@ -280,9 +288,12 @@
       "infrastructure/terraform/modules/trust-zones/main.tf:516-545 (zone Cloud NAT, LIST_OF_SUBNETWORKS)",
       "every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held (backend/crates/tests/qip-acceptance/tests/gitops.rs:2240; vpcAccess egress ALL_TRAFFIC)",
       "backend/crates/apps/qip-api/src/main.rs:644 and backend/crates/apps/qip-deepbrain/src/connectors.rs:132 (data-finder catalogue composed where the proxy is attached)",
-      "infrastructure/environments/dev/terraform.tfvars:97 (external_egress = {})"
+      "infrastructure/environments/dev/terraform.tfvars:97 (external_egress = {})",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::every_cloud_nat_translates_only_subnetworks_its_own_module_declares_and_logs_every_connection (mutations: ALL_SUBNETWORKS_ALL_IP_RANGES on the zone gateway, ERRORS_ONLY logging and a variable subnetwork on the node gateway, and a custom google_compute_route each failed it; restored)",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::no_workload_beyond_the_two_the_register_records_can_reach_the_internet_outside_a_cloud_nat (mutation: the dev API manifest set to PRIVATE_RANGES_ONLY failed it; restored)",
+      "infrastructure/fleet/main.tf (google_cloud_run_v2_job.fleet: no vpc_access)"
     ],
-    "gap": "The mechanism objection was overstated: Cloud Run workloads have no external address and send ALL_TRAFFIC through their zone's subnet (asserted by gitops.rs::every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_module_held) behind default-deny egress, so their only internet route is modules/trust-zones' Cloud NAT (LIST_OF_SUBNETWORKS, main.tf:516-545) for zones that declare external egress, with the Envoy sidecar as the application-level allow-list in front of it. Crawler and agent code is wired to it: qip-data-finder and the market-data connector are composed into qip-api, and deepbrain's discovery/connector pass runs in deepbrain, both of which carry the proxy; the image-bake builder has no internet route at all (Google APIs only). What is missing: no test reads google_compute_router_nat at all, so the NAT being the sole route (and never ALL_SUBNETWORKS) is unguarded; there is no Secure Web Proxy; dev declares external_egress = {}, so the path has never carried a crawler's traffic; fastbrain carries no proxy by design; and every sidecar attachment is a RunService revision only Config Connector creates, suspended in dev (ADR 0093).",
+    "gap": "The NAT-as-only-route property now has a test: every google_compute_router_nat in the tree lists its subnetworks (never ALL_SUBNETWORKS), serves only subnetworks its own module declares, and logs every connection; no custom google_compute_route exists; and each reserved external address is held by a NAT gateway alone. What keeps this PARTIAL, found 2026-10-04: the ADR 0102 fleet job (infrastructure/fleet/main.tf, google_cloud_run_v2_job.fleet) is an agent workload with no vpc_access block at all, so it reaches the internet through Cloud Run's own egress, past every deny-egress rule, gateway log and allow-list this requirement names. It is recorded, with the dev portal (SEC-052), in security_controls.rs's OUTSIDE_THE_NAT, and the test fails on any further workload that leaves the VPC path. Also still true: there is no Secure Web Proxy (not required — the requirement admits Cloud NAT); dev declares external_egress = {}, so the path has never carried a crawler's traffic; fastbrain carries no proxy by design; and every sidecar attachment is a RunService revision only Config Connector creates, suspended in dev (ADR 0093).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -290,11 +301,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/tests/qip-acceptance/tests/egress.rs::no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy, ::the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named",
+    "verification": "cargo test -p qip-acceptance --test security_controls every_cloud_nat_translates_only_subnetworks_its_own_module_declares_and_logs_every_connection no_workload_beyond_the_two_the_register_records_can_reach_the_internet_outside_a_cloud_nat; backend/crates/tests/qip-acceptance/tests/egress.rs::no_zone_or_node_has_an_egress_rule_that_bypasses_the_proxy, ::the_egress_proxy_dials_only_the_vendor_hosts_the_adapters_named",
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "Either add a test pinning the zone NAT as the sole internet route (and optionally Secure Web Proxy), or record the Envoy-plus-zone-NAT arrangement as the controlled egress path in an ADR. verify: status kept; gap corrected and deployable true -> false. The row said the path was not Cloud NAT and that no crawler workload was wired to it; both were wrong - the Envoy sidecar sits in front of the trust-zones Cloud NAT, and the data finder runs inside qip-api and deepbrain, which carry the proxy. It stays PARTIAL because the NAT-as-only-route property has no test and the Cloud Run side cannot be provisioned while the reconciler is suspended."
+    "notes": "Either add a test pinning the zone NAT as the sole internet route (and optionally Secure Web Proxy), or record the Envoy-plus-zone-NAT arrangement as the controlled egress path in an ADR. verify: status kept; gap corrected and deployable true -> false. The row said the path was not Cloud NAT and that no crawler workload was wired to it; both were wrong - the Envoy sidecar sits in front of the trust-zones Cloud NAT, and the data finder runs inside qip-api and deepbrain, which carry the proxy. It stays PARTIAL because the NAT-as-only-route property has no test and the Cloud Run side cannot be provisioned while the reconciler is suspended. | 2026-10-04: status kept. The missing NAT test is written and mutation-verified, and writing it found the fleet job outside the path. Closing this needs the fleet job routed through a zone (a vpc_access block and a zone to hold it), which is a decision for ADR 0102/0098's owner because that root is deliberately separate from the platform's network."
   },
   {
     "id": "SEC-013",
@@ -326,7 +337,8 @@
     "evidence": [
       "infrastructure/egress/envoy.yaml:266-269 (stdout access_log; repeated on every destination listener)",
       "infrastructure/terraform/modules/trust-zones/main.tf:282-283,430-431 (deny-egress and external-egress firewall log_config)",
-      "infrastructure/terraform/modules/trust-zones/main.tf:539-541 (zone NAT log_config, filter ALL)"
+      "infrastructure/terraform/modules/trust-zones/main.tf:539-541 (zone NAT log_config, filter ALL)",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::every_cloud_nat_translates_only_subnetworks_its_own_module_declares_and_logs_every_connection (both NAT gateways are pinned to log_config filter = \"ALL\"; mutation ERRORS_ONLY failed it; restored)"
     ],
     "gap": "Nothing is applied to any real environment's serving traffic path in a way that has ever been exercised, so no log entry naming a source workload and destination has ever actually been read; there is no audit-sink integration test.",
     "implemented": true,
@@ -340,7 +352,7 @@
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status kept; deployable true -> false; evidence given line numbers. No log sink exists anywhere in infrastructure/terraform (no google_logging_* resource at all), so nothing routes these entries to an audit sink; and the Envoy half rides RunService revisions that only the suspended Config Connector creates."
+    "notes": "verify: status kept; deployable true -> false; evidence given line numbers. No log sink exists anywhere in infrastructure/terraform (no google_logging_* resource at all), so nothing routes these entries to an audit sink; and the Envoy half rides RunService revisions that only the suspended Config Connector creates. | 2026-10-04: both Cloud NAT gateways are now test-pinned to log every connection rather than errors only. That is one of the paths' logging declared, not the requirement demonstrated: there is still no log sink in the tree, and no request has been observed in any log. tested stays false."
   },
   {
     "id": "SEC-015",
@@ -376,9 +388,10 @@
       "neither_the_fast_path_nor_an_execution_node_can_reach_a_proxy_that_is_not_its_own (backend/crates/tests/qip-acceptance/tests/egress.rs:1635)",
       "infrastructure/terraform/modules/execution-node/variables.tf:598-617 (create_egress_nat, default false, description cites a network-module NAT)",
       "infrastructure/terraform/modules/network/main.tf:20-25 ('It has no NAT')",
-      "infrastructure/terraform/modules/egress-proxy/variables.tf:57 (substring venue/broker/exchange refusal)"
+      "infrastructure/terraform/modules/egress-proxy/variables.tf:57 (substring venue/broker/exchange refusal)",
+      "backend/crates/tests/qip-acceptance/tests/security_controls.rs::every_cloud_nat_translates_only_subnetworks_its_own_module_declares_and_logs_every_connection (each gateway serves only its own module's subnetworks; mutation: the node gateway given a subnetwork by variable failed it; restored)"
     ],
-    "gap": "Half of this lives in a module no environment enables: modules/execution-node's own firewall and NAT are instantiated for execution_nodes = {} everywhere, so the separated venue path has never existed. With create_egress_nat = false - the default, and the value dev's commented example uses - a node in the primary region has no NAT at all: the variable's description (execution-node/variables.tf:598-617) says modules/network provides one, but modules/network's header states it has no NAT, so a primary-region node's 'own gateway' does not exist and it has no route to any venue. The shared-path half is guarded by a substring heuristic: both the plan-time validation (egress-proxy/variables.tf:57) and the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order refuse only host names containing 'venue', 'broker' or 'exchange', which a real broker host such as paper-api.alpaca.markets does not; today's listeners hold no venue by inspection, not by a test that would catch one.",
+    "gap": "Half of this lives in a module no environment enables: execution_nodes = {} everywhere, so the separated venue path has never existed. The primary-region NAT contradiction is resolved in the text that carried it: create_egress_nat's description (execution-node/variables.tf) and the root's execution_nodes description said modules/network provisioned a NAT covering the primary region, and it has none; both now say that nothing translates a node's subnetwork unless the node creates its own gateway, which is the right default for the in-process simulated venue and the thing to set for a venue on the public internet. A test now holds that each NAT serves only subnetworks its own module declares, so the zones' gateway and a node's cannot become one. Still open: the proxy-side venue refusal is the substring heuristic (venue, broker, exchange) in both egress-proxy/variables.tf and the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order. The tree holds no registry of venue order-entry hosts to derive a real check from — qip-brokers takes its endpoint from configuration — so what actually keeps a venue host off the allow-list is its seven-entry positive list with provenance (egress.rs ALLOWED_UPSTREAMS, equal to the bootstrap's dialled hosts), not a venue-aware rule.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -390,7 +403,7 @@
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "deployable=false: execution_nodes = {} everywhere, so the separated venue path is never actually running. verify: COMPLETE -> PARTIAL. The node half is Terraform no environment enables, which COMPLETE's infrastructure clause excludes; the node module's primary-region NAT claim contradicts modules/network, leaving such a node no venue gateway; and the proxy-side venue refusal is the substring match the testing rules name as a trap."
+    "notes": "deployable=false: execution_nodes = {} everywhere, so the separated venue path is never actually running. verify: COMPLETE -> PARTIAL. The node half is Terraform no environment enables, which COMPLETE's infrastructure clause excludes; the node module's primary-region NAT claim contradicts modules/network, leaving such a node no venue gateway; and the proxy-side venue refusal is the substring match the testing rules name as a trap. | 2026-10-04: status kept. Description corrected in two files (terraform fmt -check clean; terraform validate and terraform test not run — no initialised provider in this worktree). The NAT default was left false on purpose: a node today runs the simulated venue and a gateway would give it an internet route nothing asked for."
   },
   {
     "id": "SEC-017",
