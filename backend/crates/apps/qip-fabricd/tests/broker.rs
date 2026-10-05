@@ -75,8 +75,12 @@ const CONTROLLER: &str = "release-controller";
 const AUDITOR: &str = "auditor";
 const OPERATOR: &str = "operator";
 const RESEARCHER: &str = "researcher";
+/// An ambient or development agent, by the grant schema's own prefix.
+const AGENT: &str = "agent:research-1";
 
-const IDENTITIES: [&str; 6] = [CELL_A, CELL_B, CONTROLLER, AUDITOR, OPERATOR, RESEARCHER];
+const IDENTITIES: [&str; 7] = [
+    CELL_A, CELL_B, CONTROLLER, AUDITOR, OPERATOR, RESEARCHER, AGENT,
+];
 
 const PARTITIONS: u32 = 4;
 
@@ -107,6 +111,8 @@ fn base_grants() -> Vec<(&'static str, &'static str, &'static str, &'static str)
         (CONTROLLER, CONTROL, "produce", "any"),
         (RESEARCHER, RESEARCH, "produce", "any"),
         (RESEARCHER, RESEARCH, "consume", "any"),
+        (AGENT, RESEARCH, "produce", "any"),
+        (AGENT, TELEMETRY, "produce", "any"),
     ];
     for stream in [CONTROL, OUTCOMES, JOURNAL, RESEARCH, TELEMETRY] {
         grants.push((AUDITOR, stream, "consume", "any"));
@@ -1524,5 +1530,97 @@ fn a_broker_does_not_start_on_a_catalogue_that_gives_a_durable_class_an_at_most_
     assert!(
         message.contains("p2_market_journal") && message.contains("weaker"),
         "the refusal names the class and what is wrong: {message}"
+    );
+}
+
+// --- FABRIC-110 -----------------------------------------------------------------
+
+/// An agent identity publishes to a P3 and a P4 stream and both are
+/// admitted; it publishes to a P0 and a P1 stream and both are refused by
+/// the broker's ACL; and no catalogue can grant it otherwise — one that
+/// tries does not start a broker, and written under a running broker it
+/// changes nothing and is reported.
+///
+/// Mutation (run, failed, restored): the catalogue's agent rule admitting
+/// `P1Outcomes` — a broker starts on the catalogue that grants the agent an
+/// outcome stream. And `Service::refuse_unless_granted` answering `Ok(None)`
+/// — the agent's produce to P1 is admitted.
+#[test]
+fn an_agent_identity_publishes_research_and_telemetry_and_is_refused_control_and_outcomes() {
+    let fabric = Fabric::start("agent");
+    for (stream, class) in [
+        (RESEARCH, QosClass::P3Research),
+        (TELEMETRY, QosClass::P4Telemetry),
+    ] {
+        let mut producer = fabric.producer(AGENT, stream, 0, class);
+        producer.init().unwrap();
+        producer
+            .send(batch_of(class, "agent", &[b"finding".to_vec()]))
+            .unwrap_or_else(|error| panic!("premise: the agent may publish to {stream}: {error}"));
+    }
+
+    for (stream, class) in [
+        (CONTROL, QosClass::P0Control),
+        (OUTCOMES, QosClass::P1Outcomes),
+    ] {
+        let init = Request::ProducerInit(ProducerInitRequest {
+            stream: stream.to_string(),
+            partition: 0,
+            producer_id: AGENT.to_string(),
+        });
+        assert_eq!(
+            refusal_of(fabric.call(AGENT, init).unwrap()),
+            Refusal::AclDenied,
+            "{stream}: an agent cannot establish a producer there"
+        );
+        let mut batch = batch_of(class, "agent", &[b"not research".to_vec()]);
+        stamp_drain(&mut batch, AGENT, 1, 0);
+        let produce = Request::Produce(
+            ProduceRequest::new(stream, 0, qip_core::hash::to_hex(&batch.encode().unwrap()))
+                .unwrap(),
+        );
+        assert_eq!(
+            refusal_of(fabric.call(AGENT, produce).unwrap()),
+            Refusal::AclDenied,
+            "{stream}: an agent's publish is refused by the ACL"
+        );
+        assert_eq!(
+            fetch_all(&fabric, AUDITOR, stream, 0).len(),
+            0,
+            "{stream}: nothing the agent sent is on the stream"
+        );
+    }
+
+    // Nobody can grant it either. The catalogue that tries does not start a
+    // broker...
+    let mut widened = base_grants();
+    widened.push((AGENT, OUTCOMES, "produce", "any"));
+    let widened = catalogue_json(&widened, "leader_only");
+    let error = Fabric::start_with("agent-widened", &widened)
+        .err()
+        .expect("a catalogue granting an agent an outcome stream starts no broker");
+    assert!(error.to_string().contains("agent identity"), "{error}");
+
+    // ...and under a running broker it is refused whole, reported, and the
+    // grants in force stay in force.
+    std::fs::write(&fabric.config.catalogue, widened).unwrap();
+    wait_until(
+        "the running broker reports the catalogue it refused",
+        || fabric.health("/healthz").1.contains("agent identity"),
+    );
+    let init = Request::ProducerInit(ProducerInitRequest {
+        stream: OUTCOMES.to_string(),
+        partition: 0,
+        producer_id: AGENT.to_string(),
+    });
+    assert_eq!(
+        refusal_of(fabric.call(AGENT, init).unwrap()),
+        Refusal::AclDenied,
+        "a refused catalogue grants nothing"
+    );
+    assert_eq!(
+        fabric.health("/healthz").0,
+        200,
+        "and the broker keeps serving on the grants it had"
     );
 }

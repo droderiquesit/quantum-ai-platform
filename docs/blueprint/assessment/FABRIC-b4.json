@@ -591,25 +591,27 @@
   },
   {
     "id": "FABRIC-110",
-    "status": "MISSING",
-    "current": "nothing. No ambient-agent module exists in the workspace at all (find backend/crates -iname '*ambient*' -> no results), so there is no publisher to classify and no ACL to refuse it P0/P1.",
+    "status": "COMPLETE",
+    "current": "The grant schema holds an identity under the `agent:` prefix to research and telemetry: Catalogue::parse refuses a produce or admin grant to such an identity on any stream that is not p3_research or p4_telemetry, so a catalogue carrying one starts no broker and, written under a running broker, is refused whole and reported while the grants in force stay in force. The broker's ACL (FABRIC-018) then refuses the agent every stream it holds no grant on. An agent identity granted P3 and P4 publishes to both through the serving broker and is answered AclDenied on P0 and P1.",
     "evidence": [
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_agent_identity_publishes_research_and_telemetry_and_is_refused_control_and_outcomes (ran: ok; mutation: the catalogue's agent rule admitting P1Outcomes -> a broker starts on the catalogue that grants the agent an outcome stream, restored; mutation: Service::refuse_unless_granted answering Ok(None) -> the agent's P0 and P1 requests are admitted, restored)",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs an_agent_identity_is_granted_produce_or_admin_on_research_and_telemetry_streams_only (ran: ok; same catalogue mutation, failed, restored)",
       "find backend/crates -iname '*ambient*' -> no results",
       "grep -rln 'topic.*acl\\|TopicAcl\\|producer.*identity' backend/crates --include=*.rs -i -> no hits"
     ],
-    "gap": "No ambient/dev agent producer, no P3/P4-only publish path, and no per-identity topic ACL exist anywhere.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an integration test publishing as an agent identity to P3/P4 (admitted) and P0/P1 (refused by ACL at every broker).",
+    "verification": "cargo test -p qip-fabricd --test broker an_agent_identity_publishes; cargo test -p qip-events --test event_fabric_policy an_agent_identity_is_granted",
     "work_item": "E13",
     "tier": "T3",
     "size": "L",
-    "notes": "Depends on ambient/development agents existing at all (E09), which the requirement's own notes place at master Phases 5-8. | fabricd pass: a per-identity stream ACL is now enforced by the broker (FABRIC-018). Still missing: an ambient or development producer, and a catalogue rule refusing such an identity a grant above P3."
+    "notes": "Depends on ambient/development agents existing at all (E09), which the requirement's own notes place at master Phases 5-8. | closed in the fabricd pass: integrated=false because no ambient or development agent produces to the fabric yet. The rule binds by name: it holds an identity provisioned under `agent:` and says nothing about an agent somebody provisions under another name, which the broker's ACL still refuses everything not granted but which a catalogue could grant more. Consume is deliberately not restricted. One broker; not deployed."
   },
   {
     "id": "FABRIC-111",

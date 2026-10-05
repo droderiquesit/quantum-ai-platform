@@ -475,6 +475,74 @@ fn a_cell_grant_must_be_scoped_to_its_own_key_and_only_the_release_controller_ma
         .expect("the release controller must be able to produce to a P0 stream");
 }
 
+/// FABRIC-110: an ambient or development agent publishes at P3 and P4 only.
+///
+/// The failure this prevents: the broker's ACL refuses whatever no grant
+/// covers, so an agent was kept off the outcome stream only for as long as
+/// nobody wrote the grant. With this rule a catalogue carrying that grant
+/// does not parse, and a broker neither starts on it nor reloads it.
+///
+/// Asserts its premise first, twice: the agent *is* granted the two classes
+/// it may publish to, and another identity *is* granted the same P1 produce
+/// the agent is refused — so each refusal below is about the identity and
+/// the class together, not about a grant shape the parser dislikes.
+///
+/// Mutation (run, failed, restored): the rule's class test admitting
+/// `P1Outcomes` beside research and telemetry — the P1 grant parses.
+#[test]
+fn an_agent_identity_is_granted_produce_or_admin_on_research_and_telemetry_streams_only() {
+    let streams = vec![
+        valid_stream_json("control", "p0_control", "quorum", 1, "none", vec![]),
+        valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]),
+        valid_stream_json(
+            "journal",
+            "p2_market_journal",
+            "leader_only",
+            1,
+            "none",
+            vec![],
+        ),
+        valid_stream_json("research", "p3_research", "leader_only", 1, "none", vec![]),
+        valid_stream_json("telemetry", "p4_telemetry", "none", 1, "none", vec![]),
+    ];
+    let grant = |identity: &str, stream: &str, permission: &str| {
+        serde_json::json!({
+            "identity": identity,
+            "stream": stream,
+            "permission": permission,
+            "key_scope": "any",
+        })
+    };
+
+    let admitted = vec![
+        grant("agent:research-1", "research", "produce"),
+        grant("agent:research-1", "telemetry", "produce"),
+        grant("agent:research-1", "research", "admin"),
+        // Reading outcomes is what research is for.
+        grant("agent:research-1", "outcomes", "consume"),
+        // The same P1 produce, to an identity that is not an agent.
+        grant("ledger-backfill", "outcomes", "produce"),
+    ];
+    let catalogue = Catalogue::parse(&catalogue_bytes(streams.clone(), admitted))
+        .expect("premise: an agent's P3 and P4 grants, and another identity's P1 grant, parse");
+    assert_eq!(catalogue.grants().len(), 5);
+
+    for stream in ["control", "outcomes", "journal"] {
+        for permission in ["produce", "admin"] {
+            let refused = Catalogue::parse(&catalogue_bytes(
+                streams.clone(),
+                vec![grant("agent:research-1", stream, permission)],
+            ))
+            .expect_err("an agent must not be granted produce or admin above P3");
+            let message = refused.to_string();
+            assert!(
+                message.contains("agent identity") && message.contains(&format!("'{stream}'")),
+                "{permission} on {stream}: {message}"
+            );
+        }
+    }
+}
+
 // --- archive-required -----------------------------------------------------
 
 #[test]
