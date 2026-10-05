@@ -154,6 +154,9 @@ pub struct FeedTick {
     pub instruments_omitted: usize,
     /// Level messages the cell was handed, including removals.
     pub messages: usize,
+    /// Books the cell had discarded that this pass rebuilt from the venue's
+    /// own depth. Zero on every ordinary pass.
+    pub resynchronised: usize,
 }
 
 /// The remembered top of one instrument's book, so the next pass publishes
@@ -248,7 +251,55 @@ impl SimulatedFeed {
     ) -> Result<FeedTick> {
         let mut tick = FeedTick::default();
         let mut frame = String::new();
-        for depth in gateway.quotes() {
+        let quotes = gateway.quotes();
+        // The venue was read, so its feed is alive whether or not anything
+        // moved. This feed publishes differences: a quiet market publishes
+        // nothing, and without this line the cell could not tell that from
+        // a feed that had died and would refuse every order under its
+        // silent-feed gate after five quiet seconds.
+        cell.feed_heartbeat(&self.venue, now);
+        // The cell's standing request for a snapshot, answered before the
+        // difference is cut: a book the cell discarded is rebuilt whole from
+        // the venue's depth as it stands, and remembered as published so the
+        // difference below is taken against what the cell now holds.
+        for request in cell.snapshot_requests() {
+            if request.venue != self.venue {
+                continue;
+            }
+            let id = request.object_id.as_str();
+            let (Some(published), Some(depth)) = (
+                self.published.get_mut(id),
+                quotes
+                    .iter()
+                    .find(|depth| depth.object_id == request.object_id),
+            ) else {
+                // Not an instrument this feed publishes; whoever handed the
+                // cell that book answers for it.
+                continue;
+            };
+            let mut edits = Vec::new();
+            *published = Published::default();
+            for (side, levels, remembered) in [
+                (BookSide::Bid, &depth.bids, &mut published.bids),
+                (BookSide::Ask, &depth.asks, &mut published.asks),
+            ] {
+                for level in levels.iter().take(MAX_LEVELS_PER_SIDE) {
+                    if level.size <= Decimal::ZERO {
+                        continue;
+                    }
+                    remembered.insert(level.price, level.size);
+                    edits.push(MessageBody::LevelSet {
+                        side,
+                        price: level.price,
+                        quantity: level.size,
+                        order_count: None,
+                    });
+                }
+            }
+            cell.apply_snapshot(&self.venue, &request.object_id, &edits, now)?;
+            tick.resynchronised += 1;
+        }
+        for depth in quotes {
             let id = depth.object_id.as_str();
             // An id the wire cannot carry is an instrument the feed cannot
             // publish. Counted as omitted rather than escaped: an escaping

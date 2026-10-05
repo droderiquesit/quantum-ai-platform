@@ -207,7 +207,12 @@ fn blueprint_command(arguments: &[String]) -> Result<u8> {
 /// store on a bad configuration would make `qip cycle` report archived records
 /// that were never anywhere.
 fn storage() -> Result<StorageSettings> {
-    let settings = StorageSettings::from_env(&|name| std::env::var(name).ok())?;
+    // The same second layer the four serving binaries hold: `qip cycle`
+    // archives the event log on this store, and Memorystore is a cache with
+    // persistence disabled. Refused here too, or the one composition root an
+    // operator runs by hand would be the one that could put the chain there.
+    let settings = StorageSettings::from_env(&|name| std::env::var(name).ok())
+        .and_then(StorageSettings::require_authoritative)?;
     settings.preflight()?;
     Ok(settings)
 }

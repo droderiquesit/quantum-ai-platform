@@ -35,26 +35,28 @@ use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
-use qip_contracts::message::{BookSide, MarketMessage};
+use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::Dispositions;
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
-use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_orderbook::venue::VenueState;
+use qip_orderbook::{BookCondition, BookView};
 use qip_protocols::registry::{FeedKey, ProtocolRegistry};
 use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel};
 use qip_routing::extension::{
     ExtensionVerdict, HedgeExtension, MirrorExtension, PathExtensions, check as check_extension,
 };
+use qip_routing::health::{HealthPolicy, HealthTracker, HealthVerdict};
 use qip_routing::mirror::Direction;
 use qip_routing::path::{
     Composition, CompositionEdge, ExecutionPath, MirrorFacts, PathAssignment, PathEndpoint,
     PathPolicy, RegionId,
 };
 use qip_routing::pathcycle::{CycleRouter, RepresentationClasses, VenueRegions};
-use qip_sequencing::tracker::{ReorderPolicy, Sequencer};
+use qip_sequencing::tracker::{ReorderPolicy, SequenceEvent, SequencedBatch, Sequencer};
 use qip_strategy::compile::CompiledStrategy;
 use qip_strategy::program::{Node, Op, Program};
 use qip_strategy::runtime::StrategyRuntime;
@@ -311,6 +313,40 @@ pub const GATE_JOURNAL_PRESSURE: &str = "journal_pressure";
 /// as [`GATE_JOURNAL_PRESSURE`].
 pub const GATE_SIGNAL_CONVICTION: &str = "signal_conviction";
 
+/// The gate an order is refused under when its venue's feed has said nothing
+/// for longer than [`CellConfig::max_staleness`].
+///
+/// Distinct from `stale_book`, which is a book the cell *knows* to be wrong
+/// because a sequence gap reset it. A feed that simply stops produces no gap
+/// and resets nothing: the book stands, serves a mid, and is exactly as old
+/// as the silence. Until this gate existed `max_staleness` was read by
+/// nothing, so a strategy whose features came from another instrument could
+/// route against a book frozen an hour ago — a limit that could not fire. A
+/// constant for the same cardinality reason as [`GATE_JOURNAL_PRESSURE`].
+pub const GATE_SILENT_FEED: &str = "silent_feed";
+
+/// The gate an order is refused under while its venue is quarantined for
+/// rejecting orders ([`CellConfig::with_venue_health`]).
+///
+/// A venue that fails a placement fails the pass: `gateway.place`'s error
+/// propagates out of [`Cell::work`]. Without a quarantine the next pass sends
+/// to the same venue again, and a venue that is down takes every pass down
+/// with it — every other venue's orders included — for as long as it stays
+/// down. The quarantine is what turns that into a refusal naming the venue,
+/// with a cooldown after which it is tried again. A constant for the same
+/// cardinality reason as [`GATE_JOURNAL_PRESSURE`].
+pub const GATE_VENUE_QUARANTINE: &str = "venue_quarantine";
+
+/// The gate a cell records under when orders rest at a venue that has
+/// failed and the gateway it was handed has no cancel path to withdraw them.
+///
+/// The counterpart of [`GATE_MASS_CANCEL`] for one venue's failure rather
+/// than a halt: the cell is stating that it cannot reduce exposure at a
+/// venue it can no longer see or send to. Recorded once per failure, not
+/// once per pass. A constant because it is recorded directly, on a path
+/// with no `WorkReport`.
+pub const GATE_VENUE_WITHDRAWAL: &str = "venue_withdrawal";
+
 /// How long a disposition's intent is good for once built. It enters the
 /// netting set in the same pass, so this is documentation of the intent's
 /// scope rather than a bound anything waits on: the instruction is re-read
@@ -409,6 +445,14 @@ pub struct CellConfig {
     /// memory is bounded by what has not shipped rather than by uptime.
     /// `Journal::len` reads the same either way.
     pub journal_trimmed_on_ship: bool,
+    /// When a venue that rejects orders is taken out of rotation, and for
+    /// how long (`qip_routing::health`).
+    ///
+    /// `None` by default, for the reason [`Self::journal_wire`] is off: a
+    /// quarantine armed on every cell changes what a failing venue does to a
+    /// pass in suites written before it existed. The composition root arms
+    /// it with [`Self::with_venue_health`]; `qip-edge-node`'s `assemble` does.
+    pub venue_health: Option<HealthPolicy>,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -453,7 +497,19 @@ impl CellConfig {
             decomposition: DecompositionPolicy::default(),
             journal_wire: false,
             journal_trimmed_on_ship: false,
+            venue_health: None,
         }
+    }
+
+    /// Quarantine a venue whose reject rate crosses `policy`'s line, for
+    /// `policy`'s cooldown (see [`GATE_VENUE_QUARANTINE`]).
+    ///
+    /// The policy is validated when the cell is assembled, so thresholds
+    /// that could never fire stop `Cell::new` rather than sitting unread.
+    #[must_use]
+    pub fn with_venue_health(mut self, policy: HealthPolicy) -> Self {
+        self.venue_health = Some(policy);
+        self
     }
 
     /// Build the cell's journal to trim behind every shipped batch.
@@ -1271,6 +1327,45 @@ pub struct Cell {
     /// composition root can arm it, because only the composition root knows
     /// whether this process is a restart — see [`crate::resume`].
     resume: Option<ResumeDiscipline>,
+    /// When each venue's feed was last heard, on this cell's own clock.
+    ///
+    /// Written by [`Cell::on_bytes`] and [`Cell::feed_heartbeat`] and by
+    /// nothing else. A venue absent here has never been heard and is not
+    /// judged silent: a book handed over by [`Cell::track`] with no feed
+    /// behind it has no silence to measure, and the gates that already
+    /// judge a book — presence, staleness, a usable mid — are the ones that
+    /// apply to it.
+    feed_heard: BTreeMap<VenueId, Timestamp>,
+    /// The venues currently journaled as silent, and the instant each was
+    /// last heard — so the incident is recorded once, not once per pass, and
+    /// the reconciliation entry can name where the blind interval began.
+    feed_silent: BTreeMap<VenueId, Timestamp>,
+    /// What each venue has done with the orders sent to it, when the
+    /// composition root armed the quarantine. `None` records nothing.
+    venue_health: Option<HealthTracker>,
+    /// The venues currently journaled as quarantined, and until when — the
+    /// same once-only bookkeeping as `feed_silent`.
+    quarantined: BTreeMap<VenueId, Timestamp>,
+    /// The streams holding messages behind a sequence gap, and the venue
+    /// each belongs to. A book at such a venue cannot be declared whole:
+    /// what is held may still be released into it, or abandoned over it.
+    /// Failed venues at which the cell has already said it cannot withdraw
+    /// what rests there, so it says so once per failure.
+    unwithdrawable: BTreeSet<VenueId>,
+    open_gaps: BTreeMap<String, VenueId>,
+    /// When each discarded book was discarded, keyed like the books are —
+    /// the start of the interval `BookResynchronised` closes.
+    unreliable_since: BTreeMap<(String, String), Timestamp>,
+}
+
+/// A book the cell will not price from until the feed handler rebuilds it
+/// with [`Cell::apply_snapshot`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotRequest {
+    pub venue: VenueId,
+    pub object_id: ObjectId,
+    /// Why the book was discarded, as the book itself records it.
+    pub reason: String,
 }
 
 /// How many reconciliation breaks a cell keeps for reporting.
@@ -1302,6 +1397,7 @@ impl Cell {
         let journal_pressure = config
             .journal_wire
             .then_some(JournalPressure::Exhausted(Exhaustion::NeverApplied));
+        let venue_health = config.venue_health.map(HealthTracker::new).transpose()?;
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
@@ -1343,6 +1439,13 @@ impl Cell {
             suspended: BTreeMap::new(),
             outlook: RegionOutlook::AllLit,
             resume: None,
+            feed_heard: BTreeMap::new(),
+            feed_silent: BTreeMap::new(),
+            venue_health,
+            quarantined: BTreeMap::new(),
+            unwithdrawable: BTreeSet::new(),
+            open_gaps: BTreeMap::new(),
+            unreliable_since: BTreeMap::new(),
             config,
         })
     }
@@ -3143,6 +3246,171 @@ impl Cell {
         );
 
         let batch = self.sequencer.accept(decoded, now);
+        self.absorb_sequenced(batch, Some(&feed.venue), now)?;
+        // Bytes that decoded are a feed that is connected. Recorded after
+        // the batch is applied, so a resumption that opened a gap is counted
+        // in the reconciliation entry as the stale book it left.
+        self.feed_heartbeat(&feed.venue, now);
+        Ok(count)
+    }
+
+    /// The feed handler's statement that `venue`'s feed is connected and
+    /// current as of `now`, whether or not anything changed.
+    ///
+    /// A feed that publishes only what moved says nothing in a quiet market,
+    /// and nothing is also what a dead feed says. The handler knows which it
+    /// is and the cell cannot, so the handler says so here; a venue whose
+    /// handler stops calling this — and stops delivering bytes — is silent
+    /// once [`CellConfig::max_staleness`] has passed, and every order bound
+    /// for it is refused under [`GATE_SILENT_FEED`].
+    ///
+    /// Hearing a venue that had been journaled silent records the
+    /// reconciliation entry for the interval: what the cell still had resting
+    /// there and how many of its books are still awaiting resynchronisation.
+    pub fn feed_heartbeat(&mut self, venue: &VenueId, now: Timestamp) {
+        self.feed_heard.insert(venue.clone(), now);
+        let Some(silent_from) = self.feed_silent.remove(venue) else {
+            return;
+        };
+        let resting_orders = self
+            .working
+            .values()
+            .filter(|working| working.order.closed.is_none() && working.order.venue == *venue)
+            .count();
+        let stale_books = self
+            .liquidity
+            .iter()
+            .filter(|state| state.venue() == venue && state.is_stale())
+            .count();
+        self.journal.record(
+            Decision::FeedReconciled {
+                venue: venue.as_str().to_string(),
+                silent_from,
+                resting_orders,
+                stale_books,
+            },
+            now,
+        );
+    }
+
+    /// Why no new order may go to `venue` right now, if its feed is silent
+    /// or it is quarantined: the gate to refuse under and the reason.
+    ///
+    /// The one predicate venue selection, the routing gates and cycle
+    /// admission all read, so the three cannot disagree about which venues
+    /// are withheld. Computed from the receipt times and the health record
+    /// themselves, never from the journaled sets, so a path that runs before
+    /// [`Self::review_venues`] has journaled the incident is refused all the
+    /// same.
+    fn venue_withheld(&self, venue: &VenueId, now: Timestamp) -> Option<(&'static str, String)> {
+        if let Some(heard) = self.feed_heard.get(venue) {
+            let age = now.since(*heard);
+            if age.as_nanos() > self.config.max_staleness.as_nanos() {
+                return Some((
+                    GATE_SILENT_FEED,
+                    format!(
+                        "the feed for {} has been silent for {} ms, past the {} ms a book may \
+                         go unrefreshed; its prices are from before the silence and nothing \
+                         is sent against them until the feed is heard again",
+                        venue.as_str(),
+                        age.as_millis(),
+                        self.config.max_staleness.as_millis()
+                    ),
+                ));
+            }
+        }
+        // The cell measures no acknowledgement latency, so the verdict is the
+        // reject-rate one alone; a zero typical latency charges nothing.
+        let assessment = self
+            .venue_health
+            .as_ref()?
+            .assess(venue, Duration::ZERO, now);
+        match assessment.verdict {
+            HealthVerdict::Quarantined { until, reason } => Some((
+                GATE_VENUE_QUARANTINE,
+                format!("{reason}; quarantined until {until}"),
+            )),
+            HealthVerdict::Healthy | HealthVerdict::Degraded { .. } => None,
+        }
+    }
+
+    /// Journal each venue's passage into silence or quarantine once, at the
+    /// first pass that finds it there.
+    ///
+    /// The refusals in `route_for` say why one order was not sent; a cell
+    /// with a second venue routes around the first and refuses nothing, so
+    /// without this the chain of a cell that quietly stopped using a venue
+    /// would not say that it had, or why. Run before the halt check: a
+    /// halted cell that loses a feed has still lost a feed.
+    fn review_venues(&mut self, now: Timestamp, report: &mut WorkReport) {
+        let limit = self.config.max_staleness;
+        let silent: Vec<(VenueId, Timestamp)> = self
+            .feed_heard
+            .iter()
+            .filter(|(venue, heard)| {
+                !self.feed_silent.contains_key(*venue)
+                    && now.since(**heard).as_nanos() > limit.as_nanos()
+            })
+            .map(|(venue, heard)| (venue.clone(), *heard))
+            .collect();
+        for (venue, last_heard) in silent {
+            self.journal.record(
+                Decision::FeedSilent {
+                    venue: venue.as_str().to_string(),
+                    last_heard,
+                    limit_ms: limit.as_millis(),
+                },
+                now,
+            );
+            self.feed_silent.insert(venue, last_heard);
+        }
+
+        let Some(health) = self.venue_health.as_ref() else {
+            return;
+        };
+        let mut entered: Vec<(VenueId, Timestamp, String)> = Vec::new();
+        let mut lapsed: Vec<VenueId> = Vec::new();
+        for venue in &self.config.venues {
+            match health.assess(venue, Duration::ZERO, now).verdict {
+                HealthVerdict::Quarantined { until, reason } => {
+                    if !self.quarantined.contains_key(venue) {
+                        entered.push((venue.clone(), until, reason));
+                    }
+                }
+                HealthVerdict::Healthy | HealthVerdict::Degraded { .. } => {
+                    if self.quarantined.contains_key(venue) {
+                        lapsed.push(venue.clone());
+                    }
+                }
+            }
+        }
+        for venue in lapsed {
+            self.quarantined.remove(&venue);
+        }
+        for (venue, until, reason) in entered {
+            self.refuse(
+                report,
+                GATE_VENUE_QUARANTINE,
+                &format!("{reason}; quarantined until {until}"),
+                now,
+            );
+            self.quarantined.insert(venue, until);
+        }
+    }
+
+    /// Apply what the sequencer released and journal what it observed.
+    ///
+    /// Shared by [`Self::on_bytes`] and the deadline poll at the top of
+    /// [`Self::work`], so a gap abandoned because time passed is handled
+    /// exactly as one abandoned because a message arrived. `venue` is the
+    /// feed the batch came from, known only on the `on_bytes` path, and is
+    /// what a newly opened gap is filed under.
+    fn absorb_sequenced(
+        &mut self,
+        batch: SequencedBatch,
+        venue: Option<&VenueId>,
+        now: Timestamp,
+    ) -> Result<()> {
         self.apply_batch(batch.released, now)?;
         for event in &batch.events {
             if let Some(detail) = gap_detail(event) {
@@ -3154,14 +3422,41 @@ impl Cell {
                     now,
                 );
             }
+            let stream = match event {
+                SequenceEvent::GapOpened { stream, .. }
+                | SequenceEvent::GapFilled { stream, .. }
+                | SequenceEvent::GapAbandoned { stream, .. } => stream,
+                SequenceEvent::StreamStarted { .. } | SequenceEvent::Duplicate { .. } => continue,
+            };
+            // Read from the tracker rather than inferred from the event: an
+            // abandoned gap can leave a second one open behind it without
+            // saying so.
+            let still_open = self
+                .sequencer
+                .tracker(stream)
+                .is_some_and(|tracker| tracker.has_open_gap());
+            if !still_open {
+                self.open_gaps.remove(stream);
+            } else if let Some(venue) = venue {
+                self.open_gaps
+                    .entry(stream.clone())
+                    .or_insert_with(|| venue.clone());
+            }
         }
-        Ok(count)
+        Ok(())
     }
 
     /// Apply released messages to books and the feature graph.
-    fn apply_batch(&mut self, messages: Vec<MarketMessage>, _now: Timestamp) -> Result<()> {
+    fn apply_batch(&mut self, messages: Vec<MarketMessage>, now: Timestamp) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
         for message in &messages {
             let venue = message.origin.venue.clone();
+            if let MessageBody::Reset { reason } = &message.body {
+                self.reset_venue_books(&venue, message, reason, now)?;
+                continue;
+            }
             if let Some(state) = self.liquidity.get_mut(&venue, &message.object_id) {
                 // A message the book refuses is a book that would be wrong if
                 // it accepted it; the refusal is recorded by the reset path,
@@ -3169,6 +3464,233 @@ impl Cell {
                 state.apply(message)?;
             }
             self.features.ingest(message)?;
+        }
+        // Judged once the whole batch is in, never between two messages of
+        // it: a venue moving up publishes the new bid before it withdraws
+        // the old ask, and a book read between the two is crossed by the
+        // order of the lines rather than by anything the venue did. An
+        // auction is excluded for the reason the venue state gives — an
+        // uncrossing book is expected to cross.
+        // ponytail: every book the cell holds is read once per batch, which
+        // is the node's sixty-four instruments at most. Collect the books a
+        // batch touched if a cell ever holds enough for this to show.
+        let crossed: Vec<(VenueId, ObjectId, String)> = self
+            .liquidity
+            .iter()
+            .filter(|state| {
+                !state.is_stale()
+                    && state.status() != VenueStatus::Auction
+                    && state.condition() == BookCondition::Crossed
+            })
+            .map(|state| {
+                let by = state
+                    .book()
+                    .crossed_by()
+                    .map_or_else(|| "an unmeasurable amount".to_string(), |by| by.to_string());
+                (
+                    state.venue().clone(),
+                    state.object_id().clone(),
+                    format!(
+                        "the book crossed by {by} while the venue is {}; a bid above the ask \
+                         is a corrupt book, not a price",
+                        state.status().as_str()
+                    ),
+                )
+            })
+            .collect();
+        for (venue, object_id, reason) in crossed {
+            if let Some(state) = self.liquidity.get_mut(&venue, &object_id) {
+                state.reset(reason.clone());
+            }
+            self.mark_unreliable(&venue, &object_id, &reason, now);
+        }
+        Ok(())
+    }
+
+    /// Discard every book this cell holds at `venue`, because the sequencer
+    /// gave up on a gap in that venue's stream.
+    ///
+    /// The sequencer's reset names no instrument — it carries an identifier
+    /// of its own, because the messages that would have said which books
+    /// were touched are the ones that were lost. Applied by instrument, as
+    /// every other message is, it therefore matched no book: the gap was
+    /// journaled as having reset the affected books and reset none, and the
+    /// cell went on pricing from depth it had just been told was wrong. So
+    /// the reset is fanned out here to each book at the venue and to that
+    /// instrument's features, under the instrument's own identifier.
+    // ponytail: every book at the venue, not only those on the gapped
+    // stream — books are keyed by venue and instrument, not by feed. Key
+    // them by stream if a venue ever carries feeds worth isolating.
+    fn reset_venue_books(
+        &mut self,
+        venue: &VenueId,
+        reset: &MarketMessage,
+        reason: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        let objects: Vec<ObjectId> = self
+            .liquidity
+            .iter()
+            .filter(|state| state.venue() == venue)
+            .map(|state| state.object_id().clone())
+            .collect();
+        for object_id in objects {
+            let message = MarketMessage::new(
+                object_id.clone(),
+                reset.origin.clone(),
+                MessageBody::Reset {
+                    reason: reason.to_string(),
+                },
+                reset.venue_time,
+                reset.capture_time,
+            );
+            if let Some(state) = self.liquidity.get_mut(venue, &object_id) {
+                state.apply(&message)?;
+            }
+            self.features.ingest(&message)?;
+            self.mark_unreliable(venue, &object_id, reason, now);
+        }
+        Ok(())
+    }
+
+    /// Journal one book's discard and remember when it happened.
+    fn mark_unreliable(
+        &mut self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        reason: &str,
+        now: Timestamp,
+    ) {
+        self.unreliable_since
+            .entry((venue.as_str().to_string(), object_id.as_str().to_string()))
+            .or_insert(now);
+        self.journal.record(
+            Decision::BookReset {
+                venue: venue.as_str().to_string(),
+                object: object_id.as_str().to_string(),
+                reason: reason.to_string(),
+            },
+            now,
+        );
+        if let Some(installed) = self.desk.as_mut() {
+            installed.desk.forget_books();
+        }
+    }
+
+    /// The books the cell is waiting on the feed handler to rebuild.
+    ///
+    /// The cell's request for a snapshot. It is a standing one — read every
+    /// pass by whatever owns the feed — because the cell does no I/O and so
+    /// cannot ask a venue for anything; what it can do is refuse to price
+    /// from the book, which it does, and say so here until it is answered.
+    pub fn snapshot_requests(&self) -> Vec<SnapshotRequest> {
+        self.liquidity
+            .iter()
+            .filter(|state| state.is_stale())
+            .map(|state| SnapshotRequest {
+                venue: state.venue().clone(),
+                object_id: state.object_id().clone(),
+                reason: state
+                    .reset_reason()
+                    .unwrap_or("the book is awaiting resynchronisation")
+                    .to_string(),
+            })
+            .collect()
+    }
+
+    /// Rebuild a discarded book from the venue's snapshot and price from it
+    /// again.
+    ///
+    /// `edits` is the whole book as book edits — level sets for an
+    /// aggregated book — and replaces whatever the cell held. Refused, and
+    /// the book left discarded, when:
+    ///
+    /// * a stream of this venue still has a gap open. Continuity has not
+    ///   been re-established: the messages held behind the gap will either
+    ///   be released into the rebuilt book or abandoned over it, and a book
+    ///   marked whole in between is whole by assertion.
+    /// * the cell holds no such book, or holds one it trusts — a snapshot
+    ///   over a trusted book would discard updates applied since it was cut.
+    /// * the snapshot is itself crossed outside an auction.
+    // ponytail: the snapshot is taken to be as of the stream's position.
+    // True of the in-process feed, which cuts it synchronously; a remote
+    // feed must carry the snapshot's sequence and drop older increments,
+    // and that check belongs here when one exists.
+    pub fn apply_snapshot(
+        &mut self,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        edits: &[MessageBody],
+        now: Timestamp,
+    ) -> Result<()> {
+        if let Some(stream) = self
+            .open_gaps
+            .iter()
+            .find(|(_, gapped)| *gapped == venue)
+            .map(|(stream, _)| stream.clone())
+        {
+            return Err(Error::invalid(format!(
+                "stream {stream} still has a sequence gap open, so the book for {object_id} at \
+                 {} cannot be declared whole: the messages held behind the gap have yet to be \
+                 released or abandoned. Apply the snapshot once the gap has closed",
+                venue.as_str()
+            )));
+        }
+        let Some(state) = self.liquidity.get_mut(venue, object_id) else {
+            return Err(Error::not_found(format!(
+                "the cell holds no book for {object_id} at {}, so there is nothing to rebuild; \
+                 track the instrument first",
+                venue.as_str()
+            )));
+        };
+        if !state.is_stale() {
+            return Err(Error::invalid(format!(
+                "the book for {object_id} at {} is not awaiting a snapshot; rebuilding a book \
+                 the cell trusts would discard the updates applied since the snapshot was cut. \
+                 Answer only what snapshot_requests names",
+                venue.as_str()
+            )));
+        }
+        state.book_mut().clear();
+        for body in edits {
+            state.book_mut().apply(body)?;
+        }
+        if state.status() != VenueStatus::Auction && state.condition() == BookCondition::Crossed {
+            state.book_mut().clear();
+            return Err(Error::invalid(format!(
+                "the snapshot for {object_id} at {} is itself crossed; the book stays discarded \
+                 until a snapshot that is a book arrives",
+                venue.as_str()
+            )));
+        }
+        state.resynchronised(now);
+        // The features were cleared with the book; they are rebuilt from the
+        // same edits, or they would describe the handful of increments that
+        // happened to arrive since rather than the book.
+        let origin = Origin::new(venue.clone(), "snapshot", 0, 0);
+        for body in edits {
+            self.features.ingest(&MarketMessage::new(
+                object_id.clone(),
+                origin.clone(),
+                body.clone(),
+                now,
+                now,
+            ))?;
+        }
+        let unreliable_from = self
+            .unreliable_since
+            .remove(&(venue.as_str().to_string(), object_id.as_str().to_string()));
+        self.journal.record(
+            Decision::BookResynchronised {
+                venue: venue.as_str().to_string(),
+                object: object_id.as_str().to_string(),
+                unreliable_from,
+                levels: edits.len(),
+            },
+            now,
+        );
+        if let Some(installed) = self.desk.as_mut() {
+            installed.desk.forget_books();
         }
         Ok(())
     }
@@ -3248,6 +3770,15 @@ impl Cell {
         // operator is looking for during somebody else's incident.
         self.record_dark_regions();
         self.record_awaiting_reconciliation();
+        // A gap's deadline, passed here because nothing else passes it. The
+        // sequencer abandons a gap on a clock it has to be handed, and until
+        // this line the cell handed it one only when a message arrived — so
+        // a feed that went quiet behind a gap kept its book, unmarked, for
+        // as long as it stayed quiet. Before the halt check: a halted cell's
+        // books go wrong like any other's.
+        let overdue = self.sequencer.poll(now);
+        self.absorb_sequenced(overdue, None, now)?;
+        self.review_venues(now, &mut report);
 
         self.record_halt();
 
@@ -3752,6 +4283,10 @@ impl Cell {
         };
         if stale {
             self.refuse(report, "stale_book", &reset_reason, now);
+            return None;
+        }
+        if let Some((gate, reason)) = self.venue_withheld(&venue, now) {
+            self.refuse(report, gate, &reason, now);
             return None;
         }
         if !status.accepts_orders() {
@@ -4295,9 +4830,19 @@ impl Cell {
         }
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
-        gateway.place(
+        let placed = gateway.place(
             &order_id, object_id, venue, side, quantity, price, release_at,
-        )?;
+        );
+        // The venue's answer, whichever it was, before the error leaves: a
+        // rejection the tracker never saw is a venue that can fail every
+        // pass and never be quarantined.
+        if let Some(health) = self.venue_health.as_mut() {
+            health.record_sent(venue);
+            if placed.is_err() {
+                health.record_reject(venue, now);
+            }
+        }
+        placed?;
         Ok((order_id, simulated))
     }
 
@@ -4562,19 +5107,74 @@ impl Cell {
         if self.is_halted() {
             return self.mass_cancel(gateway, now);
         }
+        // What rests at a venue whose feed has gone silent or that is
+        // quarantined is withdrawn too, on a cell that is otherwise running.
+        // Until this arm existed only a halt pulled an order early, so one
+        // venue's failure left its orders to be filled by a market the cell
+        // could no longer see while every other venue traded on.
+        let stranded = self.stranded_at_failed_venues(gateway.can_cancel(), now);
         let due: Vec<String> = self
             .working
             .values()
             .filter(|working| {
                 working.order.closed.is_none()
-                    && working
+                    && (working
                         .order
                         .expires_at
                         .is_some_and(|expires_at| expires_at <= now)
+                        || stranded.contains(&working.order.venue))
             })
             .map(|working| working.order.order_id.clone())
             .collect();
         self.withdraw_all(due, gateway, now)
+    }
+
+    /// The failed venues whose resting orders this pass should withdraw.
+    ///
+    /// Empty when the gateway has no cancel path — and then the cell says
+    /// so in the chain, once per failure, rather than withdrawing nothing
+    /// quietly or calling a cancel that can only come back as a
+    /// reconciliation break.
+    fn stranded_at_failed_venues(&mut self, can_cancel: bool, now: Timestamp) -> BTreeSet<VenueId> {
+        let mut resting: BTreeMap<VenueId, usize> = BTreeMap::new();
+        for working in self.working.values() {
+            if working.order.closed.is_none() {
+                *resting.entry(working.order.venue.clone()).or_insert(0) += 1;
+            }
+        }
+        let failed: BTreeMap<VenueId, (usize, String)> = resting
+            .into_iter()
+            .filter_map(|(venue, orders)| {
+                let (_, reason) = self.venue_withheld(&venue, now)?;
+                Some((venue, (orders, reason)))
+            })
+            .collect();
+        // A venue that has recovered, or been emptied, can fail again and
+        // be reported again.
+        self.unwithdrawable
+            .retain(|venue| failed.contains_key(venue));
+        if can_cancel {
+            return failed.into_keys().collect();
+        }
+        for (venue, (orders, reason)) in failed {
+            if !self.unwithdrawable.insert(venue.clone()) {
+                continue;
+            }
+            self.metrics.refusal(GATE_VENUE_WITHDRAWAL);
+            self.journal.record(
+                Decision::Refused {
+                    gate: GATE_VENUE_WITHDRAWAL.to_string(),
+                    reason: format!(
+                        "{orders} order(s) rest at {} and cannot be withdrawn: {reason}, and the \
+                         gateway this cell was handed has no cancel path to the venue. The \
+                         exposure stands until the venue closes those orders itself",
+                        venue.as_str()
+                    ),
+                },
+                now,
+            );
+        }
+        BTreeSet::new()
     }
 
     /// Withdraw every order this cell has resting, whatever its time to live
@@ -4649,6 +5249,14 @@ impl Cell {
                 .order
                 .expires_at
                 .is_some_and(|expires_at| expires_at <= now);
+            // The third cause. Only on a running cell: a halt pulls every
+            // order whatever its venue is doing, and that is the cause an
+            // operator needs to read for it.
+            let venue_failure = if expired || self.is_halted() {
+                None
+            } else {
+                self.venue_withheld(&venue, now).map(|(_, reason)| reason)
+            };
             // §29.2: a cancel is a message the venue's rate limit counts, and
             // it is drawn from the reserve placements may not spend. A cancel
             // the budget cannot fund leaves the order open and is journaled
@@ -4678,10 +5286,28 @@ impl Cell {
             match gateway.cancel(&order_id, &object_id, &venue, now) {
                 Ok(remaining) => {
                     if let Some(working) = self.working.get_mut(&order_id) {
-                        working.order.closed =
-                            Some(if expired { "expired" } else { "mass_cancel" }.to_string());
+                        working.order.closed = Some(
+                            if expired {
+                                "expired"
+                            } else if venue_failure.is_some() {
+                                "venue_failure"
+                            } else {
+                                "mass_cancel"
+                            }
+                            .to_string(),
+                        );
                     }
-                    if expired {
+                    if let Some(reason) = venue_failure {
+                        self.journal.record(
+                            Decision::VenueWithdrawn {
+                                order_id: order_id.clone(),
+                                venue: venue.as_str().to_string(),
+                                withdrawn: remaining.to_string(),
+                                reason,
+                            },
+                            now,
+                        );
+                    } else if expired {
                         self.journal.record(
                             Decision::OrderExpired {
                                 order_id: order_id.clone(),
@@ -6042,6 +6668,22 @@ impl Cell {
         // cannot be judged one member at a time.
         let proposed: Vec<Intent> = legs.into_iter().map(Into::into).collect();
         let venues: Vec<VenueId> = proposed.iter().map(|leg| leg.venue.clone()).collect();
+        // Before anything else is judged: a cycle with a leg at a venue the
+        // cell cannot see, or one that is rejecting orders, is refused whole.
+        // Sending the other legs would open the position the missing leg was
+        // there to close.
+        if let Some((gate, reason)) = venues
+            .iter()
+            .find_map(|venue| self.venue_withheld(venue, now))
+        {
+            self.refuse(
+                report,
+                gate,
+                &format!("cycle {cycle_id} is refused whole: {reason}"),
+                now,
+            );
+            return None;
+        }
         // §32.1, before a leg exists. A cycle is one position until its last
         // leg fills, so the spread between its venues' fill times is the
         // window the cell is exposed for and the unwind cost is whatever the
@@ -7907,6 +8549,13 @@ impl Cell {
                 fallback = Some(venue.clone());
             }
             if state.is_stale() || !state.status().accepts_orders() || state.mid().is_none() {
+                continue;
+            }
+            // A silent or quarantined venue is not a candidate, so flow goes
+            // to a venue the cell can still see and that still takes orders.
+            // It stays the fallback: with nowhere else to go, `route_for`
+            // refuses under the gate that says which of the two it was.
+            if self.venue_withheld(venue, now).is_some() {
                 continue;
             }
             let Some(spread) = state.spread() else {

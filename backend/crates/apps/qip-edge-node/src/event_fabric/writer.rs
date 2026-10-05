@@ -208,10 +208,15 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::Filled { .. }
         | Decision::OrderExpired { .. }
         | Decision::MassCancelled { .. }
+        | Decision::VenueWithdrawn { .. }
         | Decision::CrossedInternally { .. }
         | Decision::ReconciliationBreak { .. } => true,
         Decision::Ingested { .. }
         | Decision::GapDetected { .. }
+        | Decision::FeedSilent { .. }
+        | Decision::FeedReconciled { .. }
+        | Decision::BookReset { .. }
+        | Decision::BookResynchronised { .. }
         | Decision::SignalRaised { .. }
         | Decision::EdgePriced { .. }
         | Decision::Refused { .. }
