@@ -371,7 +371,8 @@ impl StorageProvider {
             )),
             StorageTarget::BigQuery => Err(Error::invalid(
                 "BigQuery has an adapter in this build, but a warehouse is neither a key-value \
-                 store nor a blob store: use qip_mesh::bigquery::BigQueryWarehouse directly, which \
+                 store nor a blob store: use `BigQueryWarehouse` in the qip-mesh crate's `bigquery` \
+                 module directly, which \
                  streams rows in and runs queries. BigQuery has no primary-key lookup and \
                  charges by bytes scanned, so a `get` per key would be a full scan per key",
             )),
