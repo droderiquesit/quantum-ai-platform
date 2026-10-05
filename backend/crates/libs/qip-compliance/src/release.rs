@@ -119,6 +119,70 @@ impl PromotionPolicy {
     }
 }
 
+/// Scanner severities, ordered so `>=` reads as "at or above".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Severity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// One scanner finding against one artifact.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finding {
+    pub id: String,
+    pub severity: Severity,
+    /// Whether a fixed version exists. The pipeline's scans run with
+    /// `--ignore-unfixed`, so an unfixed finding is reported, not blocking.
+    pub fix_available: bool,
+}
+
+/// The severity policy behind the security gate (CICD-017): a fixable finding
+/// at or above `blocking` stops promotion. Without a stated threshold the
+/// scanner's `--severity CRITICAL,HIGH` flag is the only record of it, and a
+/// gate that cannot be shown to refuse at the line and admit below it is
+/// indistinguishable from one that refuses everything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeverityPolicy {
+    blocking: Severity,
+}
+
+impl Default for SeverityPolicy {
+    /// HIGH, matching the `trivy --severity CRITICAL,HIGH` steps in `ci.yml`
+    /// and `deploy.yml`.
+    fn default() -> Self {
+        Self {
+            blocking: Severity::High,
+        }
+    }
+}
+
+impl SeverityPolicy {
+    pub fn new(blocking: Severity) -> Self {
+        Self { blocking }
+    }
+
+    /// Refuse if any fixable finding is at or above the blocking severity,
+    /// naming each so the operator upgrades them in one pass.
+    pub fn admit(&self, findings: &[Finding]) -> Result<()> {
+        let blocking: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.fix_available && f.severity >= self.blocking)
+            .map(|f| f.id.as_str())
+            .collect();
+        if blocking.is_empty() {
+            return Ok(());
+        }
+        Err(Error::denied(format!(
+            "promotion blocked by fixable findings at or above {:?}: [{}]; upgrade the affected \
+             packages and rescan the same artifact",
+            self.blocking,
+            blocking.join(", ")
+        )))
+    }
+}
+
 /// A runbook: a named action and the body a person reviewed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Runbook {

@@ -349,21 +349,22 @@
   },
   {
     "id": "CICD-084",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "Structurally guaranteed by per-environment GCP-project isolation: modules/secrets creates dev's 16 empty secret containers inside the algorik-dev project only, and no other environment's project has ever been created (test/stage/prod all carry project_id='unprovisioned'), so there is no production secret anywhere that could reach dev.",
     "evidence": [
       "infrastructure/terraform/modules/secrets/main.tf:121 (per-project secret containers)",
-      "infrastructure/environments/test/terraform.tfvars:14, stage/terraform.tfvars:14, prod/terraform.tfvars:16-17 (project_id='unprovisioned')"
+      "infrastructure/environments/test/terraform.tfvars:14, stage/terraform.tfvars:14, prod/terraform.tfvars:16-17 (project_id='unprovisioned')",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project"
     ],
-    "gap": "No test asserts 'no dev secret is a version of, or grants access equivalent to, a prod secret' — the guarantee currently holds only because prod has never been provisioned, not because a check would catch it if it were.",
+    "gap": "Static check on the Terraform and tfvars; no real prod project exists to inspect (all non-dev environments are unprovisioned).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "none exists",
+    "verification": "cargo test -p qip-acceptance --test infrastructure dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project (mutation-verified twice: test tfvars pointed at dev's project fails the uniqueness assertion; dropping the environment suffix from secret_id fails the suffix assertion; both restored)",
     "work_item": "E14",
     "tier": "T2",
     "size": "S",
