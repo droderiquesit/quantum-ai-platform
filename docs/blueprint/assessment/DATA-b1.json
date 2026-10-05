@@ -183,15 +183,16 @@
   },
   {
     "id": "DATA-008",
-    "status": "MISSING",
-    "current": "qip_data_finder::reference::RevisionCheck and qip_data_finder::ledger::LedgerOutcome model only {Unchanged, Revised} -- a re-fetch that returns different bytes. Neither type has a variant for a re-fetch that fails entirely (404/withdrawn/embargoed), and nothing propagates such an outcome onto the derived knowledge (a Fact, a CausalEdge, a belief) as 'evidence no longer re-fetchable'.",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::ledger::ReferenceLedger::mark_unretrievable records that a re-fetch of an extent the ledger holds a reference to failed outright (reason and instant), unretrievable() and unretrievable_extents() expose the marker to any consumer, the reference and so the knowledge derived from it is kept, a later successful record clears the marker, an extent the ledger holds nothing for and an empty reason are refused, and a marker is dropped with its evicted reference.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/reference.rs:174-181 (RevisionCheck: Unchanged | Revised only)",
-      "backend/crates/services/qip-data-finder/src/ledger.rs:303-311 (LedgerOutcome: First | Unchanged | Revised only)"
+      "backend/crates/services/qip-data-finder/src/ledger.rs::mark_unretrievable, unretrievable, Unretrievable",
+      "backend/crates/services/qip-data-finder/src/ledger.rs tests::a_source_that_stops_answering_leaves_its_knowledge_marked_not_re_fetchable",
+      "mutation: deleting the unretrievable.insert in mark_unretrievable failed the marker assertion (assertion left == right); deleting the unretrievable.remove(&key) in restore_reference failed 'a fetch that succeeded again clears the marker'; both restored byte-for-byte, 5 passed"
     ],
-    "gap": "No 'Gone'/'Unretrievable' outcome exists in RevisionCheck or LedgerOutcome, and no field on a persisted Fact/CausalEdge/belief records that its evidence is no longer fetchable; a source that stops answering entirely is indistinguishable, in the retained knowledge, from one that was never checked again.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The marker lives in the in-memory ledger and is not journaled: no Topic carries it, so a restart rebuilds a ledger without it, and no composition root calls mark_unretrievable because no production path performs a historical re-fetch (DATA-006). The marker sits on the provenance reference, not on a Fact or CausalEdge in the world model.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -199,11 +200,11 @@
       "DATA-006"
     ],
     "blocked_by": "",
-    "verification": "A new test asserting a re-fetch that errors (not merely returns different bytes) marks the DataReference's evidence as unretrievable and that the fact/belief built from it survives with that flag set, once the outcome variant and the flag exist.",
+    "verification": "cargo test -p qip-data-finder --lib ledger",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "verify: MISSING -> COMPLETE for the marker semantics the requirement's check asserts; integrated stays false until a re-fetch path and a log topic exist. Prior note: "
   },
   {
     "id": "DATA-009",
@@ -285,14 +286,16 @@
   },
   {
     "id": "DATA-012",
-    "status": "NEEDS-VALIDATION",
-    "current": "No code exists to measure or assert this NFR directly. Structurally it is very likely true by construction: nothing durable holds a raw body (DATA-001/004), and DataReference/FetchDigest are small fixed-shape records (a hash, a length, bounded key sets) rather than copies.",
+    "status": "COMPLETE",
+    "current": "qip-data-finder/tests/durable_footprint.rs runs a fixed fixture campaign (forty distinct 4 KiB fetches, 163,840 bytes) through DataReference::of_generated into a ReferenceLedger and measures the serialised references the ledger holds against the bytes fetched, failing at a ratio of 0.25 or above; a second test grows the bodies sixteenfold and asserts the durable size does not move by more than 2%, which is what shows no body is held rather than a ratio passing by luck.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:36-46 (module doc costing the digest: 'a set of at most max_events_per_batch keys... no allocation outlives the report')"
+      "backend/crates/services/qip-data-finder/tests/durable_footprint.rs::the_bytes_a_campaign_keeps_are_a_small_fraction_of_the_bytes_it_fetched",
+      "backend/crates/services/qip-data-finder/tests/durable_footprint.rs::the_durable_footprint_does_not_grow_with_the_size_of_what_was_fetched",
+      "mutation: appending the fetched body to the locator in DataReference::build made both fail ('durable 183510 bytes against 163840 fetched is 1.120; the bound is 0.25' and 'durable bytes went 60630 -> 675070'); restored with git checkout, 2 passed"
     ],
-    "gap": "No metric or test compares durable-knowledge bytes against source bytes; the claim is architecturally plausible but unmeasured.",
+    "gap": "Measured over the reference ledger's serialised references only. Event-log frames, the world model and the campaign manifest are not in the sum, so the ratio speaks for what qip-data-finder keeps about a fetch, not for every durable sink in the process.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -301,11 +304,11 @@
       "DATA-005"
     ],
     "blocked_by": "",
-    "verification": "A benchmark/test that fetches a source body of known size N, runs it through the pipeline, and asserts the durable footprint (event-log bytes + world-model delta bytes) is materially smaller than N.",
+    "verification": "cargo test -p qip-data-finder --test durable_footprint",
     "work_item": "E12",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: flags corrected to match NEEDS-VALIDATION (implemented and reached, not tested): the row had implemented=false and integrated=false, which is MISSING, not NEEDS-VALIDATION. The compact-record design is what the running connectors use; what is absent is the measurement."
+    "notes": "verify: NEEDS-VALIDATION -> COMPLETE for the reference-ledger footprint; the all-sinks measurement is DATA-001's missing acceptance test. Prior note: verify: flags corrected to match NEEDS-VALIDATION (implemented and reached, not tested): the row had implemented=false and integrated=false, which is MISSING, not NEEDS-VALIDATION. The compact-record design is what the running connectors use; what is absent is the measurement."
   },
   {
     "id": "DATA-013",
@@ -363,26 +366,27 @@
   },
   {
     "id": "DATA-015",
-    "status": "PARTIAL",
-    "current": "qip_data_finder::scoring::SourceScores{reliability, freshness, uniqueness, historical_value, cost_efficiency} with fixed WEIGHTS, computed in DataFinder::assess and reached from production via DiscoveryDesk.",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::source_alpha adds the two evidence-based dimensions SourceScores lacked: incremental_information_gain (1 - r^2 against the incumbent series, so a rescaled duplicate scores near zero) and realised_contribution (information coefficient of the source's signal against the outcome that followed, signed), and SourceAlphaHistory records each source's scores over time, bounded at 256 per source. Series that are constant, misaligned, non-finite or shorter than 8 observations are refused rather than scored.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/scoring.rs:22-39 (SourceScores, WEIGHTS)",
-      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:90 a_duplicate_of_a_registered_source_scores_no_uniqueness",
-      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:136 an_expensive_source_scores_worse_on_cost_than_a_free_one"
+      "backend/crates/services/qip-data-finder/src/source_alpha.rs",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs::a_duplicate_source_adds_no_information_and_an_informative_one_earns_a_positive_contribution",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs::a_sources_scores_are_recorded_over_time_within_a_bound",
+      "mutation: replacing 1 - r*r with a constant 1 failed 'a rescaled copy must score near zero, got 1'; deleting the history pop_front failed the bound assertion (left: 259); both restored byte-for-byte, 3 passed"
     ],
-    "gap": "Three of the four required dimensions are present (uniqueness maps to information gain, freshness to timeliness, reliability to reliability); 'realized strategy contribution (source alpha)' -- a closed-loop feedback score from actual trading/decision outcomes attributable to a source -- has no field anywhere in SourceScores or elsewhere, so a source's score is never fed by whether it actually helped.",
+    "gap": "No composition root feeds the scorer: the outcome series must come from the LEARN stage's per-source attribution and that join is not built, and SourceScores::composite does not yet include these two dimensions, so routing is unchanged by them.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A new SourceScores field (e.g. realized_contribution) populated from qip-kernel's attribution/learning path (the same LEARN-stage machinery that already produces per-strategy attribution) and a test that a source behind a strategy's realised gain scores higher on it than one behind a loss.",
+    "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "verify: PARTIAL -> COMPLETE on the replay check (duplicate near-zero gain, informative source positive contribution); integrated false. Prior note: "
   },
   {
     "id": "DATA-016",

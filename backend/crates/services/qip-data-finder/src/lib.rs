@@ -93,6 +93,7 @@ pub mod robots;
 pub mod schema;
 pub mod scoring;
 pub mod source;
+pub mod source_alpha;
 pub mod tier;
 
 pub use admission::AdmittedSource;
@@ -115,7 +116,7 @@ pub use endpoint::{
 pub use finder::{DataFinder, FinderConfig, MonitorOutcome};
 pub use health::{HealthObservation, ObservationOutcome, SourceHealth};
 pub use ingestion::{IngestionPlan, descriptor_for, plan_for};
-pub use ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord};
+pub use ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord, Unretrievable};
 pub use legal::{
     HostRules, LegalAssessment, Legality, LicensingPosture, RateLimit, SourceLicense, SourcePolicy,
 };
