@@ -35,12 +35,13 @@ use qip_arbitrage::scan::{Opportunity, RejectionStage};
 use qip_contracts::capital::{CapitalGrant, Utilisation};
 use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
-use qip_contracts::message::{BookSide, MarketMessage};
+use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::Dispositions;
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
+use qip_feature_dag::definition::FeatureDefinition;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_orderbook::venue::VenueState;
 use qip_protocols::registry::{FeedKey, ProtocolRegistry};
@@ -932,7 +933,8 @@ pub struct OpenOrder {
     pub side: BookSide,
     /// What was sent.
     pub quantity: Decimal,
-    /// The limit it was sent with.
+    /// The limit it rests at: the one it was sent with, until a requote
+    /// re-sends its remainder at another ([`Cell::record_replacement`]).
     pub price: Decimal,
     /// What the venue has reported traded, summed over every report.
     pub filled: Decimal,
@@ -985,6 +987,17 @@ struct Working {
 /// could not attribute a fill on; the refusal is counted and journaled like
 /// every other, so a cell that stopped for this reason says so.
 pub const MAX_OPEN_ORDERS: usize = 256;
+
+/// How many feature nodes a cell's engine will hold.
+///
+/// Every pass evaluates what is dirty in the engine, so the engine's size is
+/// a term in the pass's cost and the memory of every series a feature keeps.
+/// Features arrive with the strategies a plan names
+/// ([`Cell::register_features`]) and a withdrawn strategy's features stay, so
+/// without a bound a cell that ran for weeks under a churning plan would
+/// grow with every instrument any plan had ever named. A registration that
+/// would pass the bound is refused whole.
+pub const MAX_FEATURE_NODES: usize = 1_024;
 
 /// How a strategy's intents are priced when they reach a venue.
 ///
@@ -1076,6 +1089,13 @@ pub struct Cell {
     config: CellConfig,
     protocols: ProtocolRegistry,
     sequencer: Sequencer,
+    /// The narrowing the journal last stated: what the latest
+    /// `PolicyApplied` named, or what a later `DegradationChanged` did.
+    /// Compared on every pass so a payload that ages into staleness with no
+    /// successor is sealed once, at the pass that first sized under it,
+    /// rather than never. Starts as the nothing-known reading, because a
+    /// chain with no `PolicyApplied` in it already says exactly that.
+    journaled_narrowing: Vec<String>,
     liquidity: CellLiquidity,
     features: FeatureEngine,
     deployed: BTreeMap<String, Deployed>,
@@ -1305,6 +1325,7 @@ impl Cell {
         Ok(Self {
             protocols: ProtocolRegistry::new(),
             sequencer: Sequencer::new(ReorderPolicy::default()),
+            journaled_narrowing: narrowed_names(&DegradationState::nothing_known()),
             liquidity: CellLiquidity::new(),
             features,
             deployed: BTreeMap::new(),
@@ -2410,6 +2431,7 @@ impl Cell {
             })
             .collect();
 
+        self.journaled_narrowing.clone_from(&narrowed);
         self.journal.record(
             Decision::PolicyApplied {
                 sequence: verified.sequence(),
@@ -2518,6 +2540,7 @@ impl Cell {
             })
             .collect();
         let sequence = previous.sequence();
+        self.journaled_narrowing.clone_from(&narrowed);
         // The record names the sequence now serving, so the journal's last
         // `policy_applied` is the package decisions are made under.
         self.journal.record(
@@ -2796,6 +2819,51 @@ impl Cell {
         if let Some(installed) = self.desk.as_mut() {
             installed.desk.forget_books();
         }
+    }
+
+    /// Register feature definitions into the engine this cell evaluates.
+    ///
+    /// The seam a composition root gives a strategy its inputs through. A
+    /// cell is constructed with an engine, and until this existed nothing
+    /// could add to it afterwards — so the node, which does not know at
+    /// start-up which instruments its plan will name, ran every pass against
+    /// an engine holding nothing: a strategy reading a computed feature
+    /// compiled, deployed, and never fired, because the value it read was
+    /// never computed. Two registrations of one key are one node, so
+    /// redeploying a strategy registers nothing new.
+    ///
+    /// Bounded by [`MAX_FEATURE_NODES`], checked before anything is
+    /// registered so a refused batch leaves the graph as it was. Returns how
+    /// many nodes the batch added.
+    pub fn register_features(
+        &mut self,
+        definitions: Vec<Box<dyn FeatureDefinition>>,
+    ) -> Result<usize> {
+        let before = self.features.graph().len();
+        let fresh: BTreeSet<String> = definitions
+            .iter()
+            .map(|definition| definition.key())
+            .filter(|key| !self.features.graph().is_defined(key))
+            .map(|key| key.canonical())
+            .collect();
+        if before.saturating_add(fresh.len()) > MAX_FEATURE_NODES {
+            return Err(Error::guard(format!(
+                "registering {} more feature(s) would take this cell's engine past the \
+                 {MAX_FEATURE_NODES} it evaluates per pass ({before} registered); withdraw a \
+                 strategy on another instrument, or split the plan across cells",
+                fresh.len()
+            )));
+        }
+        for definition in definitions {
+            self.features.register(definition)?;
+        }
+        Ok(self.features.graph().len().saturating_sub(before))
+    }
+
+    /// The feature engine, for reading what is registered and what it last
+    /// computed.
+    pub fn features(&self) -> &FeatureEngine {
+        &self.features
     }
 
     /// Deploy a strategy, the program its plan indexes into, and the verified
@@ -3142,9 +3210,57 @@ impl Cell {
             now,
         );
 
+        // A hole whose deadline has passed is given up on before anything
+        // newer is accepted, so the reset reaches the books ahead of the
+        // messages that were held behind it.
+        self.expire_sequence_gaps(now)?;
         let batch = self.sequencer.accept(decoded, now);
+        self.apply_sequenced(batch, now)?;
+        Ok(count)
+    }
+
+    /// Give up on every sequence gap whose deadline has passed.
+    ///
+    /// The sequencer abandons a gap on a deadline only when it is told the
+    /// time, and until this existed nothing in the cell told it: a stream
+    /// that lost a message and then went quiet held everything behind the
+    /// hole for ever, and the cell went on pricing off the book as it stood
+    /// before the loss — a book with a silent hole in it, which is the one
+    /// failure sequencing exists to prevent. Called from [`Cell::on_bytes`]
+    /// before newer bytes are accepted and from [`Cell::work`] before
+    /// anything reads a book, so a feed that has stopped talking is still
+    /// judged on every pass.
+    fn expire_sequence_gaps(&mut self, now: Timestamp) -> Result<()> {
+        let batch = self.sequencer.poll(now);
+        if batch.is_empty() {
+            return Ok(());
+        }
+        self.apply_sequenced(batch, now)
+    }
+
+    /// Apply what the sequencer released and journal what it observed.
+    ///
+    /// Every observation but a stream's first message is recorded, each
+    /// under its own leading word — `gap`, `reorder`, `duplicate`,
+    /// `abandoned` — so a reader counts the kinds without parsing a
+    /// sentence. Duplicates are summed per stream per call rather than
+    /// journaled one by one: a redundant line delivers every message twice,
+    /// and an entry for each would double the journal at feed rate to say
+    /// one thing.
+    fn apply_sequenced(
+        &mut self,
+        batch: qip_sequencing::tracker::SequencedBatch,
+        now: Timestamp,
+    ) -> Result<()> {
+        use qip_sequencing::tracker::SequenceEvent;
         self.apply_batch(batch.released, now)?;
+        let mut duplicates: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         for event in &batch.events {
+            if let SequenceEvent::Duplicate { stream, sequence } = event {
+                let seen = duplicates.entry(stream.clone()).or_insert((*sequence, 0));
+                seen.1 = seen.1.saturating_add(1);
+                continue;
+            }
             if let Some(detail) = gap_detail(event) {
                 self.journal.record(
                     Decision::GapDetected {
@@ -3155,12 +3271,28 @@ impl Cell {
                 );
             }
         }
-        Ok(count)
+        for (stream, (first, count)) in duplicates {
+            self.journal.record(
+                Decision::GapDetected {
+                    stream,
+                    detail: format!(
+                        "duplicate: {count} delivery unit(s) arrived again, the first at \
+                         sequence {first}; each was already applied or held and is applied once"
+                    ),
+                },
+                now,
+            );
+        }
+        Ok(())
     }
 
     /// Apply released messages to books and the feature graph.
     fn apply_batch(&mut self, messages: Vec<MarketMessage>, _now: Timestamp) -> Result<()> {
         for message in &messages {
+            if let MessageBody::Reset { reason } = &message.body {
+                self.reset_venue(message, reason)?;
+                continue;
+            }
             let venue = message.origin.venue.clone();
             if let Some(state) = self.liquidity.get_mut(&venue, &message.object_id) {
                 // A message the book refuses is a book that would be wrong if
@@ -3169,6 +3301,45 @@ impl Cell {
                 state.apply(message)?;
             }
             self.features.ingest(message)?;
+        }
+        Ok(())
+    }
+
+    /// Carry a stream's reset to every book that stream could have fed.
+    ///
+    /// The sequencer's reset names the stream and not an instrument — the
+    /// venue sent nothing, so its identifier is derived — and the lookup
+    /// above is by instrument. Until this existed that lookup found no book,
+    /// the reset reached nothing, and the messages held behind an abandoned
+    /// gap were then applied to books that still carried everything from
+    /// before the hole: the journal said "the affected books are reset" and
+    /// no book was. Every book at the venue is reset rather than the ones
+    /// the lost sequences touched, because which those were is exactly what
+    /// was lost. A reset book answers nothing until its feed has replayed a
+    /// snapshot, so the cell refuses under its `book` gate rather than
+    /// pricing off the remainder.
+    fn reset_venue(&mut self, message: &MarketMessage, reason: &str) -> Result<()> {
+        let venue = &message.origin.venue;
+        let objects: Vec<ObjectId> = self
+            .liquidity
+            .iter()
+            .filter(|state| state.venue() == venue)
+            .map(|state| state.object_id().clone())
+            .collect();
+        for object_id in objects {
+            let reset = MarketMessage::new(
+                object_id.clone(),
+                message.origin.clone(),
+                MessageBody::Reset {
+                    reason: reason.to_string(),
+                },
+                message.venue_time,
+                message.capture_time,
+            );
+            if let Some(state) = self.liquidity.get_mut(venue, &object_id) {
+                state.apply(&reset)?;
+            }
+            self.features.ingest(&reset)?;
         }
         Ok(())
     }
@@ -3250,6 +3421,12 @@ impl Cell {
         self.record_awaiting_reconciliation();
 
         self.record_halt();
+
+        // A feed that lost a message and then stopped talking: the gap's
+        // deadline is judged here, before anything below reads a book and
+        // before the halt check, because a halted cell's books keep
+        // absorbing and a stale book is a fact whichever halt is in force.
+        self.expire_sequence_gaps(now)?;
 
         // What the venue has done with the orders already out, before the
         // halt check: a halted cell sends nothing, and still has to learn
@@ -3347,6 +3524,26 @@ impl Cell {
         // cell actually sized against. Before this the whole table was
         // formatted into a journal string and discarded.
         self.metrics.narrowing(&narrowing);
+        // And the chain, when the reading has moved since the chain last
+        // stated it. A payload's slots age on the cell's own clock, so a cell
+        // whose centre has gone quiet narrows with no payload arriving — and
+        // `PolicyApplied` is written only when one does. Until this entry
+        // the only record that a cell had started sizing at half was a gauge;
+        // the journal showed the last payload as fresh and then smaller
+        // orders, with nothing between to say why. Once per change, not once
+        // per pass: the entry is the transition.
+        let narrowed = narrowed_names(&narrowing);
+        if narrowed != self.journaled_narrowing {
+            self.journal.record(
+                Decision::DegradationChanged {
+                    sequence: self.policy_sequence(),
+                    narrowed: narrowed.clone(),
+                    sizing_multiplier: narrowing.sizing_multiplier().to_string(),
+                },
+                now,
+            );
+            self.journaled_narrowing = narrowed;
+        }
 
         // Phase one collects; phase two nets; phase three sends. The split is
         // the blueprint's, and §28 is why the per-strategy gates stay in phase
@@ -8481,6 +8678,69 @@ impl Cell {
         admission
     }
 
+    /// Seal a requote's first half: the venue acknowledged withdrawing the
+    /// order the cell holds as `order_id`.
+    ///
+    /// A requote happens beneath the cell's placer seam, and until this
+    /// existed it left nothing in the chain: the cancel, its
+    /// acknowledgement and the replacement were a line on stderr and a
+    /// counter. The withdrawal is recorded on its own, before anything is
+    /// known about a replacement, because the case that most needs a record
+    /// is the one where none follows — an order the cell still holds open
+    /// that no venue holds at all.
+    pub fn record_requote_withdrawal(
+        &mut self,
+        order_id: &str,
+        venue: &VenueId,
+        withdrawn: &str,
+        acknowledged: Decimal,
+        now: Timestamp,
+    ) {
+        self.journal.record(
+            Decision::RequoteWithdrawn {
+                order_id: order_id.to_string(),
+                venue: venue.as_str().to_string(),
+                withdrawn: withdrawn.to_string(),
+                acknowledged: acknowledged.to_string(),
+            },
+            now,
+        );
+    }
+
+    /// Seal a requote's second half, and move the open order to where it
+    /// now rests.
+    ///
+    /// The venue accepted `quantity` at `price` under `replacement`. The
+    /// cell keeps its one id for the intention; what changes is the limit,
+    /// which [`OpenOrder::price`] reports from here on. Left at the limit
+    /// the order was first sent with, the cell's own account of its resting
+    /// orders named a price nothing rested at, and whatever ranked them by
+    /// how far behind the touch they were ranked a just-replaced order as
+    /// the furthest behind.
+    pub fn record_replacement(
+        &mut self,
+        order_id: &str,
+        venue: &VenueId,
+        replacement: &str,
+        quantity: Decimal,
+        price: Decimal,
+        now: Timestamp,
+    ) {
+        if let Some(working) = self.working.get_mut(order_id) {
+            working.order.price = price;
+        }
+        self.journal.record(
+            Decision::OrderReplaced {
+                order_id: order_id.to_string(),
+                venue: venue.as_str().to_string(),
+                replacement: replacement.to_string(),
+                quantity: quantity.to_string(),
+                price: price.to_string(),
+            },
+            now,
+        );
+    }
+
     /// What each venue's fill-time history holds, in venue order (§32.1).
     pub fn fill_times(&self) -> Vec<crate::dispersion::VenueFillTimeState> {
         self.fill_times.summary()
@@ -8924,11 +9184,28 @@ pub trait Placer: std::fmt::Debug {
     }
 }
 
+/// Every capability a reading leaves less than fresh, as the journal names
+/// them: `capability:freshness`, in the table's own order.
+fn narrowed_names(state: &DegradationState) -> Vec<String> {
+    state
+        .narrowed()
+        .iter()
+        .map(|(capability, freshness)| format!("{}:{}", capability.as_str(), freshness.as_str()))
+        .collect()
+}
+
 /// The gap events worth journalling, and what to say about each.
 ///
 /// An opened gap may still fill, so it is recorded as an observation. An
 /// abandoned one has already produced a reset and invalidated a book, which is
-/// the event an incident review is looking for.
+/// the event an incident review is looking for. A hole that filled is
+/// recorded too, as the reorder it turned out to be: without it a journal
+/// that says a gap opened never says whether the cell traded through it or
+/// recovered, and the two are different mornings. Each detail leads with its
+/// own word so the kinds can be counted without reading the sentence.
+///
+/// A duplicate answers `None` here because [`Cell::apply_sequenced`] sums
+/// them per stream rather than recording each.
 fn gap_detail(event: &qip_sequencing::tracker::SequenceEvent) -> Option<(String, String)> {
     use qip_sequencing::tracker::SequenceEvent;
     match event {
@@ -8938,7 +9215,19 @@ fn gap_detail(event: &qip_sequencing::tracker::SequenceEvent) -> Option<(String,
             missing_to,
         } => Some((
             stream.clone(),
-            format!("sequences {missing_from}..={missing_to} are missing; holding for reorder"),
+            format!(
+                "gap: sequences {missing_from}..={missing_to} are missing; holding for reorder"
+            ),
+        )),
+        SequenceEvent::GapFilled {
+            stream,
+            recovered_through,
+        } => Some((
+            stream.clone(),
+            format!(
+                "reorder: the missing sequences arrived late and everything held was released \
+                 in sequence order through {recovered_through}"
+            ),
         )),
         SequenceEvent::GapAbandoned {
             stream,
@@ -8948,13 +9237,11 @@ fn gap_detail(event: &qip_sequencing::tracker::SequenceEvent) -> Option<(String,
         } => Some((
             stream.clone(),
             format!(
-                "sequences {missing_from}..={missing_to} will not arrive ({reason:?}); \
-                 the affected books are reset"
+                "abandoned: sequences {missing_from}..={missing_to} will not arrive \
+                 ({reason:?}); every book at the venue is reset and awaits a snapshot"
             ),
         )),
-        SequenceEvent::StreamStarted { .. }
-        | SequenceEvent::Duplicate { .. }
-        | SequenceEvent::GapFilled { .. } => None,
+        SequenceEvent::StreamStarted { .. } | SequenceEvent::Duplicate { .. } => None,
     }
 }
 

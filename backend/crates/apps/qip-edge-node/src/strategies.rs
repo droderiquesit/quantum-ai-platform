@@ -52,6 +52,7 @@ use qip_core::hash::sha256_hex;
 use qip_core::{Duration, Timestamp};
 use qip_edge::cell::{Cell, PricingPolicy};
 use qip_edge::envelope::VerifiedEnvelope;
+use qip_feature_dag::features::standard_suite;
 use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::StrategySpec;
@@ -490,6 +491,23 @@ impl StrategyInstaller {
                     continue;
                 }
             };
+            // The suite the strategy was compiled against, registered into
+            // the engine it will be evaluated against — the same call to
+            // `standard_suite` that built the compiler's catalogue, so the
+            // two cannot name different vocabularies. Until this line the
+            // node's engine held nothing: `main.rs` builds it empty because
+            // it does not know at start-up which instruments a plan will
+            // name, and nothing registered into it afterwards, so a strategy
+            // reading a computed feature compiled, deployed and never fired.
+            // Before the deployment rather than after, so a strategy the
+            // engine has no room for is refused by name instead of deployed
+            // deaf.
+            if let Err(error) = cell.register_features(standard_suite(&spec.subject)) {
+                outcome
+                    .refused
+                    .push((strategy.clone(), error.message().to_string()));
+                continue;
+            }
             match cell.deploy_with_pricing(compiled, program, envelope, pricing) {
                 Ok(()) => {
                     // Spent: the cell holds it now, and `renew_capital`

@@ -896,3 +896,66 @@ fn a_policy_payload_verifies_only_with_the_right_key_cell_and_bytes() -> Result<
     );
     Ok(())
 }
+
+/// `Cell::register_features` is how a strategy's inputs reach the engine
+/// after the cell is built, and every pass evaluates what the engine holds.
+/// A withdrawn strategy's features stay, so without the bound a cell under a
+/// churning plan grows by eleven nodes for every instrument any plan ever
+/// named. The refusal is whole: a batch that half-registered would leave a
+/// strategy reading some of its inputs and not others.
+#[test]
+fn a_feature_registration_past_the_engines_bound_is_refused_whole_and_one_inside_it_is_admitted()
+-> Result<()> {
+    use qip_edge::cell::{Cell, CellConfig, MAX_FEATURE_NODES};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::features::standard_suite;
+    use qip_feature_dag::state::MarketState;
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+    assert!(
+        cell.features().graph().is_empty(),
+        "the premise is an empty engine"
+    );
+
+    // Fill the engine with whole suites until one more would not fit.
+    let suite = standard_suite(&object("FILL-0")).len();
+    assert!(suite > 1, "the premise is a suite of several features");
+    let fits = MAX_FEATURE_NODES / suite;
+    for index in 0..fits {
+        let added = cell.register_features(standard_suite(&object(&format!("FILL-{index}"))))?;
+        assert_eq!(added, suite, "suite {index} did not register whole");
+    }
+    let held = cell.features().graph().len();
+    assert_eq!(held, fits * suite);
+    assert!(
+        held + suite > MAX_FEATURE_NODES,
+        "the premise is an engine one suite short of its bound"
+    );
+
+    // One more instrument: refused, by name, and nothing of it registered.
+    let error = cell
+        .register_features(standard_suite(&object("ONE-TOO-MANY")))
+        .expect_err("a suite past the bound was registered");
+    assert_eq!(error.code(), "guard");
+    assert!(
+        error.message().contains(&MAX_FEATURE_NODES.to_string()),
+        "the refusal does not name the bound: {}",
+        error.message()
+    );
+    assert_eq!(
+        cell.features().graph().len(),
+        held,
+        "a refused batch left part of itself in the engine"
+    );
+
+    // An instrument already registered costs nothing, so a redeploy at the
+    // bound is not refused for nodes it does not add.
+    assert_eq!(
+        cell.register_features(standard_suite(&object("FILL-0")))?,
+        0,
+        "re-registering a suite the engine holds added nodes"
+    );
+    Ok(())
+}

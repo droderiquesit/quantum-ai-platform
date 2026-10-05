@@ -359,19 +359,17 @@
   },
   {
     "id": "REFLEX-039",
-    "status": "PARTIAL",
-    "current": "Cancel: Cell::withdraw_expired (TTL, cell.rs:4139) and Cell::mass_cancel (halt, cell.rs:4175), journaled as Decision::OrderExpired / Decision::MassCancelled, counted by qip_edge_orders_expired_total / qip_edge_orders_mass_cancelled_total. Replace: qip_routing::reprice::Repricer (withdraw-then-replace, never amend) driven by qip-edge-node's Requoter beneath the cell's Placer seam (RequotingPlacer); the cell keeps one OpenOrder id per intention and the replacement is not journaled.",
+    "status": "COMPLETE",
+    "current": "Cancel: Cell::withdraw_expired (time to live) and Cell::mass_cancel (halt), journaled as OrderExpired / MassCancelled. Replace: qip_routing::reprice::Repricer driven by qip-edge-node's Requoter beneath the cell's placer seam, which now tells the cell each half as it becomes known. Cell::record_requote_withdrawal seals Decision::RequoteWithdrawn (the venue-level id cancelled and the remainder the venue acknowledged withdrawing) whatever follows it; Cell::record_replacement seals Decision::OrderReplaced (replacement id, quantity, price) and moves OpenOrder.price to the limit the order now rests at. Before this a requote left a stderr line and a counter, and the cell's open order went on naming a limit nothing rested at.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:4139 (withdraw_expired), :4175 (mass_cancel)",
-      "backend/crates/edge/qip-edge/src/journal.rs:377-408 (Decision::kind: order_expired and mass_cancelled exist; no replace/requote decision)",
-      "backend/crates/apps/qip-edge-node/src/reprice.rs:1-60 (requoter beneath the Placer; only reads cell.open_orders and spends the quote budget)",
-      "backend/crates/edge/qip-routing/src/reprice.rs (Repricer, RepriceDecision)",
-      "test an_order_that_filled_while_its_cancel_was_in_flight_yields_no_replacement (backend/crates/edge/qip-routing/tests/reprice.rs:260)",
-      "test the_repricer_refuses_to_mint_a_replacement_until_the_cancel_is_acknowledged (qip-routing/tests/reprice.rs:159)",
-      "test a_node_pass_reprices_a_stale_resting_child_after_draining_gateway_events_first (backend/crates/apps/qip-edge-node/tests/pass.rs:874) -- asserts venue state and stats, no journal entry",
-      "test a_partial_fill_on_an_order_that_later_expires_is_counted_once (qip-edge-node/tests/pass.rs:701)"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_requote_seals_its_cancel_acknowledgement_and_its_replacement_and_moves_the_open_order",
+      "backend/crates/apps/qip-edge-node/src/reprice.rs (Requoter::reprice records both halves; Requoter::replace reports the acknowledged remainder)",
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::record_requote_withdrawal, Cell::record_replacement)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs (Decision::RequoteWithdrawn, Decision::OrderReplaced)",
+      "backend/crates/edge/qip-routing/tests/reprice.rs::an_order_that_filled_while_its_cancel_was_in_flight_yields_no_replacement",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_partial_fill_on_an_order_that_later_expires_is_counted_once"
     ],
-    "gap": "Cancel is journaled but replace is not: no Decision variant records a replacement or its acknowledgement, the requote outcome is only a stdout line in main.rs and a PassStats counter, and no test asserts a journal entry for either half of a requote -- so the check's 'open-order state and the journal reflect each acknowledgement' is unmet for replace. A replacement changes size only by the filled remainder and price only to the touch on drift; the cell has no path to cancel or re-price a chosen order on any other decision. QIP_REPRICE is not set by the execution-node template.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -381,11 +379,11 @@
       "REFLEX-035"
     ],
     "blocked_by": "",
-    "verification": "Existing: qip-routing/tests/reprice.rs (cancel/fill race, ack gate), qip-edge-node/tests/pass.rs:701,874 through run_pass. Needed: the replacement and its cancel acknowledgement sealed into the cell's journal, and a node test asserting both journal entries alongside open-order state.",
+    "verification": "backend/crates/apps/qip-edge-node/tests/pass.rs::a_requote_seals_its_cancel_acknowledgement_and_its_replacement_and_moves_the_open_order: against the simulated venue a cancel races a partial fill, the remainder is re-sent at a new price and a new size, then cancelled at its time to live; the journal holds the fill, the withdrawal with the acknowledged remainder, the replacement and the expiry, and the open order shows the new limit with the raced fill counted once. Three mutations, each fired and was restored byte-for-byte: the cancel acknowledgement never sealed; the replacement never sealed; the open order keeping the limit nothing rests at.",
     "work_item": "E04",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL. The replace half runs beneath the cell and leaves no record in the hash-chained journal (journal.rs has no such Decision), which the requirement's check requires; e2e kept true because qip-edge-node run_pass tests drive both the expiry withdrawal and the requote."
+    "notes": "Closed 2026-10-04. Both new kinds are on P2 only in the node's event-fabric writer (is_outcome): ADR 0100 section 5's P1 row names six outcome kinds and widening it is the ADR's to do. QIP_REPRICE is not set by the execution-node template, so deployable stays false. A replacement changes size only by the filled remainder and price only to the touch on drift; other order types are REFLEX-035. The live form is BLOCKED under ADR 0003."
   },
   {
     "id": "REFLEX-040",
