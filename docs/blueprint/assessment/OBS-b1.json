@@ -47,15 +47,18 @@
   {
     "id": "OBS-003",
     "status": "COMPLETE",
-    "current": "backend/crates/libs/qip-observability/src/aiops.rs detect_level_shift: robust median/MAD level-shift detector over a metric series with no configured threshold; returns an Anomaly naming the series and window; a too-short series is refused rather than called quiet. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs detect_level_shift: robust median/MAD level-shift detector over a metric series with no configured threshold; returns an Anomaly naming the series and window; a too-short series is refused rather than called quiet. Library logic only: no production seam calls it yet, so integrated and deployable stay false. Wired: qip-kernel Platform::run_cycle feeds its own cycle duration to self_watch::SelfWatch (Platform::watch_own_series), which runs detect_level_shift per point, counts qip_telemetry_anomalies_total{series} and puts a once-per-step problem on the LEARN stage. Only the cycle-duration series is fed; other series need a caller. Not deployed.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/aiops.rs",
-      "backend/crates/libs/qip-observability/tests/aiops.rs::a_step_change_crossing_no_threshold_is_named_by_series_and_window_and_the_same_series_without_it_is_silent"
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_step_change_crossing_no_threshold_is_named_by_series_and_window_and_the_same_series_without_it_is_silent",
+      "backend/crates/runtime/qip-kernel/src/self_watch.rs",
+      "backend/crates/runtime/qip-kernel/tests/self_observation.rs::a_step_in_the_platforms_own_series_is_counted_and_reported_once",
+      "backend/crates/runtime/qip-kernel/tests/self_observation.rs::a_cycle_feeds_its_own_duration_to_the_self_watch"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [

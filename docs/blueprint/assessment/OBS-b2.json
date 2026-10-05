@@ -164,15 +164,16 @@
   {
     "id": "OBS-028",
     "status": "COMPLETE",
-    "current": "backend/crates/libs/qip-observability/src/aiops.rs release_gate(plane, statuses): refuses a promotion to a plane with an observed objective whose error budget is spent, naming the objective; other planes and unmeasured objectives never block. No CI/CD workflow calls it yet. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs release_gate(plane, statuses): refuses a promotion to a plane with an observed objective whose error budget is spent, naming the objective; other planes and unmeasured objectives never block. No CI/CD workflow calls it yet. Library logic only: no production seam calls it yet, so integrated and deployable stay false. Wired: Platform::release_decision and blueprint_objectives::fold put a 'release to <plane> is refused' problem on the LEARN stage while a page-worthy observed objective of that plane has spent its budget. No CI/deploy step reads it yet, so deployable stays false.",
     "evidence": [
       "backend/crates/libs/qip-observability/src/aiops.rs",
-      "backend/crates/libs/qip-observability/tests/aiops.rs::an_exhausted_budget_refuses_a_promotion_to_its_plane_and_remaining_budget_lets_it_through"
+      "backend/crates/libs/qip-observability/tests/aiops.rs::an_exhausted_budget_refuses_a_promotion_to_its_plane_and_remaining_budget_lets_it_through",
+      "backend/crates/runtime/qip-kernel/tests/self_observation.rs::a_plane_whose_error_budget_is_spent_refuses_a_release_and_other_planes_proceed"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
