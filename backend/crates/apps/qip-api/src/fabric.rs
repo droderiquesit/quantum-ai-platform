@@ -59,6 +59,17 @@
 //! that refusal is a record, because the refusal is a decision and belongs in
 //! the log.
 //!
+//! Beside `commands` the document may carry `corridor_policy`: the corridors
+//! the Intelligence layer rules on, each with its route, the two ceilings the
+//! desk states and the strategies it funds. It is declared to the platform
+//! before any command, on every application, and it is what makes a `gate`
+//! command assessable at all — the kernel re-derives the ruling a gate
+//! command states and refuses the command when no policy rules on its
+//! corridor. Without the key a declared gate command naming a proposed
+//! corridor stops the feed, which is what every deployment did until the key
+//! existed. `qip_kernel::fabric_declaration` gives the shape and the reason
+//! the policy sits outside the append-only prefix.
+//!
 //! **Every fractional number is written as a string.** A JSON number that is
 //! not an exact integer is refused by position, before any command is
 //! deserialised. `Decimal`'s deserialiser accepts a float and reaches
@@ -286,9 +297,10 @@ impl FabricFeed {
     /// The start-up banner line.
     pub fn describe(&self) -> String {
         format!(
-            "{} ({} command(s) declared)",
+            "{} ({} command(s) declared, corridor policy for {} corridor(s))",
             self.path,
-            self.declaration.len()
+            self.declaration.len(),
+            self.declaration.corridors_ruled()
         )
     }
 }
@@ -379,10 +391,13 @@ impl<H: Handler> FabricRefresh<H> {
         // The read is here, under the feed lock and no other. A refusal
         // returns without ever touching the platform lock, so a broken file
         // cannot make the cycle route queue behind whatever holds it.
-        let Some(appended) = feed.refresh()? else {
-            return Ok(());
-        };
-        if appended == 0 {
+        // `None` is a file that has not moved, and nothing else returns
+        // early. A file that moved with no command appended used to return
+        // here too; it no longer does, because the corridor policy is a
+        // statement the desk may restate without appending an act, and a
+        // restated ceiling that waited for the next unrelated command would
+        // leave the gate measuring against the figure the desk had withdrawn.
+        if feed.refresh()?.is_none() {
             return Ok(());
         }
         let mut platform = self

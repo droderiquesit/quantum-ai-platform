@@ -113,6 +113,7 @@ dependencies = [
  "qip-agents",
  "qip-ai",
  "qip-capital",
+ "qip-capital-fabric",
  "qip-compliance",
  "qip-contracts",
  "qip-core",

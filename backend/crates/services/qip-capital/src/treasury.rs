@@ -83,6 +83,11 @@ impl CapitalBook {
         self.total
     }
 
+    /// The amount that must stay uncommitted.
+    pub fn floor(&self) -> Decimal {
+        self.floor
+    }
+
     /// Sum of everything assigned to a use.
     pub fn committed(&self) -> Decimal {
         self.assigned

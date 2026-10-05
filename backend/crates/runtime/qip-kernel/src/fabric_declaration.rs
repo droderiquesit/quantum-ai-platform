@@ -29,14 +29,45 @@
 //! refusal is a record, because a refusal is a decision and belongs in the
 //! log.
 //!
+//! # The corridor policy the gate is measured against
+//!
+//! A declaration may also carry `corridor_policy`: the corridors the
+//! Intelligence layer rules on, each with the strategies it funds and the two
+//! ceilings the desk stated. It is applied through
+//! [`Platform::declare_corridors`] before any command, every time the
+//! declaration is applied.
+//!
+//! Until this key existed `declare_corridors` was called by tests and by
+//! nothing else, which made the gate unreachable from a deployed process in a
+//! way that read as reachable: `Platform::decide_fabric` re-derives the ruling
+//! a gate command states and refuses the command when no policy has been
+//! declared, so a `gate` command naming a proposed corridor stopped the feed
+//! on every deployment, and the only assessment an operator could put on the
+//! chain was a refusal against a corridor nobody had proposed. The seven
+//! checks ran in the kernel's suite and for no operator.
+//!
+//! The policy is a statement and not an act. A command is history, sealed on
+//! the chain and never amended; a ceiling is a figure the desk holds and may
+//! restate, and the ruling each assessment was made under is written into its
+//! own gate record. So the policy is outside the append-only prefix the
+//! composition root compares, and restating it replaces it.
+//!
+//! Each subject is built through `CorridorSubject::new` rather than
+//! deserialised into place, because that constructor is where a zero ceiling
+//! and a pilot ceiling above the full one are refused, and a derive would
+//! have walked straight past both.
+//!
 //! Nothing here performs I/O or reads a clock. `Declaration::parse` takes
 //! text and `Declaration::apply_counting` takes the instant its caller holds,
 //! so the same declaration replays identically.
 
 use crate::Platform;
 use qip_capital_fabric::journal::FabricCommand;
-use qip_core::Timestamp;
+use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Timestamp};
+use qip_lifecycle::corridor::{CorridorRoute, CorridorSubject};
+use serde::Deserialize;
 
 /// The most commands one declaration may carry.
 ///
@@ -53,7 +84,31 @@ pub const MAX_FABRIC_COMMANDS: usize = 1024;
 /// ignored would leave a process serving with nothing declared while its
 /// banner said a declaration was loaded, which is the state this module
 /// exists to end.
-const DECLARATION_KEYS: [&str; 1] = ["commands"];
+const DECLARATION_KEYS: [&str; 2] = ["commands", "corridor_policy"];
+
+/// One corridor's policy subject as an operator writes it.
+///
+/// A document type rather than `CorridorSubject`'s own derive, so that every
+/// subject passes through the constructor that refuses a ceiling of zero.
+/// Unknown fields are denied for the reason unknown keys are: a misspelt
+/// `pilot_celing` that was dropped would leave the corridor governed by a
+/// figure nobody wrote.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubjectDocument {
+    route: RouteDocument,
+    ceiling: Decimal,
+    pilot_ceiling: Decimal,
+    funds: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteDocument {
+    source: String,
+    destination: String,
+    asset: String,
+}
 
 /// Where the declaration is read from, named here so the refusals this
 /// module raises can say how to run with none.
@@ -74,6 +129,10 @@ pub struct Declaration {
     /// type it is allowed to name, and `api_boundary.rs`'s dependency check
     /// would go on passing while the thing it protects had gone.
     commands: Vec<FabricCommand>,
+    /// The corridor policy's subjects, in file order. Empty when the
+    /// declaration carries no `corridor_policy`, which leaves whatever policy
+    /// the platform already holds alone.
+    policy: Vec<CorridorSubject>,
 }
 
 impl Declaration {
@@ -104,7 +163,8 @@ impl Declaration {
             if !DECLARATION_KEYS.contains(&key.as_str()) {
                 return Err(Error::invalid(format!(
                     "the declaration carries the key {key}, which is not one it may carry; the \
-                     only key is commands, and a misspelt one would be ignored in silence"
+                     keys are commands and corridor_policy, and a misspelt one would be ignored \
+                     in silence"
                 )));
             }
         }
@@ -172,7 +232,95 @@ impl Declaration {
             commands.push(command);
         }
 
-        Ok(Self { commands })
+        let policy = match object.get("corridor_policy") {
+            None => Vec::new(),
+            Some(value) => Self::parse_policy(value)?,
+        };
+
+        Ok(Self { commands, policy })
+    }
+
+    /// Build the corridor policy's subjects, each through its constructor.
+    ///
+    /// Refusals name the position and the rule, and never the constructor's
+    /// own message: that message names the route, a route's destination is an
+    /// account, and no refusal from this module repeats what the file says.
+    fn parse_policy(value: &serde_json::Value) -> Result<Vec<CorridorSubject>> {
+        let list = value.as_array().ok_or_else(|| {
+            Error::invalid(
+                "corridor_policy is not a list; it is a list of corridors, each with its route, \
+                 its two ceilings and the strategies it funds",
+            )
+        })?;
+        // Refused rather than read as "no policy". An absent key leaves the
+        // platform's policy alone; an empty list looks like a policy
+        // withdrawn, and treating it as absent would leave every corridor
+        // ruled by the one last declared while the file said there was none.
+        if list.is_empty() {
+            return Err(Error::invalid(
+                "corridor_policy is empty; omit the key to leave the policy as it stands, or \
+                 name the corridors it rules on. An empty list would read as a policy withdrawn \
+                 while the corridors went on being ruled by the one last declared",
+            ));
+        }
+        if list.len() > MAX_FABRIC_COMMANDS {
+            return Err(Error::denied(format!(
+                "corridor_policy lists {} corridors against a bound of {MAX_FABRIC_COMMANDS}; \
+                 the policy is re-derived whenever a strategy's rung moves, so split the desk's \
+                 corridors rather than raising the bound",
+                list.len()
+            )));
+        }
+        let mut subjects = Vec::with_capacity(list.len());
+        for (index, entry) in list.iter().enumerate() {
+            let document: SubjectDocument =
+                serde_json::from_value(entry.clone()).map_err(|error| {
+                    Error::invalid(format!(
+                        "corridor_policy[{index}] is not a corridor subject: {}. A subject names \
+                         its route (source, destination, asset), a ceiling, a pilot_ceiling and \
+                         the strategies it funds",
+                        shape_of(&error)
+                    ))
+                })?;
+            let subject = CorridorRoute::new(
+                document.route.source,
+                document.route.destination,
+                document.route.asset,
+            )
+            .and_then(|route| {
+                CorridorSubject::new(
+                    route,
+                    document.ceiling,
+                    document.pilot_ceiling,
+                    document.funds.into_iter().map(StrategyId::new),
+                )
+            })
+            .map_err(|refusal| {
+                Error::invalid(format!(
+                    "corridor_policy[{index}] is refused ({}): every leg of the route is named, \
+                     both ceilings are positive, the pilot ceiling is at most the full one, and \
+                     the corridor funds at least one strategy. A corridor that should carry \
+                     nothing is suspended by where its strategies stand, not by a ceiling of zero",
+                    refusal.code()
+                ))
+            })?;
+            // Two subjects on one route are two claims about one fact. The
+            // lifecycle ledger refuses the pair too, in words that name the
+            // route; refusing here names the two positions instead.
+            if let Some(earlier) = subjects
+                .iter()
+                .position(|held: &CorridorSubject| held.route() == subject.route())
+            {
+                return Err(Error::invalid(format!(
+                    "corridor_policy[{index}] rules on the same route as \
+                     corridor_policy[{earlier}]; give each route one policy, because a transfer \
+                     matched against whichever was found first would be governed by a cap nobody \
+                     chose"
+                )));
+            }
+            subjects.push(subject);
+        }
+        Ok(subjects)
     }
 
     /// Apply the commands from `from` onward, returning how many were
@@ -213,6 +361,22 @@ impl Declaration {
         now: Timestamp,
         applied: &mut usize,
     ) -> Result<()> {
+        // The policy first, and on every application: a gate command further
+        // down states a ruling `decide_fabric` re-derives from this policy,
+        // so a policy applied after the commands would refuse them against
+        // the one it replaced. An absent policy declares nothing rather than
+        // clearing what is held — silence in a file is not an instruction.
+        if !self.policy.is_empty() {
+            platform
+                .declare_corridors(self.policy.clone(), now)
+                .map_err(|refusal| {
+                    Error::invalid(format!(
+                        "corridor_policy was refused when it was declared ({}); the subjects \
+                         parsed, so check them against what the lifecycle ledger already holds",
+                        refusal.code()
+                    ))
+                })?;
+        }
         for (index, command) in self.commands.iter().enumerate().skip(from) {
             platform
                 .decide_fabric(command.clone(), now)
@@ -329,6 +493,11 @@ impl Declaration {
     /// clippy asks for it beside `len`.
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
+    }
+
+    /// How many corridors the declaration states a policy for.
+    pub fn corridors_ruled(&self) -> usize {
+        self.policy.len()
     }
 
     /// Whether this declaration's first `count` commands are the same acts,
