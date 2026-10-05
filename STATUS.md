@@ -6,8 +6,9 @@ Phase 0 complete bar Review Board re-check of the revised ADR 0101; Phase 1 foun
 Branch: `docs/hermes-phase-0`, worktree `.claude/worktrees/hermes-phase-0`.
 
 ## Measured so far
-- Register, 2026-10-05 after merging round 1 (31 lanes) and round 2 (31 lanes): 232 complete, 707 partial, 410 missing, 166 blocked, 86 unscored of 1601. Most closures are library-level (`integrated=false`): tested code no production path calls yet.
-- Integrated tree: `cargo test --workspace --no-fail-fast` exit 0, 544 `test result:` lines, 6873 passed, 0 failed, 0 ignored (after fixing two merge-time failures: `qip-agency` had no lane; an ambient type had been wired into the order-path kernel and was reverted).
+- Register, 2026-10-05 after three rounds of requirement lanes: 328 complete (20.5%), 653 partial, 374 missing, 166 blocked, 80 unscored of 1601. Most closures are library-level (`integrated=false`).
+- Integrated tree (`db97c010`): `cargo test --workspace --no-fail-fast` exit 0, 588 `test result:` lines, 7131 passed, 0 failed, 0 ignored; clippy 0 warnings; fmt clean.
+- Unmerged: REFLEX lane (edge-cell conflicts, being resolved), RISK lane (its new guard RISK-001 refuses the CAPITAL lane's `rebalance.rs` as an unnamed TransferIntent originator; needs an owner decision, not a guard edit), six round 3 worktrees cut off mid-work by a session limit (uncommitted, kept).
 - Blueprint of record in direction: v12.0 and GCP v3.0 (ADR 0101). 1,601 requirements, 31 domains.
 - Nothing of the platform itself is deployed; no market data is ingested from a real source; the portal has not been run this session.
 
