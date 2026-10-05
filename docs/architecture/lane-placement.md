@@ -66,6 +66,7 @@ lane it hosts.
 | qip-data-finder | 3 | discovery against a committed candidate list; licence posture before use |
 | qip-entity-resolution | 3 | entity resolution over evidence |
 | qip-evolution | 3 | challenger and promotion; shadow before live |
+| qip-agency | 3 | goal specs, tool registry and bounded intervention plans as contracts; slow-plane cognition that depends only on lane 0 and is reached only where a composition root wires it |
 | qip-learning-engine | 3 | calibration from resolved outcomes |
 | qip-prediction | 3 | prediction markets; reached only where a composition root wires it |
 | qip-reasoning-engine | 3 | hypotheses and confidence as arithmetic |
