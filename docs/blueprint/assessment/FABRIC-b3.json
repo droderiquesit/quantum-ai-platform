@@ -1,42 +1,38 @@
 [
   {
     "id": "FABRIC-057",
-    "status": "PARTIAL",
-    "current": "One of the seven declarations exists, per topic, and is enforced: ADR 0089 makes every qip_events::Topic declare its retention class in an exhaustive match with no wildcard arm (Topic::retention_class, backend/crates/libs/qip-events/src/topic.rs:532), so a topic added without a class is a compile error rather than a broker-style default, and the log's retention seams read that class and not the topic's group (retention.rs module doc). EventLog is constructed by qip-kernel's Platform in every central binary, so per-class retention runs on the deployed Cloud Run services. Nothing else exists: there is no P0-P4 QoS class type, and no partitioning-key, ordering, replication, overload or mirroring declaration on any topic. qip_streaming::RoutingClass (backend/crates/services/qip-streaming/src/routing.rs:77) is a three-class Hot/Warm/Cold split mapped onto two paths (Local/Durable), not a five-class QoS model. Durability (fsync vs OS-buffered) is set per EventLog instance via EventLog::with_durability (backend/crates/libs/qip-events/src/log.rs:516), i.e. for every topic on that log at once, not per topic by class.",
+    "status": "COMPLETE",
+    "current": "Broker::declare_stream now takes a whole StreamPolicy (class, partition key, ordering, retention, replication, overload, mirroring, ack floor, quotas, lag limit, entitlement, seal age, peak rate), a type with no Default and one validating constructor, so a stream cannot be declared with any declaration left to a default; the stored policy is returned exactly (stream_policy) and redeclaration under a different policy is refused. The committed catalogue refuses a stream missing any of the seven declarations, naming it.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/topic.rs:532 (retention_class, exhaustive per-topic match), :649,:658 (derived predicates)",
-      "backend/crates/libs/qip-events/src/retention.rs:1-30 (ADR 0089: a topic added without a class is a compile error)",
-      "backend/crates/libs/qip-events/tests/backbone.rs:2411 (every_topic_declares_the_retention_class_its_record_carries)",
-      "backend/crates/libs/qip-events/tests/backbone.rs:2521 (a_topics_declared_retention_class_and_not_its_group_decides_whether_the_log_rolls_it)",
-      "backend/crates/libs/qip-events/src/log.rs:516 (with_durability: one durability per log, not per topic)",
-      "backend/crates/services/qip-streaming/src/routing.rs:75-110 (RoutingClass Hot/Warm/Cold, two paths)",
-      "rg -n -i 'qos|StreamPolicy|stream.?catalogue|TopicSpec' backend/crates --type rust (non-test) -> no hit"
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs a_declared_stream_returns_its_whole_policy_and_cannot_be_redeclared_under_another (ran: ok; mutation: the existing.policy != policy refusal disabled, test failed, restored)",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs a_stream_missing_any_of_the_seven_declarations_is_refused_naming_it_and_a_full_one_round_trips (all seven removed in turn; ran: ok; mutation: overload_policy given a silent default in the catalogue parser, test failed, restored)"
     ],
-    "gap": "No QoS-class (P0-P4) type exists, and six of the seven declarations (class, partitioning key, ordering, replication, overload, mirroring) have no field to declare or omit; there is no topic-creation API that refuses a missing declaration by name. Durability is per log, not per topic by class. ADR 0100 section 5 places the committed stream catalogue in qip-events::event_fabric; nothing of it is built.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events --test backbone every_topic_declares_the_retention_class_its_record_carries proves the retention declaration today. The full check still needs a stream-policy builder whose build() refuses when any of the seven declarations is unset, naming it, and round-trips every declared value.",
+    "verification": "cargo test -p qip-events --test event_fabric_policy; cargo test -p qip-streaming --test event_fabric_broker",
     "work_item": "E03",
     "tier": "T2",
     "size": "L",
-    "notes": "This is a data-modelling gap, not one of ADR 0099's C1-C8 conflicts \u2014 it can be built on blocking I/O with serde alone. verify: upgraded MISSING -> PARTIAL and set implemented/tested/integrated/deployable true for the retention declaration only. The requirement's own notes say ADR 0089's per-topic retention class is one of the seven declarations; it is exhaustive at compile time, tested by two named backbone.rs tests, and runs in the central binaries' EventLog. Also corrected 'two-way Hot/Durable split' to RoutingClass's three classes over two paths, and recorded that durability is per log, not per topic."
+    "notes": "This is a data-modelling gap, not one of ADR 0099's C1-C8 conflicts \u2014 it can be built on blocking I/O with serde alone. verify: upgraded MISSING -> PARTIAL and set implemented/tested/integrated/deployable true for the retention declaration only. The requirement's own notes say ADR 0089's per-topic retention class is one of the seven declarations; it is exhaustive at compile time, tested by two named backbone.rs tests, and runs in the central binaries' EventLog. Also corrected 'two-way Hot/Durable split' to RoutingClass's three classes over two paths, and recorded that durability is per log, not per topic. | closed in the FABRIC pass: Library-complete, not served: qip-fabricd/src/main.rs does not yet construct a Broker, so no deployed process runs this path (integrated=false). The broker takes a StreamPolicy value; nothing yet reads the committed catalogue file into Broker::declare_stream."
   },
   {
     "id": "FABRIC-058",
-    "status": "MISSING",
-    "current": "nothing implements producer epochs or fencing anywhere in the workspace. `rg -in fenc` across backend/crates/*/src (excluding tests) returns only unrelated hits (RuleDefence, ring-fences collateral, code-fence stripping in an LLM provider) \u2014 no producer-ID/epoch type, no broker-side write refusal for a stale epoch.",
+    "status": "COMPLETE",
+    "current": "qip_streaming::event_fabric::producer::ProducerTable::admit refuses an epoch older than the one it has recorded for (producer_id, partition) before it reads the sequence (Admission::FencedEpoch), and Broker::produce admits every batch through it, so a superseded producer is refused before anything is appended. P0 control fencing rides the same table; the producer SDK (qip_transport::event_fabric::producer::Producer) latches the fenced epoch and re-inits for a fresh one.",
     "evidence": [
-      "rg -in 'producer.*epoch|fenc' backend/crates --type rust (excluding tests) \u2014 no fencing-epoch hit",
-      "backend/crates/libs/qip-transport/src/mesh.rs (MeshPublisher/MeshEndpoint have no producer-id/epoch field)"
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs for_any_schedule_a_resumed_superseded_producer_never_appends_after_its_successors_first_append (60 seeded schedules of A resuming after B started, aimed at exactly the sequence the table expects next; ran: ok; mutation: the epoch<current refusal disabled, test failed at the log-order assertion, restored)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs a_superseded_epoch_is_fenced_after_its_successors_first_append",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::produce maps Admission::FencedEpoch to Error::denied"
     ],
-    "gap": "No producer identity, no epoch counter, no broker-side (or mesh-endpoint-side) comparison-and-refuse against a prior epoch for the same producer ID.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -44,11 +40,11 @@
       "FABRIC-057"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needs a property test: for any schedule where producer B supersedes A for one producer ID (including A resuming after a pause), no record from A under the old epoch is appended after B's first append.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_producer",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "Buildable without a new dependency \u2014 pure logic on the existing blocking mesh/transport path. verify: status unchanged (MISSING). Nearest analog, which is not fencing: qip-edge's Cell::apply_policy refuses a policy payload at or below the applied sequence (backend/crates/edge/qip-edge/src/cell.rs:2108-2120; region share RefusedLowerSequence at :2282-2287). That is consumer-side replay refusal of a centrally minted sequence, runs only in qip-edge-node, and does not stop a superseded producer instance appending under a fresh sequence, so it does not meet the property in the check."
+    "notes": "Buildable without a new dependency \u2014 pure logic on the existing blocking mesh/transport path. verify: status unchanged (MISSING). Nearest analog, which is not fencing: qip-edge's Cell::apply_policy refuses a policy payload at or below the applied sequence (backend/crates/edge/qip-edge/src/cell.rs:2108-2120; region share RefusedLowerSequence at :2282-2287). That is consumer-side replay refusal of a centrally minted sequence, runs only in qip-edge-node, and does not stop a superseded producer instance appending under a fresh sequence, so it does not meet the property in the check. | closed in the FABRIC pass: Library-complete, not served: qip-fabricd/src/main.rs does not yet construct a Broker, so no deployed process runs this path (integrated=false)."
   },
   {
     "id": "FABRIC-059",
@@ -246,27 +242,28 @@
   },
   {
     "id": "FABRIC-067",
-    "status": "MISSING",
-    "current": "No explicit acknowledgement-profile concept exists. qip_transport::mesh::PublishAck (backend/crates/libs/qip-transport/src/mesh.rs:150) and Admission (:229-240, Accepted/Duplicate/Full) describe queueing outcome, not a producer-selected durability profile (quorum/leader-only/none), and there is no per-topic-class durability requirement to check a profile against because FABRIC-057's class model does not exist.",
+    "status": "COMPLETE",
+    "current": "qip_transport::event_fabric::producer::ProducerConfig now states its stream class (qos_class) beside its ack_profile, and Producer::new refuses an AckProfile weaker than QosClass::ack_floor() for that class, naming the class (P0/P1 floor Quorum, P2/P3 LeaderOnly, P4 None). StreamPolicy::new holds the same floor at stream declaration.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/mesh.rs:150,229-240",
-      "grep -in 'ack.?profile|acknowledg' backend/crates/libs/qip-transport backend/crates/services/qip-streaming --type rust -> no ack-profile type"
+      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs a_producer_is_refused_every_acknowledgement_profile_weaker_than_its_classs_floor (5 classes x 3 profiles: 9 accepted, 6 refused naming the class; ran: ok; mutation: comparison flipped, test failed, restored)",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs an_ack_profile_weaker_than_the_stream_class_is_refused",
+      "backend/crates/apps/qip-cli/src/event_fabric/grant.rs builds its P0 control producer with QosClass::P0Control and AckProfile::Quorum"
     ],
-    "gap": "No Ack-profile enum, no per-class minimum, and no refusal path for a producer that asks for less durability than its topic's class requires.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "FABRIC-057"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needs a unit test per class asserting the SDK accepts the required profile and refuses every weaker one by name.",
+    "verification": "cargo test -p qip-transport --test event_fabric_client; cargo test -p qip-events --test event_fabric_policy",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "closed in the FABRIC pass: Previously the producer carried no class and noted the check could only come from a broker that never produced Refusal::AckTooWeak."
   },
   {
     "id": "FABRIC-068",
@@ -443,15 +440,15 @@
   },
   {
     "id": "FABRIC-075",
-    "status": "MISSING",
-    "current": "No explicit ordering-key parameter exists on any publish call. qip_streaming::Publisher::publish (backend/crates/services/qip-streaming/src/ports.rs:79-80) takes a StreamEnvelope and a clock reading, not a caller-named ordering key; there is exactly one 'partition' (the single-process log) in this architecture, so the requirement is currently vacuous rather than violated, but the explicit-key API itself does not exist.",
+    "status": "COMPLETE",
+    "current": "Broker::produce(stream, key, batch) takes an explicit ordering key and routes it through partition::partition_for (u64(sha256(key)[0..8]) mod partition_count); there is no produce path without a key.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/ports.rs:76-96",
-      "grep -in 'ordering.?key|order_key' backend/crates --type rust -> hits are unrelated (qip-routing's per-order requote budget key)"
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs for_any_interleaving_of_keys_every_key_stays_in_one_partition_and_in_produce_order (12 keys, 4 partitions, 120 seeded produces; ran: ok; mutation: a process-wide counter mixed into partition_for, test failed, restored)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs records_sharing_a_key_share_a_partition_in_produce_order"
     ],
-    "gap": "No ordering_key field or parameter exists on the publish path; same-key-same-partition is untested because there is no key to test it with.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -459,32 +456,33 @@
       "FABRIC-057"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needs a property test: for any set of keys and any sequence of produces, all records sharing a key land in one partition in produce order.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_broker for_any_interleaving records_sharing",
     "work_item": "E03",
     "tier": "T1",
     "size": "S",
-    "notes": "Trivially satisfiable today (one partition, one order) once the key parameter exists; the real test only bites once partitioning (FABRIC-076) exists."
+    "notes": "Trivially satisfiable today (one partition, one order) once the key parameter exists; the real test only bites once partitioning (FABRIC-076) exists. | closed in the FABRIC pass: Library-complete, not served: qip-fabricd/src/main.rs does not yet construct a Broker, so no deployed process runs this path (integrated=false)."
   },
   {
     "id": "FABRIC-076",
-    "status": "MISSING",
-    "current": "No partition-leader assignment exists because no partitions or multiple broker nodes exist. `rg -il 'partition|replication.?factor|quorum|leader.?elect'` across qip-streaming/qip-transport/qip-events (excluding tests) returns nothing relevant.",
+    "status": "COMPLETE",
+    "current": "qip_streaming::event_fabric::partition::leader_for(stream, partition, brokers) places a partition leader by rendezvous (highest-random-weight) hashing over sha256, refusing an empty, duplicate or nameless broker set; order of the broker list does not change the answer.",
     "evidence": [
-      "rg -il 'partition|replication.?factor|quorum|leader.?elect' backend/crates/services/qip-streaming backend/crates/libs/qip-transport backend/crates/libs/qip-events --type rust -> no hit"
+      "backend/crates/services/qip-streaming/tests/event_fabric_leader.rs adding_one_broker_moves_about_one_in_n_plus_one_leaderships_and_only_to_the_new_broker (n in 2,3,5,8 over 2,000 partitions; every move goes to the new broker; ran: ok; mutation: broker count mixed into the hash, test failed on a move between two old brokers, restored)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_leader.rs removing_a_broker_moves_only_the_partitions_it_led"
     ],
-    "gap": "No rendezvous or consistent-hash assignment function exists (rg -i 'rendezvous|consistent.?hash|hash.?ring|jump.?hash' over backend/ and infrastructure/ returns nothing). The function and its minimal-movement property test need no refused crate: it is pure logic over broker and partition identifiers, and in-tree SHA-256 is authorised (ADR 0002). Only running it across several live brokers per region waits on C8 (the broker count and cost), and ADR 0100 builds one broker per region first.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. A pure property test is writable now: for any n, adding one broker to an n-broker assignment moves roughly 1/(n+1) of leaderships, and no leadership moves between two brokers present both before and after.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_leader",
     "work_item": "E03",
     "tier": "T4",
     "size": "L",
-    "notes": "P1 in the requirement \u2014 it only matters once brokers can be added, which the single-region MVP does not require. verify: BLOCKED(C2) -> MISSING, work_item E99 -> E03, blocked_by cleared, depends_on [FABRIC-062, FABRIC-065] cleared. Leader placement by rendezvous or consistent hashing is an in-tree pure function, and the requirement's check is a property test that needs no broker process. It needs neither Tokio (FABRIC-062) nor a consensus quorum (FABRIC-065), so C2 is not the reason it is absent. Deploying several brokers per region is C8, which does not block building and proving the assignment."
+    "notes": "P1 in the requirement \u2014 it only matters once brokers can be added, which the single-region MVP does not require. verify: BLOCKED(C2) -> MISSING, work_item E99 -> E03, blocked_by cleared, depends_on [FABRIC-062, FABRIC-065] cleared. Leader placement by rendezvous or consistent hashing is an in-tree pure function, and the requirement's check is a property test that needs no broker process. It needs neither Tokio (FABRIC-062) nor a consensus quorum (FABRIC-065), so C2 is not the reason it is absent. Deploying several brokers per region is C8, which does not block building and proving the assignment. | closed in the FABRIC pass: A pure function: ADR 0100 builds one broker per region first, so nothing calls leader_for yet; running several live brokers per region remains C8."
   },
   {
     "id": "FABRIC-077",
@@ -610,26 +608,25 @@
   },
   {
     "id": "FABRIC-082",
-    "status": "MISSING",
-    "current": "No dedicated ledger-sink consumer exists. qip_events::Topic::OutcomeObserved (backend/crates/libs/qip-events/src/topic.rs:178,388) is the nearest analog of a 'P1 Financial Outcomes' topic, but nothing consumes it with an offset that only advances after a committed write; qip_transport::retry::RetryPolicy (backend/crates/libs/qip-transport/src/retry.rs) is bounded exponential backoff with a maximum attempt count, not indefinite retry.",
+    "status": "COMPLETE",
+    "current": "qip_streaming::event_fabric::sink::LedgerSink drains one partition into an OutcomeWriter: it commits a batch offset through Broker::commit_offset only after every record in the batch was applied, retries a refused write without any attempt limit (SinkStep::Retrying with a doubling, capped backoff), exposes retries() and lag(), and refuses to step past a batch that does not decode. At-least-once into an idempotent writer, so a restored ledger takes each outcome once in effect.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/topic.rs:178,303,388",
-      "backend/crates/libs/qip-transport/src/retry.rs:100-135 (bounded attempts and max_backoff, not indefinite)",
-      "find backend/crates -maxdepth 3 -iname '*ledger*' -> only apps/qip-api/ROUTES-LEDGER.md, no ledger-sink crate"
+      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs a_sustained_ledger_outage_holds_the_checkpoint_skips_nothing_and_every_outcome_commits_once_in_effect (40 denied steps: committed offset stays 1, retries 40, lag 4, backoff capped; restore commits 2..5 once each; ran: ok; mutation: commit moved before the write, test failed, restored)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs a_thousand_consecutive_failures_still_retry_the_same_outcome_and_the_wait_stays_capped (mutation: skip after 100 attempts, test failed, restored)"
     ],
-    "gap": "No consumer of OutcomeObserved (or any financial-outcome topic) exists with offset-gated, indefinitely-retried, observable commit semantics; RetryPolicy's bound is the opposite of what 'never dropping the record' requires.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needs a chaos test denying ledger-store writes for a sustained interval and asserting the committed offset does not advance and no outcome is skipped.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_sink",
     "work_item": "E05",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "closed in the FABRIC pass: The sink is a library and the ledger writer in the test is a fake: qip-ledgerd does not construct it, and retries()/lag() are accessors, not yet series on a scraped /metrics. Idempotency of the real ledger writer on event_id is FABRIC-044."
   },
   {
     "id": "FABRIC-083",

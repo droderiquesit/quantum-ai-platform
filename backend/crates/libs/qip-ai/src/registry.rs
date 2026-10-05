@@ -93,6 +93,30 @@ pub struct ModelCard {
     /// is the state every card was in before ADR 0083.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_digest: Option<String>,
+    /// The named benchmarks and baselines this model is judged against,
+    /// kept apart from `evaluations` (the measured results) so a reader can
+    /// tell what the model was *meant* to beat from what it scored
+    /// (EXPAND-038).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benchmarks: Vec<String>,
+    /// The resource ceiling the model is admitted under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_budget: Option<ResourceBudget>,
+    /// The reference this card displaced when it was promoted, recorded so a
+    /// rollback has one unambiguous place to go back to. `None` for a card
+    /// that displaced nothing, which therefore cannot be rolled back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_parent: Option<String>,
+}
+
+/// A declared ceiling on what a model may consume. A ceiling set at
+/// admission, not a measurement: enforcing it is the serving layer's job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceBudget {
+    /// Wall-clock microseconds one inference may take.
+    pub max_inference_micros: u64,
+    /// Bytes of memory the loaded model may hold.
+    pub max_memory_bytes: u64,
 }
 
 /// A digest-named artifact, ready for a composition root to write.
@@ -139,7 +163,20 @@ impl ModelCard {
             evaluation_validity: Duration::from_days(90),
             limitations: Vec::new(),
             artifact_digest: None,
+            benchmarks: Vec::new(),
+            resource_budget: None,
+            rollback_parent: None,
         }
+    }
+
+    pub fn with_benchmark(mut self, benchmark: impl Into<String>) -> Self {
+        self.benchmarks.push(benchmark.into());
+        self
+    }
+
+    pub const fn with_resource_budget(mut self, budget: ResourceBudget) -> Self {
+        self.resource_budget = Some(budget);
+        self
     }
 
     pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
@@ -219,6 +256,59 @@ impl ModelCard {
 #[derive(Clone, Debug, Default)]
 pub struct ModelRegistry {
     cards: BTreeMap<String, ModelCard>,
+    packages: BTreeMap<String, Package>,
+}
+
+/// The four kinds of package the registry holds (MODEL-068).
+///
+/// A closed set on purpose: the registry is what a deployment is checked
+/// against, and a kind it does not know is a thing it cannot say anything
+/// true about. [`PackageKind::parse`] refuses the rest by name rather than
+/// filing them under a catch-all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageKind {
+    Model,
+    Policy,
+    Feature,
+    Risk,
+}
+
+impl PackageKind {
+    pub const ALL: [Self; 4] = [Self::Model, Self::Policy, Self::Feature, Self::Risk];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Policy => "policy",
+            Self::Feature => "feature",
+            Self::Risk => "risk",
+        }
+    }
+
+    pub fn parse(kind: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|known| known.as_str() == kind)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "`{kind}` is not a package kind the registry holds; the kinds are model, \
+                     policy, feature and risk"
+                ))
+            })
+    }
+}
+
+/// One registered package version and the digest of its bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Package {
+    pub kind: PackageKind,
+    pub name: String,
+    pub version: String,
+    /// SHA-256 of the package's bytes, hex. Computed by the producer;
+    /// the registry checks its shape and never overwrites it.
+    pub digest: String,
+    pub registered_at: Timestamp,
 }
 
 impl ModelRegistry {
@@ -232,6 +322,69 @@ impl ModelRegistry {
 
     pub fn len(&self) -> usize {
         self.cards.len()
+    }
+
+    /// Register a package of one of the four kinds under `name@version`.
+    ///
+    /// Refuses an unknown kind, a digest that is not 64 hex characters (a
+    /// digest nobody computed names nothing), and a second digest under a
+    /// version already registered — the same rule
+    /// [`Self::promote_artifact`] keeps for models, so a version names one
+    /// artifact whatever kind of package it is. Re-registering the same
+    /// digest is idempotent.
+    pub fn register_package(
+        &mut self,
+        kind: &str,
+        name: &str,
+        version: &str,
+        digest: &str,
+        at: Timestamp,
+    ) -> Result<()> {
+        let kind = PackageKind::parse(kind)?;
+        if name.trim().is_empty() || version.trim().is_empty() {
+            return Err(Error::invalid(
+                "a package needs a name and a version to be referenced by",
+            ));
+        }
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(Error::invalid(format!(
+                "{name}@{version} carries `{digest}`, which is not a SHA-256 digest; compute \
+                 the digest of the package's bytes and register that"
+            )));
+        }
+        let key = format!("{}:{name}@{version}", kind.as_str());
+        if let Some(existing) = self.packages.get(&key) {
+            if existing.digest == digest {
+                return Ok(());
+            }
+            return Err(Error::denied(format!(
+                "{} package {name}@{version} was registered at {} and these bytes digest to {digest}; \
+                 a version names one artifact — register the new bytes under a new version",
+                kind.as_str(),
+                existing.digest
+            )));
+        }
+        self.packages.insert(
+            key,
+            Package {
+                kind,
+                name: name.to_string(),
+                version: version.to_string(),
+                digest: digest.to_string(),
+                registered_at: at,
+            },
+        );
+        Ok(())
+    }
+
+    /// A registered package, by kind and `name@version`.
+    pub fn package(&self, kind: PackageKind, name: &str, version: &str) -> Option<&Package> {
+        self.packages
+            .get(&format!("{}:{name}@{version}", kind.as_str()))
+    }
+
+    pub fn packages(&self) -> impl Iterator<Item = &Package> {
+        self.packages.values()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -339,6 +492,118 @@ impl ModelRegistry {
             file_name: format!("{}.json", artifact.digest),
             contents,
         })
+    }
+
+    /// Record which of the references a promotion displaced is the one to
+    /// return to. With several displaced, the most recently deployed is the
+    /// parent: it is what production was running immediately beforehand.
+    /// A no-op for an empty `displaced`, because a first promotion has no
+    /// parent and must not be given one.
+    pub fn record_rollback_parent(&mut self, reference: &str, displaced: &[String]) -> Result<()> {
+        let mut parent: Option<(&String, i64)> = None;
+        for candidate in displaced {
+            let card = self.get(candidate).ok_or_else(|| {
+                Error::not_found(format!("displaced model {candidate} is not registered"))
+            })?;
+            let at = card.deployed_at.unwrap_or(card.created_at).as_nanos();
+            if parent.is_none_or(|(_, best)| at >= best) {
+                parent = Some((candidate, at));
+            }
+        }
+        let Some((parent, _)) = parent else {
+            return Ok(());
+        };
+        let parent = parent.clone();
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        card.rollback_parent = Some(parent);
+        Ok(())
+    }
+
+    /// Roll a production model back to the reference it displaced: the model
+    /// is retired and its recorded parent returns to production under the
+    /// artifact digest it was promoted with. Returns the parent.
+    ///
+    /// Refused, before anything changes, for a model that is not in
+    /// production, one that recorded no parent (nothing to go back to, and
+    /// guessing would be rolling back to a model nobody chose), or a parent
+    /// that holds no artifact digest, because a rollback that cannot say
+    /// which bytes it restores is not a rollback.
+    pub fn rollback(&mut self, reference: &str, at: Timestamp) -> Result<&ModelCard> {
+        let card = self
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if card.stage != ModelStage::Production {
+            return Err(Error::denied(format!(
+                "{reference} is in {:?}, not production; only a production model is rolled back",
+                card.stage
+            )));
+        }
+        let Some(parent) = card.rollback_parent.clone() else {
+            return Err(Error::denied(format!(
+                "{reference} recorded no parent when it was promoted, so there is nothing to \
+                 roll back to; promote a known-good version instead"
+            )));
+        };
+        let held = self.get(&parent).ok_or_else(|| {
+            Error::not_found(format!("the recorded parent {parent} is not registered"))
+        })?;
+        if held.artifact_digest.is_none() {
+            return Err(Error::denied(format!(
+                "the recorded parent {parent} holds no artifact digest, so a rollback could \
+                 not say which bytes it restores"
+            )));
+        }
+        self.retire(reference, at)?;
+        let restored = self
+            .get_mut(&parent)
+            .ok_or_else(|| Error::not_found(format!("the recorded parent {parent} vanished")))?;
+        restored.stage = ModelStage::Production;
+        restored.deployed_at = Some(at);
+        restored.retired_at = None;
+        Ok(restored)
+    }
+
+    /// Return a retired model to production: the rollback half of automatic
+    /// retirement (MODEL-045).
+    ///
+    /// Refused unless the card is retired, carries the artifact digest it was
+    /// promoted with (so what comes back is bytes that passed the gate, not a
+    /// card that merely exists), last evaluated as passed, and has not drifted
+    /// past its own threshold. A rollback to a model that is itself degraded
+    /// replaces one failure with another and says it recovered.
+    pub fn reactivate(&mut self, reference: &str, at: Timestamp) -> Result<()> {
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if card.stage != ModelStage::Retired {
+            return Err(Error::denied(format!(
+                "{reference} is not retired, so there is nothing to reactivate"
+            )));
+        }
+        if card.artifact_digest.is_none() {
+            return Err(Error::denied(format!(
+                "{reference} was never promoted with an artifact, so no known-good bytes exist \
+                 to roll back to"
+            )));
+        }
+        if card.latest_evaluation().is_none_or(|e| !e.passed) {
+            return Err(Error::denied(format!(
+                "{reference} cannot be reactivated without a passing evaluation"
+            )));
+        }
+        if card.drift_score > card.drift_threshold {
+            return Err(Error::denied(format!(
+                "{reference} has itself drifted to {:.3}, past its threshold {:.3}; it is not a \
+                 known-good model to roll back to",
+                card.drift_score, card.drift_threshold
+            )));
+        }
+        card.stage = ModelStage::Production;
+        card.deployed_at = Some(at);
+        card.retired_at = None;
+        Ok(())
     }
 
     /// Retire a model. Anything referencing it afterwards is rejected.

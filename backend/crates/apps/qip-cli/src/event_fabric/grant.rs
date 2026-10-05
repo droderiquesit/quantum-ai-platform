@@ -51,7 +51,7 @@ use qip_core::time::Duration;
 use qip_core::{CorrelationId, Decimal, Lineage, Timestamp};
 use qip_edge::envelope::sign_payload;
 use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record};
-use qip_events::event_fabric::policy::AckProfile;
+use qip_events::event_fabric::policy::{AckProfile, QosClass};
 use qip_events::{AnyEvent, Envelope, EventBody};
 use qip_mesh::spine::{CapitalGrantFrame, PolicyFrame};
 use qip_transport::breaker::BreakerPolicy;
@@ -687,6 +687,7 @@ pub fn publish(
         stream: fixture.stream(),
         partition: fixture.partition,
         producer_id: RELEASE_CONTROLLER.to_string(),
+        qos_class: QosClass::P0Control,
         ack_profile: AckProfile::Quorum,
         retry_policy: RetryPolicy::default(),
         breaker_policy: BreakerPolicy::default(),

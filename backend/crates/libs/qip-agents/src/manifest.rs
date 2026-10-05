@@ -258,7 +258,22 @@ impl AgentManifest {
             )));
         }
 
-        self.validate_separation_of_duties()
+        self.validate_separation_of_duties()?;
+
+        // EXPAND-053: the boundary is what a specialist abstains outside of,
+        // so a specialist without one has no edge to abstain at and would be
+        // asked everything. Blank entries are refused too: a list of empty
+        // strings declares nothing while passing an is_empty check. Checked
+        // after the separation of duties so a manifest that is unsafe is
+        // refused for being unsafe, the more consequential finding.
+        if self.competencies.iter().all(|c| c.trim().is_empty()) {
+            return Err(Error::invalid(format!(
+                "agent {} declares no competency boundary; list what it can answer with \
+                 `with_competencies` so it has something to abstain outside of",
+                self.id
+            )));
+        }
+        Ok(())
     }
 
     /// The prohibitions. Each is a combination that would collapse a control.

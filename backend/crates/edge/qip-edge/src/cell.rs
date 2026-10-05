@@ -1080,6 +1080,15 @@ pub struct Cell {
     /// capability reads as unavailable and the cell sizes at its conservative
     /// floor. A cell nobody ships policy to trades small, not blind.
     policy: Option<VerifiedPolicy>,
+    /// The payload `policy` replaced, kept resident so that a rollback is an
+    /// assignment and not a fetch (REFLEX-065). One step deep on purpose: a
+    /// history would be a menu of old, wider policies.
+    previous_policy: Option<VerifiedPolicy>,
+    /// The highest sequence ever applied. Replay discipline reads this and not
+    /// the applied payload's own sequence, because after a rollback the
+    /// applied payload is older than a sequence the centre already issued, and
+    /// that issued payload must not be replayable.
+    highest_policy_sequence: Option<u64>,
     /// Whether the centre has halted this cell through policy. Separate from
     /// the local kill switch on purpose: the switch clears only with an
     /// operator credential, while this clears only with a newer verified
@@ -1291,6 +1300,8 @@ impl Cell {
             deployed: BTreeMap::new(),
             autonomy: AutonomyController::new(),
             policy: None,
+            previous_policy: None,
+            highest_policy_sequence: None,
             policy_halted: false,
             policy_halt_barrier: None,
             polled_halt: None,
@@ -2340,7 +2351,7 @@ impl Cell {
                 self.config.cell_id
             )));
         }
-        if let Some(applied) = self.policy_sequence()
+        if let Some(applied) = self.highest_policy_sequence
             && verified.sequence() <= applied
         {
             return Err(Error::denied(format!(
@@ -2418,7 +2429,8 @@ impl Cell {
             });
         }
         self.policy_halted = halting;
-        self.policy = Some(verified);
+        self.previous_policy = self.policy.replace(verified);
+        self.highest_policy_sequence = Some(sequence);
         self.record_halt();
         // The sequence the cell has *applied*, recorded once the swap has
         // happened. Recording it before would publish a payload the cell might
@@ -2431,6 +2443,67 @@ impl Cell {
         // already accepted whole and never from one it went on to refuse.
         self.apply_region_share(sequence, now);
         Ok(())
+    }
+
+    /// Return to the payload the applied one replaced, with no fetch
+    /// (REFLEX-065).
+    ///
+    /// A rollback is for a payload that verified and then behaved badly, so it
+    /// may only narrow the cell's exposure to the centre's say-so, never widen
+    /// it: it is refused while any halt from the centre is in force (the
+    /// previous payload cannot release what the newer one imposed), refused
+    /// when the previous payload is itself a halt (halting is the centre's
+    /// act, not a side effect of a rollback), and refused once the previous
+    /// payload has outlived its `valid_for`, because serving a payload every
+    /// slot of which reads stale is a rollback in name only. The sequence
+    /// floor stays where the newer payload put it, so the rolled-away payload
+    /// cannot be replayed and only a strictly newer one can follow.
+    pub fn roll_back_policy(&mut self, now: Timestamp) -> Result<u64> {
+        let Some(previous) = self.previous_policy.as_ref() else {
+            return Err(Error::invalid(
+                "no previous policy payload is held; the centre must ship a corrected payload",
+            ));
+        };
+        if self.policy_halted {
+            return Err(Error::denied(
+                "the cell is halted by the centre; a rollback cannot release a halt,                  only a newer verified payload can",
+            ));
+        }
+        if previous.halted() {
+            return Err(Error::denied(
+                "the previous payload is a halt; a rollback cannot halt the cell",
+            ));
+        }
+        let payload = previous.payload();
+        if now < payload.issued_at || now > payload.issued_at.saturating_add(payload.valid_for) {
+            return Err(Error::denied(format!(
+                "the previous payload (sequence {}) is outside its validity window;                  the centre must ship a fresh one",
+                payload.sequence
+            )));
+        }
+        let narrowed: Vec<String> = payload
+            .narrowing(now)
+            .narrowed()
+            .iter()
+            .map(|(capability, freshness)| {
+                format!("{}:{}", capability.as_str(), freshness.as_str())
+            })
+            .collect();
+        let sequence = previous.sequence();
+        // The record names the sequence now serving, so the journal's last
+        // `policy_applied` is the package decisions are made under.
+        self.journal.record(
+            Decision::PolicyApplied {
+                sequence,
+                halted: false,
+                narrowed,
+            },
+            now,
+        );
+        self.policy = self.previous_policy.take();
+        self.metrics.policy_applied(sequence);
+        self.record_adversary_postures();
+        Ok(sequence)
     }
 
     /// The adversary posture the applied policy's slot 12 states for one of

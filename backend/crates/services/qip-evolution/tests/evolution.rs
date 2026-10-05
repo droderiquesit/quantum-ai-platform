@@ -1135,6 +1135,60 @@ fn a_band_only_rises_with_evidence() {
 }
 
 #[test]
+fn a_challenger_that_wins_one_regime_and_loses_the_other_is_reported_split_with_both_scorecards() {
+    use qip_evolution::scoring::Standing;
+    let mut board = Scoreboard::strategies();
+    // Calm: the challenger is right more often. Volatile: the champion is.
+    for round in 0..200 {
+        board.observe(Outcome::binary("champion", "calm", round % 5 != 0));
+        board.observe(Outcome::binary("challenger", "calm", round % 10 != 0));
+        board.observe(Outcome::binary("champion", "volatile", round % 10 != 0));
+        board.observe(Outcome::binary("challenger", "volatile", round % 5 != 0));
+    }
+    // The four numbers, flipped: challenger 0.9 / champion 0.8 in calm,
+    // challenger 0.8 / champion 0.9 in volatile.
+    let standing = board.head_to_head("champion", "challenger");
+    // Premise: both contexts produced a scorecard for each side, so the split
+    // below is not the absence of one regime.
+    assert_eq!(standing.standings.len(), 2);
+    let by_context: std::collections::BTreeMap<&str, Standing> = standing
+        .standings
+        .iter()
+        .map(|each| (each.champion.context(), each.standing))
+        .collect();
+    assert_eq!(by_context["calm"], Standing::ChallengerLeads);
+    assert_eq!(by_context["volatile"], Standing::ChampionLeads);
+    assert!(standing.is_split());
+    assert_eq!(standing.challenger_leads_in(), vec!["calm"]);
+    assert!(standing.summarise().starts_with("split; "));
+
+    // The overall ranking alone is the thing that hides this: pooled, the two
+    // read as equals.
+    let pooled_champion = board.pooled("champion").expect("seen").score();
+    let pooled_challenger = board.pooled("challenger").expect("seen").score();
+    assert!((pooled_champion - pooled_challenger).abs() < 1e-9);
+
+    // A challenger that leads everywhere is a win, not a split.
+    let mut sweep = Scoreboard::strategies();
+    for round in 0..200 {
+        for context in ["calm", "volatile"] {
+            sweep.observe(Outcome::binary("champion", context, round % 5 != 0));
+            sweep.observe(Outcome::binary("challenger", context, round % 10 != 0));
+        }
+    }
+    let swept = sweep.head_to_head("champion", "challenger");
+    assert_eq!(swept.challenger_leads_in(), vec!["calm", "volatile"]);
+    assert!(!swept.is_split());
+
+    // A context only one of them has been scored in is not compared.
+    board.observe(Outcome::binary("champion", "crisis", true));
+    assert_eq!(
+        board.head_to_head("champion", "challenger").standings.len(),
+        2
+    );
+}
+
+#[test]
 fn pooling_hides_a_spread_the_board_will_still_report() {
     let mut board = Scoreboard::strategies();
     for _ in 0..200 {

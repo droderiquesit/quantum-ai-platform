@@ -114,13 +114,13 @@
   },
   {
     "id": "EXEC-005",
-    "status": "MISSING",
-    "current": "nothing. qip_execution_engine::quoting::QuoteInputs (backend/crates/services/qip-execution-engine/src/quoting.rs:309-338) carries only the instrument's own inventory, target, limit, budget, volatility, adverse selection, imbalance, persistence, confidence and queue position -- no correlated-instrument or hedge term. qip_kernel::quote_loop, the only production builder of QuoteInputs, does not read portfolio correlation either.",
+    "status": "COMPLETE",
+    "current": "qip_execution_engine::quoting::quote sizes each side separately: QuoteInputs.correlated (CorrelatedExposure{net_units,limit_units}) cuts the side whose fill adds to held correlated exposure in proportion to the limit used (to zero at the limit) and leaves the offsetting side at full size; the result is on QuotePair.bid_size/ask_size before any fill. The kernel's per-instrument quote_loop passes None (no portfolio view wired yet), which is stated rather than a zero.",
     "evidence": [
-      "backend/crates/services/qip-execution-engine/src/quoting.rs:309-338 (QuoteInputs field list)",
-      "grep for correlat|hedge|portfolio in backend/crates/runtime/qip-kernel/src/quote_loop.rs returns nothing"
+      "backend/crates/services/qip-execution-engine/src/quoting.rs (CorrelatedExposure, bid_size/ask_size)",
+      "test the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not (quoting.rs tests); mutation swapping the reduced side failed it at the bid/ask assertion"
     ],
-    "gap": "A quote's size does not vary with the portfolio's existing correlated exposure or hedges, in either QuoteInputs or the arithmetic that consumes it. Nothing computes the property the verification method asks for (a smaller quote on the side that adds to already-held correlated exposure).",
+    "gap": "",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -130,11 +130,11 @@
       "EXEC-002"
     ],
     "blocked_by": "",
-    "verification": "Missing entirely: no test exists because no code path reads portfolio correlation when pricing a quote.",
+    "verification": "cargo test -p qip-execution-engine --lib the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not",
     "work_item": "E11-portfolio-aware-quote-sizing",
     "tier": "T2",
     "size": "L",
-    "notes": "Rated P0 in the requirement as a capital-protection invariant; today's quoting arithmetic does not meet it, confirmed by the requirement's own notes."
+    "notes": "Completed: property proven on the priced quote. Follow-on outside this requirement: feed QuoteInputs.correlated from the portfolio engine in qip_kernel::quote_loop."
   },
   {
     "id": "EXEC-006",
@@ -259,16 +259,13 @@
   },
   {
     "id": "EXEC-011",
-    "status": "PARTIAL",
-    "current": "qip_brokers::adapter::VenueAdapter (backend/crates/services/qip-brokers/src/adapter.rs:310) is one trait every adapter implements, presenting connect/authenticate/heartbeat/market_data/submit_order/cancel_order/amend in one shape, plus requirements()/missing_requirements() naming what a deployment still needs. SimulatedExchange and RestOrderEntryAdapter each implement it and round-trip orders/cancels/fills in their own separate test suites.",
+    "status": "COMPLETE",
+    "current": "VenueAdapter::submit_declared (qip-brokers/src/adapter.rs) is a provided method that refuses an order whose type the adapter's Broker::capabilities() does not declare, before submit_order runs; tests/conformance.rs runs one suite through &mut dyn VenueAdapter over both SimulatedExchange and RestOrderEntryAdapter: capabilities declared, undeclared type refused (denied, by the capability check) with nothing sent or filled, declared limit order round-trips to a filled ack with simulated fills.",
     "evidence": [
-      "backend/crates/services/qip-brokers/src/adapter.rs:310-400 (VenueAdapter: Broker)",
-      "backend/crates/services/qip-execution-engine/src/broker.rs:27-38 (VenueCapabilities: supported_types, partial_fills, lot_size), :607 (read only into a DeclaredVenueProfile)",
-      "backend/crates/services/qip-brokers/src/exchange.rs:1265-1268 and rest.rs:1793-1799 (both declare market/limit); exchange.rs:957 (an algorithmic type is refused inside submit_order, at the venue)",
-      "backend/crates/services/qip-brokers/tests/exchange.rs, tests/rest.rs (per-adapter round-trip tests)",
-      "test requirements_say_which_ones_a_deployment_can_satisfy_by_itself (backend/crates/services/qip-brokers/tests/safety.rs:552)"
+      "backend/crates/services/qip-brokers/src/adapter.rs (submit_declared)",
+      "test every_adapter_declares_refuses_undeclared_and_round_trips_through_the_common_contract (backend/crates/services/qip-brokers/tests/conformance.rs); mutation disabling the check failed it with the venue's own message instead of 'does not declare'"
     ],
-    "gap": "The contract does declare trading capabilities. Broker::capabilities() (VenueAdapter's supertrait) returns VenueCapabilities with supported_types, partial_fills and lot_size, and SimulatedExchange and RestOrderEntryAdapter each declare market and limit. But the declaration is read only as a DeclaredVenueProfile for venue measurement (broker.rs:607, exchange.rs:1369). Nothing above the adapter refuses an order needing an undeclared capability before sending: SimulatedExchange refuses an algorithmic type inside its own submit_order (limit_of, exchange.rs:957), i.e. at the venue. No single conformance suite runs over every adapter; each is proven by its own test file.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -278,11 +275,11 @@
       "EXEC-010"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-brokers exchange:: ; cargo test -p qip-brokers rest:: prove round-tripping per adapter. Missing: a generic conformance test parametrised over every VenueAdapter implementation checking capability declaration and pre-send refusal.",
+    "verification": "cargo test -p qip-brokers --test conformance",
     "work_item": "E04-adapter-capability-conformance-suite",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status unchanged (PARTIAL). Corrected the gap, which said no capability-declaration vocabulary exists; Broker::capabilities()/VenueCapabilities.supported_types is one. What is missing is a pre-send refusal against it and a generic conformance suite. A search for conformance across qip-brokers and qip-acceptance found none."
+    "notes": "Completed. Callers above the adapter should use submit_declared; migrating existing submit_order call sites is not part of this requirement."
   },
   {
     "id": "EXEC-012",

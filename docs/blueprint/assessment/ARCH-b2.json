@@ -570,9 +570,11 @@
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1533 the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two",
       "backend/crates/services/qip-streaming/src/pubsub.rs (PubSubBinding/PubSubTransport, refusing port); src/registry.rs:60-73 (TransportKind::PubSub)",
       "infrastructure/terraform/modules/secrets/main.tf:78 google_pubsub_topic.rotation (Secret Manager -> operator rotation notice)",
-      "infrastructure/terraform/modules/trust-zones/main.tf:587-609 google_pubsub_topic_iam_member fabric_publish/fabric_attach on var.control_fabric_topic; infrastructure/terraform/main.tf:466-493 (passed null)"
+      "infrastructure/terraform/modules/trust-zones/main.tf:587-609 google_pubsub_topic_iam_member fabric_publish/fabric_attach on var.control_fabric_topic; infrastructure/terraform/main.tf:466-493 (passed null)",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists"
     ],
-    "gap": "The requirement's Terraform scan is not clean and nothing tests it. Terraform creates one Pub/Sub topic (google_pubsub_topic.rotation, a Secret Manager rotation notification to an operator -- not internal messaging, but a scan will find it and the allowance should be recorded), and the trust-zones module still carries publish/attach bindings for a Pub/Sub 'control fabric' topic, passed null at main.tf:493 with a comment that 'whether it is Pub/Sub at all is open' -- which ADR 0099's adoption of this prohibition should now close. qip-streaming still offers PubSub as a selectable internal TransportKind (refusing). No acceptance test scans Terraform/workflows for Pub/Sub or Kafka used for internal messaging. The second clause -- 'every internal asynchronous contract is a Fabric schema' -- does not hold: internal async contracts are split across qip-events, qip-transport and qip-streaming's DurableLogTransport (ARCH-028).",
+    "gap": "The Terraform and dependency scan is now tested (blueprint_arch terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice and the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists). What remains: qip-streaming still offers PubSub as a selectable internal TransportKind (refusing), and the second clause, every internal asynchronous contract is a Fabric schema, does not hold because contracts are split across qip-events, qip-transport and qip-streaming's DurableLogTransport (ARCH-028).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -582,7 +584,7 @@
       "ARCH-028"
     ],
     "blocked_by": "",
-    "verification": "scripts/check-dependencies.sh; cargo test -p qip-acceptance --test architecture. Missing: an infrastructure acceptance test refusing google_pubsub_*/Kafka resources other than the recorded rotation-notice exception.",
+    "verification": "scripts/check-dependencies.sh; cargo test -p qip-acceptance --test architecture --test blueprint_arch. Missing: one Fabric schema family for every internal async contract (ARCH-028).",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
@@ -590,25 +592,27 @@
   },
   {
     "id": "ARCH-048",
-    "status": "MISSING",
-    "current": "nothing. No partner has been named, and no bridge code, module or rule exists.",
+    "status": "COMPLETE",
+    "current": "No partner bridge exists, and the guard that keeps it that way is a test: Terraform may declare only the recorded Pub/Sub rotation notice (and the two trust-zones bindings that stay empty while control_fabric_topic is null), no crate, module or workflow may be named for Kafka or a bridge without an ADR, and no backend manifest may name a Kafka or Pub/Sub client. Fabric semantics stay in the Rust crates by construction.",
     "evidence": [
-      "rg -i 'partner.*bridge|bridge.*kafka|bridge.*pub.?sub' backend/ infrastructure/ -> no relevant hits"
+      "rg -i 'partner.*bridge|bridge.*kafka|bridge.*pub.?sub' backend/ infrastructure/ -> no relevant hits",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_notice",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists"
     ],
-    "gap": "If a partner bridge were added today, nothing specifically enforces 'stateless and at the external boundary only' -- the only applicable control is the generic new-dependency ADR gate (ADR 0002/0009) that any Kafka/Pub/Sub client crate would have to pass regardless of where it sits.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "ARCH-047"
     ],
     "blocked_by": "",
-    "verification": "No test exists; not applicable until a partner need arises.",
+    "verification": "cargo test -p qip-acceptance --test blueprint_arch (3 passed; mutations: an extra Pub/Sub resource, a kafka-bridge module directory and a submodules file each failed the matching test, all restored)",
     "work_item": "E03",
     "tier": "T0",
     "size": "S",
-    "notes": "Conditional requirement with no phase and P2 priority; nothing to build until a partner integration is proposed, at which point a dependency record (ADR 0002/0009) is required in any case."
+    "notes": "Conditional requirement with no bridge to inspect: COMPLETE means the unreviewed appearance of one is refused, not that a bridge was built. A real bridge needs an ADR proving it stateless and boundary-only."
   }
 ]

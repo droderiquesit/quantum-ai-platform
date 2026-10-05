@@ -81,6 +81,54 @@ impl ClockEstimate {
     }
 }
 
+/// Why a normalized timestamp was moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CorrectionKind {
+    /// The venue-to-cell offset estimate was applied.
+    OffsetEstimate,
+    /// The result was raised to the previous output so time never runs backwards.
+    MonotonicFloor,
+}
+
+/// One adjustment made to a timestamp: what, by how much, from which source,
+/// and when.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClockCorrection {
+    pub kind: CorrectionKind,
+    /// Signed amount added to the time before this correction.
+    pub delta: Duration,
+    /// Capture time of the message the correction was applied to.
+    pub applied_at: Timestamp,
+    /// Observations behind the estimate at that moment.
+    pub samples: usize,
+    /// Published uncertainty of the estimate, in nanoseconds; zero for the floor.
+    pub uncertainty_nanos_f64: f64,
+}
+
+/// A normalized timestamp with its originals and the corrections between them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DisciplinedTime {
+    /// What the venue said, never altered.
+    pub venue_time: Timestamp,
+    /// When this cell saw it, never altered.
+    pub capture_time: Timestamp,
+    pub normalized: Timestamp,
+    /// In the order applied.
+    pub corrections: Vec<ClockCorrection>,
+}
+
+impl DisciplinedTime {
+    /// Undo every recorded correction, newest first, from the normalized time.
+    ///
+    /// Equals `venue_time` unless a correction saturated at the timestamp range.
+    pub fn reversed(&self) -> Timestamp {
+        self.corrections
+            .iter()
+            .rev()
+            .fold(self.normalized, |time, c| time.saturating_sub(c.delta))
+    }
+}
+
 /// Estimates the offset between a venue's clock and this cell's.
 #[derive(Debug)]
 pub struct ClockDiscipline {
@@ -205,19 +253,52 @@ impl ClockDiscipline {
     /// The result is never earlier than the previous result, whatever the
     /// estimate says.
     pub fn discipline(&mut self, venue_time: Timestamp) -> Timestamp {
-        let corrected = match self.estimate() {
-            Some(estimate) if estimate.trustworthy => estimate.corrected(venue_time),
-            _ => venue_time,
-        };
-        let emitted = match self.last_emitted {
-            Some(previous) if corrected < previous => {
-                self.clamped += 1;
-                previous
-            }
-            _ => corrected,
-        };
-        self.last_emitted = Some(emitted);
-        emitted
+        self.discipline_traced(venue_time, venue_time).normalized
+    }
+
+    /// [`Self::discipline`], keeping the lineage of every adjustment.
+    ///
+    /// The result holds the untouched venue and capture times beside the
+    /// normalized one, and one [`ClockCorrection`] per adjustment made, so a
+    /// normalized time that later looks wrong can be traced to the estimate or
+    /// the monotonic floor that moved it, and walked back with
+    /// [`DisciplinedTime::reversed`]. The floor is a correction in its own right:
+    /// it replaces a time with an earlier output and used to leave only a counter.
+    pub fn discipline_traced(
+        &mut self,
+        venue_time: Timestamp,
+        capture_time: Timestamp,
+    ) -> DisciplinedTime {
+        let mut corrections = Vec::new();
+        let mut normalized = venue_time;
+        if let Some(estimate) = self.estimate().filter(|estimate| estimate.trustworthy) {
+            normalized = estimate.corrected(venue_time);
+            corrections.push(ClockCorrection {
+                kind: CorrectionKind::OffsetEstimate,
+                delta: normalized.since(venue_time),
+                applied_at: capture_time,
+                samples: estimate.samples,
+                uncertainty_nanos_f64: estimate.uncertainty_nanos_f64,
+            });
+        }
+        if let Some(previous) = self.last_emitted.filter(|previous| normalized < *previous) {
+            self.clamped += 1;
+            corrections.push(ClockCorrection {
+                kind: CorrectionKind::MonotonicFloor,
+                delta: previous.since(normalized),
+                applied_at: capture_time,
+                samples: self.observations.len(),
+                uncertainty_nanos_f64: 0.0,
+            });
+            normalized = previous;
+        }
+        self.last_emitted = Some(normalized);
+        DisciplinedTime {
+            venue_time,
+            capture_time,
+            normalized,
+            corrections,
+        }
     }
 
     /// Forget the history, after a venue's clock has been stepped.

@@ -1239,5 +1239,127 @@
       "SEC"
     ],
     "notes": "G names agent/symbolic workers as the caller, and H draws only Vertex. Both are cognitive-plane research callers, so both are kept. G's row is more specific about protocol and mode and its wording is used. G's 'no execution dependency' is QUANT-008 and its 'eligible quantum jobs only' is QUANT-035. EXTERNAL_ACTION (from G p19) was dropped as not applicable. In-tree: HostedProvider is a library adapter with no production caller, qip-kernel attaches only SimulatedProvider, and no service identity is scoped to call IBM Quantum beyond membership of the 'optimisation' trust zone."
+  },
+  {
+    "id": "QUANT-037",
+    "domain": "QUANT",
+    "title": "A Problem Compiler classifies each problem and dispatches a classical baseline and quantum formulations in parallel, verifying returned candidates classically",
+    "statement": "Five steps: classify; extract variables and required proof properties; generate the classical baseline plus QUBO, Ising, kernel and variational formulations; dispatch in parallel; verify returned candidates classically and update the Solver Registry. The Solver Registry is undefined in the source.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "25",
+        "section": "\u00a711.2 Problem Compiler & Hybrid Compute Router"
+      },
+      {
+        "doc": "M12",
+        "page": "24",
+        "section": "\u00a711.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A problem yields a classical baseline in every run and a quantum candidate is accepted only after classical verification."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [
+      "ARCH"
+    ]
+  },
+  {
+    "id": "QUANT-038",
+    "domain": "QUANT",
+    "title": "A Compute Intelligence Router chooses a substrate from measured quality, calibration, latency, repeatability and cost and presumes none superior",
+    "statement": "The router chooses among Rust/CPU, GPU, TPU, quantum-inspired algorithms, IBM QPU hardware or parallel ensembles. Its policy learns from measurement; no substrate is presumed superior. No TPU, GPU or accelerator resource exists, and none is a synchronous dependency between tick and order.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "24-25",
+        "section": "\u00a711.1 Quantum-Classical Cognitive Compute Fabric"
+      },
+      {
+        "doc": "G3",
+        "page": "13",
+        "section": "\u00a711.6 Hybrid compute fabric"
+      },
+      {
+        "doc": "G3",
+        "page": "29",
+        "section": "\u00a727.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The router picks CPU when no accelerator is configured and records its measured basis for each choice."
+    },
+    "policy_flags": [
+      "COST",
+      "NON_RUST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ]
+  },
+  {
+    "id": "QUANT-039",
+    "domain": "QUANT",
+    "title": "Quantum, quantum-inspired and classical outputs enter ensembles as features, never as direct authority",
+    "statement": "Outputs of every substrate become ensemble features rather than direct authority. Quantum never establishes truth and never bypasses deterministic financial controls; QPU jobs remain asynchronous research workloads.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "25",
+        "section": "\u00a711.4 Quantum-Classical Ensemble Learning"
+      },
+      {
+        "doc": "M12",
+        "page": "25",
+        "section": "\u00a711.5 Hardware Evolution Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "No order-path function accepts a quantum result without a deterministic gate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ]
+  },
+  {
+    "id": "QUANT-040",
+    "domain": "QUANT",
+    "title": "Quantum research surface rows each carry a required classical check",
+    "statement": "Quantum runs on forecasting feature spaces, world-model subset selection, hedging, capital placement, arbitrage path search, model-society selection and simulation sampling, each with a named classical check such as executable cost or capital invariants. Capital placement and hedge baskets remain advisory.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "25",
+        "section": "\u00a711.3 Expanded Quantum Research Surface"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "For each domain implemented, the stated classical check runs and can reject the quantum candidate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ]
   }
 ]

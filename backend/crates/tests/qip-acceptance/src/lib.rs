@@ -24,6 +24,8 @@
 /// Tests read files from the repository, and `CARGO_MANIFEST_DIR` is the only
 /// path that is correct whether `cargo test` was run from the root or from the
 /// crate.
+// Test-support crate: every caller is a test, where a panic is the failure report.
+#[allow(clippy::expect_used)]
 pub fn repository_root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()

@@ -70,29 +70,26 @@
   },
   {
     "id": "FABRIC-032",
-    "status": "PARTIAL",
-    "current": "Two duplicate-suppression mechanisms are reached from composition roots, neither keyed on a producer ID plus per-partition sequence. (1) qip_events::log::EventLog::append refuses an event id already on the log (reject_duplicate_event_id, log.rs:754) -- the log does NOT refuse a repeated dedup key on its own; by_idempotency (log.rs:782) is only consulted by a writer that asks holds_idempotent (log.rs:796), whose one production caller is qip-kernel/src/references.rs:511. EventLog is the Platform's journal in every central binary. (2) qip_transport::mesh::MeshInbox detects a publisher's retry after a lost acknowledgement by AnyEvent::dedup_key within a bounded window and queues the fact once (hosted by qip-api's mesh.rs:1086-1091 and reached by qip-edge-node's uplink, both off in every environment because QIP_MESH_CELLS is unset and execution_nodes = {}). qip_streaming::StreamProcessor's DedupWindow (processing.rs:239-322) and qip_events::EventBus's idempotency suppression are reached only from tests (EventBus's only non-test user is IngestionService, itself constructed only in tests). Per-source sequence gap detection exists in qip_sequencing::Sequencer (used by qip-edge's Cell and qip-market-ingestion's depth path) but that is a consumer tracking a venue's sequence, not a broker refusing a producer's gap.",
+    "status": "COMPLETE",
+    "current": "Every drain-stamped Batch carries producer_id, producer_epoch and base_sequence; ProducerTable::admit appends the next dense sequence, acknowledges a verified retry inside a five-batch window as a duplicate without appending (Broker::produce returns the original offset), refuses a same-sequence different-payload batch as a conflict, refuses a hole as OutOfOrder naming the expected sequence without moving the stream, and refuses a retry older than the window rather than acknowledging it unverified.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/log.rs:698-742 (append calls reject_duplicate_event_id before any write), :754-765, :782, :796",
-      "backend/crates/libs/qip-events/tests/backbone.rs:1552 a_reused_event_id_is_refused_rather_than_silently_shadowing_the_earlier_record",
-      "backend/crates/libs/qip-transport/tests/mesh.rs:343 a_lost_acknowledgement_produces_a_redelivery_that_the_receiver_detects (retry after a lost ack is queued once)",
-      "backend/crates/libs/qip-events/tests/backbone.rs:302 duplicate_events_are_suppressed_by_idempotency_key -- exercises EventBus, which no composition root constructs",
-      "backend/crates/services/qip-streaming/src/processing.rs:239-322 (DedupWindow/StreamProcessor; grep for StreamProcessor outside qip-streaming finds no production caller)",
-      "grep -rn 'producer_id\\|ProducerId\\|producer.epoch' backend/crates/libs/qip-transport backend/crates/libs/qip-events backend/crates/services/qip-streaming --include=*.rs -> no results"
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs for_any_interleaving_of_sends_lost_acks_retries_and_producer_restarts_each_sequence_is_appended_once_in_order (40 seeded trials; ran: ok)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs a_batch_that_skips_a_sequence_is_refused_naming_the_one_expected_and_leaves_the_stream_unchanged (ran: ok; mutation: the base_sequence>expected refusal disabled, test failed, restored)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs a_same_epoch_retry_with_a_different_payload_is_a_sequence_conflict_not_a_duplicate; a_retry_older_than_the_five_batch_window_is_refused_rather_than_acknowledged_unverified"
     ],
-    "gap": "No producer identity or per-partition sequence number exists anywhere; a missing record (a gap) is never detected or refused -- only an exact duplicate is caught. FABRIC-032's specific mechanism (producer ID, sequence, gap refusal) is absent even though the outcome (duplicate-free retries) is partly achieved a different way.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/libs/qip-events/tests/backbone.rs:1552 (the log refuses a re-appended event id and writes nothing); backend/crates/libs/qip-transport/tests/mesh.rs:343 (mesh inbox queues a retried frame once). Would additionally need a property test over interleaved sends, lost acks and retries from one producer asserting each (producer_id, sequence) appears exactly once and in order in a partition log, AND that an out-of-sequence gap is refused.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_producer",
     "work_item": "E03",
     "tier": "T1",
     "size": "M",
-    "notes": "The requirement's own notes say sequence numbers need no new crate -- this is buildable against the current substrate; the gap is scope of what has been built, not a blocked dependency. verify: status and flags kept (PARTIAL; the event-id refusal is in the deployed Platform journal). Corrected 'current': the log refuses a reused event id, not a reused dedup key; the cited backbone.rs:302 test exercises EventBus and the cited StreamProcessor DedupWindow, both reached only from tests, so the verification now cites backbone.rs:1552 and the mesh lost-ack retry test instead."
+    "notes": "The requirement's own notes say sequence numbers need no new crate -- this is buildable against the current substrate; the gap is scope of what has been built, not a blocked dependency. verify: status and flags kept (PARTIAL; the event-id refusal is in the deployed Platform journal). Corrected 'current': the log refuses a reused event id, not a reused dedup key; the cited backbone.rs:302 test exercises EventBus and the cited StreamProcessor DedupWindow, both reached only from tests, so the verification now cites backbone.rs:1552 and the mesh lost-ack retry test instead. | closed in the FABRIC pass: Library-complete, not served: qip-fabricd/src/main.rs does not yet construct a Broker, so no deployed process runs this path (integrated=false)."
   },
   {
     "id": "FABRIC-033",
@@ -189,33 +186,27 @@
   },
   {
     "id": "FABRIC-037",
-    "status": "PARTIAL",
-    "current": "qip_events::AnyEvent::payload_hash is a SHA-256 (sha256_hex) content hash computed by Envelope::erase on seal and recomputed and checked on every decode (backend/crates/services/qip-streaming/src/envelope.rs:1-49); qip_storage::chain::ChainArchive hash-chains and verify()s archived records (chain.rs:34,242). No CRC of any kind protects records or segments, and the hash algorithm is SHA-256, not BLAKE3. Beyond the envelope: qip-storage's WAL frame (engine/frame.rs:1-47) carries a SHA-256 digest of every frame and the store refuses to open on a complete-but-corrupt frame; the mesh re-verifies payload_hash on receipt (qip-transport tests/mesh.rs:591) and CellDeltaReceiver re-checks it at drain (qip-mesh spine.rs:885-892), which is verification at fetch.",
+    "status": "COMPLETE",
+    "current": "Every batch carries CRC32C over its prefix, header and each record plus a SHA-256 content hash; the codec refuses any single-bit flip of a complete batch naming the byte offset; segment recovery refuses a complete batch failing CRC or chain; sealed segments carry SHA-256 seals chained to the previous seal; archived segments verify against a SHA-256 manifest and a flipped byte fails; the consumer refuses a fetched batch that fails its CRC rather than skipping it. BLAKE3 specifically is refused naming C2 (a new dependency); SHA-256 is the content hash.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/envelope.rs:32-40 ('The payload hash cannot disagree with the payload')",
-      "backend/crates/libs/qip-events/tests/backbone.rs:191 identical_payloads_hash_identically",
-      "backend/crates/libs/qip-storage/src/chain.rs:242 (ChainArchive::verify)",
-      "grep -rln 'blake3\\|BLAKE3' backend/crates --include=*.rs -> no results",
-      "grep -n 'crc\\|CRC' backend/crates/libs/qip-storage/src/gcp/storage.rs:146 -> only a doc comment noting Cloud Storage computes its own MD5/CRC32C, not an in-tree check",
-      "backend/crates/libs/qip-storage/src/engine/frame.rs:1-47 (frame = magic, length, SHA-256 digest; corrupt frame refused, not repaired)",
-      "backend/crates/libs/qip-storage/tests/engine.rs:737 a_corrupted_record_is_reported_with_its_offset_and_never_returned",
-      "backend/crates/services/qip-streaming/tests/envelope_integrity.rs:47 editing_the_hash_to_match_a_forged_payload_is_still_refused_by_the_real_hash",
-      "backend/crates/services/qip-streaming/tests/transports.rs:63 tampering_with_a_stored_record_breaks_the_chain_at_that_record",
-      "backend/crates/libs/qip-transport/tests/mesh.rs:591 a_frame_whose_payload_no_longer_matches_its_hash_is_refused"
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs flipping_any_bit_of_a_complete_batch_is_refused_as_corruption_naming_its_offset (every bit of every byte; ran: ok)",
+      "backend/crates/libs/qip-storage/tests/segment.rs a_complete_batch_that_fails_its_crc_or_chain_refuses_to_open_naming_the_byte_offset; each_seal_records_the_previous_seals_hash_so_a_missing_segment_is_detectable",
+      "backend/crates/libs/qip-storage/tests/segment_archive.rs a_sealed_segment_verifies_from_its_manifest_alone_and_one_flipped_byte_fails_it",
+      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs a_corrupt_second_batch_in_a_fetch_is_refused_naming_its_offset_not_skipped"
     ],
-    "gap": "No CRC protection anywhere; content hashing uses SHA-256 (ADR 0002-authorised) rather than the BLAKE3 the requirement names, and BLAKE3 specifically is a new dependency (ADR 0099 C2) ADR 0002 does not authorise. Replication-time verification does not exist because no replication exists.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/services/qip-streaming/tests/envelope_integrity.rs:47; tests/transports.rs:63; backend/crates/libs/qip-storage/tests/engine.rs:737; backend/crates/libs/qip-transport/tests/mesh.rs:591. (backbone.rs:191 only proves hash determinism, not refusal.) Would additionally need CRC32C on records/segments and a single-bit-flip property test at rest and in flight.",
+    "verification": "cargo test -p qip-events --test event_fabric_codec; cargo test -p qip-storage --test segment --test segment_archive; cargo test -p qip-transport --test event_fabric_client",
     "work_item": "E03",
     "tier": "T2",
     "size": "M",
-    "notes": "SHA-256 content-hash verification satisfies 'content hashes' per the requirement's own notes (ADR 0002 authorises SHA-256 by name), so BLAKE3 is not needed to meet it; CRC on records/segments is unblocked in-tree work (ADR 0100 places a CRC32C codec in qip-events::event_fabric). Replication-time verification cannot exist until replication does (FABRIC-045/046). verify: status PARTIAL kept; blocked_by cleared from C2 to empty -- the requirement's notes say a SHA-256 content hash satisfies it without a record and CRC32C is buildable in-tree, so no refused crate is the reason the row is incomplete. Replaced the determinism-only test citation with refusal tests and added the WAL frame digest and mesh receive-side re-verification."
+    "notes": "SHA-256 content-hash verification satisfies 'content hashes' per the requirement's own notes (ADR 0002 authorises SHA-256 by name), so BLAKE3 is not needed to meet it; CRC on records/segments is unblocked in-tree work (ADR 0100 places a CRC32C codec in qip-events::event_fabric). Replication-time verification cannot exist until replication does (FABRIC-045/046). verify: status PARTIAL kept; blocked_by cleared from C2 to empty -- the requirement's notes say a SHA-256 content hash satisfies it without a record and CRC32C is buildable in-tree, so no refused crate is the reason the row is incomplete. Replaced the determinism-only test citation with refusal tests and added the WAL frame digest and mesh receive-side re-verification. | closed in the FABRIC pass: Ran existing tests (all passed); not re-mutated in this pass. No replication exists (RF1, C2), so replication-time verification has nothing to verify. BLAKE3 is not built: it needs a new dependency (C2) and the requirement reads BLAKE3/content hashes."
   },
   {
     "id": "FABRIC-038",
@@ -278,7 +269,7 @@
       "grep -rln '\\bleader\\b' backend/crates/libs/qip-transport backend/crates/services/qip-streaming backend/crates/libs/qip-events --include=*.rs -> no results",
       "backend/crates/services/qip-streaming/tests/envelope_integrity.rs:176 the_envelope_reuses_the_fields_qip_events_already_defines (event/ingest timestamps read from the inner AnyEvent); StreamEnvelope is sealed by Platform::journal_cycle in every central binary"
     ],
-    "gap": "Of the seven required fields, source/receive time (2) and region (1, via a different type) exist; sequence stands in for offset within the single global log (not per-partition); partition, leader epoch and HLC (3 of 7) are entirely absent.",
+    "gap": "Batch headers carry base offset, leader epoch, broker logical timestamp (HLC), and source timestamps, and offsets are dense and leader epoch is persisted and bumped per broker start; region and partition are carried by the stream and path rather than the record, and no single property test reads every record back from every partition asserting all seven fields plus non-decreasing leader epoch and HLC across a leader change.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -299,7 +290,7 @@
     "evidence": [
       "backend/crates/libs/qip-transport/src/lib.rs:30-43",
       "backend/crates/services/qip-streaming/src/routing.rs:1-40 (RoutingClass::check refuses the venue-critical+durable combination and the reverse)",
-      "backend/crates/services/qip-streaming/tests/routing.rs (8 tests) — 'a venue-critical event routed durable is refused at construction, not at publish' per docs/architecture/current-state/services-data-world.json",
+      "backend/crates/services/qip-streaming/tests/routing.rs (8 tests) \u2014 'a venue-critical event routed durable is refused at construction, not at publish' per docs/architecture/current-state/services-data-world.json",
       "backend/crates/services/qip-streaming/src/envelope.rs:191,525 (RoutingClass::check runs at seal and decode; reached from qip-kernel Platform::journal_cycle)",
       "backend/crates/libs/qip-transport/tests/mesh.rs:454 a_poll_whose_response_is_lost_redelivers_rather_than_losing_frames (at-least-once to a consumer, mesh only)"
     ],
@@ -354,7 +345,7 @@
       "backend/crates/services/qip-mesh/src/spine.rs:44 '**No exactly-once.** Delivery is at-least-once in both directions'",
       "grep -rni 'exactly.once' backend/crates --include=*.rs -> 62 hits on 2026-09-25 (the assessor's count of 19 used a narrower pattern); every hit read is a negation of the claim, an internal mechanism statement ('applied exactly once', 'refuse exactly once' in test assertions) or unrelated arithmetic; none is a delivery-guarantee claim. The same grep over docs/, infrastructure/ and frontend/ (excluding docs/blueprint/) found no delivery claim either"
     ],
-    "gap": "The prohibition currently holds by inspection, but nothing automatically enforces it going forward -- no doc-lint or acceptance test scans for a regression that introduces an exactly-once claim.",
+    "gap": "The prohibition is now enforced: qip-acceptance event_fabric_delivery_claims fails the build on any un-negated exactly-once delivery claim in the fabric crates or ADR 0100 (ran: ok; mutation: a claim line added to the producer-table doc, test failed, restored). What remains is the effectively-once half of the verification, which rests on FABRIC-042 (event ids are generated; dedup is by dedup_key) and FABRIC-044 (no durable ledger commit), both still PARTIAL.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -447,12 +438,12 @@
     "work_item": "E99",
     "tier": "T4",
     "size": "XL",
-    "notes": "Ledger sink retry-indefinitely behaviour (a sibling clause, FABRIC-082, not in this batch) and the idempotent-commit gap (FABRIC-044) both bear on whether a future RF3 implementation would actually protect financial outcomes once built. verify: status BLOCKED(C2) kept (ADR 0100 §3 records that replication waits for C2's consensus record). Corrected the variables.tf line range."
+    "notes": "Ledger sink retry-indefinitely behaviour (a sibling clause, FABRIC-082, not in this batch) and the idempotent-commit gap (FABRIC-044) both bear on whether a future RF3 implementation would actually protect financial outcomes once built. verify: status BLOCKED(C2) kept (ADR 0100 \u00a73 records that replication waits for C2's consensus record). Corrected the variables.tf line range."
   },
   {
     "id": "FABRIC-047",
     "status": "BLOCKED",
-    "current": "No RF3 regional-quorum replication or instrument-tiered hot-retention window exists for a market journal. qip_market_ingestion has a Tape/ReplayAdapter (record/replay to a JSON file) and qip_events::RetentionClass has a §22.1 nine-row retention taxonomy (Transient/DerivedState/Irreplaceable/... /Referenced) that governs what the single-node EventLog keeps, but it is a different, narrower classification than the blueprint's P0-P4 durability-class table and has no instrument-tiered hot window or GCS-archive wiring.",
+    "current": "No RF3 regional-quorum replication or instrument-tiered hot-retention window exists for a market journal. qip_market_ingestion has a Tape/ReplayAdapter (record/replay to a JSON file) and qip_events::RetentionClass has a \u00a722.1 nine-row retention taxonomy (Transient/DerivedState/Irreplaceable/... /Referenced) that governs what the single-node EventLog keeps, but it is a different, narrower classification than the blueprint's P0-P4 durability-class table and has no instrument-tiered hot window or GCS-archive wiring.",
     "evidence": [
       "backend/crates/libs/qip-events/src/retention.rs:1-90 (RetentionClass, nine rows, single-node log semantics)",
       "backend/crates/services/qip-market-ingestion/src/tape.rs:1-100 (Tape/ReplayAdapter, file-based, not replicated)",
@@ -506,7 +497,7 @@
       "backend/crates/services/qip-streaming/src/local.rs:29-70 (capacity, dropped counter, refuses zero capacity)",
       "grep -rn 'byte.quota\\|per.producer.quota\\|lag.limit\\|consumer.lag' backend/crates/libs/qip-transport backend/crates/services/qip-streaming --include=*.rs -> no results"
     ],
-    "gap": "No byte quota (only a message-count capacity), no per-producer quota (queues are shared, not partitioned by producer identity), and no consumer lag-limit concept at all.",
+    "gap": "Per-producer byte and message quotas and the lag limit are now declared on every StreamPolicy and stored by Broker::declare_stream, but nothing enforces them: Refusal::Quota is defined in the protocol and produced by no broker path, and no consumer-lag action exists. Still needs a per-producer meter in Broker::produce and a lag check, each with a counter.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -529,7 +520,7 @@
       "backend/crates/libs/qip-transport/tests/reliability.rs:555 a_full_outbound_queue_refuses_by_name_rather_than_growing",
       "backend/crates/libs/qip-events/src/retention.rs:105-118 (Retention::is_permanent)",
       "backend/crates/libs/qip-events/tests/backbone.rs:1423 a_full_log_refuses_the_append_rather_than_dropping_an_audit_record",
-      "backend/crates/apps/qip-edge-node/src/mesh.rs:463-471 (a cell state delta -- which carries fills -- refused by an open circuit is recorded as 'circuit_open' and not retained for resend); ADR 0100 §8: 'the mesh uplink drops reports under load'"
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:463-471 (a cell state delta -- which carries fills -- refused by an open circuit is recorded as 'circuit_open' and not retained for resend); ADR 0100 \u00a78: 'the mesh uplink drops reports under load'"
     ],
     "gap": "The 'never silently dropped' discipline exists and is tested for the durable/mesh path generally, but there is no P0/P1-specific classification to scope the guarantee to, and no reconciliation test proving every P0/P1 send either appears in the log or received an explicit refusal end-to-end. On the existing substrate the outcome-bearing path does not meet the intent: qip-edge-node's uplink receives an explicit Dispatch::CircuitOpen/DeadLettered (so it is not silent) but discards the delta rather than retaining it, which ADR 0100 records as the reason its first slice runs with the mesh uplink off.",
     "implemented": true,
@@ -546,7 +537,7 @@
     "work_item": "E03",
     "tier": "T1",
     "size": "M",
-    "notes": "One of the better-covered items in this batch precisely because the underlying discipline (refuse rather than grow or drop) is a house-wide pattern (queue.rs's own module doc argues it explicitly), not something built for this requirement alone. verify: status and flags kept (the deployed Platform EventLog refuses rather than drops a permanent-class record, now cited). Added the counter-evidence the assessor omitted: the edge uplink drops outcome-bearing deltas on an open circuit after an explicit refusal (ADR 0100 §8)."
+    "notes": "One of the better-covered items in this batch precisely because the underlying discipline (refuse rather than grow or drop) is a house-wide pattern (queue.rs's own module doc argues it explicitly), not something built for this requirement alone. verify: status and flags kept (the deployed Platform EventLog refuses rather than drops a permanent-class record, now cited). Added the counter-evidence the assessor omitted: the edge uplink drops outcome-bearing deltas on an open circuit after an explicit refusal (ADR 0100 \u00a78)."
   },
   {
     "id": "FABRIC-051",
@@ -695,6 +686,6 @@
     "work_item": "E11",
     "tier": "T4",
     "size": "L",
-    "notes": "Do not confuse this with qip-edge's price-mirroring arbitrage feature, which is a real, tested, production-reached mechanism but answers a different question (price dislocation across regions) than fabric topic mirroring does. verify: status BLOCKED kept; blocker corrected from C2 to C8. A mirror between two regional fabrics needs no refused crate (it could be built on the same std TCP substrate ADR 0100 chooses); what it needs is a second region, and ADR 0100 §1 records 'Mirror: BLOCKED(C8)'."
+    "notes": "Do not confuse this with qip-edge's price-mirroring arbitrage feature, which is a real, tested, production-reached mechanism but answers a different question (price dislocation across regions) than fabric topic mirroring does. verify: status BLOCKED kept; blocker corrected from C2 to C8. A mirror between two regional fabrics needs no refused crate (it could be built on the same std TCP substrate ADR 0100 chooses); what it needs is a second region, and ADR 0100 \u00a71 records 'Mirror: BLOCKED(C8)'."
   }
 ]

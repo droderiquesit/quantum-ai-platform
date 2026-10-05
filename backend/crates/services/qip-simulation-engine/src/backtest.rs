@@ -571,7 +571,20 @@ impl Backtester {
                     // `Decimal::ZERO` when the total was not representable, so
                     // the one order whose cost the money type could not hold
                     // was the one order booked as free.
-                    portfolio.apply_fill(object, quantity, fill_price, cost.charged(), at, None);
+                    // A fill the book refuses (an instrument priced in a unit
+                    // it holds no cash in) is a rejected order, not a free
+                    // one and not a silently converted one.
+                    if let Err(refusal) =
+                        portfolio.apply_fill(object, quantity, fill_price, cost.charged(), at, None)
+                    {
+                        rejected.push(RejectedOrder {
+                            at,
+                            object_id: object_key.clone(),
+                            quantity,
+                            reason: refusal.to_string(),
+                        });
+                        continue;
+                    }
                     fills.push(SimulatedFill {
                         at,
                         object_id: object_key.clone(),

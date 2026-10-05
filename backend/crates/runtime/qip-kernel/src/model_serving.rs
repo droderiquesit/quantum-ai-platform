@@ -56,6 +56,32 @@ use std::collections::BTreeMap;
 /// records the way the venue review's records are picked out by origin.
 pub const MODEL_PROMOTION_ORIGIN: &str = "kernel/model-promotion";
 
+/// Who produced a promotion candidate (blueprint section 10, MODEL-067).
+///
+/// Deploy candidates come from the training pipeline and nowhere else. The
+/// quantum gateway's output is a control signal (a selection or search
+/// result) that may inform a classical candidate, and that candidate arrives
+/// here as [`Self::QuantumInformed`] carrying the reference of the classical
+/// baseline it was compared against. A quantum result presented as the
+/// candidate itself is [`Self::QuantumGateway`], and is refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelProducer {
+    TrainingPipeline,
+    QuantumGateway,
+    QuantumInformed { baseline: String },
+}
+
+impl ModelProducer {
+    fn default_pipeline() -> Self {
+        Self::TrainingPipeline
+    }
+
+    fn is_training_pipeline(&self) -> bool {
+        matches!(self, Self::TrainingPipeline)
+    }
+}
+
 /// The distillate a promotion names to the cells: the name the compiled
 /// plan carries the model under and the digest `Cell::check_models_promoted`
 /// compares against.
@@ -96,6 +122,13 @@ pub struct ModelPromotion {
     /// it on the next manifest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub displaced: Vec<String>,
+    /// Who produced the candidate. Absent from records written before the
+    /// field existed, all of which came from the training pipeline.
+    #[serde(
+        default = "ModelProducer::default_pipeline",
+        skip_serializing_if = "ModelProducer::is_training_pipeline"
+    )]
+    pub producer: ModelProducer,
     pub at: Timestamp,
 }
 
@@ -149,17 +182,28 @@ impl ModelManifestIssue {
 /// each record exactly as [`Platform::promote_model`] applied it.
 pub(crate) fn resume_model_promotions(log: &EventLog) -> Result<BTreeMap<String, ModelPromotion>> {
     let mut promoted = BTreeMap::new();
+    for record in promotions_in(log)? {
+        apply_promotion(&mut promoted, record);
+    }
+    Ok(promoted)
+}
+
+/// Every promotion the log holds, in log order, including those since
+/// displaced.
+fn promotions_in(log: &EventLog) -> Result<Vec<ModelPromotion>> {
+    let mut records = Vec::new();
     for event in log.events() {
         if event.topic != ModelPromotion::TOPIC || event.lineage.producer != MODEL_PROMOTION_ORIGIN
         {
             continue;
         }
-        let record = StreamEnvelope::from_frame(event)
-            .and_then(|envelope| envelope.decode::<ModelPromotion>())?
-            .body;
-        apply_promotion(&mut promoted, record);
+        records.push(
+            StreamEnvelope::from_frame(event)
+                .and_then(|envelope| envelope.decode::<ModelPromotion>())?
+                .body,
+        );
     }
-    Ok(promoted)
+    Ok(records)
 }
 
 /// One apply for the live path and the replay, so they cannot diverge.
@@ -215,6 +259,72 @@ impl Platform {
         displaced: &[String],
         now: Timestamp,
     ) -> Result<PublishedArtifact> {
+        self.promote_model_from(
+            ModelProducer::TrainingPipeline,
+            registry,
+            artifact,
+            distilled,
+            displaced,
+            now,
+        )
+    }
+
+    /// [`Self::promote_model`] for a candidate whose producer is named.
+    ///
+    /// Refuses a candidate produced by the quantum gateway, and a
+    /// quantum-informed one whose classical baseline is not on record with a
+    /// fitted calibration (ADR 0006): a quantum-informed candidate is
+    /// admitted only with its baseline comparison attached.
+    pub fn promote_model_from(
+        &mut self,
+        producer: ModelProducer,
+        registry: &mut ModelRegistry,
+        artifact: &ModelArtifact,
+        distilled: Option<&DistilledModel>,
+        displaced: &[String],
+        now: Timestamp,
+    ) -> Result<PublishedArtifact> {
+        match &producer {
+            ModelProducer::TrainingPipeline => {}
+            ModelProducer::QuantumGateway => {
+                return Err(Error::denied(format!(
+                    "{} is not promoted: its producer is the quantum gateway, whose output is a \
+                     control signal and never a deploy candidate; train a classical candidate \
+                     informed by it and promote that",
+                    artifact.reference
+                )));
+            }
+            ModelProducer::QuantumInformed { baseline } => {
+                crate::central::models::require_calibrated_baseline(registry, baseline).map_err(
+                    |error| {
+                        Error::denied(format!(
+                            "{} is not promoted: a quantum-informed candidate needs its \
+                             classical baseline comparison attached: {}",
+                            artifact.reference,
+                            error.message()
+                        ))
+                    },
+                )?;
+            }
+        }
+        // A version names one artifact for good (MODEL-034). The log is the
+        // history, so the first digest a reference was ever promoted under is
+        // read from it: a registry that forgot the card, a restarted desk
+        // whose fit counter began again at the same version, and a retired
+        // reference are all caught here, where the registry's own per-card
+        // refusal cannot see them.
+        if let Some(first) = promotions_in(self.event_log())?
+            .into_iter()
+            .find(|record| record.reference == artifact.reference)
+            && first.artifact_digest != artifact.digest
+        {
+            return Err(Error::denied(format!(
+                "{} is not promoted: the log records it first promoted at artifact {}, and this \
+                 artifact is {}; a version names one artifact, so publish the new bytes under a \
+                 new version",
+                artifact.reference, first.artifact_digest, artifact.digest
+            )));
+        }
         let served = self.model_provider.serve(artifact).map_err(|error| {
             Error::denied(format!(
                 "{} is not promoted: {}",
@@ -241,6 +351,12 @@ impl Platform {
         for reference in displaced {
             scratch.retire(reference, now)?;
         }
+        // EXPAND-038: the promotion records what it displaced as the rollback
+        // parent, on the same scratch, so the record that says a model went
+        // live and the record of where to go back to are one write or none.
+        // Done after the retirements and from the pre-retirement deploy
+        // times, which retire does not touch.
+        scratch.record_rollback_parent(&artifact.reference, displaced)?;
         let record = ModelPromotion {
             reference: artifact.reference.clone(),
             name,
@@ -252,12 +368,89 @@ impl Platform {
                 digest: model.digest(),
             }),
             displaced: displaced.to_vec(),
+            producer,
             at: now,
         };
         self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
         *registry = scratch;
         apply_promotion(&mut self.model_promotions, record);
         Ok(published)
+    }
+
+    /// Retire a degraded promoted model and reactivate the one it displaced:
+    /// automatic retirement with rollback to the last known-good (MODEL-045).
+    ///
+    /// The predecessor is read from the log, not from the caller: the records
+    /// this promotion displaced, newest first, each taken back at the digest
+    /// it was first promoted under (which is the digest that passed the gate,
+    /// and which [`Self::promote_model_from`] guarantees is the only one that
+    /// reference ever carried). A predecessor the registry will not
+    /// reactivate (drifted itself, never carried an artifact) is skipped for
+    /// the one before it. Same discipline as a promotion: a scratch registry,
+    /// the record journalled first, then adopted, so a refused rollback leaves
+    /// the log and the registry as they were. Returns the reactivated
+    /// reference.
+    pub fn rollback_model(
+        &mut self,
+        registry: &mut ModelRegistry,
+        degraded: &str,
+        now: Timestamp,
+    ) -> Result<String> {
+        let active = self
+            .model_promotions
+            .get(degraded)
+            .cloned()
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "{degraded} is not in the promoted set, so there is nothing to roll back from"
+                ))
+            })?;
+        let history = promotions_in(self.event_log())?;
+        let mut refusals = Vec::new();
+        for predecessor in active.displaced.iter().rev() {
+            let Some(original) = history
+                .iter()
+                .find(|record| &record.reference == predecessor)
+            else {
+                refusals.push(format!("{predecessor} has no promotion record in the log"));
+                continue;
+            };
+            let mut scratch = registry.clone();
+            if let Err(error) = scratch.reactivate(predecessor, now) {
+                refusals.push(error.message().to_string());
+                continue;
+            }
+            // The card must carry the digest the log first recorded: what
+            // comes back is the artifact that passed, not a card edited since.
+            if scratch
+                .get(predecessor)
+                .and_then(|card| card.artifact_digest.as_deref())
+                != Some(original.artifact_digest.as_str())
+            {
+                refusals.push(format!(
+                    "{predecessor}'s card does not carry the digest the log first recorded for it"
+                ));
+                continue;
+            }
+            scratch.retire(degraded, now)?;
+            let record = ModelPromotion {
+                displaced: vec![degraded.to_string()],
+                at: now,
+                ..original.clone()
+            };
+            self.journal_record(record.clone(), MODEL_PROMOTION_ORIGIN, now)?;
+            *registry = scratch;
+            apply_promotion(&mut self.model_promotions, record);
+            return Ok(predecessor.clone());
+        }
+        Err(Error::not_found(format!(
+            "{degraded} has no known-good predecessor to roll back to: {}",
+            if refusals.is_empty() {
+                "it displaced nothing".to_string()
+            } else {
+                refusals.join("; ")
+            }
+        )))
     }
 
     /// The `trained_models` slot: every promoted distillate by the digest a

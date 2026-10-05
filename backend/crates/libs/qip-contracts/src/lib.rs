@@ -27,6 +27,7 @@
 //!   reached the decision at all — and refuses to report a net figure that its
 //!   parts do not sum to.
 
+pub mod ambient;
 pub mod capital;
 pub mod degradation;
 pub mod edge;
@@ -35,8 +36,10 @@ pub mod feature;
 pub mod gate;
 pub mod governance;
 pub mod intent;
+pub mod knowledge_pack;
 pub mod ledger;
 pub mod market_event;
+pub mod market_state;
 pub mod message;
 pub mod policy;
 pub mod reflex;

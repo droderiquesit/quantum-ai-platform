@@ -8,13 +8,23 @@
 //! answer and says so rather than approximating.
 
 use crate::l2::L2Book;
-use crate::l3::{L3Book, QueuePosition};
+use crate::l3::{L3Book, L3Checkpoint, QueuePosition};
 use crate::ladder::LevelWalk;
 use crate::snapshot::BookKind;
+use crate::snapshot::BookSnapshot;
 use crate::view::BookView;
 use qip_contracts::{BookSide, MessageBody};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use serde::{Deserialize, Serialize};
+
+/// What a [`Book`] needs to be rebuilt mid-history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BookCheckpoint {
+    OrderByOrder(L3Checkpoint),
+    /// An aggregated book is its levels, so the level snapshot is complete.
+    Aggregated(BookSnapshot),
+}
 
 /// A venue's book, at whatever resolution the venue publishes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,6 +59,33 @@ impl Book {
         match self {
             Self::OrderByOrder(book) => book.apply(body),
             Self::Aggregated(book) => book.apply(body),
+        }
+    }
+
+    /// Capture the book so a replay can start from here.
+    pub fn checkpoint(&self) -> BookCheckpoint {
+        match self {
+            Self::OrderByOrder(book) => BookCheckpoint::OrderByOrder(book.checkpoint()),
+            Self::Aggregated(book) => BookCheckpoint::Aggregated(book.snapshot()),
+        }
+    }
+
+    /// Rebuild a book from a checkpoint.
+    pub fn restore(checkpoint: &BookCheckpoint) -> Result<Self> {
+        match checkpoint {
+            BookCheckpoint::OrderByOrder(c) => Ok(Self::OrderByOrder(L3Book::restore(c)?)),
+            BookCheckpoint::Aggregated(snapshot) => {
+                let mut book = L2Book::new();
+                for (side, levels) in [
+                    (BookSide::Bid, &snapshot.bids),
+                    (BookSide::Ask, &snapshot.asks),
+                ] {
+                    for l in levels {
+                        book.set_level(side, l.price, l.size, Some(l.order_count))?;
+                    }
+                }
+                Ok(Self::Aggregated(book))
+            }
         }
     }
 

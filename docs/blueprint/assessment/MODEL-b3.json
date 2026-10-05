@@ -89,14 +89,11 @@
     "status": "PARTIAL",
     "current": "qip_ai::registry::ModelRegistry::promote_artifact produces a digest-named PublishedArtifact (backend/crates/libs/qip-ai/src/registry.rs:292-338, tested at backend/crates/libs/qip-ai/tests/model_infrastructure.rs:824-925). qip-deepbrain's composition root writes it via write_model_artifact (backend/crates/apps/qip-deepbrain/src/main.rs:636-647,858-876) into config.storage.key_value('model-artifacts'). infrastructure/terraform/modules/data declares a versioned, KMS-encrypted GCS bucket google_storage_bucket.artifacts named '<prefix>-model-artifacts' (main.tf:166-185). The bucket is count-gated on enable_cloud_storage, which is false in dev, test, stage and prod, so no environment provisions it.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:107-118,292-338",
-      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:824,895,925 (promote_artifact tests)",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:636-647,858-876",
-      "infrastructure/terraform/modules/data/main.tf:166-185",
-      "backend/crates/libs/qip-storage/src/provider.rs:333-372 (key_value() refuses StorageTarget::CloudStorage; doc at :25 names 'model artifacts' as blob content)",
-      "infrastructure/environments/{dev:253,test:107,stage:107,prod:110}/terraform.tfvars: enable_cloud_storage = false"
+      "backend/crates/apps/qip-deepbrain/src/artifacts.rs (write_model_artifact via BlobStore, read_model_artifact by digest with verify_digest and name check); backend/crates/apps/qip-deepbrain/src/main.rs opens config.storage.blobs(MODEL_ARTIFACTS_NAMESPACE)",
+      "test: a_written_artifact_is_fetched_back_by_its_digest_and_a_tampered_one_is_refused (artifacts.rs) -- mutation: name/contents digest check disabled -> failed at the 'disagree' assertion; restored, 'test result: ok. 1 passed'",
+      "backend/crates/libs/qip-storage/src/provider.rs:363-370 (key_value refuses CloudStorage); infrastructure/terraform/modules/data/main.tf google_storage_bucket.artifacts (gated)"
     ],
-    "gap": "write_model_artifact calls StorageProvider::key_value(), but key_value() explicitly refuses StorageTarget::CloudStorage for this exact content and directs callers to StorageProvider::blobs() instead (provider.rs:363-370). Under a CloudStorage-configured deployment this write would fail with Error::invalid; today it only works under Memory/File/Engine targets. There is also no fetch/read counterpart anywhere (grep for 'model_artifacts\\.' outside the write site returns nothing), so 'the package manager and nodes fetch them from there' is unimplemented.",
+    "gap": "Closed this pass: the write path used StorageProvider::key_value(), which refuses the CloudStorage target for this content; qip-deepbrain now writes through StorageProvider::blobs() (artifacts::write_model_artifact) and there is a read counterpart, artifacts::read_model_artifact, that fetches by digest and refuses bytes whose digest is not the name. Remaining: (1) infrastructure/terraform/modules/data declares the artifacts bucket count-gated on enable_cloud_storage = false in every environment and declares no IAM grant for a training identity (publish) or node/package-manager identities (read only); (2) no Artifact Registry repository is declared; (3) no node-side or package-manager consumer calls read_model_artifact, and a fetch from a real bucket cannot be integration-tested without provisioning it (C4).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -104,11 +101,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ai --test model_infrastructure a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference; write_model_artifact itself has no dedicated test",
+    "verification": "cd backend && cargo test -p qip-deepbrain --lib artifacts; terraform side: no IAM or Artifact Registry declaration yet",
     "work_item": "E10",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status and flags kept. Added that google_storage_bucket.artifacts is gated by enable_cloud_storage = false in all four environments, which the row omitted; it reinforces deployable = false. Confirmed key_value() refuses StorageTarget::CloudStorage (provider.rs:363-370) and that no production path reads an artifact back. | The write-path/storage-type mismatch is a small, well-scoped bug: switch the call site to .blobs()."
+    "notes": "verify: status and flags kept. Added that google_storage_bucket.artifacts is gated by enable_cloud_storage = false in all four environments, which the row omitted; it reinforces deployable = false. Confirmed key_value() refuses StorageTarget::CloudStorage (provider.rs:363-370) and that no production path reads an artifact back. | The write-path/storage-type mismatch is a small, well-scoped bug: switch the call site to .blobs(). | 2026-10-04: code bug fixed and fetch-by-digest added, mutation-verified; remains PARTIAL on the Terraform identities and the unprovisioned bucket (blocked: enable_cloud_storage false everywhere, provisioning is external action)."
   },
   {
     "id": "MODEL-053",
@@ -155,7 +152,7 @@
     "work_item": "E14",
     "tier": "T4",
     "size": "XL",
-    "notes": "This is GCP org/folder-model work, not refused by ADR 0099's conflict register directly, but a large restructuring (new project, new IAM boundary, re-plumbed Terraform providers) touching every environment."
+    "notes": "This is GCP org/folder-model work, not refused by ADR 0099's conflict register directly, but a large restructuring (new project, new IAM boundary, re-plumbed Terraform providers) touching every environment. | Blocked 2026-10-04 (not built): a separate AI project and IAM boundary is a GCP project creation and apply, which is external action; execution_nodes and the infrastructure have never been applied."
   },
   {
     "id": "MODEL-055",
@@ -413,7 +410,7 @@
     "work_item": "E10",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status and flags kept. Added the concrete promotion-event link, the ModelPromotion record journalled in the event log with its test. Confirmed rg for source_commit|git_commit|commit_sha|activation_epoch|activated_at across backend returns nothing, so the source-commit and activation-epoch links are absent and the signature link is the ADR 0043 gap. | The signature half of this gap is architectural (ADR 0043), not simply unbuilt; source-commit and activation-epoch tracking are unbuilt and cheaper to close."
+    "notes": "verify: status and flags kept. Added the concrete promotion-event link, the ModelPromotion record journalled in the event log with its test. Confirmed rg for source_commit|git_commit|commit_sha|activation_epoch|activated_at across backend returns nothing, so the source-commit and activation-epoch links are absent and the signature link is the ADR 0043 gap. | The signature half of this gap is architectural (ADR 0043), not simply unbuilt; source-commit and activation-epoch tracking are unbuilt and cheaper to close. | Blocked 2026-10-04 (not built): two of the five links (source commit, asymmetric signature) cannot exist without external build provenance and a managed signer (ADR 0043); the activation-epoch link depends on MODEL-051's package distribution."
   },
   {
     "id": "MODEL-065",
@@ -463,16 +460,16 @@
   },
   {
     "id": "MODEL-067",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "Structurally the two paths are separate: qip_optimization_engine::router::ComputeRouter::solve (backend/crates/services/qip-optimization-engine/src/router.rs) is called only from qip-portfolio-engine's PortfolioConstructor::size (a DECIDE-stage sizing decision) and never from qip_evolution::promotion (the only production model/strategy promotion path, which takes Candidate/StrategyEvidence/Approval — no quantum-derived type exists). No deploy candidate anywhere in the workspace can be constructed from a QaoaResult/RoutingDecision.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:196-290",
-      "backend/crates/services/qip-portfolio-engine/src/construction.rs:19-20,159,163,343,366",
-      "backend/crates/services/qip-evolution/src/promotion.rs:20-70 (Candidate/StrategyEvidence/Approval only)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:872-880,987 nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver (qip-lifecycle is in NO_SOLVER_AUTHORITY)",
-      "backend/crates/services/qip-lifecycle/Cargo.toml:27-31 (qip-optimization-engine deliberately not a dependency)"
+      "backend/crates/runtime/qip-kernel/src/model_serving.rs (ModelProducer {TrainingPipeline, QuantumGateway, QuantumInformed{baseline}}; Platform::promote_model_from refuses the gateway and requires a calibrated baseline on record for a quantum-informed candidate; ModelPromotion.producer is journalled; promote_model delegates with TrainingPipeline so the one production caller is unchanged)",
+      "test: a_candidate_produced_by_the_quantum_gateway_is_refused_and_leaves_no_record (backend/crates/runtime/qip-kernel/tests/serving.rs)",
+      "test: a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached (same file)",
+      "mutation: gateway arm disabled and baseline requirement removed -> both tests failed ('2 failed'); restored, 'test result: ok. 7 passed; 0 failed'",
+      "backend/crates/tests/qip-acceptance architecture test nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver (strategy gate; pre-existing)"
     ],
-    "gap": "The refusal half holds by absence: the strategy gate (qip-lifecycle) cannot reach qip-quantum, which an architecture test proves, and no deploy-candidate type can be built from a quantum result. But the model gate (Platform::promote_model) lives in qip-kernel, which does reach qip-quantum, and no test covers it; no candidate records its producer, so the gate cannot refuse 'a candidate whose producer is the quantum gateway' as the check requires; and no path exists for a quantum-informed candidate to arrive with its classical-baseline comparison attached.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -480,22 +477,21 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture nothing_that_vetoes_executes_or_moves_money_can_reach_a_quantum_solver (strategy gate only); a test constructing a quantum-derived candidate and asserting both gates refuse it by producer still needs a producer field to exist",
+    "verification": "backend/crates/runtime/qip-kernel/tests/serving.rs::a_candidate_produced_by_the_quantum_gateway_is_refused_and_leaves_no_record; ::a_quantum_informed_candidate_is_admitted_only_with_its_calibrated_baseline_attached",
     "work_item": "E10",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: NEEDS-VALIDATION -> PARTIAL, tested -> true. A named test does cover part of it -- architecture.rs:987 puts qip-lifecycle in NO_SOLVER_AUTHORITY and proves it cannot reach qip-quantum -- so 'no test demonstrates it' was wrong. But the requirement is not wholly implemented: candidates carry no producer to refuse on, the kernel's model gate is uncovered, and the quantum-informed-with-baseline acceptance path does not exist. | Accidental-by-construction today; worth an explicit test since the safety argument currently rests on nobody having wired a path that could violate it."
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL, tested -> true. A named test does cover part of it -- architecture.rs:987 puts qip-lifecycle in NO_SOLVER_AUTHORITY and proves it cannot reach qip-quantum -- so 'no test demonstrates it' was wrong. But the requirement is not wholly implemented: candidates carry no producer to refuse on, the kernel's model gate is uncovered, and the quantum-informed-with-baseline acceptance path does not exist. | Accidental-by-construction today; worth an explicit test since the safety argument currently rests on nobody having wired a path that could violate it. | Closed 2026-10-04: candidates now carry a producer on the model gate; the baseline-comparison attachment reuses MODEL-031's require_calibrated_baseline."
   },
   {
     "id": "MODEL-068",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "One of the four package types is registered: qip_ai::registry::ModelRegistry stores ModelCards (backend/crates/libs/qip-ai/src/registry.rs:56-96,229) with a PublishedArtifact per promotion (registry.rs:107), held by qip-deepbrain's learning desk and promoted through the kernel. There is no package-kind discriminator and no policy, feature or risk package type in any registry, so nothing refuses a fifth kind -- register(card) accepts any ModelCard. (qip_ai::serving::ModelFormat's four variants are model encodings, not package kinds.)",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:56-96,220-233 (ModelCard; register takes any card)",
-      "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:523,618 (model cards register and promote)",
-      "rg -n 'enum.*Package' backend/crates/libs/qip-ai/src -- no hits"
+      "backend/crates/libs/qip-ai/src/registry.rs (PackageKind {Model, Policy, Feature, Risk}; PackageKind::parse refuses any other kind by name; ModelRegistry::register_package / package / packages)",
+      "test: a_package_of_each_of_the_four_kinds_registers_and_any_other_kind_is_refused (backend/crates/libs/qip-ai/tests/model_infrastructure.rs) -- mutations: kind parser widened to accept longer strings -> failed; same-version-different-digest refusal disabled -> failed; both restored, 'test result: ok. 47 passed; 0 failed'"
     ],
-    "gap": "Policy, feature and risk packages have no registry type, there is no package-kind enum, and no refusal of an unknown kind exists -- the invariant's discriminating half is absent.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -503,11 +499,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-ai --test model_infrastructure a_model_needs_a_passing_evaluation_before_promotion (the model kind only); a unit test registering all four kinds and refusing a fifth awaits the discriminator",
+    "verification": "backend/crates/libs/qip-ai/tests/model_infrastructure.rs::a_package_of_each_of_the_four_kinds_registers_and_any_other_kind_is_refused",
     "work_item": "E10",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: upgraded MISSING -> PARTIAL. The model kind, one of the four, does register, is tested and is reached from qip-deepbrain, so 'nothing implements it' overstated the absence; the type discriminator, the other three kinds and the refusal of unknown kinds are all missing. deployable follows this file's convention for the deep brain's registry (MODEL-057)."
+    "notes": "verify: upgraded MISSING -> PARTIAL. The model kind, one of the four, does register, is tested and is reached from qip-deepbrain, so 'nothing implements it' overstated the absence; the type discriminator, the other three kinds and the refusal of unknown kinds are all missing. deployable follows this file's convention for the deep brain's registry (MODEL-057). | Closed 2026-10-04 at the registry: the discriminating refusal now exists. No composition root registers policy, feature or risk packages yet, because nothing produces them; that is MODEL-051/064 distribution work, not this requirement's check."
   },
   {
     "id": "MODEL-069",

@@ -8,6 +8,7 @@
 //! engine and that what the venue says happened is what reconciliation hears.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::{SignalKind, StrategyId};

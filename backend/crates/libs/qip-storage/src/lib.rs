@@ -51,16 +51,19 @@
 //! misconfigured deployment fails loudly at start-up rather than silently
 //! writing nowhere. See `docs/operations/external-dependencies.md`.
 
+pub mod archive_names;
 pub mod blob;
 pub mod chain;
 pub mod engine;
 mod fsio;
 pub mod gcp;
 pub mod kv;
+pub mod lake;
 pub mod managed;
 pub mod provider;
 pub mod redis;
 pub mod repository;
+pub mod rowkey;
 pub mod segment;
 pub mod settings;
 

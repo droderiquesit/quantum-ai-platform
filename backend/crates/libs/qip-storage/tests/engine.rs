@@ -12,6 +12,7 @@
 //! *Process death* is real here — a child process writes, acknowledges, and
 //! calls `abort`, which gives it no chance to flush anything from user space.
 //! The parent then reopens the directory and looks for the acknowledged write.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Error;
 use qip_core::{Clock, ManualClock, Timestamp};

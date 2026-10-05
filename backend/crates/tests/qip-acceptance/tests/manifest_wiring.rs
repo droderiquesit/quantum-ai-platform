@@ -55,6 +55,7 @@
 //! never a deployment it wrongly rejects. Each rule therefore asserts it
 //! contributed something, so a rule that silently stops resolving anything
 //! fails here instead of quietly widening the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 // The workspace denies `panic_in_result_fn` because an assertion that aborts a
 // `Result`-returning function is a bug in production code. These tests return
@@ -2855,7 +2856,15 @@ fn every_metric_name_the_platform_declares_is_one_something_records() {
 fn production_records(sources: &[std::path::PathBuf], name: &str) -> bool {
     sources.iter().any(|path| {
         let is_test = path.components().any(|c| c.as_os_str() == "tests");
+        // `critical_paths.rs` names the series each objective *reads*; its own
+        // doc says "where nothing emits it yet, this is the name it must be
+        // emitted under". Counting that mention as a recording site made a
+        // fixtures-only series look published the moment an objective was
+        // pointed at it, and an objective over a series nothing records is the
+        // opposite of a recording site: it is a control that cannot fire.
+        let names_a_source_series_only = path.ends_with("qip-observability/src/critical_paths.rs");
         !is_test
+            && !names_a_source_series_only
             && std::fs::read_to_string(path)
                 .is_ok_and(|text| text.contains(&format!("names::{name}")))
     })

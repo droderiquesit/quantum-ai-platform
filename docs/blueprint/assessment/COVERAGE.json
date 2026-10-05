@@ -327,15 +327,15 @@
   },
   {
     "id": "COVERAGE-013",
-    "status": "MISSING",
-    "current": "nothing. qip_financial::constraints::TradingRestriction (constraints.rs:44-61) gates sanctions/jurisdiction/halt per instrument, and qip_compliance::licensing::EntitlementRegistry gates data licensing, but neither is an entity/jurisdiction permission gate for a derivative type.",
+    "status": "PARTIAL",
+    "current": "qip_financial::derivative_permissions::DerivativePermissions (grant/authorize_order; empty table refuses every InstrumentType::is_derivative type; exact entity+jurisdiction+type grants). Platform::order_for refuses an ungranted derivative before an Order value exists; Platform::authorise_derivatives is the grant seam; the ACT release loop (stage_act_orders) calls the same Platform::derivative_gate before Order::new.",
     "evidence": [
-      "grep -rin derivative backend/crates/services/qip-execution-engine backend/crates/services/qip-risk-engine backend/crates/libs/qip-compliance backend/crates/libs/qip-risk -- no match in any of the four",
-      "backend/crates/libs/qip-financial/src/constraints.rs:44-61 (TradingRestriction: per-instrument sanctions/jurisdiction/halt, not a per-derivative-type entity permission)"
+      "backend/crates/libs/qip-financial/src/derivative_permissions.rs (unit tests: a_derivative_is_refused_with_no_permissions_admitted_once_granted_and_never_to_another_entity, an_equity_needs_no_derivative_permission_and_cannot_be_granted_one; mutation: grant lookup pinned to one jurisdiction -> first test failed, restored -> passed)",
+      "backend/crates/runtime/qip-kernel/tests/asset_classes.rs a_derivative_order_is_refused_before_it_exists_until_the_desk_is_granted_that_type (mutation: derivative lookup keyed on a wrong id -> failed at the ungranted-order assertion, restored -> passed)"
     ],
-    "gap": "No gate exists anywhere that refuses an order for a derivative type the trading entity/jurisdiction has not been granted permission for, before an order object exists, while still permitting research/simulation and defaulting to refuse-all with no permissions configured. This is a P0 fail-closed invariant with no implementation.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The gate and its fail-closed default are proven through Platform::order_for, but no test drives an approved derivative proposal through the ACT release loop, so that loop call (and nothing else) is unproven by a mutation-verified test; no composition root yet calls authorise_derivatives, so nothing can trade a derivative until one does (the safe default). Also unwired: a permission source in configuration/Terraform.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -343,11 +343,11 @@
       "COVERAGE-012"
     ],
     "blocked_by": "",
-    "verification": "No test exists; none can.",
+    "verification": "cargo test -p qip-financial --lib derivative_permissions; cargo test -p qip-kernel --test asset_classes a_derivative_order_is_refused_before_it_exists_until_the_desk_is_granted_that_type",
     "work_item": "E13-derivative-permission-gate",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status unchanged (MISSING). Re-searched for a derivative-type permission under other shapes: AssetClassRegistry refuses unregistered classes at assembly but registers Derivative (so it admits derivatives, per class, with no entity or jurisdiction); the catalogue refuses every derivative by format (catalogue.rs:322), which also blocks research and has no grant path, so it is not this gate; TradingRestriction is per-instrument and defaults permissive (object_model.rs venue_approval_defaults_to_permissive_but_binds_once_set); qip-capital ProductEligibility gates investor products by jurisdiction. None refuses an order for an ungranted derivative type while still admitting it to simulation, and none admits it once granted. | P0 in the requirement register; the platform currently has no structural barrier between 'the registry can represent this derivative type' and 'an order for it may be created'."
+    "notes": "Advanced from MISSING. Remaining: a cycle-driven test of the release loop gate and a composition-root grant."
   },
   {
     "id": "COVERAGE-014",

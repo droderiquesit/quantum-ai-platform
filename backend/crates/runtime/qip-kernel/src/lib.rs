@@ -69,7 +69,9 @@ pub use asset_class_registry::{AssetClassRecord, AssetClassRegistry, ValuationEn
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};
-pub use model_serving::{DistilledManifestEntry, ModelManifestIssue, ModelPromotion};
+pub use model_serving::{
+    DistilledManifestEntry, ModelManifestIssue, ModelProducer, ModelPromotion,
+};
 pub use platform::{
     CapitalGrantEntry, ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction,
     SourceAssessment, UniverseAssembled,

@@ -38,6 +38,7 @@ pub mod licensing;
 pub mod model_risk;
 pub mod pit;
 pub mod plane;
+pub mod release;
 pub mod signing;
 
 pub use approval::{

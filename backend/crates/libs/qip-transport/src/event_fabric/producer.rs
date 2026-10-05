@@ -76,7 +76,7 @@ use qip_core::hash::to_hex;
 use qip_core::rng::Xoshiro256;
 use qip_core::time::Clock;
 use qip_events::event_fabric::codec::{Batch, stamp_drain};
-use qip_events::event_fabric::policy::AckProfile;
+use qip_events::event_fabric::policy::{AckProfile, QosClass};
 
 use crate::breaker::{
     BreakerPolicy, BreakerState, CircuitBreaker, Decision, Outcome, Refusal as BreakerRefusal,
@@ -105,11 +105,15 @@ pub struct ProducerConfig {
     pub stream: String,
     pub partition: u32,
     pub producer_id: String,
-    /// FABRIC-067: never weaker than the stream's own class requires. This
-    /// producer cannot check that locally — the wire protocol does not yet
-    /// carry a stream's `QosClass` to a producer that has not fetched its
-    /// catalogue entry — so a profile that is too weak surfaces as
-    /// [`Refusal::AckTooWeak`] from the broker, not as a local refusal here.
+    /// The class the stream was declared under (ADR 0100 §5). Stated by the
+    /// caller, never defaulted, so [`Producer::new`] can hold
+    /// [`Self::ack_profile`] to this class's floor before a single byte
+    /// leaves the process (FABRIC-067).
+    pub qos_class: QosClass,
+    /// FABRIC-067: never weaker than [`QosClass::ack_floor`] of
+    /// [`Self::qos_class`]; [`Producer::new`] refuses a weaker one naming the
+    /// class, so a P0 producer cannot be built that would acknowledge on the
+    /// leader's say-so alone.
     pub ack_profile: AckProfile,
     pub retry_policy: RetryPolicy,
     pub breaker_policy: BreakerPolicy,
@@ -197,6 +201,17 @@ impl Producer {
             return Err(Error::invalid(
                 "a producer must have a non-empty producer id: the broker fences by it",
             ));
+        }
+        if config.ack_profile < config.qos_class.ack_floor() {
+            return Err(Error::denied(format!(
+                "a {} producer must acknowledge at {:?} or stronger, not {:?}: the class is \
+                 never dropped, and a weaker acknowledgement would call a record safe before \
+                 it is; choose AckProfile::{:?} or stronger",
+                config.qos_class.as_str(),
+                config.qos_class.ack_floor(),
+                config.ack_profile,
+                config.qos_class.ack_floor(),
+            )));
         }
         config.retry_policy.validate()?;
         config.breaker_policy.validate()?;
@@ -624,6 +639,7 @@ mod tests {
             stream: "orders".to_string(),
             partition: 0,
             producer_id: "cell-eu-1".to_string(),
+            qos_class: QosClass::P0Control,
             ack_profile: AckProfile::Quorum,
             retry_policy: RetryPolicy {
                 max_attempts: 3,

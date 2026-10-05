@@ -38,11 +38,54 @@
 //!   its own homework, exactly as the foundry would if it scored its own
 //!   candidates.
 
-use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry};
+use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ResourceBudget};
 use qip_core::error::{Error, Result};
 use qip_core::{ModelId, Timestamp};
 use qip_training::local::{SkillPolicy, TrainedTeacher};
 use std::collections::BTreeMap;
+
+/// The ceiling a fitted in-tree model is admitted under: one inference in a
+/// millisecond and a megabyte resident. A declared limit rather than a
+/// measurement, recorded so the serving layer has a number to hold the
+/// model to. Nothing in the registry enforces it.
+pub const DEFAULT_RESOURCE_BUDGET: ResourceBudget = ResourceBudget {
+    max_inference_micros: 1_000,
+    max_memory_bytes: 1_048_576,
+};
+const CALIBRATION_SCALE: &str = "calibration_scale";
+const CALIBRATION_OFFSET: &str = "calibration_offset";
+
+/// Refuse to evaluate a candidate unless the classical baseline it is judged
+/// against is on record with a fitted calibration (ADR 0006, MODEL-031).
+///
+/// A challenger scored against a baseline nobody recorded, or one left at the
+/// identity calibration every fit starts with, is scored against a number the
+/// record cannot reproduce — and "it beat the baseline" is then an assertion,
+/// not a result.
+pub fn require_calibrated_baseline(registry: &ModelRegistry, reference: &str) -> Result<()> {
+    let card = registry.get(reference).ok_or_else(|| {
+        Error::denied(format!(
+            "no baseline {reference} is on record; fit and register the classical baseline \
+             before evaluating any candidate against it"
+        ))
+    })?;
+    let read = |key: &str| {
+        card.parameters
+            .get(key)
+            .and_then(|text| text.parse::<f64>().ok())
+    };
+    match (read(CALIBRATION_SCALE), read(CALIBRATION_OFFSET)) {
+        (Some(scale), Some(offset))
+            if !qip_training::local::Calibration { scale, offset }.is_identity() =>
+        {
+            Ok(())
+        }
+        _ => Err(Error::denied(format!(
+            "baseline {reference} is on record without a fitted calibration; calibrate it \
+             (Calibration::fit) before evaluating any candidate against it"
+        ))),
+    }
+}
 
 /// What registering a fit produced.
 #[derive(Clone, Debug, PartialEq)]
@@ -122,6 +165,13 @@ pub fn register_fit(
     )
     .with_features(teacher.feature_names().to_vec())
     .with_training_data(vec![teacher.dataset().to_string()])
+    // The bar the verdict above is measured against, by name, so the card
+    // says what the model was meant to beat and not only what it scored.
+    .with_benchmark(format!(
+        "holdout R-squared over the mean predictor on {}",
+        teacher.dataset()
+    ))
+    .with_resource_budget(DEFAULT_RESOURCE_BUDGET)
     .with_purpose(format!(
         "learned function fitted on {}, held out on its last {} observations",
         teacher.dataset(),
@@ -132,6 +182,18 @@ pub fn register_fit(
         None => card,
         Some(reason) => card.with_limitation(format!("did not clear the skill bar: {reason}")),
     };
+    // The calibration is part of the function the card describes: two fits
+    // with the same coefficients and different calibrations predict
+    // differently, and a baseline whose calibration is not on its card cannot
+    // be shown to have been calibrated at all.
+    card.parameters.insert(
+        CALIBRATION_SCALE.to_string(),
+        format!("{}", teacher.calibration().scale),
+    );
+    card.parameters.insert(
+        CALIBRATION_OFFSET.to_string(),
+        format!("{}", teacher.calibration().offset),
+    );
     card.evaluations.push(EvaluationRecord {
         evaluated_at: now,
         dataset: teacher.dataset().to_string(),

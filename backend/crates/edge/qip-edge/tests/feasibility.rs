@@ -10,6 +10,7 @@
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
@@ -277,6 +278,94 @@ fn an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strate
         1,
         "the refusal did not reach qip_edge_refusals_total{{gate=feasibility_lot}}"
     );
+    Ok(())
+}
+
+/// Keeps every order the venue adapter was handed, so a test can look at what
+/// actually reached the venue rather than at what the cell reported.
+#[derive(Debug, Default)]
+struct RecordingGateway {
+    received: Vec<(Decimal, Decimal)>,
+}
+
+impl Placer for RecordingGateway {
+    fn is_simulated(&self) -> bool {
+        true
+    }
+
+    fn place(
+        &mut self,
+        _order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        _at: Timestamp,
+    ) -> Result<()> {
+        self.received.push((quantity, price));
+        Ok(())
+    }
+}
+
+/// REFLEX-072's second half: no order reaches the venue adapter without the
+/// local risk gate's approval. Judged at the adapter, over many generated
+/// sizes, by the gate's own rules restated independently here (whole lots, no
+/// more than the 400 resting at the touch), so a pipeline that skipped the
+/// gate fails this by delivering an order the rules forbid.
+#[test]
+fn no_order_reaches_the_venue_adapter_that_the_feasibility_gate_would_have_refused() -> Result<()> {
+    let sizes = [
+        "1", "2.5", "10", "10.5", "399", "400", "401", "0.5", "37", "1000", "7.25", "250",
+    ];
+    // A fixed linear congruence rather than a random source: the stream is
+    // generated, and a failure replays.
+    let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as usize
+    };
+
+    let (mut admitted, mut refused) = (0, 0);
+    for _ in 0..40 {
+        let size = sizes[next() % sizes.len()];
+        let (mut cell, _) = trading_cell(
+            Some(lot_model()?),
+            &[("generated", SignalKind::Enter, size)],
+        )?;
+        let mut gateway = RecordingGateway::default();
+        let report = cell.work(t(10), &mut gateway)?;
+
+        let on_lots = d(size).floor_to_step(dec!("1")) == d(size);
+        let within_touch = d(size) <= dec!("400");
+        if on_lots && within_touch {
+            admitted += 1;
+            assert_eq!(
+                gateway.received.len(),
+                1,
+                "{size} is feasible and was not sent: {report:?}"
+            );
+        } else {
+            refused += 1;
+        }
+        for (quantity, _) in &gateway.received {
+            assert!(
+                quantity.floor_to_step(dec!("1")) == *quantity && *quantity <= dec!("400"),
+                "an order of {quantity} reached the venue adapter without clearing the gate \
+                 (generated size {size})"
+            );
+        }
+        assert_eq!(
+            gateway.received.len(),
+            report.orders.len(),
+            "the adapter received a different set of orders from the one the cell reported"
+        );
+    }
+    // Premise: the stream exercised both verdicts, or "nothing forbidden was
+    // delivered" is true of a stream the gate never had to refuse anything in.
+    assert!(admitted >= 5 && refused >= 5, "{admitted} / {refused}");
     Ok(())
 }
 

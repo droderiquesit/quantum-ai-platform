@@ -694,6 +694,8 @@ impl StrategyCompiler {
                 ))
             }
             Expr::Model { model, inputs } => {
+                // A deserialised plan never passed the model's constructor.
+                model.validate()?;
                 if inputs.len() != model.arity() {
                     return Err(Error::invalid(format!(
                         "{site}: model {} takes {} inputs, given {}",

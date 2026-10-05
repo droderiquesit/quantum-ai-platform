@@ -12,6 +12,7 @@
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::BookSide;
@@ -296,5 +297,57 @@ fn a_grant_for_another_strategy_is_refused_by_the_installer_rather_than_held() -
         "a grant for another strategy was held for the desk"
     );
     assert!(!installer.holds_envelope());
+    Ok(())
+}
+
+/// REFLEX-027's chain in one run: the signed whitelist's conversions become
+/// the graph, the desk re-quotes it from books, and the scanner returns an
+/// opportunity. The node tests above stop at installation and the scanner's
+/// own tests never use a whitelist, so a whitelist the scanner could not
+/// walk would have passed both.
+#[test]
+fn a_whitelisted_triangle_becomes_an_opportunity_once_its_books_are_read() -> Result<()> {
+    use qip_arbitrage::liquidity::StaticLiquidity;
+    use qip_arbitrage::scan::RejectionStage;
+    use qip_core::ObjectId;
+    use qip_edge_node::arbitrage::desk_from_whitelist;
+
+    let venue = VenueId::new(VENUE);
+    let mut books = StaticLiquidity::new();
+    for (market, bid, ask, size) in [
+        ("ETHUSDT", dec!("3000.0"), dec!("3000.1"), dec!("200")),
+        ("ETHBTC", dec!("0.0505"), dec!("0.05051"), dec!("200")),
+        ("BTCUSDT", dec!("60000"), dec!("60001"), dec!("10")),
+    ] {
+        books = books.with_quote(
+            venue.clone(),
+            ObjectId::from_string(market),
+            t(0),
+            bid,
+            size,
+            ask,
+            size,
+            20,
+        );
+    }
+
+    let mut desk = desk_from_whitelist(
+        &triangle(VENUE),
+        std::slice::from_ref(&venue),
+        StrategyId::new(DESK),
+        signed_envelope(DESK)?,
+    )?;
+    // Premise: the whitelist produced a graph, and before any book is read
+    // the placeholder rates are no opportunity (a rate of one all round).
+    assert_eq!(desk.graph().edge_count(), 3);
+    assert!(desk.scan(&books, t(1)).opportunities.is_empty());
+
+    assert_eq!(desk.refresh(&books)?.repriced, 3);
+    let report = desk.scan(&books, t(1));
+    assert_eq!(report.opportunities.len(), 1, "{:?}", report.rejections);
+    let opportunity = &report.opportunities[0];
+    assert_eq!(opportunity.planned.plan.len(), 3);
+    assert!(opportunity.net() > Decimal::ZERO);
+    assert!(report.rejected_at(RejectionStage::NetEdge).is_empty());
     Ok(())
 }

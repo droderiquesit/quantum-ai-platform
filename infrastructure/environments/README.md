@@ -26,7 +26,7 @@ one over for a node. Directory name and variable value are the same string on
 purpose — the thing you type is the thing that lands in a resource name.
 
 `project_id` **is** in these files, and each environment names a project of its
-own — or says it has none. `dev` is `algorik-dev` and is the only one
+own — or says it has none. `dev` is `algorik-platform-dev` and is the only one
 provisioned; `test`, `stage` and `prod` carry the literal marker
 `unprovisioned`, which `terraform` refuses at plan time and `deploy.yml` and
 `vendor.yml` refuse before they authenticate, each naming what is missing.

@@ -30,13 +30,12 @@
     "current": "qip_storage::gcp::storage::CloudStorageBlobStore (backend/crates/libs/qip-storage/src/gcp/storage.rs:174, impl BlobStore at same file) is a real, tested adapter over the Cloud Storage JSON REST API via qip_transport::HttpClient -- no new crate needed, confirmed by StorageTarget::CloudStorage.is_implemented()==true (provider.rs:55-65). infrastructure/terraform/modules/data/main.tf:115-160 already declares google_storage_bucket.archive with two lifecycle_rule blocks (age 90 -> NEARLINE, age 365 -> COLDLINE).",
     "evidence": [
       "backend/crates/libs/qip-storage/src/gcp/storage.rs:1-40,174",
-      "backend/crates/libs/qip-storage/src/provider.rs:55-65",
+      "backend/crates/libs/qip-storage/src/lake.rs (partition-keyed object paths: class/venue/date/instrument/entitlement)",
+      "backend/crates/libs/qip-storage/tests/lake.rs::a_written_segments_path_encodes_its_partition_keys",
       "infrastructure/terraform/modules/data/main.tf:115-160",
-      "infrastructure/environments/dev/terraform.tfvars:253 (enable_cloud_storage = false)",
-      "infrastructure/terraform/variables.tf:365-382 (storage_target validated to memory|file|engine only -- CloudStorage is not a legal value)",
-      "backend/crates/libs/qip-storage/tests/gcp.rs (52 #[test]s covering CloudStorageBlobStore put/get/delete/list/digest)"
+      "infrastructure/terraform/variables.tf:365-382"
     ],
-    "gap": "Neither half is wired to a composition root: no crates/apps/*/src file can select storage_target=cloud_storage (Terraform refuses the value entirely) and enable_cloud_storage=false in every environment.tfvars. Even once wired, the declared bucket is one generic, undifferentiated object namespace -- it has no declared partition-key layout (venue/date/instrument) and no writer encodes such a path, so the requirement's own check ('a written segment's object path encodes its partition keys') has nothing to verify against a tick-specific lake.",
+    "gap": "The partition layout and its writer now exist (qip_storage::lake, path encodes class/venue/date/instrument/entitlement) over any BlobStore, but: segments are not compressed (needs a codec; the workspace permits two dependencies, so compression needs an ADR); the Terraform bucket is still one undifferentiated namespace without the declared layout and lifecycle per class; and no composition root can select the Cloud Storage target (storage_target refuses it, enable_cloud_storage=false everywhere).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -52,19 +51,14 @@
   },
   {
     "id": "TICK-036",
-    "status": "PARTIAL",
-    "current": "qip_financial::quality::Provenance.licensing: LicensingClass travels with every MarketEventEnvelope (envelope.rs:200-202 licensing()) and with every SensedRecord a ConnectorFeed emits (connector_feed.rs:260 licensing: manifest.licensing); source admission runs qip_data_finder::admission's two-gate LicensingDecision (admission.rs:659-844) before a feed opens, reached from qip-fastbrain feed.rs:49-305 and qip-deepbrain campaign.rs:80. Decision-grade gating is enforced on FinancialObject::is_decision_grade (qip-financial object.rs:162), called from qip-api main.rs:1370 and universe.rs:207. MarketEventEnvelope::is_decision_grade (envelope.rs:206-212) exists but has no non-test caller -- only connector_runtime.rs:786 and connector_contract.rs:295 call it.",
+    "status": "COMPLETE",
+    "current": "Lake partitions carry the entitlement in the object path (entitlement=<id>) and Partition::new refuses an empty entitlement, so the writer cannot form a path without one. Lake::materialize(manifest, granted) reads only segments under granted entitlements, lists the rest as withheld, and returns the set of entitlements actually read as the job's output lineage. Live-path entitlement (Provenance.licensing on every envelope) is unchanged.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:200-212",
-      "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:260",
-      "backend/crates/libs/qip-financial/src/quality.rs:36,43-54",
-      "backend/crates/libs/qip-financial/src/object.rs:162 (FinancialObject::is_decision_grade; production callers qip-api/src/main.rs:1370, qip-financial/src/universe.rs:207)",
-      "backend/crates/services/qip-data-finder/src/admission.rs:659-844",
-      "backend/crates/apps/qip-fastbrain/src/feed.rs:49,288",
-      "backend/crates/services/qip-data-finder/tests/lifecycle.rs",
-      "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs"
+      "backend/crates/libs/qip-storage/src/lake.rs",
+      "backend/crates/libs/qip-storage/tests/lake.rs::a_partition_without_an_entitlement_cannot_be_formed",
+      "backend/crates/libs/qip-storage/tests/lake.rs::a_job_granted_one_entitlement_reads_only_that_partition_and_reports_it"
     ],
-    "gap": "Entitlement travels with the live envelope and gates decision-grade use, but there is no Tick Lake (TICK-035) for it to travel with into storage, no partition-level entitlement restriction a replay/training job is held to, and no lineage report of which entitlements a job actually read. The lake-writer refusal the requirement's own verification names ('the lake writer refuses a partition that has no entitlement') has no lake writer to refuse anything.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -74,16 +68,16 @@
       "TICK-035"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/services/qip-data-finder/tests/lifecycle.rs and registration_is_not_ingestion.rs prove admission-time gating; no test proves a job granted entitlement A cannot read a partition held under B, because there are no partitions.",
+    "verification": "cargo test -p qip-storage --test lake (7 passed). Mutations (each failed exactly the named test, then restored byte-for-byte, 7 passed): raw kept regardless of entitlement -> raw_bytes_are_kept_only_where_the_entitlement_permits...; overwrite check disabled -> a_sealed_segment_cannot_be_overwritten...; entitlement filter disabled -> a_job_granted_one_entitlement...; checksum check disabled -> re_materializing_a_manifest_matches_its_checksums...",
     "work_item": "E06-tick-lake-entitlement",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags kept. Corrected 'current': MarketEventEnvelope::is_decision_grade has no non-test caller (rg shows only tests/connector_runtime.rs:786 and tests/connector_contract.rs:295); the production decision-grade gate is FinancialObject::is_decision_grade. Split the malformed evidence entry into two real paths."
+    "notes": "Residual: qip_storage::lake::Lake is not yet selected by any composition root (storage_target cannot name the lake, enable_cloud_storage=false everywhere), so integrated and deployable stay false. No replay, feature or training job calls materialize yet."
   },
   {
     "id": "TICK-037",
     "status": "PARTIAL",
-    "current": "In code the classes exist and are enforced: qip_events::retention::RetentionClass (retention.rs:55-77, ADR 0089, blueprint \u00a722.1) is declared exhaustively per Topic (topic.rs:532-640, no wildcard arm), and the file-backable EventLog's two retention seams read it (log.rs:818-835,887). Own orders/fills/verdicts are Irreplaceable (Retention::Permanent, never evicted -- a full log refuses the append); world-sourced records (NewsReceived, FundamentalUpdated, MarketTrade, ...) are Referenced (ManifestOnly); beliefs are Semantic; raw ticks/quotes/book deltas are Transient (Retention::Never, 'a bounded ring measured in seconds'); book state at each own order/fill is EventAnchored (90-day rolling). qip_data_finder's bounded pass-through retention (retention.rs, campaign.rs ResearchCache/CacheBound) handles fetched world data. At the infra layer google_storage_bucket.archive (data/main.tf:115-160) carries one retention_policy and two age-based lifecycle_rule blocks for one undifferentiated namespace, and enable_cloud_storage = false in every environment.",
+    "current": "In code the classes exist and are enforced: qip_events::retention::RetentionClass (retention.rs:55-77, ADR 0089, blueprint §22.1) is declared exhaustively per Topic (topic.rs:532-640, no wildcard arm), and the file-backable EventLog's two retention seams read it (log.rs:818-835,887). Own orders/fills/verdicts are Irreplaceable (Retention::Permanent, never evicted -- a full log refuses the append); world-sourced records (NewsReceived, FundamentalUpdated, MarketTrade, ...) are Referenced (ManifestOnly); beliefs are Semantic; raw ticks/quotes/book deltas are Transient (Retention::Never, 'a bounded ring measured in seconds'); book state at each own order/fill is EventAnchored (90-day rolling). qip_data_finder's bounded pass-through retention (retention.rs, campaign.rs ResearchCache/CacheBound) handles fetched world data. At the infra layer google_storage_bucket.archive (data/main.tf:115-160) carries one retention_policy and two age-based lifecycle_rule blocks for one undifferentiated namespace, and enable_cloud_storage = false in every environment.",
     "evidence": [
       "backend/crates/libs/qip-events/src/retention.rs:55-77,171-182",
       "backend/crates/libs/qip-events/src/topic.rs:532-640 (Topic::retention_class)",
@@ -94,7 +88,7 @@
       "backend/crates/services/qip-data-finder/src/campaign.rs:334",
       "infrastructure/terraform/modules/data/main.tf:115-160"
     ],
-    "gap": "The code-level classes are real, but (a) tick/order-book history is classed Transient -- never retained -- so the in-tree policy today contradicts this requirement's 'archived where rights and policy require it for replay/training' for market history; building the Tick Lake (TICK-035) needs that row of the \u00a722.1 table (ADR 0089) reconciled first, or a separate class for archived tick segments; and (b) the infra bucket has one lifecycle policy on one namespace, so the requirement's own infra-plan check (separate lifecycle/retention rules per class plus a lifecycle dry-run) has nothing to plan against.",
+    "gap": "(a) tick/order-book history is classed Transient (never retained) in the event log, contradicting archiving it for replay/training; reconciling that row of the ADR 0089 table, or adding a class for archived tick segments, needs a superseding ADR. (b) The infra bucket has one lifecycle policy on one namespace, so the per-class lifecycle plan and dry-run check has nothing to plan against. The lake itself (qip_storage::lake) now separates market and internal history by path, but carries no retention policy.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -112,21 +106,13 @@
   },
   {
     "id": "TICK-038",
-    "status": "PARTIAL",
-    "current": "Per-object checksums: qip_storage::blob::BlobStore::digest (blob.rs:16-18) gives every stored object a SHA-256 content hash, and CloudStorageBlobStore keeps SHA-256 rather than Google's MD5/CRC32C (gcp.rs:928-945) -- unwired (TICK-035). Manifests of training/simulation input sets exist and are production-reached from qip-deepbrain: qip_kernel::central::foundry::recorded_manifest (foundry.rs:363) content-hashes the exact bars a candidate was simulated over, called from qip-deepbrain evolution.rs:1350; and each research learning round is assembled through qip_data_finder's FetchCampaign, whose CampaignManifest (campaign.rs:305-345) lists ManifestEntry { DataReference { locator, range, content_hash, ... } } (reference.rs:219-233) and is journaled (qip-deepbrain campaign.rs:308 assemble, called from evolution.rs:575). A later fetch whose hash disagrees flags the entry by name (flag_revised).",
+    "status": "COMPLETE",
+    "current": "Every lake segment is recorded with a SHA-256 of its canonical bytes; Lake::write_manifest seals a named Manifest of SegmentRecords; Lake::materialize re-reads the manifest's segments and fails naming any segment whose bytes no longer match; Lake::verify lists every mismatching key. The existing DatasetManifest and CampaignManifest remain for bar windows and fetched references.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/blob.rs:9-19",
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs:145-150",
-      "backend/crates/libs/qip-storage/tests/gcp.rs:928-945",
-      "backend/crates/runtime/qip-kernel/src/central/foundry.rs:352-363 (recorded_manifest)",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1350,575",
-      "backend/crates/services/qip-data-finder/src/campaign.rs:305-345 (ManifestEntry, CampaignManifest)",
-      "backend/crates/services/qip-data-finder/src/reference.rs:219-233 (DataReference.content_hash)",
-      "backend/crates/apps/qip-deepbrain/src/campaign.rs:308 (assemble)",
-      "backend/crates/runtime/qip-kernel/tests/central.rs:5877 a_dataset_manifest_names_the_bars_by_content_so_an_edited_price_is_a_different_dataset",
-      "backend/crates/apps/qip-deepbrain/src/campaign.rs:674 a_window_is_assembled_through_a_campaign_whose_manifest_is_journaled; :1031 the_campaign_that_used_the_original_is_flagged_and_the_one_that_used_the_revision_is_not"
+      "backend/crates/libs/qip-storage/src/lake.rs",
+      "backend/crates/libs/qip-storage/tests/lake.rs::re_materializing_a_manifest_matches_its_checksums_and_a_corrupt_byte_names_the_segment"
     ],
-    "gap": "There are no Tick Lake segments (TICK-035), so no segment carries a checksum in an archive. The existing manifests describe bar windows and fetched references, not tick segments: DatasetManifest carries a content hash but no locator, so it detects a changed dataset without being able to re-materialize one; CampaignManifest carries locator + content hash, so re-fetching and verifying is possible, but no re-materialization routine reads a stored manifest back into the identical set and no test corrupts a stored segment and expects the integrity check to name it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -136,11 +122,11 @@
       "TICK-035"
     ],
     "blocked_by": "",
-    "verification": "central.rs:5877 proves an edited price changes the dataset manifest's hash; qip-deepbrain campaign.rs:674 and :1031 prove the campaign manifest is journaled and a revised extent is flagged by entry; gcp.rs:928-945 proves the object digest. Missing: re-materializing a stored manifest and a one-byte segment corruption test.",
+    "verification": "cargo test -p qip-storage --test lake (7 passed). Mutations (each failed exactly the named test, then restored byte-for-byte, 7 passed): raw kept regardless of entitlement -> raw_bytes_are_kept_only_where_the_entitlement_permits...; overwrite check disabled -> a_sealed_segment_cannot_be_overwritten...; entitlement filter disabled -> a_job_granted_one_entitlement...; checksum check disabled -> re_materializing_a_manifest_matches_its_checksums...",
     "work_item": "E06-segment-manifests",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept PARTIAL; integrated false->true and deployable false->true. The assessor's claim that CampaignManifest 'carries no checksum list' is wrong -- each ManifestEntry's DataReference carries content_hash -- and it missed foundry::recorded_manifest; both are reached from qip-deepbrain's EvolutionEngine (constructed in qip-deepbrain main.rs:359)."
+    "notes": "Residual: qip_storage::lake::Lake is not yet selected by any composition root (storage_target cannot name the lake, enable_cloud_storage=false everywhere), so integrated and deployable stay false."
   },
   {
     "id": "TICK-039",
@@ -169,17 +155,16 @@
   },
   {
     "id": "TICK-040",
-    "status": "PARTIAL",
-    "current": "qip_sequencing::tracker::{Sequencer,SequenceTracker} detects and reports gaps live (SequenceEvent::GapOpened/GapFilled/GapAbandoned, tracker.rs:99-110,336-456), reached from production only through qip-edge's Cell::on_bytes (cell.rs:2784-2812), called by qip-edge-node feed.rs:287; each gap is written to the cell's hash-chained journal as Decision::GapDetected (cell.rs:2808). qip_orderbook's MessageBody::Reset forces the book to discard state and withhold every price until resynchronisation (venue.rs:149), proven by a_reset_discards_the_book_and_withholds_every_price_until_resynchronisation (qip-orderbook tests/venue.rs:64). qip-streaming's SequenceCoordinator/StreamProcessor (sequencing.rs, processing.rs:320) has no non-test caller outside its own crate.",
+    "status": "COMPLETE",
+    "current": "qip_orderbook::replay::replay reconstructs a venue's history in batch and carries the integrity finding on its output: one ReplayStep flag per message and one UnreliablePeriod per episode (a Gap naming the missing sequences, or an OutOfOrder message), opened at the first message after the fault and closed at the next venue Reset. While open, book edits are withheld (the book is already wrong) while trades, status and auctions still apply. The live path (Sequencer, Decision::GapDetected, VenueState::reset) is unchanged.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/src/tracker.rs:99-110,336-456",
-      "backend/crates/edge/qip-edge/src/cell.rs:2784-2812 (on_bytes; Decision::GapDetected at :2808)",
-      "backend/crates/apps/qip-edge-node/src/feed.rs:287",
-      "backend/crates/edge/qip-orderbook/src/venue.rs:149",
-      "backend/crates/edge/qip-orderbook/tests/venue.rs:64",
-      "backend/crates/edge/qip-sequencing/tests/tracker.rs:211 (a_gap_that_outlives_its_deadline_is_abandoned_even_if_nothing_else_arrives)"
+      "backend/crates/edge/qip-orderbook/src/replay.rs",
+      "backend/crates/edge/qip-orderbook/tests/integrity.rs::an_unmodified_recorded_sequence_produces_no_flag",
+      "backend/crates/edge/qip-orderbook/tests/integrity.rs::removing_one_message_flags_the_period_from_the_gap_and_the_flag_is_on_the_output",
+      "backend/crates/edge/qip-orderbook/tests/integrity.rs::a_reset_closes_the_period_and_the_messages_after_it_are_reliable_again",
+      "backend/crates/edge/qip-orderbook/tests/integrity.rs::a_message_behind_one_already_applied_is_flagged_out_of_order"
     ],
-    "gap": "This is live, streaming gap handling inside qip-edge, whose only host (qip-edge-node) is undeployed (execution_nodes = {} in every environment). There is no batch/offline reconstruction over archived history (TICK-035 does not exist) and no persisted 'unreliable period' flag that a later, separate replay or training job reads back -- the reset is an in-process book-state change, not a record that reaches a downstream consumer.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -189,21 +174,25 @@
       "TICK-035"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-sequencing/tests/tracker.rs::a_gap_that_outlives_its_deadline_is_abandoned_even_if_nothing_else_arrives; qip-orderbook's reset/resync tests in tests/venue.rs",
+    "verification": "cargo test -p qip-orderbook --test integrity (4 passed). Mutations (each failed the named tests, then restored byte-for-byte, 4 passed): gap detection disabled -> removing_one_message... and a_reset_closes...; book-edit withholding disabled -> three tests; reset no longer closing the period -> a_reset_closes...; out-of-order detection disabled -> a_message_behind_one_already_applied...",
     "work_item": "E06-gap-flag-persistence",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status and flags kept (integrated true via qip-edge-node; deployable false). Removed the claim that qip-streaming's sequencing is 'reached by the deployed qip-deepbrain binary': StreamProcessor::new has no caller outside qip-streaming's own tests. Added the journaled Decision::GapDetected, which is a persisted gap record but not a replay-output integrity flag."
+    "notes": "Mutation-verified. Residual: no replay, training or label job consumes ReplayOutput yet, so nothing forces a downstream consumer to read the flag (integrated false); the period close assumes the snapshot after a Reset is complete, since the canonical schema has no end-of-snapshot marker."
   },
   {
     "id": "TICK-041",
-    "status": "PARTIAL",
-    "current": "qip_orderbook::snapshot::{BookSnapshot,VenueSnapshot} (snapshot.rs:50,102) capture book state with a stable content digest (snapshot.rs:65,122), proven deterministic by backend/crates/edge/qip-orderbook/tests/replay.rs (applying_a_stream_twice_from_a_fresh_book_gives_byte_identical_snapshots, a_snapshot_taken_twice_from_one_book_is_the_same_snapshot).",
+    "status": "COMPLETE",
+    "current": "qip_orderbook now has restore as well as capture: L3Book::{checkpoint,restore} (L3Checkpoint holds every resting order in queue order), Book::{checkpoint,restore} (BookCheckpoint; an aggregated book restores from its level snapshot) and VenueState::{checkpoint,restore} (VenueCheckpoint carries sequence, session totals, auction, last trade and the awaiting-snapshot flag). A checkpoint round-trips through serde_json and a restore refuses a repeated order reference rather than repairing it.",
     "evidence": [
-      "backend/crates/edge/qip-orderbook/src/snapshot.rs:50,65,102,122",
-      "backend/crates/edge/qip-orderbook/tests/replay.rs:20-140"
+      "backend/crates/edge/qip-orderbook/src/l3.rs (L3Book::checkpoint/restore)",
+      "backend/crates/edge/qip-orderbook/src/book.rs (BookCheckpoint)",
+      "backend/crates/edge/qip-orderbook/src/venue.rs (VenueCheckpoint, VenueState::checkpoint/restore)",
+      "backend/crates/edge/qip-orderbook/tests/replay.rs::a_replay_started_from_a_checkpoint_matches_a_replay_from_the_start_at_every_sequence",
+      "backend/crates/edge/qip-orderbook/tests/replay.rs::an_aggregated_book_restored_from_a_checkpoint_replays_to_the_same_book",
+      "backend/crates/edge/qip-orderbook/tests/replay.rs::a_checkpoint_that_repeats_an_order_reference_is_refused_not_repaired"
     ],
-    "gap": "No constructor rebuilds an L3Book/L2Book/VenueState FROM a BookSnapshot/VenueSnapshot -- grep for from_snapshot/restore across the crate finds nothing -- so a checkpoint cannot actually be used to start a replay mid-history. The requirement's own verification (replay started from any checkpoint reaches the same book-state hash as a replay from the start) cannot be performed because the restore half does not exist. Nor is the capture half reached: no non-test code outside qip-orderbook calls BookView::snapshot/snapshot_to or VenueState::snapshot (the qip-edge cell holds VenueStates in seam.rs but never snapshots them), so no checkpoint is ever taken in a running process.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -211,11 +200,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "replay.rs's determinism tests prove snapshot equality when built from scratch; no test proves resume-from-checkpoint, because no restore constructor exists.",
+    "verification": "cargo test -p qip-orderbook --test replay (8 passed). Mutation: sorting the L3 checkpoint by descending order reference made the checkpoint test fail with \"queue order diverged at 100\"; restored byte-for-byte, 8 passed.",
     "work_item": "E06-book-snapshot-restore",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: integrated true -> false. rg for .snapshot()/snapshot_to/BookSnapshot/VenueSnapshot outside qip-orderbook finds only metrics-registry snapshots; the book snapshot is exercised only by qip-orderbook's own tests."
+    "notes": "Mutation-verified. Residual: no running process takes a checkpoint yet (the qip-edge cell holds VenueStates but never snapshots them), so integrated stays false; the requirement's own check is the property test over generated sequences."
   },
   {
     "id": "TICK-042",
@@ -263,16 +252,19 @@
   },
   {
     "id": "TICK-044",
-    "status": "PARTIAL",
-    "current": "One of the seven label types exists at one horizon: qip-deepbrain's LearningDesk builds a future-return label for every fit with next_bar_returns (learning.rs:1490-1497, called at :1242), the return from each feature row's bar into the next, and fits qip_training models on it. The desk is reached from qip-deepbrain main.rs:359 (EvolutionEngine::new) -> evolution.rs:402 (LearningDesk::new). The test a_feature_row_never_reads_the_bar_its_target_spans (learning.rs:2793) asserts the first target equals a hand-computed return, the requirement's own style of check. qip_feature_dag::features::RealisedVolatility (features.rs:270-308) is a backward-looking feature, not a forward label.",
+    "status": "COMPLETE",
+    "current": "qip_training::labels::LabelBuilder over a MidSeries builds future_return, realized_volatility, adverse_selection, market_impact, fill_outcome and opportunity_decay at any horizon, and at_horizons returns them as a BTreeMap keyed by horizon. A window the series does not cover is refused rather than shortened. qip-deepbrain's private next_bar_returns remains its own bar-based helper.",
     "evidence": [
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:1242,1490-1497 (next_bar_returns)",
-      "backend/crates/apps/qip-deepbrain/src/learning.rs:2793 a_feature_row_never_reads_the_bar_its_target_spans",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs:402; backend/crates/apps/qip-deepbrain/src/main.rs:359",
-      "backend/crates/edge/qip-feature-dag/src/features.rs:269-309",
-      "rg -n 'struct.*Label|LabelBuilder|OutcomeLabel' backend/crates -> only qip-ai's unrelated RegimeLabel (memory/episode.rs:167)"
+      "backend/crates/services/qip-training/src/labels.rs",
+      "backend/crates/services/qip-training/tests/labels.rs::future_return_at_each_horizon_is_the_hand_computed_ratio",
+      "backend/crates/services/qip-training/tests/labels.rs::realized_volatility_is_the_root_of_summed_squared_log_returns",
+      "backend/crates/services/qip-training/tests/labels.rs::adverse_selection_is_signed_against_the_side_that_filled",
+      "backend/crates/services/qip-training/tests/labels.rs::market_impact_is_positive_when_the_price_moves_in_the_traded_direction",
+      "backend/crates/services/qip-training/tests/labels.rs::a_resting_order_is_filled_only_by_a_print_through_its_limit_inside_the_horizon",
+      "backend/crates/services/qip-training/tests/labels.rs::opportunity_decay_is_the_share_of_the_initial_edge_still_available",
+      "backend/crates/services/qip-training/tests/labels.rs::a_horizon_the_series_does_not_cover_is_refused_not_shortened"
     ],
-    "gap": "No outcome/label builder module: the one label is a private helper inside a composition root, bar-based, single-horizon (next bar), and not reusable. Fill-probability, adverse-selection, market-impact, realized-volatility (as a forward label), opportunity-decay and multi-horizon labels do not exist.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -280,11 +272,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/apps/qip-deepbrain/src/learning.rs:2793 a_feature_row_never_reads_the_bar_its_target_spans (future-return label, one horizon); no test for the other six label types because they do not exist.",
+    "verification": "cargo test -p qip-training --test labels (7 passed). Mutation: flipping the adverse-selection sign and admitting a print at the decision instant failed two tests; restored byte-for-byte, 7 passed.",
     "work_item": "E06-outcome-label-builder",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: MISSING -> PARTIAL. The assessor missed next_bar_returns in qip-deepbrain's learning desk: a production future-return label, reached from qip-deepbrain main.rs, with a test asserting a hand-computed value."
+    "notes": "Mutation-verified. Residual: no production caller yet (the deepbrain desk still uses its own next-bar label), so integrated stays false. Sign conventions are stated in the module doc."
   },
   {
     "id": "TICK-045",
@@ -314,7 +306,7 @@
   {
     "id": "TICK-046",
     "status": "MISSING",
-    "current": "nothing -- no microstructure training/evaluation service exists in this tree at all (the \u00a78.2 'microstructure training service' row this requirement splits from has no implementation). qip_kernel::family_review.rs evaluates strategy candidates generally (deflated Sharpe, family_review.rs:162,334-352) with no venue x asset x regime x horizon breakdown of any kind.",
+    "current": "nothing -- no microstructure training/evaluation service exists in this tree at all (the §8.2 'microstructure training service' row this requirement splits from has no implementation). qip_kernel::family_review.rs evaluates strategy candidates generally (deflated Sharpe, family_review.rs:162,334-352) with no venue x asset x regime x horizon breakdown of any kind.",
     "evidence": [
       "rg -n microstructure backend/crates -> agent/feature/market-structure hits only, no training or evaluation service",
       "backend/crates/runtime/qip-kernel/src/family_review.rs (generic strategy evaluation, no slice breakdown)"
@@ -563,15 +555,15 @@
   },
   {
     "id": "TICK-056",
-    "status": "PARTIAL",
-    "current": "qip_sequencing::clock::ClockDiscipline (clock.rs:86-229) estimates a venue-to-cell clock offset from a bounded observation window and never lets a correction move a timestamp backwards (discipline(), clock.rs:207, clamps against its own last output and counts how often it had to). It returns only a corrected Timestamp. The 'originals kept' half exists independently: qip_contracts::message::MarketMessage carries both venue_time and capture_time (message.rs:168-170).",
+    "status": "COMPLETE",
+    "current": "qip_sequencing::clock::ClockDiscipline::discipline_traced returns a DisciplinedTime holding the untouched venue_time and capture_time, the normalized time, and one ClockCorrection per adjustment (kind OffsetEstimate or MonotonicFloor, signed delta, applied_at, samples, published uncertainty). The monotonic floor, which used to leave only a counter, is now a recorded correction. DisciplinedTime::reversed walks the deltas back to the venue time. discipline() delegates to it so there is one code path.",
     "evidence": [
-      "backend/crates/edge/qip-sequencing/src/clock.rs:1-229",
-      "backend/crates/edge/qip-sequencing/tests/clock.rs",
-      "docs/architecture/current-state/edge-libs.json qip-sequencing gaps_observed: 'clock::ClockDiscipline ... zero non-test call sites in backend/crates'",
-      "backend/crates/libs/qip-contracts/src/message.rs:168-170 (venue_time, capture_time)"
+      "backend/crates/edge/qip-sequencing/src/clock.rs (ClockCorrection, CorrectionKind, DisciplinedTime, discipline_traced)",
+      "backend/crates/edge/qip-sequencing/tests/clock.rs::a_correction_is_recorded_leaves_the_originals_alone_and_can_be_reversed",
+      "backend/crates/edge/qip-sequencing/tests/clock.rs::the_monotonic_floor_is_a_recorded_correction_and_reversing_both_recovers_the_venue_time",
+      "backend/crates/edge/qip-sequencing/tests/clock.rs::an_untrusted_estimate_records_no_correction"
     ],
-    "gap": "No lineage record exists at all (what was corrected, by how much, from which clock source, and reversibly) -- the type has no such field or output. The estimator itself is unreached from any production code path (confirmed: zero non-test callers anywhere in the workspace), so even the corrected timestamp it can produce never reaches a real message today.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -579,23 +571,24 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-sequencing/tests/clock.rs proves the estimator's own correctness and monotonicity; no test exists for lineage, because lineage does not exist.",
+    "verification": "cargo test -p qip-sequencing --test clock (11 passed). Mutation: reversed() adding instead of subtracting each delta failed both reversal tests; restored byte-for-byte, 11 passed.",
     "work_item": "E06-clock-correction-lineage",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status and flags kept; zero non-test callers of ClockDiscipline confirmed. Note for the builder: discipline()'s monotonic floor (clock.rs:207-220) replaces a corrected time with the previous output and only increments a counter -- once wired, that is itself a correction with no lineage and must emit one."
+    "notes": "Mutation-verified (sign of the reversal). Residual: ClockDiscipline still has no non-test caller, so integrated stays false; wiring it into the edge capture path belongs with TICK-031/TICK-033."
   },
   {
     "id": "TICK-057",
-    "status": "PARTIAL",
-    "current": "Structural pieces exist independently. qip_financial::extensions::ListingStatus{Listed,Suspended,Delisted,PreIpo} (extensions.rs:127-138) has no Default and must be stated per instrument, so a vendor record omitting the field cannot silently read as tradable. qip_market::corporate_action::CorporateActionKind::Delisting (corporate_action.rs:36) is modeled and classified in platform.rs:18406-18415. qip_entity_resolution merges aliases so a renamed instrument resolves to one entity, tested in resolution.rs.",
+    "status": "COMPLETE",
+    "current": "qip_financial::history::UniverseHistory keeps listing spans (delisting ends a span and keeps the record), symbol eras (a rename keeps the ObjectId; resolve answers by date so a recycled ticker does not resolve to the earlier company) and recorded venue outages (outages_overlapping returns every outage a replay window spans). Records that would rewrite history (double delist, out-of-order rename, relisting an id, empty outage window) are refused. Existing ListingStatus, CorporateActionKind::Delisting and qip_entity_resolution remain the per-instrument pieces.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/extensions.rs:120-138",
-      "backend/crates/libs/qip-market/src/corporate_action.rs:36,232-255",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18406-18415",
-      "backend/crates/services/qip-entity-resolution/tests/resolution.rs"
+      "backend/crates/libs/qip-financial/src/history.rs",
+      "backend/crates/libs/qip-financial/tests/history.rs::a_universe_as_of_a_past_date_includes_an_instrument_delisted_afterwards",
+      "backend/crates/libs/qip-financial/tests/history.rs::a_symbol_change_resolves_to_one_instrument_on_both_sides",
+      "backend/crates/libs/qip-financial/tests/history.rs::a_replay_window_across_a_venue_outage_reports_the_outage",
+      "backend/crates/libs/qip-financial/tests/history.rs::history_records_that_would_rewrite_it_are_refused"
     ],
-    "gap": "qip_financial::universe::Universe (universe.rs:40-80) is a flat, current-membership set with no as-of/point-in-time reconstruction method -- no 'historical universe as of a past date' capability exists to assemble one that would retain a since-delisted name, and no test replays a known venue outage and asserts it is shown rather than silently skipped.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -603,11 +596,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No single test proves the composed requirement; the component tests listed above prove the individual building blocks (listing status, delisting classification, alias merge) each in isolation.",
+    "verification": "cargo test -p qip-financial --test history (4 passed). Mutation: membership that required delisted_at to be None (survivors only) failed the as-of test with \"survivorship: [obj-alive, obj-renamed]\"; restored byte-for-byte, 4 passed.",
     "work_item": "E06-point-in-time-universe",
     "tier": "T1",
     "size": "M",
-    "notes": ""
+    "notes": "Mutation-verified. Residual: nothing yet feeds UniverseHistory from the catalogue or consults it in training/replay, so integrated stays false."
   },
   {
     "id": "TICK-058",
@@ -686,19 +679,15 @@
   },
   {
     "id": "TICK-061",
-    "status": "PARTIAL",
-    "current": "No tick-archive lake writer exists (TICK-035), but the platform's internal record already cannot hold raw world text by construction: qip_financial::intelligence::NewsItem (intelligence.rs:121-139) has no text field -- it carries a SourceManifest with the document's SHA-256 ('Not the text... with no String to put the article in, no adapter can archive one') -- and every world-sourced topic (NewsReceived, FundamentalUpdated, AlternativeDataReceived, MarketTrade, ...) is classed qip_events::retention::RetentionClass::Referenced, Retention::ManifestOnly ('re-readable from the source, referenced by content hash, never copied', topic.rs:541-552). The narrative adapter test pins that the manifest hashes the served document (narrative_feed.rs:234-242). NewsItems reach the kernel from the synthetic and connector feeds (platform.rs:8745).",
+    "status": "COMPLETE",
+    "current": "qip_storage::lake::RecordClass is a closed enum of Market and Internal; RecordClass::parse refuses any other class by name, and Lake::write_segment takes a Partition whose class is that enum, so a world-source document has no representable form to write. The platform's records were already manifest-only for world content (NewsItem carries a SourceManifest, world topics are RetentionClass::Referenced).",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/intelligence.rs:121-139 (NewsItem: manifest, not text)",
-      "backend/crates/libs/qip-events/src/topic.rs:541-552 (world-sourced topics -> RetentionClass::Referenced)",
-      "backend/crates/libs/qip-events/src/retention.rs:96-97,171-182 (Referenced -> Retention::ManifestOnly)",
-      "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs:234-242",
-      "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs:101 a_registered_source_carries_no_copy_of_the_text_the_probe_sampled",
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs:174 (generic put(key, bytes) with no record-type concept)"
+      "backend/crates/libs/qip-storage/src/lake.rs",
+      "backend/crates/libs/qip-storage/tests/lake.rs::a_world_source_document_is_refused_by_name_and_the_lake_has_only_two_classes"
     ],
-    "gap": "The prohibition is held on the record types, not at an archive: there is no lake writer with an accepted-record-type list, and the event log (which the declared event-archive bucket is for) accepts world-sourced record types -- manifests, headlines and facts, not raw corpus -- so the requirement's check ('only market-event and internal-execution types; a world-source document is refused') has no writer to run against. No test asserts the serialized news record lacks the article text; the narrative test pins the manifest hash, not the absence.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -706,11 +695,11 @@
       "TICK-035"
     ],
     "blocked_by": "",
-    "verification": "No test of a lake writer's accepted types exists (no writer). Structural: NewsItem has no field that could hold article text; narrative_feed.rs:234-242 pins the manifest hash.",
+    "verification": "cargo test -p qip-storage --test lake (7 passed). Mutations (each failed exactly the named test, then restored byte-for-byte, 7 passed): raw kept regardless of entitlement -> raw_bytes_are_kept_only_where_the_entitlement_permits...; overwrite check disabled -> a_sealed_segment_cannot_be_overwritten...; entitlement filter disabled -> a_job_granted_one_entitlement...; checksum check disabled -> re_materializing_a_manifest_matches_its_checksums...",
     "work_item": "E06-lake-writer-type-restriction",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: MISSING -> PARTIAL. The assessor missed that NewsItem is manifest-only by construction and that world-sourced topics are RetentionClass::Referenced (ManifestOnly) in the event log -- the raw-corpus half of this prohibition already holds structurally for the internal record. tested=false: no named test asserts the absence."
+    "notes": "Residual: qip_storage::lake::Lake is not yet selected by any composition root (storage_target cannot name the lake, enable_cloud_storage=false everywhere), so integrated and deployable stay false."
   },
   {
     "id": "TICK-062",
@@ -772,7 +761,7 @@
       "backend/crates/services/qip-twin/src/counterfactual.rs:48-68,494,544,639,818",
       "backend/crates/runtime/qip-kernel/tests/learning.rs (DoNotTrade priced alongside Trade in score_filled/score_declined)"
     ],
-    "gap": "This covers only trading decisions. There is no general 'intervention simulation' for a non-trading proposed platform action (the causal-agency framing GCP \u00a711 names) -- agency of that kind does not exist in this build at all; ADR 0099 keeps causal agency shadow-only and unbuilt.",
+    "gap": "This covers only trading decisions. There is no general 'intervention simulation' for a non-trading proposed platform action (the causal-agency framing GCP §11 names) -- agency of that kind does not exist in this build at all; ADR 0099 keeps causal agency shadow-only and unbuilt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -799,7 +788,7 @@
       "backend/crates/libs/qip-events/tests/backbone.rs:95 decision_relevant_topics_are_retained_permanently_and_never_dropped",
       "backend/crates/libs/qip-events/tests/backbone.rs:2090 the_snapshot_window_rolls_replaceable_records_by_age_and_never_a_permanent_one"
     ],
-    "gap": "No lake writer exists to be the requirement's other named destination (TICK-035), and no architecture test proves 'no edge into the pass-through/discard stage' across the two subsystems. Within the event log the never-discard property is enforced by the retention class and tested; the separation from qip-data-finder's pipeline still holds only because nothing wires them together.",
+    "gap": "qip_storage::lake::Lake now exists as the lake destination (RecordClass::Internal is a first-class partition), but nothing writes the platform's own orders, fills or decisions to it, and no architecture test proves 'no edge into the pass-through/discard stage' across qip-data-finder and the lake/ledger writers. Within the event log the never-discard property is enforced by RetentionClass and tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,

@@ -108,16 +108,16 @@
   },
   {
     "id": "MESH-029",
-    "status": "MISSING",
-    "current": "nothing. qip_routing::path::Coordination (path.rs:566) has no execution-time coordination arm: §31 path 3 (MirroredInventory) is Coordination::PolicyInAdvance (path.rs:664), and every other path is unilateral, pre-committed, from-the-venue or loose. Cross-region mirror cycles can now be composed by one cell (qip-edge/tests/cross_region.rs), but that cell takes them alone against policy distributed in advance; no reservation condition, coordinator or FIRE declaration exists. Note that the qip_arbitrage::legs module doc the original row quoted (legs.rs:48-53) is stale: it says the graph has no mirror edge class and every cycle is path 1, 2 or 7, which cross_region.rs's path-3 tests contradict.",
+    "status": "COMPLETE",
+    "current": "PeerEndpoint::declare_fire declares FIRE only when every leg is reserved at its full size (and the epoch is live and the loss bound holds); send_leg refuses before FIRE. Condition is all-legs-reserved; no other condition is configurable. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-routing/src/path.rs:563-589,661-669 (Coordination enum; MirroredInventory => PolicyInAdvance)",
-      "backend/crates/edge/qip-edge/tests/cross_region.rs:459 a_cell_told_one_of_its_venues_is_abroad_composes_mirror_edges_and_is_assigned_path_three",
-      "backend/crates/edge/qip-arbitrage/src/legs.rs:48-53 (stale doc: 'never a message at execution time')"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- fire_is_declared_exactly_when_every_leg_is_reserved_and_no_leg_precedes_it",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- a_leg_reserved_for_less_than_its_requirement_does_not_meet_the_fire_condition"
     ],
-    "gap": "No FIRE declaration, reservation-condition or coordinator concept exists anywhere; every cycle executes alone inside one cell today.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -126,11 +126,11 @@
       "MESH-044"
     ],
     "blocked_by": "",
-    "verification": "none exists; would be a property test generating reservation outcomes (refused/timeout/partial) and asserting FIRE fires iff the configured condition holds",
+    "verification": "cargo test -p qip-mesh --test peer -- fire_is_declared_exactly_when_every_leg_is_reserved_and_no_leg_precedes_it a_leg_reserved_for_less_than_its_requirement_does_not_meet_the_fire_condition (mutation-verified: by weakening the all-reserved test and removing the before-FIRE guard, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E11-fire-protocol",
     "tier": "T3",
     "size": "XL",
-    "notes": "Not blocked by ADR 0099's register by itself — the coordination logic could be built in-tree on the existing serde/serde_json + qip-transport HTTP substrate; only the low-latency peer transport (MESH-038) is C2-blocked. verify: status unchanged (MISSING). Rewrote 'current': the row relied on a stale legs.rs doc claiming no cross-region cycle can be composed. Path-3 mirror cycles do exist in single-cell form, but coordination is PolicyInAdvance by design, so there is still no FIRE."
+    "notes": "Not blocked by ADR 0099's register by itself — the coordination logic could be built in-tree on the existing serde/serde_json + qip-transport HTTP substrate; only the low-latency peer transport (MESH-038) is C2-blocked. verify: status unchanged (MISSING). Rewrote 'current': the row relied on a stale legs.rs doc claiming no cross-region cycle can be composed. Path-3 mirror cycles do exist in single-cell form, but coordination is PolicyInAdvance by design, so there is still no FIRE. | Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-030",
@@ -366,7 +366,7 @@
     "work_item": "E99-c2-transport-decision",
     "tier": "T4",
     "size": "XL",
-    "notes": "Explicitly named BLOCKED by the requirement's own notes, citing ADR 0099 C2."
+    "notes": "Explicitly named BLOCKED by the requirement's own notes, citing ADR 0099 C2. | Left BLOCKED: needs a new dependency / superseding ADR or a Terraform apply that this change may not make."
   },
   {
     "id": "MESH-039",
@@ -387,7 +387,7 @@
     "work_item": "E99-c8-region-footprint",
     "tier": "T4",
     "size": "L",
-    "notes": "execution_nodes = {} in every environment (infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars) and billing is disabled on the dev project, per ADR 0099."
+    "notes": "execution_nodes = {} in every environment (infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars) and billing is disabled on the dev project, per ADR 0099. | Left BLOCKED: needs a new dependency / superseding ADR or a Terraform apply that this change may not make."
   },
   {
     "id": "MESH-040",
@@ -410,7 +410,7 @@
     "work_item": "E99-c8-region-footprint",
     "tier": "T4",
     "size": "M",
-    "notes": ""
+    "notes": "Left BLOCKED: needs a new dependency / superseding ADR or a Terraform apply that this change may not make."
   },
   {
     "id": "MESH-041",
@@ -437,29 +437,25 @@
   },
   {
     "id": "MESH-042",
-    "status": "PARTIAL",
-    "current": "Receiver side: the qip-api mesh server that absorbs cell deltas binds with mesh_server_limits() (qip-api/src/mesh.rs:306-313, used at :425), max_body 1 MiB, and qip-api's HTTP parser refuses a declared Content-Length above max_body with 413 before allocating (qip-api/src/http.rs:711). The cell's poll client is bounded the same way by qip_transport::http::ClientLimits::max_body (http.rs:52, checked before allocation at :1269). Sender side: there is no byte bound. qip_edge::mesh::CellStateDelta truncates its fills, refusals and crosses lists to MAX_*_PER_DELTA and reports an omitted count (mesh.rs:97, 303-325) instead of refusing.",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::encode refuses a body over the bound at the sender; decode refuses a frame whose declared length exceeds the bound before reading the body or sizing a buffer. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/apps/qip-api/src/mesh.rs:306-313,425 (mesh server max_body 1 MiB)",
-      "backend/crates/apps/qip-api/src/http.rs:704-713 (declared length above max_body refused with 413 before allocation)",
-      "backend/crates/apps/qip-api/tests/api.rs:795 an_oversized_body_is_refused_before_it_is_buffered (generic server test; not the mesh endpoint)",
-      "backend/crates/libs/qip-transport/src/http.rs:52,1265-1272 (ClientLimits::max_body, checked before reading the declared length)",
-      "backend/crates/edge/qip-edge/src/mesh.rs:97,303-325 (sender truncates and counts omissions; no byte bound)",
-      "backend/crates/edge/qip-edge/src/mesh.rs:1247 a_delta_that_refuses_more_than_it_may_carry_says_how_many_it_dropped"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- a_message_at_the_size_bound_is_sent_and_one_byte_over_is_refused_by_sender_and_receiver"
     ],
-    "gap": "The sender never refuses an over-bound message: it has no byte bound, and its per-list discipline is truncate-and-report, a clamp that the requirement's 'refused by the sender' and the house 'refuse rather than clamp' principle both count against (so if this truncation were treated as the Mesh size bound, INCORRECT would apply). The receiver refusal is tested only generically on the API server, and nothing tests a message exactly at the bound being accepted while one byte over is refused.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-api --test api an_oversized_body_is_refused_before_it_is_buffered (receiver, generic); cargo test -p qip-edge --lib mesh::tests::a_delta_that_refuses_more_than_it_may_carry_says_how_many_it_dropped (sender truncation); missing: sender-side byte-bound refusal and an at-bound/one-over unit test on the mesh wire",
+    "verification": "cargo test -p qip-mesh --test peer -- a_message_at_the_size_bound_is_sent_and_one_byte_over_is_refused_by_sender_and_receiver (mutation-verified: by removing the sender bound and the declared-length check, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E11-mesh-message-bound",
     "tier": "T1",
     "size": "S",
-    "notes": "Bounded-working-set discipline exists and is arguably more informative than plain refusal (it reports what was dropped); closing the gap is mostly a naming/semantics change plus one new test. verify: status and flags unchanged (PARTIAL). Added the receiver half the row missed (the qip-api mesh server's 1 MiB max_body, refused with 413 before allocation). Flagged that the sender's truncation is a clamp rather than a refusal and would read as INCORRECT if offered as the size bound."
+    "notes": "Bounded-working-set discipline exists and is arguably more informative than plain refusal (it reports what was dropped); closing the gap is mostly a naming/semantics change plus one new test. verify: status and flags unchanged (PARTIAL). Added the receiver half the row missed (the qip-api mesh server's 1 MiB max_body, refused with 413 before allocation). Flagged that the sender's truncation is a clamp rather than a refusal and would read as INCORRECT if offered as the size bound. | Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-043",
@@ -489,58 +485,50 @@
   },
   {
     "id": "MESH-044",
-    "status": "PARTIAL",
-    "current": "qip_edge::reservation::{RegionAllocation, RegionTable} (backend/crates/edge/qip-edge/src/reservation.rs:121,522) bound region capital by amount — refused whole rather than reduced when a hold cannot be taken — and by time, via per-pass holds returned by RegionAllocation::sweep_before (reservation.rs:481). Cell::admit_cycle applies the identical discipline to an arbitrage cycle's own notional via region_hold_id_for_cycle/hold_region_capital/release_cycle_hold (cell.rs).",
+    "status": "COMPLETE",
+    "current": "qip_mesh::peer::ReservationBook refuses a reservation above its leg requirement or the remaining grant, and releases an epoch on completion/rejection (release_epoch) or at expiry (expire). backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/reservation.rs:121-150,432,481-522 (RegionAllocation; sweep_before)",
-      "backend/crates/edge/qip-edge/src/cell.rs:5696-5723 (one hold for the cycle's summed notional; released on quote-budget refusal)",
-      "backend/crates/edge/qip-edge/src/cell.rs:6007-6030,7376-7470 (released when not sent; committed as spend when all legs go out)",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:770 a_cycle_the_region_allocation_cannot_hold_is_refused_whole",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:822 a_cycle_whose_legs_all_go_out_spends_the_region_allocation_and_does_not_get_it_back",
-      "backend/crates/edge/qip-edge/tests/reservation.rs:249 a_second_strategy_is_refused_once_the_region_allocation_is_spent_even_though_its_own_envelope_would_admit_it",
-      "backend/crates/edge/qip-edge/tests/region_table.rs:289 a_disconnected_cells_second_proposal_is_refused_against_what_its_first_still_holds_until_that_order_expires",
-      "backend/crates/edge/qip-edge/tests/region_table.rs:516 a_halted_cell_withdraws_what_it_had_resting_and_that_capital_returns_exactly_once"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- reservations_never_exceed_the_leg_or_the_grant_and_are_released_when_the_epoch_ends",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- a_reservation_is_released_at_its_epoch_expiry_and_not_a_moment_before"
     ],
-    "gap": "The requirement bounds reservations 'for an epoch' taken by a coordinator or participant; neither the epoch nor a coordinator exists (the same reason MESH-028 is PARTIAL). In-tree, one hold covers a whole cycle (the sum of its admitted legs' notional), not one reservation per leg. Its lifetime is pass-scoped (swept at the next pass, or committed as spend once every leg is sent), and there is no TTL. No property test runs over generated epochs. For a sent cycle, a_cycle_whose_legs_all_go_out_spends_the_region_allocation_and_does_not_get_it_back asserts the balance never rises afterwards; that capital returns 'to its prior value net of fills' when a cycle's legs expire unfilled is not tested for cycles.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test region_table a_disconnected_cells_second_proposal_is_refused_against_what_its_first_still_holds_until_that_order_expires",
+    "verification": "cargo test -p qip-mesh --test peer -- reservations_never_exceed_the_leg_or_the_grant_and_are_released_when_the_epoch_ends a_reservation_is_released_at_its_epoch_expiry_and_not_a_moment_before (mutation-verified: by removing the requirement, grant, release and expiry logic, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E11-cross-region-epoch",
     "tier": "T2",
     "size": "M",
-    "notes": "Single-region (per-cell, ADR 0039 region-share) form; MULTI_REGION is inapplicable to the underlying amount/time-bound guarantee, which is what the requirement actually checks. verify: downgraded COMPLETE->PARTIAL. The requirement is about epoch-scoped reservations by coordinators and participants, and neither the epoch nor its TTL exists; the assessor scored the sibling MESH-028 PARTIAL for exactly that absence. In-tree holds are per cycle rather than per leg, and pass-scoped rather than TTL-bounded. The requirement's property test over generated epochs does not exist."
+    "notes": "Single-region (per-cell, ADR 0039 region-share) form; MULTI_REGION is inapplicable to the underlying amount/time-bound guarantee, which is what the requirement actually checks. verify: downgraded COMPLETE->PARTIAL. The requirement is about epoch-scoped reservations by coordinators and participants, and neither the epoch nor its TTL exists; the assessor scored the sibling MESH-028 PARTIAL for exactly that absence. In-tree holds are per cycle rather than per leg, and pass-scoped rather than TTL-bounded. The requirement's property test over generated epochs does not exist. | Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-045",
-    "status": "PARTIAL",
-    "current": "Every order a cell sends, cycle legs included, goes through the single order-sending seam (Cell::send / trait Placer, cell.rs) which enforces the deterministic gates (feasibility, capital envelope, GATE_LIVE_VENUE, etc.) uniformly regardless of origin — qip_edge::arbitrage's module doc states 'every leg it produces goes through the cell's own feasibility gate, the desk's capital envelope, and the cell's one order path'.",
+    "status": "COMPLETE",
+    "current": "PeerEndpoint::send_leg runs the sending node's local gate after FIRE and a veto stops the leg; FIRE only authorises an attempt. Library-level: the gate is a caller-supplied closure, not yet the cell's real risk gate. backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/arbitrage.rs:40-45",
-      "backend/crates/edge/qip-edge/src/cell.rs:3864 (metrics.refusal(GATE_LIVE_VENUE) inside Cell::send)",
-      "backend/crates/edge/qip-edge/tests/paper_boundary.rs:203 a_cell_handed_a_live_class_gateway_places_nothing_and_names_the_gate",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:961 a_policy_payload_cannot_make_a_venue_this_cell_is_not_configured_for_reachable (a centre-sent payload cannot widen the gate's venue input)",
-      "backend/crates/edge/qip-edge/tests/arbitrage.rs:473 an_infeasible_leg_vetoes_the_whole_cycle_and_no_leg_goes_out (cycle legs pass the same feasibility gate as any order)"
+      "backend/crates/services/qip-mesh/src/peer.rs; backend/crates/services/qip-mesh/tests/peer.rs",
+      "backend/crates/services/qip-mesh/tests/peer.rs -- a_fired_leg_the_local_risk_gate_vetoes_is_never_sent"
     ],
-    "gap": "No coordinator or peer FIRE message exists to attempt an override — no cross-region protocol exists at all — so the specific defended-against scenario ('a FIRE from a coordinator cannot bypass the gate') has no adversary to test against; the guarantee holds today only because there is no second path in, not because a bypass attempt was exercised and refused.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "MESH-029"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test paper_boundary a_cell_handed_a_live_class_gateway_places_nothing_and_names_the_gate",
+    "verification": "cargo test -p qip-mesh --test peer -- a_fired_leg_the_local_risk_gate_vetoes_is_never_sent (mutation-verified: by removing the gate call, each in backend/crates/services/qip-mesh/src/peer.rs was disabled in turn and the named test failed; restored byte-for-byte and the suite passes 15/15).",
     "work_item": "E11-fire-protocol",
     "tier": "T1",
     "size": "S",
-    "notes": "Once MESH-029 exists, the specific override-attempt test becomes possible and should be added; the gate itself needs no new code. verify: status and flags unchanged (PARTIAL). Added two tests that support the single-cell form: a message from outside the process cannot widen the gate's inputs, and cycle legs pass the ordinary feasibility gate. The FIRE-bypass adversary still does not exist."
+    "notes": "Once MESH-029 exists, the specific override-attempt test becomes possible and should be added; the gate itself needs no new code. verify: status and flags unchanged (PARTIAL). Added two tests that support the single-cell form: a message from outside the process cannot widen the gate's inputs, and cycle legs pass the ordinary feasibility gate. The FIRE-bypass adversary still does not exist. | Library-level protocol rules in qip_mesh::peer with no transport: no cell composition root calls them yet (integrated=false) and the peer transport itself is MESH-038, blocked on a dependency record (ADR 0002/0009)."
   },
   {
     "id": "MESH-046",

@@ -12,6 +12,7 @@
 //! in [`node`] is allowed to run.
 
 pub mod config;
+pub mod cycle_log;
 pub mod feed;
 pub mod health;
 pub mod node;

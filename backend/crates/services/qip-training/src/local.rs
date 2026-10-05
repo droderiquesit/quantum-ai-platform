@@ -276,6 +276,35 @@ impl Calibration {
     pub fn is_identity(&self) -> bool {
         (self.scale - 1.0).abs() < f64::EPSILON && self.offset.abs() < f64::EPSILON
     }
+
+    /// The least-squares scale and offset that map `predictions` onto
+    /// `targets`.
+    ///
+    /// Refuses a constant prediction: its scale is undetermined, and a
+    /// calibration guessed for it would be a number nobody computed.
+    pub fn fit(predictions: &[f64], targets: &[f64]) -> Result<Self> {
+        if predictions.len() != targets.len() || predictions.len() < 2 {
+            return Err(Error::invalid(
+                "a calibration needs at least two paired predictions and targets",
+            ));
+        }
+        let n = predictions.len() as f64;
+        let mean_p = predictions.iter().sum::<f64>() / n;
+        let mean_t = targets.iter().sum::<f64>() / n;
+        let (mut covariance, mut variance) = (0.0, 0.0);
+        for (p, t) in predictions.iter().zip(targets) {
+            covariance += (p - mean_p) * (t - mean_t);
+            variance += (p - mean_p).powi(2);
+        }
+        let scale = covariance / variance;
+        let offset = mean_t - scale * mean_p;
+        if variance <= 0.0 || !scale.is_finite() || !offset.is_finite() {
+            return Err(Error::numeric(
+                "the model's predictions do not vary, so no calibration can be fitted to them",
+            ));
+        }
+        Ok(Self { scale, offset })
+    }
 }
 
 /// How well a fit did, in sample and out of it.
@@ -485,6 +514,23 @@ impl TrainedTeacher {
     pub fn predict(&self, inputs: &[f64]) -> Result<f64> {
         self.form
             .predict_calibrated(self.arity(), self.calibration, &self.reference(), inputs)
+    }
+
+    /// Fit this teacher's calibration to `data` and keep it.
+    ///
+    /// A fit-time step, so it does not go through an [`AuthorisedUpdate`]: the
+    /// cadence gate exists to stop a live cadence from touching a model, and
+    /// this runs inside the fit that produced it. Pass the fit set, not the
+    /// holdout — a calibration fitted on the tail its diagnostics were scored
+    /// on would flatter them.
+    pub fn calibrated_on(mut self, data: &TrainingDataset) -> Result<Self> {
+        let raw: Vec<f64> = data
+            .rows()
+            .iter()
+            .map(|row| self.form.predict(row))
+            .collect();
+        self.calibration = Calibration::fit(&raw, data.targets())?;
+        Ok(self)
     }
 
     /// Predict for every row of a dataset.

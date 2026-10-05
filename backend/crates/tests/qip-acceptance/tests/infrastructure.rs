@@ -14,6 +14,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_acceptance::{files_with_extension, read, repository_root};
 
@@ -3545,6 +3546,32 @@ fn no_firewall_allow_rule_permits_the_whole_internet() {
 }
 
 #[test]
+fn every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access() {
+    // GCP-033: a subnet without Private Google Access sends a workload to
+    // Cloud Storage, Spanner or Artifact Registry through an external address
+    // or a NAT route, which is the path the requirement closes. A fifth subnet
+    // added in a new module is one more block that looks like the others.
+    let mut subnets = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for (name, body) in terraform_resources(&content, "google_compute_subnetwork") {
+            subnets += 1;
+            assert!(
+                body.lines()
+                    .any(|l| l.split_whitespace().collect::<Vec<_>>()
+                        == ["private_ip_google_access", "=", "true"]),
+                "{}: the subnet `{name}` does not set private_ip_google_access = true",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        subnets >= 4,
+        "only {subnets} subnets were read; the walk is not reaching the modules"
+    );
+}
+
+#[test]
 fn the_fast_brain_cannot_reach_anything_that_could_serve_a_language_model() {
     // ADR 0008, consequence 3: nothing on the hot path consults a model. The
     // binary refuses to start if an agent it hosts holds `call_language_model`;
@@ -4072,6 +4099,76 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     );
 }
 
+// --- capacity (FINOPS-002) ---------------------------------------------------
+
+/// The first resource type among `types` that a Terraform file declares.
+fn declares_resource_of(content: &str, types: &[&str]) -> Option<String> {
+    without_comments(content).lines().find_map(|line| {
+        let line = collapsed(line);
+        types
+            .iter()
+            .find(|t| line.starts_with(&format!("resource \"{t}\"")))
+            .map(|t| (*t).to_string())
+    })
+}
+
+const AUTOSCALER_TYPES: [&str; 3] = [
+    "google_compute_autoscaler",
+    "google_compute_region_autoscaler",
+    "google_compute_resource_policy_autoscaler",
+];
+
+#[test]
+fn reflex_capacity_is_never_scaled_by_a_reactive_autoscaler() {
+    // Reflex capacity changes by an operator provisioning shards ahead of
+    // demand. An autoscaler reacts to load that has already arrived, adds a
+    // machine that takes minutes to boot, fetch secrets and open venue
+    // sessions, and a second machine holding sessions for one cell is a
+    // duplicate-order hazard (execution-node `node_count` doc). The group's
+    // `target_size` must also be the literal operator input.
+    let mut scanned = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        scanned += 1;
+        let content = std::fs::read_to_string(&path).expect("readable");
+        assert_eq!(
+            declares_resource_of(&content, &AUTOSCALER_TYPES),
+            None,
+            "{} declares an autoscaler; Reflex capacity changes only by \
+             pre-provisioned shards",
+            path.display()
+        );
+    }
+    assert!(
+        scanned > 10,
+        "the scan read {scanned} files, so it proved nothing"
+    );
+
+    // The premise: the detector sees a declaration when one is present, and
+    // not when it is only discussed in a comment.
+    assert_eq!(
+        declares_resource_of(
+            "resource \"google_compute_autoscaler\" \"x\" {\n}\n",
+            &AUTOSCALER_TYPES
+        )
+        .as_deref(),
+        Some("google_compute_autoscaler")
+    );
+    assert_eq!(
+        declares_resource_of(
+            "# resource \"google_compute_autoscaler\" \"x\"\n",
+            &AUTOSCALER_TYPES
+        ),
+        None
+    );
+
+    let node = read("infrastructure/terraform/modules/execution-node/main.tf");
+    assert!(
+        node.lines()
+            .any(|l| collapsed(l) == "target_size = var.node_count"),
+        "the group's size is no longer the operator's literal node_count"
+    );
+}
+
 // --- the registry -----------------------------------------------------------
 
 #[test]
@@ -4244,6 +4341,9 @@ fn no_workflow_depends_on_a_repository_variable() {
         ".github/workflows/deploy.yml",
         ".github/workflows/vendor.yml",
         ".github/workflows/image.yml",
+        // Authenticates by workload identity as infra.yml does, so the same
+        // failure mode is available to it; it was outside the list when added.
+        ".github/workflows/fleet.yml",
     ] {
         let workflow = read(workflow_file);
         assert!(
@@ -5141,12 +5241,13 @@ fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, Str
 
 #[test]
 fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
-    const WORKFLOWS: [&str; 5] = [
+    const WORKFLOWS: [&str; 6] = [
         ".github/workflows/ci.yml",
         ".github/workflows/deploy.yml",
         ".github/workflows/image.yml",
         ".github/workflows/infra.yml",
         ".github/workflows/vendor.yml",
+        ".github/workflows/fleet.yml",
     ];
 
     /// The outputs each `id`-bearing step of one job writes.
@@ -8694,7 +8795,9 @@ fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_proje
          broken bootstrap. It printed: {printed}"
     );
     assert!(
-        written.lines().any(|line| line == "project=algorik-dev"),
+        written
+            .lines()
+            .any(|line| line == "project=algorik-platform-dev"),
         "the identity step admitted `dev` and wrote no `project=` output naming dev's project; \
          it exited 0 without reaching its end, which is the failure the four steps that read \
          `steps.identity.outputs.project` cannot see"
@@ -8824,7 +8927,7 @@ fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_wh
     //    stops. The project id it echoes is printed only after both guards.
     let (code, printed) = run(&real, "dev");
     assert!(
-        printed.contains("project:") && printed.contains("algorik-dev"),
+        printed.contains("project:") && printed.contains("algorik-platform-dev"),
         "scripts/bootstrap-deploy.sh did not get past its own guards for `dev`, the one \
          provisioned environment: it never echoed the project it would act on. A guard that \
          refuses everything is not a guard. It exited {code} and printed: {printed}"
