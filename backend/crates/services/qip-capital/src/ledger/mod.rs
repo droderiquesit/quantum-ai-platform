@@ -181,7 +181,8 @@ mod registry;
 mod request;
 
 pub use book::{
-    AttributedFill, CancelledInflow, LedgerKey, ProRataSplit, StrategyBook, UserLedger, UserShare,
+    AttributedFill, CancelledInflow, Conversion, LedgerKey, ProRataSplit, StrategyBook, UserLedger,
+    UserShare,
 };
 pub use cash::{CashBalance, ExpectedInflow, PostedInflow};
 pub use eligibility::{
