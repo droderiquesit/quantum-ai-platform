@@ -1,20 +1,21 @@
 [
   {
     "id": "CONTRACT-027",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_contracts::expansion::GoalSpec (backend/crates/libs/qip-contracts/src/expansion.rs) carries every field the requirement lists as a strict serde record (deny_unknown_fields); validate/decode refuse a missing, blank or empty field naming it. Shadow-only: nothing produces or consumes it yet.",
     "evidence": [
-      "grep -rn \"GoalSpec\" backend --include=*.rs -> zero hits (2026-09-25)"
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_goal_with_no_stop_or_rollback_condition_or_a_zero_horizon_or_budget_is_refused (mutation: removing the stop/rollback list check failed it and the blank-field sweep; restored byte-for-byte, 9 passed)",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_complete_record_of_each_kind_is_accepted_and_a_missing_field_is_refused_by_every_decoder"
     ],
-    "gap": "No GoalSpec type exists anywhere in the workspace. None of the twelve required fields (desired state/distribution, target entities, horizon, utility/success metric, budget, risk/side-effect constraints, identity, jurisdiction, authority class, prohibited methods, stop/rollback conditions) has a representation in qip-contracts or anywhere else.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production producer or consumer; the type is the contract only (integrated=false).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A unit test asserting a GoalSpec missing any listed field, or with empty stop/rollback conditions, is refused -- does not exist, because there is no GoalSpec module to write it against.",
+    "verification": "cargo test -p qip-contracts --test expansion",
     "work_item": "E16-goalspec-type",
     "tier": "T1",
     "size": "S",
@@ -22,20 +23,21 @@
   },
   {
     "id": "CONTRACT-028",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_contracts::expansion::InterventionPlan (backend/crates/libs/qip-contracts/src/expansion.rs) carries every field the requirement lists as a strict serde record (deny_unknown_fields); validate/decode refuse a missing, blank or empty field naming it. Shadow-only: nothing produces or consumes it yet.",
     "evidence": [
-      "grep -rn \"InterventionPlan\" backend --include=*.rs -> zero hits (2026-09-25)"
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_plan_without_a_no_action_baseline_or_abort_rules_is_refused (mutation: dropping the no_action_baseline check failed it and the blank-field sweep; restored byte-for-byte, 9 passed)",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_complete_record_of_each_kind_is_accepted_and_a_missing_field_is_refused_by_every_decoder"
     ],
-    "gap": "No InterventionPlan type exists. None of the eleven required fields (causal hypothesis, controllable levers, ordered/conditional candidate actions, tool identities, expected effect distribution, cost, timing, reversibility, world-model simulations run, no-action baseline, required approvals, abort rules) has a representation.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production producer or consumer; the type is the contract only (integrated=false).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A unit test asserting an InterventionPlan missing its no-action baseline, abort rules or any other listed field is refused -- does not exist.",
+    "verification": "cargo test -p qip-contracts --test expansion",
     "work_item": "E16-interventionplan-type",
     "tier": "T1",
     "size": "S",
@@ -64,14 +66,15 @@
   },
   {
     "id": "CONTRACT-030",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_contracts::expansion::EffectAttribution (backend/crates/libs/qip-contracts/src/expansion.rs) carries every field the requirement lists as a strict serde record (deny_unknown_fields); validate/decode refuse a missing, blank or empty field naming it. Shadow-only: nothing produces or consumes it yet.",
     "evidence": [
-      "grep -rn \"EffectAttribution\" backend --include=*.rs -> zero hits (2026-09-25)"
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::an_attribution_must_name_a_goal_an_intervention_and_an_action_that_exist (mutation: dropping the action reference from validate_references failed it; restored byte-for-byte, 9 passed)",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_complete_record_of_each_kind_is_accepted_and_a_missing_field_is_refused_by_every_decoder"
     ],
-    "gap": "No EffectAttribution type exists. None of the required fields (goal/intervention/action IDs, observations across horizons, control/counterfactual method, estimated causal effect distribution, confounders, side effects, confidence/identifiability, world-model and action-policy updates) has a representation, and there is nothing for it to reference since GoalSpec, InterventionPlan and ActionIntent do not exist either.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production producer or consumer; the type is the contract only (integrated=false).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -81,7 +84,7 @@
       "CONTRACT-029"
     ],
     "blocked_by": "",
-    "verification": "A unit test asserting an EffectAttribution missing its counterfactual method, confounders or any other listed field is refused, and that every one references an existing goal, intervention and action -- does not exist.",
+    "verification": "cargo test -p qip-contracts --test expansion",
     "work_item": "E16-effectattribution-type",
     "tier": "T1",
     "size": "M",
@@ -89,20 +92,21 @@
   },
   {
     "id": "CONTRACT-031",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_contracts::expansion::GapSignal (backend/crates/libs/qip-contracts/src/expansion.rs) carries every field the requirement lists as a strict serde record (deny_unknown_fields); validate/decode refuse a missing, blank or empty field naming it. Shadow-only: nothing produces or consumes it yet.",
     "evidence": [
-      "grep -rln \"GapSignal\\|GapClass\\|gap_class\" backend --include=*.rs -> zero hits (2026-09-25)"
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_gap_class_outside_the_section_23_1_classes_is_refused_and_each_named_class_is_accepted (mutation: removing the compute_quantum_research class failed it; restored byte-for-byte, 9 passed)",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_complete_record_of_each_kind_is_accepted_and_a_missing_field_is_refused_by_every_decoder"
     ],
-    "gap": "No GapSignal type and no gap-class enumeration (data, ontology, causal, memory, model, tool, specialist, execution, compute/quantum research opportunity) exist anywhere. The expansion/curriculum loop this would feed (CONTRACT-032) also does not exist.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production producer or consumer; the type is the contract only (integrated=false).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A unit test asserting a GapSignal missing any listed field is refused, and that its candidate gap class is one of the section 23.1 classes -- does not exist.",
+    "verification": "cargo test -p qip-contracts --test expansion",
     "work_item": "E16-gapsignal-type",
     "tier": "T1",
     "size": "S",
@@ -110,14 +114,15 @@
   },
   {
     "id": "CONTRACT-032",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_contracts::expansion::CurriculumItem (backend/crates/libs/qip-contracts/src/expansion.rs) carries every field the requirement lists as a strict serde record (deny_unknown_fields); validate/decode refuse a missing, blank or empty field naming it. Shadow-only: nothing produces or consumes it yet.",
     "evidence": [
-      "grep -rln \"CurriculumItem\\|CurriculumEngine\\|ResearchQuestion\" backend --include=*.rs -> zero hits (2026-09-25)"
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_curriculum_item_without_budget_owner_or_stop_conditions_is_refused (mutation: dropping the budget check failed it; restored byte-for-byte, 9 passed)",
+      "backend/crates/libs/qip-contracts/tests/expansion.rs::a_complete_record_of_each_kind_is_accepted_and_a_missing_field_is_refused_by_every_decoder"
     ],
-    "gap": "No CurriculumItem type or Curriculum Engine exists. None of the required fields (research question, expected information/economic value, tools/data required, budget, owning agent, evaluation suite, stop conditions) has a representation.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production producer or consumer; the type is the contract only (integrated=false).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -125,7 +130,7 @@
       "CONTRACT-031"
     ],
     "blocked_by": "",
-    "verification": "A unit test asserting a CurriculumItem missing its budget, owner, evaluation suite, stop conditions or any other listed field is refused -- does not exist.",
+    "verification": "cargo test -p qip-contracts --test expansion",
     "work_item": "E16-curriculumitem-type",
     "tier": "T1",
     "size": "S",

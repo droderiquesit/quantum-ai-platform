@@ -32,6 +32,7 @@ pub mod ambient;
 pub mod capital;
 pub mod degradation;
 pub mod edge;
+pub mod expansion;
 pub mod feasibility;
 pub mod feature;
 pub mod gate;
