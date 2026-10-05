@@ -406,6 +406,11 @@ fn run() -> Result<()> {
              its message-to-trade ratio narrows quoting without refusing it"
         );
     }
+    // Built empty, and not left that way: which instruments this cell will
+    // trade is the plan's to say, so `StrategyInstaller` registers the
+    // standard suite for each strategy's subject as it deploys it
+    // (`Cell::register_features`). An engine nothing registered into was
+    // what every node ran until then.
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
 
     // The cell, the mesh series and the registry the scrape serves are wired

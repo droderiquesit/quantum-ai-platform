@@ -236,7 +236,15 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::VenueReconciled { .. }
         | Decision::VenueChosen { .. }
         | Decision::DispositionIntent { .. }
-        | Decision::KnowledgeReconciled { .. } => false,
+        | Decision::KnowledgeReconciled { .. }
+        | Decision::DegradationChanged { .. } => false,
+        // A requote's two halves act on the venue, and by that argument they
+        // are outcomes. They are on P2 alone because ADR 0100 §5's P1 row
+        // names six kinds and these are not among them: widening that row is
+        // the ADR's to do, not this match's. Decided, not defaulted — and
+        // until the row names them a consumer of P1 alone sees an order sent
+        // at one limit and filled at another, as it always has.
+        Decision::RequoteWithdrawn { .. } | Decision::OrderReplaced { .. } => false,
     }
 }
 

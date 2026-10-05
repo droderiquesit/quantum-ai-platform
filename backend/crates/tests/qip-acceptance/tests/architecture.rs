@@ -793,6 +793,176 @@ fn no_edge_cell_can_reach_a_historical_data_reader() {
     }
 }
 
+/// Whether a line of Rust names a socket, a file or one of the two crates
+/// that hold them, by any spelling of the import.
+///
+/// Prose — a line whose first token is `//` — is not code and is skipped.
+/// A trailing comment on a code line counts: a false positive that fails
+/// closed and is fixed by rewording.
+fn names_out_of_process_io(line: &str) -> bool {
+    let code = line.trim_start();
+    if code.starts_with("//") {
+        return false;
+    }
+    [
+        "qip_transport",
+        "qip_storage",
+        "std::net",
+        "std::fs",
+        "TcpStream",
+        "TcpListener",
+        "UdpSocket",
+    ]
+    .iter()
+    .any(|name| code.contains(name))
+}
+
+/// The files directly under `directory` that name out-of-process I/O in
+/// code, by file name, and how many files were read to find them.
+fn sources_naming_io(directory: &str) -> (BTreeSet<String>, usize) {
+    let root = repository_root();
+    let mut naming = BTreeSet::new();
+    let mut scanned = 0usize;
+    for path in qip_acceptance::files_with_extension(directory, "rs") {
+        let relative = path
+            .strip_prefix(&root)
+            .expect("the file is under the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        scanned += 1;
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {relative}: {error}"));
+        if text.lines().any(names_out_of_process_io) {
+            naming.insert(
+                relative
+                    .strip_prefix(directory)
+                    .unwrap_or(&relative)
+                    .trim_start_matches('/')
+                    .to_string(),
+            );
+        }
+    }
+    (naming, scanned)
+}
+
+#[test]
+fn every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_transport() {
+    // REFLEX-004: feed decode, book update, features, reflex inference,
+    // strategy predicates, local risk, netting, inventory, routing, order
+    // generation and the venue adapters all run inside the regional node.
+    // "Inside" is two claims, and each fails differently. A stage that is
+    // not linked into the binary is a stage the node cannot run. A stage
+    // that is linked but reached through a client is a remote service the
+    // decision waits on, which is the failure the blueprint places these
+    // functions in the node to prevent.
+    //
+    // The stage, and the crate it is.
+    const DECIDING: [(&str, &str); 7] = [
+        ("feed decode", "qip-protocols"),
+        ("sequence checking", "qip-sequencing"),
+        ("book update", "qip-orderbook"),
+        ("features", "qip-feature-dag"),
+        ("reflex inference and strategy predicates", "qip-strategy"),
+        ("routing", "qip-routing"),
+        ("the order model", "qip-execution-engine"),
+    ];
+    // The two that legitimately link the transport, and so cannot be held to
+    // the crate-level rule: the cell — local risk, netting, inventory and
+    // order generation — carries the mesh client beside them, and the venue
+    // adapters are the one stage whose job is to leave the process.
+    const CELL: &str = "qip-edge";
+    const ADAPTERS: &str = "qip-brokers";
+
+    let graph = dependency_graph();
+    let stages: Vec<&str> = DECIDING
+        .iter()
+        .map(|(_, name)| *name)
+        .chain([CELL, ADAPTERS])
+        .collect();
+    assert_named_crates_exist(&graph, stages.iter().copied());
+    assert_named_crates_exist(&graph, ["qip-edge-node", "qip-transport"]);
+
+    // Linked: every stage is something the node binary can call.
+    let linked = reachable_from(&graph, "qip-edge-node");
+    for stage in &stages {
+        assert!(
+            linked.contains(*stage),
+            "{stage} holds a Lane 0 stage and is not linked into qip-edge-node; the node \
+             cannot run that stage in its own process"
+        );
+    }
+
+    // The anchor. The node does hold a transport, for its mesh, so the walk
+    // can show the edge whose absence is asserted below.
+    assert!(
+        linked.contains("qip-transport"),
+        "the node no longer reaches qip-transport, so the absences this test asserts prove \
+         nothing about the walk"
+    );
+    for (stage, name) in DECIDING {
+        let reachable = reachable_from(&graph, name);
+        assert!(
+            !reachable.contains("qip-transport"),
+            "{name} ({stage}) can reach qip-transport: a Lane 0 stage with a client in it can \
+             be turned into a call the decision waits on"
+        );
+    }
+
+    // The cell links the transport, so it is held to the rule file by file:
+    // the mesh client is in `mesh.rs` and the journal's file mirror — which
+    // `Cell::flush` drains off the hot path — is in `journal.rs`, and no
+    // other source of the crate names a socket or a file. Equality rather
+    // than containment, so an exemption cannot outlive its reason.
+    let (cell_io, cell_scanned) = sources_naming_io("backend/crates/edge/qip-edge/src");
+    assert!(
+        cell_scanned >= 20,
+        "only {cell_scanned} sources of qip-edge were read; the walk is not reaching the crate"
+    );
+    assert_eq!(
+        cell_io,
+        BTreeSet::from(["journal.rs".to_string(), "mesh.rs".to_string()]),
+        "a source of qip-edge other than the mesh client and the journal's file mirror names \
+         a socket or a file (or one of those two no longer does); the cell's risk gate, \
+         netting, inventory and order generation must stay arithmetic and memory"
+    );
+
+    // The adapters: the simulated exchange the node's passes place against
+    // is in-process, and only the REST adapter names the transport.
+    let (adapter_io, adapter_scanned) =
+        sources_naming_io("backend/crates/services/qip-brokers/src");
+    assert!(
+        adapter_scanned >= 5,
+        "only {adapter_scanned} sources of qip-brokers were read"
+    );
+    assert_eq!(
+        adapter_io,
+        BTreeSet::from(["rest.rs".to_string()]),
+        "a venue adapter source other than the REST adapter names a socket or a file; the \
+         simulated exchange a paper pass places against must stay in this process"
+    );
+
+    // And the node's own pass: the feed, the pass and the requoter beneath
+    // the placer are the code between a venue event and its order.
+    let (node_io, node_scanned) = sources_naming_io("backend/crates/apps/qip-edge-node/src");
+    assert!(
+        node_scanned >= 15,
+        "only {node_scanned} sources of qip-edge-node were read"
+    );
+    for pass_source in ["feed.rs", "pass.rs", "reprice.rs"] {
+        assert!(
+            !node_io.contains(pass_source),
+            "{pass_source} is on the node's event-to-order path and names a socket or a file"
+        );
+    }
+    // The premise of the line above: the scan can see the node's I/O where
+    // it does exist.
+    assert!(
+        node_io.contains("mesh.rs") && node_io.contains("mirror.rs"),
+        "the scan found no I/O in the node's mesh link or its journal mirror, so finding none \
+         on the pass path proves nothing: {node_io:?}"
+    );
+}
+
 #[test]
 fn no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store() {
     // RES-081: loss of BigQuery or Bigtable has no direct impact on the

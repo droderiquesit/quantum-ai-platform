@@ -44,7 +44,10 @@ pub enum Decision {
         decoded: usize,
         skipped: usize,
     },
-    /// A sequence gap was detected and the affected books reset.
+    /// Something the sequencer observed on a feed: a hole opening, a hole
+    /// filling late, a delivery repeated, or a hole given up on — the last
+    /// of which resets every book at the venue. `detail` leads with which:
+    /// `gap:`, `reorder:`, `duplicate:` or `abandoned:`.
     GapDetected { stream: String, detail: String },
     /// A venue's feed has said nothing for longer than the cell lets a book
     /// go unrefreshed, so every order bound for that venue is now refused.
@@ -494,6 +497,57 @@ pub enum Decision {
         replaced: u64,
         items: Vec<String>,
     },
+    /// §29.2's requote, first half: the venue acknowledged withdrawing a
+    /// resting order so its remainder could be re-sent.
+    ///
+    /// Its own kind rather than an `OrderExpired`, because the cell has not
+    /// finished with the order: the intention stays open, and what follows is
+    /// either an [`Decision::OrderReplaced`] or nothing — and "nothing" is
+    /// the case this entry exists for. A cancel the venue acknowledged whose
+    /// replacement was then refused leaves an order the cell holds open and
+    /// no venue holds at all, and until this was recorded the chain could
+    /// not say so. `withdrawn` is the venue-level id cancelled, which is the
+    /// cell's own id until the first replacement; `acknowledged` is the
+    /// unfilled remainder the venue said it withdrew, a `Decimal` as text.
+    RequoteWithdrawn {
+        order_id: String,
+        venue: String,
+        withdrawn: String,
+        acknowledged: String,
+    },
+    /// §29.2's requote, second half: the venue accepted the remainder under
+    /// a fresh venue-level id at a new limit.
+    ///
+    /// `order_id` is the cell's id for the intention, which does not change;
+    /// `replacement` is the id the venue now holds it under. `quantity` and
+    /// `price` are what rests there now — the remainder the cancel
+    /// acknowledged, at the touch it was re-sent to — so a reader of a fill
+    /// at a price the `OrderSent` entry never named can find where the
+    /// price came from without leaving the chain.
+    OrderReplaced {
+        order_id: String,
+        venue: String,
+        replacement: String,
+        quantity: String,
+        price: String,
+    },
+    /// The narrowing the cell sizes under moved with no payload arriving:
+    /// the applied payload's slots aged on the cell's own clock.
+    ///
+    /// `PolicyApplied` states the narrowing at the instant a payload lands.
+    /// A cell cut off from its centre receives no further payload, and it
+    /// is exactly then that its slots go stale — so the entry that would
+    /// have said "this cell is now running degraded" was the one entry that
+    /// could never be written. `sequence` is the payload that aged, `None`
+    /// for a cell holding none; `narrowed` is every capability less than
+    /// fresh, as `PolicyApplied` names them; `sizing_multiplier` is what the
+    /// cell multiplies a strategy's size by from this pass on, a `Decimal`
+    /// as text.
+    DegradationChanged {
+        sequence: Option<u64>,
+        narrowed: Vec<String>,
+        sizing_multiplier: String,
+    },
 }
 
 impl Decision {
@@ -533,6 +587,9 @@ impl Decision {
             Self::VenueChosen { .. } => "venue_chosen",
             Self::DispositionIntent { .. } => "disposition_intent",
             Self::KnowledgeReconciled { .. } => "knowledge_reconciled",
+            Self::RequoteWithdrawn { .. } => "requote_withdrawn",
+            Self::OrderReplaced { .. } => "order_replaced",
+            Self::DegradationChanged { .. } => "degradation_changed",
         }
     }
 }
