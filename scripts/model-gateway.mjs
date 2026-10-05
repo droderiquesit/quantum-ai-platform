@@ -37,6 +37,11 @@
  *   HF_TOKEN_FILE=/run/secrets/hf-token \
  *   node scripts/model-gateway.mjs --task task.json
  *
+ *   ALGORIK_WORKER_PROVIDER=vertex \
+ *   ALGORIK_WORKER_VERTEX_PROJECT=<project-id> \
+ *   ALGORIK_WORKER_MODEL=google/gemini-2.5-flash-lite \
+ *   node scripts/model-gateway.mjs --task task.json   # on Google compute only
+ *
  *   node scripts/model-gateway.mjs --check     # configuration and reachability
  *   node scripts/model-gateway.mjs --probe     # reachability only, no key, nothing sent
  *
@@ -55,6 +60,16 @@
  * a third-party inference provider chosen per model, so the privacy
  * position is that provider's, which is why `--probe` prints the providers
  * a model resolves to before any key is spent on it.
+ *
+ * `vertex` is Vertex AI's OpenAI-shaped endpoint (ADR 0102), and it differs
+ * from every other provider in one way that matters: **it takes no key.** Its
+ * bearer is the short-lived token the metadata server issues to the attached
+ * service account, fetched per call and held nowhere. So the preset refuses
+ * an API key or a key file being set at all, where the others refuse one
+ * being absent: a key beside a keyless preset is either a mistake or a
+ * downloaded service-account key, and `01-security-and-safety.md` forbids
+ * the second. The host is fixed and the project is the only variable part of
+ * the URL, validated as a project id so that it cannot carry a path.
  */
 import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -72,7 +87,58 @@ export const PROVIDERS = {
     keyFileVariable: "HF_TOKEN_FILE",
     keyVariable: "HF_TOKEN",
   },
+  // Observed answering on 2026-10-04 in `global` (ADR 0102, appendix). The
+  // chat path has no `/v1` of its own: the version is in the base.
+  vertex: {
+    baseUrlFor: (project) =>
+      `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global/endpoints/openapi`,
+    projectVariable: "ALGORIK_WORKER_VERTEX_PROJECT",
+    chatPath: "/chat/completions",
+    credential: "metadata",
+  },
 };
+
+/** Every variable through which a key could reach a preset that takes none. */
+const KEY_VARIABLES = [
+  "ALGORIK_WORKER_API_KEY",
+  "ALGORIK_WORKER_API_KEY_FILE",
+  "GOOGLE_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+];
+
+/** A Google Cloud project id. Nothing in it can separate a URL path segment. */
+export const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+export const METADATA_TOKEN_URL =
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+
+/**
+ * The attached service account's short-lived token, from the metadata server.
+ *
+ * The timeout is explicit because off Google compute the name does not
+ * resolve at all on a good day and hangs on a bad one, and a worker that
+ * hangs before its first call bills task time for nothing. A refusal or an
+ * answer without a token throws: the alternative is `Bearer undefined` sent
+ * to the provider, which reads there as somebody else's malformed request.
+ */
+export async function metadataToken(fetchImpl = fetch, timeoutMs = 5000) {
+  const response = await fetchImpl(METADATA_TOKEN_URL, {
+    method: "GET",
+    headers: { "Metadata-Flavor": "Google" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `the metadata server refused a token (${response.status}); the vertex preset runs only ` +
+        "where a service account is attached (Cloud Run, Compute Engine)",
+    );
+  }
+  const body = await response.json();
+  if (typeof body.access_token !== "string" || body.access_token === "") {
+    throw new Error("the metadata server answered without an access_token; no call was made");
+  }
+  return body.access_token;
+}
 
 /** Patterns that mean "this payload carries a credential". Refuse, never strip. */
 const CREDENTIAL_SHAPES = [
@@ -117,17 +183,32 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
     );
   }
 
+  let presetBaseUrl = preset?.baseUrl;
+  if (preset?.baseUrlFor) {
+    const project = env[preset.projectVariable]?.trim();
+    if (!project) {
+      problems.push(`${preset.projectVariable} is not set; name the project the call is made in and billed to`);
+    } else if (!GCP_PROJECT_ID.test(project)) {
+      // Refused, not escaped: the value becomes part of a URL path.
+      problems.push(`${preset.projectVariable} is '${project}', which is not a Google Cloud project id`);
+    } else {
+      presetBaseUrl = preset.baseUrlFor(project);
+    }
+  }
+
   const explicitBaseUrl = env.ALGORIK_WORKER_BASE_URL?.trim();
-  if (preset && explicitBaseUrl && explicitBaseUrl !== preset.baseUrl) {
+  if (preset && explicitBaseUrl && explicitBaseUrl !== presetBaseUrl) {
     // A preset and a different URL is two claims about where the source
     // goes. Refuse rather than pick, because whichever one loses is the one
     // somebody meant.
     problems.push(
-      `ALGORIK_WORKER_PROVIDER=${providerName} fixes the base URL to ${preset.baseUrl}; ` +
+      `ALGORIK_WORKER_PROVIDER=${providerName} fixes the base URL${presetBaseUrl ? ` to ${presetBaseUrl}` : ""}; ` +
         `ALGORIK_WORKER_BASE_URL=${explicitBaseUrl} disagrees. Unset one.`,
     );
   }
-  const baseUrl = preset?.baseUrl ?? explicitBaseUrl;
+  // Never `presetBaseUrl ?? explicitBaseUrl`: a preset whose project was
+  // refused would then fall through to whatever URL the environment named.
+  const baseUrl = preset ? presetBaseUrl : explicitBaseUrl;
   const model = env.ALGORIK_WORKER_MODEL?.trim();
   const keyFileVariable = preset?.keyFileVariable ?? "ALGORIK_WORKER_API_KEY_FILE";
   const keyVariable = preset?.keyVariable ?? "ALGORIK_WORKER_API_KEY";
@@ -138,7 +219,16 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
   if (!model) problems.push("ALGORIK_WORKER_MODEL is not set");
 
   let apiKey = null;
-  if (keyFile && inlineKey) {
+  if (preset?.credential === "metadata") {
+    for (const name of KEY_VARIABLES) {
+      if (env[name]?.trim()) {
+        problems.push(
+          `${name} is set, and ALGORIK_WORKER_PROVIDER=${providerName} takes no key: its only ` +
+            "credential is the metadata server's short-lived token. Unset it.",
+        );
+      }
+    }
+  } else if (keyFile && inlineKey) {
     // The platform's `_FILE` rule: both set is an ambiguity, not a choice.
     problems.push(`${keyFileVariable} and ${keyVariable} are both set; set exactly one`);
   } else if (keyFile) {
@@ -190,7 +280,50 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
     }
   }
 
-  return { provider: providerName ?? "custom", baseUrl, model, apiKey, maxCalls, maxTokens, extraBody, problems };
+  return {
+    provider: providerName ?? "custom",
+    baseUrl,
+    chatPath: preset?.chatPath ?? "/v1/chat/completions",
+    credential: preset?.credential ?? "key",
+    model,
+    apiKey,
+    maxCalls,
+    maxTokens,
+    extraBody,
+    problems,
+  };
+}
+
+/** What every worker is told before its task; here once, so a caller can count its bytes. */
+export const WORKER_SYSTEM_PROMPT =
+  "You are a bounded worker. Do exactly the task. Return only the " +
+  "requested output. Do not invent files, do not widen scope, and " +
+  "state plainly if the task cannot be completed as specified.";
+
+/**
+ * One chat request to the configured provider; returns the raw response.
+ *
+ * `model` and `max_tokens` come from the configuration and are written after
+ * the extra body, so nothing a caller merges in can change what is billed.
+ * `timeoutMs` is the caller's to give: the command line below has never set
+ * one, and a deadline added there would start failing calls that pass today.
+ */
+export async function chatCompletion(config, messages, { fetchImpl = fetch, timeoutMs } = {}) {
+  const bearer = config.credential === "metadata" ? await metadataToken(fetchImpl) : config.apiKey;
+  return fetchImpl(`${config.baseUrl}${config.chatPath}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${bearer}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      ...config.extraBody,
+      model: config.model,
+      max_tokens: config.maxTokens,
+      messages,
+    }),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+  });
 }
 
 /**
@@ -257,6 +390,21 @@ export async function probe(config, fetchImpl = fetch) {
   return 0;
 }
 
+/**
+ * Why a command does not apply to this configuration, or `null` if it does.
+ *
+ * `--probe` and `--check` both ask `/v1/models`, one with nothing and one
+ * with the key. A preset whose credential is the metadata token has neither
+ * a catalogue at that path nor a key, and `Bearer null` is not a question
+ * worth sending to a provider.
+ */
+export function inapplicable(config, args) {
+  if (config.credential === "metadata" && (args.includes("--probe") || args.includes("--check"))) {
+    return `--probe and --check do not apply to ${config.provider}: it lists no catalogue at /v1/models and takes no key`;
+  }
+  return null;
+}
+
 /** Calls spent so far, counted from the ledger rather than from memory. */
 function spent() {
   if (!existsSync(LEDGER)) return 0;
@@ -321,28 +469,10 @@ async function run(config, taskPath) {
   }
 
   const started = Date.now();
-  const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${config.apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      ...config.extraBody,
-      model: config.model,
-      max_tokens: config.maxTokens,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a bounded worker. Do exactly the task. Return only the " +
-            "requested output. Do not invent files, do not widen scope, and " +
-            "state plainly if the task cannot be completed as specified.",
-        },
-        { role: "user", content: payload },
-      ],
-    }),
-  });
+  const response = await chatCompletion(config, [
+    { role: "system", content: WORKER_SYSTEM_PROMPT },
+    { role: "user", content: payload },
+  ]);
 
   if (!response.ok) {
     console.error(`provider refused: ${response.status} ${response.statusText}`);
@@ -393,6 +523,11 @@ async function run(config, taskPath) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const config = configure();
   const args = process.argv.slice(2);
+  const why = inapplicable(config, args);
+  if (why) {
+    console.error(why);
+    process.exit(64);
+  }
   if (args.includes("--probe")) {
     process.exit(await probe(config));
   }
