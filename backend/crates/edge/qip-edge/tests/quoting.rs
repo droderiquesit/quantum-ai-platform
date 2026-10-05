@@ -813,3 +813,202 @@ fn a_requote_is_refused_rather_than_funded_from_the_reserve_a_mass_cancel_needs(
     );
     Ok(())
 }
+
+// --- EXEC-004: a venue's own rate and its own ratio, both refusing ---------
+
+/// A cell whose fallback budget is the default ceiling and whose one venue
+/// carries limits of its own, so a refusal below can only have come from the
+/// venue's figure.
+fn cell_with_venue_limits(own: RateLimits) -> Result<(Cell, Arc<Metrics>)> {
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue_quote_limits(venue(), own);
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+    cell.track(book()?);
+    let (compiled, program) = firing_strategy("alpha", "10")?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        signed_envelope("alpha")?,
+        PricingPolicy::Marketable,
+    )?;
+    Ok((cell, metrics))
+}
+
+/// Three messages of burst refilling at one a second, two messages per
+/// trade, the ratio held over a minute. Small enough to count on one hand,
+/// and far below the fallback ceiling of 4,096 and 64 per trade.
+fn venue_limits() -> Result<RateLimits> {
+    RateLimits::new(3, 1, 0, 0, 2, 64)?.refusing_at_ratio(Duration::from_secs(60))
+}
+
+#[test]
+fn quotes_driven_past_a_venues_own_rate_are_refused_before_the_gateway_is_called() -> Result<()> {
+    // EXEC-004, the rate half, on the venue's own figure. Until the limits
+    // were per venue the cell applied one `RateLimits` to every venue it
+    // held, so a venue's stated rate reached nothing; five passes in one
+    // instant against the default ceiling of 4,096 are five orders.
+    let (mut cell, metrics) = cell_with_venue_limits(venue_limits()?)?;
+    assert_eq!(
+        cell.quote_limits_at(&venue()).map(RateLimits::capacity),
+        Some(3),
+        "the premise failed: the venue's own limits did not reach the budget the cell spends"
+    );
+    // A venue that fills everything, so the ratio is healthy throughout and
+    // the only thing that can refuse is the bucket.
+    let mut gateway = FillingVenue::default();
+    let mut placed = 0;
+    let mut refused = Vec::new();
+    for _ in 0..5 {
+        // The same instant every time: faster than one message a second.
+        let report = cell.work(t(10), &mut gateway)?;
+        placed += report.orders.len();
+        refused.extend(
+            refusals_under(&report, GATE_QUOTE_BUDGET)
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    assert_eq!(
+        placed, 3,
+        "the venue's burst of three did not bound what was sent: {refused:?}"
+    );
+    assert_eq!(
+        refused.len(),
+        2,
+        "the two placements past the venue's rate were not each refused"
+    );
+    assert!(
+        refused
+            .iter()
+            .all(|reason| reason.contains("quote budget at XLON")),
+        "a rate refusal did not name the bucket and the venue: {refused:?}"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", GATE_QUOTE_BUDGET)),
+        2,
+        "the refusals were not each recorded on the refusal series"
+    );
+    Ok(())
+}
+
+#[test]
+fn quotes_with_fewer_trades_than_a_venues_ratio_allows_are_refused_before_the_gateway_is_called()
+-> Result<()> {
+    // EXEC-004, the ratio half. The monitor used to narrow and never refuse:
+    // a window that closed over the bound raised a floor, the bucket went on
+    // refilling, and a stream with no trade in it was admitted at the
+    // sustained rate for as long as it ran. The venue's ratio would then be
+    // found out when the venue enforced it.
+    let (mut cell, metrics) = cell_with_venue_limits(venue_limits()?)?;
+    // Accepts everything and reports no fill, so the denominator stays at
+    // nothing.
+    let mut gateway = RestingVenue::default();
+    let mut refused = Vec::new();
+    // Ten seconds apart: slower than the rate, so the bucket is full on
+    // every pass and whatever refuses is not the bucket.
+    for pass in 0..5 {
+        let report = cell.work(t(10 + pass * 10), &mut gateway)?;
+        refused.extend(
+            refusals_under(&report, GATE_QUOTE_BUDGET)
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    let state = cell.quote_budget();
+    assert_eq!(
+        state[0].trades, 0,
+        "the premise failed: the venue reported a trade, so the stream is not short of them"
+    );
+    assert_eq!(
+        gateway.placed.len(),
+        2,
+        "the gateway was called past two messages against no trade at a bound of two per trade"
+    );
+    // Read after the count above, because it only holds once the last pass
+    // was refused: the bucket stood full while the ratio refused, so the
+    // rate is not what stopped the three placements below.
+    assert_eq!(
+        state[0].tokens, 3,
+        "the bucket was not full at the refusals, so the rate may be what refused"
+    );
+    assert_eq!(
+        refused.len(),
+        3,
+        "the three placements past the ratio were not each refused"
+    );
+    assert!(
+        refused
+            .iter()
+            .all(|reason| reason.contains("message-to-trade ratio at XLON")),
+        "a ratio refusal did not name the limit and the venue: {refused:?}"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(names::EDGE_REFUSALS, &by("gate", GATE_QUOTE_BUDGET)),
+        3,
+        "the refusals were not each recorded on the refusal series"
+    );
+    assert_eq!(
+        journal_kinds(&cell)
+            .iter()
+            .filter(|kind| **kind == "refused")
+            .count(),
+        3,
+        "the refusals were not each journaled: {:?}",
+        journal_kinds(&cell)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_stream_within_a_venues_own_rate_and_ratio_is_admitted_in_full() -> Result<()> {
+    // The half that distinguishes a limit from a refusal of everything: the
+    // same five passes, slower than the rate and with a trade for every
+    // message, lose nothing.
+    let (mut cell, _) = cell_with_venue_limits(venue_limits()?)?;
+    let mut gateway = FillingVenue::default();
+    let mut placed = 0;
+    for pass in 0..5 {
+        let report = cell.work(t(10 + pass * 10), &mut gateway)?;
+        assert!(
+            refusals_under(&report, GATE_QUOTE_BUDGET).is_empty(),
+            "pass {pass} was refused inside both of the venue's limits: {:?}",
+            report.refusals
+        );
+        placed += report.orders.len();
+    }
+    assert_eq!(
+        placed, 5,
+        "a stream within both limits was not sent in full"
+    );
+    assert_eq!(
+        cell.quote_budget()[0].trades,
+        5,
+        "the premise failed: the venue's fills did not reach the ratio's denominator"
+    );
+    Ok(())
+}
+
+#[test]
+fn quote_limits_for_a_venue_the_cell_does_not_hold_are_refused_at_assembly() -> Result<()> {
+    // A limit somebody wrote that binds nothing reads as protection.
+    let config = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_venue_quote_limits(VenueId::new("XPAR"), venue_limits()?);
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let refusal = Cell::new(config, features)
+        .expect_err("limits for an unconfigured venue were accepted")
+        .message()
+        .to_string();
+    assert!(
+        refusal.contains("quote limits for XPAR"),
+        "the refusal does not name the stray venue: {refusal}"
+    );
+    Ok(())
+}

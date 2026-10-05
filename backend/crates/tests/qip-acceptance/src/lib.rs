@@ -66,3 +66,40 @@ pub fn files_with_extension(relative: &str, extension: &str) -> Vec<std::path::P
     found.sort();
     found
 }
+
+/// The production text of a Rust source file: comment lines dropped and every
+/// `#[cfg(test)]` item skipped by brace depth, wherever in the file it sits.
+///
+/// For the scans that assert a name is *absent* from production code. Cutting
+/// at the first `#[cfg(test)]` instead would stop reading at a test-only
+/// helper near the top of a file and call everything below it unscanned
+/// production clean; keeping the tests would report a fixture as a violation.
+/// A caller asserts the result is non-empty for a file it expects to hold
+/// production code, because a helper that returned nothing would make every
+/// absence trivially true.
+pub fn production_text(source: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        if line.trim() != "#[cfg(test)]" {
+            kept.push(line);
+            continue;
+        }
+        // Skip the attributed item. One with no body ends at its semicolon;
+        // one with a body ends where its braces balance.
+        let mut depth = 0usize;
+        let mut opened = false;
+        for body in lines.by_ref() {
+            depth += body.matches('{').count();
+            opened |= depth > 0;
+            depth = depth.saturating_sub(body.matches('}').count());
+            if (opened && depth == 0) || (!opened && body.trim_end().ends_with(';')) {
+                break;
+            }
+        }
+    }
+    kept.join("\n")
+}
