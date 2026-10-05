@@ -167,25 +167,25 @@
   },
   {
     "id": "EXPAND-007",
-    "status": "MISSING",
-    "current": "Nothing. qip_data_finder registers DATA SOURCES (a related but distinct concept, see EXPAND-033) and qip_ai::registry::ModelRegistry (backend/crates/libs/qip-ai/src/registry.rs:14-60) registers MODELS specifically -- neither is a general Tool Registry covering connectors, browsers, parsers, solvers, code runtimes, simulators, geospatial tools, venue adapters, model endpoints and quantum backends as one catalogue with a permission scope per entry.",
+    "status": "COMPLETE",
+    "current": "qip_agents::tools::ToolRegistry holds a ToolSpec per tool under one of the ten ToolKind variants, resolvable by kind, each carrying its permission scope.",
     "evidence": [
-      "rg -l 'ToolRegistry|ToolSpec' backend/crates -> no matches (2026-09-25)",
-      "backend/crates/libs/qip-ai/src/registry.rs:14-60 (nearest neighbour: model-only registry)"
+      "backend/crates/libs/qip-agents/src/tools.rs (ToolKind, ToolSpec, ToolRegistry::by_kind)",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_tool_of_each_of_the_ten_kinds_resolves_by_kind_with_its_scope (mutation: by_kind filter inverted to != failed it; restored, 3 passed)"
     ],
-    "gap": "No ToolRegistry or ToolSpec type exists for the ten named tool kinds, and no permission-scope model exists for a tool.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needed: register one tool of each of the ten kinds and assert each resolves by kind to its ToolSpec including a permission scope.",
+    "verification": "cargo test -p qip-agents --test expansion_registries a_tool_of_each_of_the_ten_kinds_resolves_by_kind_with_its_scope",
     "work_item": "E16-tool-registry",
     "tier": "T2",
     "size": "L",
-    "notes": "The registry itself (metadata catalogue) needs no new dependency; executing some of the named tool kinds (a browser, a general code runtime) would need an ADR under ADR 0002/0009 before implementation, which the registry design should record as a distinct, later step."
+    "notes": "Closed 2026-10-04 as a library; no production caller yet, so integrated stays false."
   },
   {
     "id": "EXPAND-008",

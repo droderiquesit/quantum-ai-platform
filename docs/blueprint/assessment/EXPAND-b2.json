@@ -125,25 +125,25 @@
   },
   {
     "id": "EXPAND-039",
-    "status": "MISSING",
-    "current": "nothing. No type named ResearchRegistry, Hypothesis registry, or null-result ledger exists. qip-world-model::falsification (falsification.rs) tracks whether a hypothesis *source* has been wired (SourceCensus, TrialLedger) and produces a Verdict per causal edge, which is adjacent territory (evidence-based falsification) but is not a registry a proposed hypothesis is checked against before an experiment runs, and it records nothing about experiments, benchmark suites or open questions.",
+    "status": "COMPLETE",
+    "current": "qip_agents::research::ResearchRegistry records hypotheses with Open/Null/Supported verdicts; screen() matches a repeat (case and whitespace insensitive) to its recorded null result before any experiment, and refuses a verdict with no evidence.",
     "evidence": [
-      "rg -c 'ResearchRegistry' backend/crates --type rust -> no matches",
-      "backend/crates/services/qip-world-model/src/falsification.rs:90-234 (TrialLedger, SourceCensus — nearest but distinct concept: source-wiring, not a hypothesis/null-result registry)"
+      "backend/crates/libs/qip-agents/src/research.rs",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_repeated_hypothesis_is_matched_to_its_recorded_null_result_before_any_experiment (mutation: dropping to_lowercase in the key failed it at tests line 77; restored, 3 passed)"
     ],
-    "gap": "No hypothesis/experiment/null-result registry exists, and nothing checks a proposed hypothesis against prior null results before running an experiment.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need: record a null result, propose the same hypothesis again, assert it is matched to the recorded null result before any experiment runs.",
+    "verification": "cargo test -p qip-agents --test expansion_registries a_repeated_hypothesis_is_matched_to_its_recorded_null_result_before_any_experiment",
     "work_item": "E08-research-registry",
     "tier": "T4",
     "size": "XL",
-    "notes": "master Phase 8's self-directed research campaigns, which would need this registry, do not exist either (no CurriculumEngine, EXPAND-042..046 are all MISSING)."
+    "notes": "Closed 2026-10-04 as a library; no production caller yet (integrated false). Matching is exact on normalised text, not semantic; open questions, benchmark suites and contradictions are not separate entry kinds."
   },
   {
     "id": "EXPAND-040",
@@ -464,25 +464,25 @@
   },
   {
     "id": "EXPAND-052",
-    "status": "MISSING",
-    "current": "nothing. No ToolSpec, tool registry, or per-tool permission-scope mechanism exists. qip_agents::capability::Capability is a fixed, compiled-in enum of 26 platform-level capabilities granted to agents (not tools), with no 'newly registered, defaults read-only until promoted' lifecycle — an agent's capability set is fixed at manifest construction, not something that starts narrow and widens through a promotion event.",
+    "status": "COMPLETE",
+    "current": "ToolRegistry::register always starts a tool at Read only; Write and LeaveSandbox are refused by authorise until ToolRegistry::promote cites a non-blank evaluation, and a grant widens exactly the permission named.",
     "evidence": [
-      "rg -c 'ToolSpec' backend/crates --type rust -> no matches",
-      "backend/crates/libs/qip-agents/src/capability.rs:23-56 (Capability — fixed platform-level enum, not a per-tool registration lifecycle)"
+      "backend/crates/libs/qip-agents/src/tools.rs (register, promote, authorise)",
+      "backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope (mutations: starting scope Read+Write failed it at tests line 28; promote's trim().is_empty() weakened to is_empty() failed it at line 39; both restored, 3 passed)"
     ],
-    "gap": "No tool registration, default-scope, or scope-widening-through-promotion mechanism exists to test against.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need: register a new tool, attempt a write and an out-of-sandbox call, assert both refused; widen scope through promotion, assert the refusal lifts for exactly the granted scope.",
+    "verification": "cargo test -p qip-agents --test expansion_registries a_new_tool_is_read_only_and_sandboxed_until_a_promotion_widens_exactly_the_granted_scope",
     "work_item": "E16-tool-registry",
     "tier": "T3",
     "size": "L",
-    "notes": "CONTRACT-034 (ToolSpec permission scope and data handling) is the contract-side half of the same absent mechanism."
+    "notes": "Closed 2026-10-04 as a library; no production caller yet (integrated false). The promotion here is a registry call citing an evaluation string, not the signed promotion of EXPAND-049."
   },
   {
     "id": "EXPAND-053",
