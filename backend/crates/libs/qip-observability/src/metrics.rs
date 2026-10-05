@@ -1126,6 +1126,12 @@ pub mod names {
     /// A fill is booked only from a delta's `fills`; a sent order books
     /// nothing, whatever contributors it names.
     pub const CENTRAL_FILLS_ATTRIBUTED: &str = "qip_central_fills_attributed_total";
+    /// Orders the centre registered as sent whose fills it has not yet booked,
+    /// summed over cells: the outcome-to-ledger backlog (LEDGER-044). A gauge
+    /// rather than a counter because it must fall back to zero once fills
+    /// arrive; a value that stays above zero while fills should be landing is
+    /// a ledger falling behind what the cells did.
+    pub const CENTRAL_OUTCOME_BACKLOG: &str = "qip_central_outcome_backlog_orders";
     /// What the platform decided about who may have capital put to work, by
     /// `decision`: `granted` and `revoked` are the two arms of the
     /// eligibility registry's own decision enum, recorded where the registry

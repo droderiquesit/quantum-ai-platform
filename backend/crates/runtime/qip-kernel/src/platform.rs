@@ -4984,6 +4984,11 @@ impl Platform {
             "cell fills attributed to strategies by the central plane, by the basis of the split",
         );
         metrics.describe(
+            names::CENTRAL_OUTCOME_BACKLOG,
+            "orders reported sent whose fills the central plane has not yet booked; rises while \
+             outcomes are outstanding and returns to zero when they are booked",
+        );
+        metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
             "internal crosses settled to both contributors' books at the mid",
         );
