@@ -102,7 +102,8 @@ fn run() -> Result<()> {
     // than read by the library: this is the composition root, the one place
     // that may read it, and the managed-target credentials it resolves go
     // through `qip_core::secret` so a deployment may mount them as files.
-    let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())?;
+    let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())
+        .and_then(StorageSettings::require_authoritative)?;
     storage.preflight()?;
     let archive = Arc::new(ChainArchive::open(storage.key_value("event-log")?)?);
 
