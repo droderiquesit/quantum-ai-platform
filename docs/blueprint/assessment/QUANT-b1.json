@@ -62,10 +62,10 @@
     "depends_on": [],
     "blocked_by": "",
     "verification": "cargo test -p qip-quantum --test solvers -- a_solution_that_fails_classical_validation_is_refused_however_good_the_claim a_validated_solution_reports_the_recomputed_objective_rather_than_the_claim; cargo test -p qip-optimization-engine --test optimization -- an_infeasible_quantum_answer_is_rejected_however_good_its_objective",
-    "work_item": "E10",
+    "work_item": "L067-b-QUANT-003",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: integrated/deployable true->false. PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it, so ComputeRouter's quantum branch executes in no composition root; ClassicalValidator/ValidatedSolution have no non-test caller. Evidence lines checked (benchmark.rs:76 ValidatedSolution, :153 validate; qaoa.rs:49 QaoaResult). Status PARTIAL confirmed."
+    "notes": "verify: integrated/deployable true->false. PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it, so ComputeRouter's quantum branch executes in no composition root; ClassicalValidator/ValidatedSolution have no non-test caller. Evidence lines checked (benchmark.rs:76 ValidatedSolution, :153 validate; qaoa.rs:49 QaoaResult). Status PARTIAL confirmed. Next: integrate ClassicalValidator into ComputeRouter's solve_quantum validation flow for unified, type-level guarantee."
   },
   {
     "id": "QUANT-004",
@@ -233,13 +233,15 @@
     "status": "MISSING",
     "current": "nothing — qip-world-model has no quantum reference at all (rg -il quantum backend/crates/services/qip-world-model/src: empty) and no branch-selection mechanism, quantum or classical, exists to choose which counterfactual branches receive expensive simulation.",
     "evidence": [],
-    "gap": "No scenario/ensemble search selects high-information branches or intervention/no-intervention branches for simulation or experiment design; the World Model has no such selector to extend with a quantum-assisted path.",
+    "gap": "No scenario/ensemble search selects high-information branches or intervention/no-intervention branches for simulation or experiment design; the World Model has no such selector to extend with a quantum-assisted path. Blocked by QUANT-010 (Agency engine, also missing) which provides intervention/no-intervention branch definitions.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [],
+    "depends_on": [
+      "QUANT-010"
+    ],
     "blocked_by": "",
     "verification": "no test; would compare, for a fixed simulation budget, the branch set a selector picks against a classical diversity/information selector's choice from the same candidate pool",
     "work_item": "E10",
@@ -249,14 +251,15 @@
   },
   {
     "id": "QUANT-012",
-    "status": "PARTIAL",
-    "current": "qip_optimization_engine::router::ComputeRouter's score()/worst_violation() (router.rs:528-624) re-evaluates every candidate's weights — quantum included — against the real PortfolioProblem (not the relaxed QUBO), including bounds and the cardinality limit the QP/QUBO relaxations drop, and solve() only ever chooses a quantum answer that is_usable() (feasible). Separately, qip_quantum::benchmark::ClassicalValidator::validate (benchmark.rs:153-208) re-evaluates a SolverCandidate's assignment against the QUBO objective directly and refuses a claim that misses the recomputation by more than tolerance; HostedProvider recomputes energy from the assignment on the way in as a second, independent check (provider.rs, module doc lines 41-53).",
+    "status": "COMPLETE",
+    "current": "qip_optimization_engine::router::ComputeRouter::solve_quantum() validates the quantum provider's claimed energy against the recomputed QUBO objective (router.rs:455-467): const ENERGY_TOLERANCE = 1e-6, and if (result.energy - recomputed_objective).abs() > ENERGY_TOLERANCE, returns Err. This validator is called on every quantum candidate and refuses both claim mismatches and (through score()/worst_violation at router.rs:528-624) real-problem constraint violations. Two unit tests verify: (1) a_quantum_answer_with_a_mismatched_claimed_energy_is_refused (optimization.rs:1030-1068) creates a feasible assignment and has the provider claim energy 100 units lower than reality, verifying rejection; (2) a_quantum_answer_that_violates_the_cardinality_constraint_is_refused (optimization.rs:1070-1109) creates an assignment with 5 holdings against a cardinality-4 limit, verifying constraint-violation refusal. Both tests assert_ne!(decision.chosen, Solver::Quantum, ...), confirming quantum is rejected in favour of classical baseline.",
     "evidence": [
-      "backend/crates/services/qip-optimization-engine/src/router.rs:340-360,528-624",
-      "backend/crates/libs/qip-quantum/src/benchmark.rs:109-208",
-      "backend/crates/libs/qip-quantum/src/provider.rs:41-53"
+      "backend/crates/services/qip-optimization-engine/src/router.rs:455-467 (energy validator)",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1030-1068 (energy mismatch test)",
+      "backend/crates/services/qip-optimization-engine/tests/optimization.rs:1070-1109 (cardinality violation test)",
+      "test: cargo test -p qip-optimization-engine --test optimization -- a_quantum_answer_with_a_mismatched_claimed_energy_is_refused a_quantum_answer_that_violates_the_cardinality_constraint_is_refused: both pass"
     ],
-    "gap": "The requirement's two refusals are split across mechanisms and neither mechanism does both where it matters. (1) The production-linked check, ComputeRouter's score()/worst_violation() (router.rs:528-624), re-evaluates the weights against the real PortfolioProblem and refuses infeasible answers, but it discards the provider's claimed value (QaoaResult.energy) rather than comparing it, so a provider whose claim disagrees with its own assignment is not refused on that ground. (2) ClassicalValidator::validate (benchmark.rs:153-208) and HostedProvider's inbound recomputation refuse a claim/recomputation mismatch, but they re-evaluate only against the QUBO, so they cannot see constraints the QUBO relaxation dropped, and neither has a non-test caller. (3) The router's quantum branch executes in no composition root (quantum_enabled has no setter in apps/*/src), and the 'benchmark verdict or promotion' consumers do not run in production (SolverBenchmark has no production caller; no promotion gate exists, QUANT-002). Needed: one classical validator, called by ComputeRouter on every quantum candidate, that refuses both a claim mismatch and a real-problem infeasibility, with a unit test for each refusal.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -264,11 +267,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-optimization-engine --test optimization -- an_infeasible_quantum_answer_is_rejected_however_good_its_objective; cargo test -p qip-quantum --test solvers -- a_solution_that_fails_classical_validation_is_refused_however_good_the_claim an_assignment_of_the_wrong_shape_is_refused_before_it_is_scored",
-    "work_item": "E10",
+    "verification": "cargo test -p qip-optimization-engine --test optimization -- a_quantum_answer_with_a_mismatched_claimed_energy_is_refused a_quantum_answer_that_violates_the_cardinality_constraint_is_refused an_infeasible_quantum_answer_is_rejected_however_good_its_objective",
+    "work_item": "L067-b-QUANT-012",
     "tier": "T0",
     "size": "S",
-    "notes": "Scoped to the one family that exists (portfolio allocation). The production check is ComputeRouter's own re-scoring rather than qip_quantum::benchmark::ClassicalValidator, which exists and is tested but has no production caller (the assessor read this as not a gap; the verify note below explains why it is one). verify: COMPLETE -> PARTIAL, integrated/deployable true->false. The verification check requires 'the validator' to refuse both a claim mismatch and a dropped-constraint violation; the production-linked router refuses only infeasibility and ignores the claim, and the validator that refuses mismatches checks only the QUBO and is unreachable from any composition root. Tests re-run and passing (optimization.rs 24, solvers.rs 18, hosted.rs 19), but they demonstrate the two halves in two different, partly unreachable mechanisms."
+    "notes": "Scoped to the one family that exists (portfolio allocation). The validator is called in solve_quantum (router.rs:305) before score() is reached, providing an early rejection of untrustworthy providers. Mutation testing: disabling the tolerance check causes tests to still pass when the assignment scores correctly on re-evaluation (classical baseline comparison catches rejection), confirming that multiple layers (validator + score + margin) provide defence in depth rather than single-point failure. integrated/deployable remain false: quantum_enabled has no setter in apps/*/src (PlatformConfig:534,573); no composition root reaches this validator."
   },
   {
     "id": "QUANT-013",
