@@ -387,3 +387,74 @@ fn one_simulated_product_runs_from_discovery_to_a_settled_resale_with_every_stag
     let s = p.settle("s1").expect("settled");
     assert!(s.net > Decimal::ZERO);
 }
+
+// ---- Customs duty (COMMERCE-003)
+
+/// The duty schedule is stated as literal Decimal figures worked by hand, not
+/// recomputed from the same `quantity × value × rate` the implementation uses:
+/// an expectation derived from the formula under test agrees with that formula
+/// whatever it says, so a duty charged on freight-inclusive value, or on the
+/// unit price instead of the declared value, would pass a self-derived check.
+///
+/// Fixture: 100 units, unit price 50, declared value 50 per unit, 8% duty,
+/// clearance fee 25, sea freight 3 per unit over 21 days, 2 clearance days,
+/// 2 storage days at 0.01 per unit per day, nothing spoils.
+///   duty      = 100 × 50 × 0.08            = 400
+///   freight   = 100 × 3                    = 300
+///   storage   = 100 × 0.01 × (21 + 2 + 2)  = 25
+///   total     = 5000 + 300 + 400 + 25 + 25 = 5750
+#[test]
+fn cross_border_purchase_computes_customs_duty_as_fixture_expects() {
+    let terms = LogisticsTerms {
+        route: vec![Leg {
+            from: "Shanghai".into(),
+            to: "Newark".into(),
+            mode: TransportMode::Sea,
+            days: 21,
+            freight_per_unit: dec!("3"),
+            freight_per_shipment: Decimal::ZERO,
+        }],
+        customs: Customs {
+            duty_rate: dec!("0.08"),
+            clearance_fee: dec!("25"),
+            clearance_days: 2,
+        },
+        spoilage: Spoilage::none("electronics do not perish in transit").expect("stated"),
+        storage_per_unit_per_day: dec!("0.01"),
+        storage_days: 2,
+        fees: MarketplaceFees {
+            ad_valorem: Decimal::ZERO,
+            per_unit: Decimal::ZERO,
+            per_consignment: Decimal::ZERO,
+        },
+        returns: Returns {
+            rate: Decimal::ZERO,
+            cost_per_unit: Decimal::ZERO,
+            recovery_rate: Decimal::ZERO,
+        },
+    };
+
+    let cost = terms
+        .cost(dec!("100"), dec!("50"), dec!("50"))
+        .expect("landed cost computed");
+
+    // Premise: nothing spoiled, so the at-border quantity is the shipped one
+    // and the duty below is the declared value of all 100 units.
+    assert_eq!(cost.quantity_delivered, dec!("100"));
+    assert_eq!(cost.elapsed_days, 25);
+
+    assert_eq!(cost.duty, dec!("400"), "duty is 5000 declared × 0.08");
+    assert_eq!(cost.clearance, dec!("25"), "clearance fee is the fixture's");
+    assert_eq!(cost.freight, dec!("300"), "freight is 100 units × 3");
+    assert_eq!(cost.storage, dec!("25"), "storage is 100 × 0.01 × 25 days");
+    assert_eq!(cost.goods, dec!("5000"), "goods are 100 units × 50");
+    assert_eq!(
+        cost.total(),
+        dec!("5750"),
+        "the duty is a component of the recorded landed cost"
+    );
+    assert_eq!(
+        cost.per_delivered_unit().expect("units delivered"),
+        dec!("57.5")
+    );
+}
