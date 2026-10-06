@@ -74,8 +74,8 @@ pub use intent::{
 };
 pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
 pub use policy::{
-    BeliefState, ModelPack, PolicyFrame, PolicyItem, PolicyPayload, RegimeChange, RiskGate, Slot,
-    UncertaintyType,
+    BeliefState, DistilledModelContract, ModelPack, PolicyFrame, PolicyItem, PolicyPayload,
+    RegimeChange, RiskGate, Slot, UncertaintyType,
 };
 pub use quantum::{ChosenPath, DecisionRequest, RoutingDecision, SolverKind, SolverResult};
 pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};
