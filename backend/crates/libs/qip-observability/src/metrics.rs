@@ -1027,6 +1027,11 @@ pub mod names {
     /// How many informative evaluations the two gauges above rest on. A Brier
     /// score from three theses is not a Brier score, and this is what says so.
     pub const BELIEF_EVALUATIONS: &str = "qip_belief_evaluations";
+    /// Per-horizon Brier score for calibration tracking, by `horizon`. Enables
+    /// separate calibration analysis for different time horizons.
+    pub const BELIEF_BRIER_SCORE_BY_HORIZON: &str = "qip_belief_brier_score_by_horizon";
+    /// Per-horizon evaluation count for Brier score calculation, by `horizon`.
+    pub const BELIEF_EVALUATIONS_BY_HORIZON: &str = "qip_belief_evaluations_by_horizon";
     /// Theses scored against what was published, by `verdict` — the learning
     /// engine's six-arm enum, so the label set is closed.
     pub const THESES_EVALUATED: &str = "qip_theses_evaluated_total";

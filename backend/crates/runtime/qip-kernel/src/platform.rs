@@ -5113,6 +5113,14 @@ impl Platform {
             "informative evaluations the calibration rests on",
         );
         metrics.describe(
+            names::BELIEF_BRIER_SCORE_BY_HORIZON,
+            "Brier score by time horizon for per-horizon calibration tracking",
+        );
+        metrics.describe(
+            names::BELIEF_EVALUATIONS_BY_HORIZON,
+            "count of evaluations contributing to per-horizon Brier score, by horizon",
+        );
+        metrics.describe(
             names::THESES_EVALUATED,
             "theses scored against what was published, by verdict",
         );
@@ -8931,6 +8939,32 @@ impl Platform {
                 labels([]),
                 report.calibration.evaluated as f64,
             );
+            // Record per-horizon calibration series for observability breakdown.
+            let mut horizon_groups: std::collections::BTreeMap<String, Vec<&Evaluation>> =
+                std::collections::BTreeMap::new();
+            for evaluation in &self.evaluations {
+                if evaluation.verdict.is_informative() {
+                    let horizon_key = format!("{}s", evaluation.horizon.as_secs_f64() as i64);
+                    horizon_groups
+                        .entry(horizon_key)
+                        .or_default()
+                        .push(evaluation);
+                }
+            }
+            for (horizon_key, evals) in horizon_groups {
+                let brier_component: f64 =
+                    evals.iter().map(|e| e.brier_component()).sum::<f64>() / evals.len() as f64;
+                self.telemetry.metrics.gauge(
+                    names::BELIEF_BRIER_SCORE_BY_HORIZON,
+                    labels([("horizon", &horizon_key)]),
+                    brier_component,
+                );
+                self.telemetry.metrics.gauge(
+                    names::BELIEF_EVALUATIONS_BY_HORIZON,
+                    labels([("horizon", &horizon_key)]),
+                    evals.len() as f64,
+                );
+            }
             self.last_calibration = Some(report.calibration.clone());
             Some(report)
         } else {
