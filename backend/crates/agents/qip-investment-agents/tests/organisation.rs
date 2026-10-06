@@ -2074,3 +2074,91 @@ fn the_causal_analyst_says_whether_a_target_it_could_not_reach_is_downstream_at_
     );
     Ok(())
 }
+
+#[test]
+fn agents_defer_on_queries_outside_their_declared_competencies() -> Result<()> {
+    use qip_investment_agents::analysts::*;
+    use qip_investment_agents::manifests;
+
+    // Test macro analyst defers on intraday horizon (outside competencies)
+    let agent = MacroAnalyst::new(manifests::macro_analyst(now()), populated_desk());
+    let intraday = AgentBrief::new(
+        "what is the macro outlook this afternoon",
+        now(),
+        Duration::from_hours(4),
+    );
+    let record = AgentHost::new(1).run(
+        &agent,
+        &intraday,
+        now(),
+        lineage(),
+        AgentRunId::from_string("run-intraday"),
+    );
+    assert_eq!(
+        record.finding.expect("a finding").status,
+        FindingStatus::Deferred,
+        "macro analyst should defer on intraday horizons"
+    );
+
+    // Test equity analyst defers on fixed income instruments
+    let agent = EquityAnalyst::new(manifests::equity_analyst(now()), populated_desk());
+    let fixed_income = AgentBrief::new(
+        "what is the credit spread on ACME bonds",
+        now(),
+        Duration::from_hours(24),
+    );
+    let record = AgentHost::new(2).run(
+        &agent,
+        &fixed_income,
+        now(),
+        lineage(),
+        AgentRunId::from_string("run-fixed-income"),
+    );
+    assert_eq!(
+        record.finding.expect("a finding").status,
+        FindingStatus::Deferred,
+        "equity analyst should defer on fixed income queries"
+    );
+
+    // Test credit analyst defers on instruments without a duration mapping
+    let agent = CreditAnalyst::new(manifests::credit_analyst(now()), populated_desk());
+    let spread_without_duration = AgentBrief::new(
+        "if ACME spreads widen by 50bps, what happens",
+        now(),
+        Duration::from_hours(24),
+    );
+    let record = AgentHost::new(3).run(
+        &agent,
+        &spread_without_duration,
+        now(),
+        lineage(),
+        AgentRunId::from_string("run-spread-duration"),
+    );
+    assert_eq!(
+        record.finding.expect("a finding").status,
+        FindingStatus::Deferred,
+        "credit analyst should defer when duration is missing"
+    );
+
+    // Test commodities analyst defers on non-commodity assets
+    let agent = CommoditiesAnalyst::new(manifests::commodities_analyst(now()), populated_desk());
+    let equity_question = AgentBrief::new(
+        "what is the fair value for ACME equity given its beta",
+        now(),
+        Duration::from_hours(24),
+    );
+    let record = AgentHost::new(4).run(
+        &agent,
+        &equity_question,
+        now(),
+        lineage(),
+        AgentRunId::from_string("run-commodity-equity"),
+    );
+    assert_eq!(
+        record.finding.expect("a finding").status,
+        FindingStatus::Deferred,
+        "commodities analyst should defer on equity queries"
+    );
+
+    Ok(())
+}
