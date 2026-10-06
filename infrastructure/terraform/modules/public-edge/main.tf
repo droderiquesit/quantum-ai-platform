@@ -374,13 +374,16 @@ resource "google_compute_url_map" "edge" {
 #
 # A certificate map is required because a global HTTPS proxy must reference a
 # map, not an individual certificate. The map entry connects a hostname pattern
-# to its certificate, and the proxy holds the map's ID.
+# to its certificate, and the proxy holds the map's ID, so a certificate
+# rotation does not change the proxy's lifecycle.
 
 resource "google_certificate_manager_certificate" "edge" {
   count = local.enabled
 
-  project = var.project_id
-  name    = local.name
+  project  = var.project_id
+  name     = local.name
+  location = "global"
+  labels   = var.labels
 
   # Managed certificates tell Certificate Manager to issue and renew them
   # automatically, the same behavior as the classic managed SSL certificate.
@@ -388,11 +391,14 @@ resource "google_certificate_manager_certificate" "edge" {
     domains = var.hostnames
   }
 
-  # A domain change replaces the certificate. The map and proxy reference the
-  # map, not the certificate, so a certificate replacement does not break the
-  # proxy's reference. The classic managed certificate used
-  # `create_before_destroy` to avoid a gap; that is no longer needed because
-  # the proxy never names the certificate directly.
+  # Certificate Manager will not reissue in place; a domain change triggers a
+  # replacement. The proxy references the map, not the certificate, so the
+  # replacement does not break its reference; creating the new certificate
+  # before destroying the old one keeps every map entry pointing at a live
+  # certificate throughout.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "google_certificate_manager_certificate_map" "edge" {
@@ -400,16 +406,19 @@ resource "google_certificate_manager_certificate_map" "edge" {
 
   project = var.project_id
   name    = local.name
+  labels  = var.labels
 }
 
+# One entry per hostname, so each domain resolves to the certificate by exact
+# match rather than through a catch-all.
 resource "google_certificate_manager_certificate_map_entry" "edge" {
-  count = local.enabled
+  for_each = local.enabled == 1 ? toset(var.hostnames) : toset([])
 
-  project     = var.project_id
-  name        = local.name
-  map         = google_certificate_manager_certificate_map.edge[0].name
-  certificate = google_certificate_manager_certificate.edge[0].id
-  hostname    = "*"
+  project      = var.project_id
+  name         = "${local.name}-${index(var.hostnames, each.value)}"
+  map          = google_certificate_manager_certificate_map.edge[0].name
+  certificates = [google_certificate_manager_certificate.edge[0].id]
+  hostname     = each.value
 }
 
 resource "google_compute_target_https_proxy" "edge" {
