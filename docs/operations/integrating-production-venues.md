@@ -1,426 +1,256 @@
-# Integrating Production Venues
+# Integrating Venues (provider sandbox, paper trading only)
 
-This document describes the end-to-end workflow for integrating a production venue into a regional edge cell deployment.
+This document describes how a venue is integrated into a regional edge cell
+deployment. **Every step here ends in a provider sandbox or the simulated
+gateway. Nothing here places a live order, and no step or phase moves the
+platform to real money.**
 
-**Prerequisite:** One execution node running in shadow mode for at least 7 days (ADR 0035).
+Paper trading is not a phase (ADR 0003). A live order path requires an
+accepted ADR — the proposed ADR 0107, "what would have to be true before
+anything moves beyond paper trading", sets out the prerequisites and is not
+accepted — so this guide has no "go live" step to follow, and an operator
+who finds one elsewhere should treat it as a defect and report it.
+
+This file used to be titled "Integrating Production Venues" and ended in
+"flip to production credentials", a test day "with real money", and "4+ weeks
+of production trading". Those were instructions to cross the paper boundary
+in a document an operator reads as procedure; they are removed rather than
+qualified.
+
+**Prerequisite:** One execution node running in shadow mode for at least 7
+days (ADR 0035).
 
 ## Overview
 
-Venue integration involves five parallel workstreams:
+Venue integration involves five workstreams:
 
-1. **Venue onboarding:** Register with the venue's operator
-2. **Network connectivity:** Ensure the cell can reach the venue
-3. **Credential storage:** Securely store venue API keys
+1. **Venue reconnaissance:** Read the venue's sandbox API documentation
+2. **Network connectivity:** Ensure the cell can reach the sandbox endpoint
+3. **Credential storage:** Store sandbox credentials as files, never env values
 4. **Order routing:** Configure which strategies use this venue
-5. **Testing and rollout:** Validate before exiting shadow mode
+5. **Sandbox testing:** Validate behaviour against the provider sandbox
 
-The cell's **capital envelope** is the throttle; the venue's **order volume limits** are its own throttle. Neither is automatic.
+The cell's **capital envelope** is the throttle on paper; the sandbox's own
+**order volume limits** are its own throttle. Neither is automatic.
 
 ## Step 1: Venue reconnaissance
 
-### Gather connectivity information
+### Gather sandbox connectivity information
 
-Contact the venue (or read their API documentation) and collect:
+Read the venue's sandbox (demo / certification) API documentation and collect:
 
 | Item | Example | Why |
 |---|---|---|
-| **Order gateway hostname** | `api.nasdaq.com` | For DNS; used by egress proxy |
-| **Published IP ranges** | `209.85.230.0/24`, `209.85.231.0/24` | For firewall rules in terraform |
-| **Order gateway port** | 443 (HTTPS) or 8443 | Firewall rule port |
+| **Sandbox gateway hostname** | `sandbox.venue.example` | For DNS; used by egress proxy |
+| **Published IP ranges** | `192.0.2.0/24` (documentation range) | For firewall rules in terraform |
+| **Gateway port** | 443 (HTTPS) or 8443 | Firewall rule port |
 | **Fill notification channel** | WebSocket on same host, or separate URL | Architecture decision |
 | **Authentication method** | API key in header, mutual TLS, etc. | `qip-brokers` adapter design |
-| **Rate limits** | 1,000 orders/second, 100 MB/s | Cell's `QIP_VENUE_*` settings |
-| **Account requirements** | Min. balance, approved for algorithmic trading | Registration blocker |
-| **Settlement terms** | T+2 trades, margin available | Risk gate configuration |
-| **Market hours** | 9:30–16:00 EST | Scheduling and envelope availability |
-| **Venue's SLA** | Fill confirmation < 100ms p95 | Monitoring threshold |
+| **Rate limits** | Sandbox order and message limits | Cell's `QIP_VENUE_*` settings |
+| **Settlement terms** | T+2, as the venue models them | Risk gate configuration |
+| **Market hours** | Sandbox session hours | Scheduling and envelope availability |
+| **Sandbox SLA** | Fill confirmation latency | Monitoring threshold; twin calibration |
 
-### Understand the business contract
+### Understand the sandbox terms
 
-1. **Who registers?** Identify one person who will hold the account (never a service account or shared credential). This person is accountable for compliance and audit.
+1. **Who holds the sandbox account?** One named person, never a shared
+   credential. Record the role, not personal details, in this repository.
+2. **What fee schedule does the sandbox model?** These feed the
+   `cost_router` so the twin's costs match what the venue would charge.
+3. **What does the sandbox not model?** Queue position, partial fills, and
+   latency are often simplified. Record the gaps; the LEARN stage scores the
+   twin against sandbox fills, and a gap nobody wrote down reads as accuracy.
 
-2. **What are the fees?** Collect the fee schedule (maker/taker, per-share or per-transaction, rebates if any). These feed the `cost_router` at order time.
+## Step 2: Register for the provider sandbox
 
-3. **What compliance is required?**
-   - Anti-money laundering (AML) checks on the registered person
-   - Account approval for algorithmic trading (often requires written test plan)
-   - Market conduct training (depends on jurisdiction)
-   - Real-time surveillance obligations (some venues require monitoring or callbacks)
+**One named operator registers for the venue's sandbox.** This person creates
+the sandbox credentials and is the escalation point if sandbox orders behave
+unexpectedly.
 
-4. **What's the liability model?** If the cell places an erroneous order, who reverses it? (Venues differ on this.)
+1. Request sandbox (demo / certification) access through the venue's
+   documented process.
+2. The venue issues sandbox credentials.
+3. The operator places a test order **in the sandbox** and confirms fills
+   arrive.
+4. The operator stores the credential (Step 3).
 
-## Step 2: Register the operator
+**Documentation:** record the registration in `data/venue-registrations.json`
+(schema in `data/venue-registrations.template.json`). Record the **secret id**
+and the operator's **role** — never a personal email address, a venue account
+identifier, or a credential.
 
-**One named operator registers with the venue.** This person:
+## Step 3: Store sandbox credentials securely
 
-- Holds the account identity and is legally liable for the account's conduct
-- Creates the API credentials (the venue issues them)
-- Is the escalation point if orders go wrong
-- Signs compliance attestations
+**Never commit an API key to this repository, even in a comment or commit
+message.**
 
-**Procedure:**
-
-1. **Contact the venue's institutional sales team** (not self-service portal; venues want to know their automated traders)
-   - Introduce the platform: "Algorik, a quantitative trading platform"
-   - State the intent: "We want to place equity orders on your exchange"
-   - Name the operator: "Alice Johnson will be the account holder"
-
-2. **Venue sends:** Account application form (requires KYC/AML info on Alice)
-
-3. **Operator completes:** Application (typically 1–2 weeks for approval)
-
-4. **Venue creates:** Account and issues credentials (usually an API key or certificate)
-
-5. **Operator tests** (in venue's sandbox first): Places a test order, confirms fills work
-
-6. **Operator stores credential securely** (see Step 3 below)
-
-**Documentation:** Create a file `data/venue-registration-<venue>.md` recording:
-- Registration date
-- Operator name and email
-- Venue account id
-- Any special terms or account restrictions
-
-## Step 3: Store credentials securely
-
-**Never commit an API key to this repository, even in a comment or commit message.**
-
-Credentials are stored in Google Cloud Secret Manager. The execution node reads them as files at boot time.
-
-### Create secrets in Cloud Secret Manager
+Credentials are stored in Google Cloud Secret Manager and reach the execution
+node as files at boot time (ADR 0024), never as environment values.
 
 ```bash
-# For each credential the venue issues (e.g., API key, mTLS cert):
-
-# 1. Create the secret
-gcloud secrets create nasdaq-prod-key \
+# For each credential the sandbox issues (API key, or mTLS cert and key):
+gcloud secrets create <venue>-sandbox-key \
   --replication-policy="automatic" \
-  --data-file=- <<< "$(cat /path/to/api.key)"
-
-# (If mTLS certificate, store both cert and key)
-gcloud secrets create nasdaq-prod-cert \
-  --replication-policy="automatic" \
-  --data-file=- <<< "$(cat /path/to/client.crt)"
-
-gcloud secrets create nasdaq-prod-key-cert \
-  --replication-policy="automatic" \
-  --data-file=- <<< "$(cat /path/to/client.key)"
-
-# 2. Record which secret ids you created
-echo "nasdaq-prod-key nasdaq-prod-cert nasdaq-prod-key-cert" > credentials-created.txt
+  --data-file=/path/to/sandbox-api.key
 ```
 
 ### Update the venue registration file
-
-Edit `data/venue-registrations.json`:
 
 ```json
 {
   "records": [
     {
-      "venue_name": "nasdaq",
-      "region": "us-east4",
-      "operator": "alice@example.com",
-      "registration_date": "2026-10-06",
-      "account_id": "ACME-12345",
-      "api_key_secret": "nasdaq-prod-key",
-      "sandbox_api_key_secret": "nasdaq-sandbox-key",
-      "notes": "Production account for newyork-1"
+      "venue_name": "<venue>",
+      "region": "<gcp-region>",
+      "operator_role": "<role, e.g. cell operator>",
+      "registration_date": "<YYYY-MM-DD>",
+      "sandbox_api_key_secret": "<venue>-sandbox-key",
+      "notes": "Provider sandbox only. Paper trading (ADR 0003)."
     }
   ]
 }
 ```
 
-**Important:** The file records the **secret id** (the name in Secret Manager), not the value.
+The file records the **secret id** (the name in Secret Manager), not the
+value. There is no field for a production credential, deliberately.
 
 ### Grant the cell access
 
-The execution node's service account must be able to read the secrets:
+The execution node's service account reads the secret through the binding
+`modules/execution-node` creates. If a manual grant is needed during
+diagnosis:
 
 ```bash
-# Automatic via Terraform (modules/execution-node/main.tf):
-# The venue_credential binding is created when shadow_mode is off
-
-# To manually grant (if needed):
-gcloud secrets add-iam-policy-binding nasdaq-prod-key \
-  --member=serviceAccount:qip-exec-newyork-1-prod@algorik-platform-prod.iam.gserviceaccount.com \
+gcloud secrets add-iam-policy-binding <venue>-sandbox-key \
+  --member=serviceAccount:<execution-node-service-account> \
   --role=roles/secretmanager.secretAccessor
 ```
 
 ## Step 4: Configure order routing
 
-Order routing is configured at two levels:
-
-### At the cell: Declare the venue in tfvars
+### At the cell: declare the venue in tfvars
 
 ```hcl
-# In environments/prod/terraform.tfvars
-
 execution_nodes = {
-  "newyork-1" = {
+  "<cell>" = {
     # ... other fields ...
     venues = {
-      "nasdaq" = { cidr = "209.85.230.0/24", port = 443 }
-      "nyse"   = { cidr = "209.85.231.0/24", port = 443 }
-      "simulated" = { cidr = "127.0.0.1/32", port = 9001 }  # Fallback
+      "<venue>"   = { cidr = "192.0.2.0/24", port = 443 }  # sandbox endpoint
+      "simulated" = { cidr = "127.0.0.1/32", port = 9001 }
     }
   }
 }
 ```
 
-### At the centre: Assign strategies to this region
+The execution-node module refuses a venue range of the whole internet
+(`0.0.0.0/0`, `::/0`); declare the sandbox's published range, not a wide one.
 
-Each strategy's deployment manifest declares which region(s) it runs in:
+### At the centre: assign strategies to this region
 
-```yaml
-# In infrastructure/gitops/envs/prod/<strategy>.yaml
+Each strategy's deployment manifest declares which region(s) it runs in and
+which venues it may route to. The cell routes subject to depth, fees,
+throughput, and the risk gates; every routing decision is journaled with its
+reason.
 
-apiVersion: qip.algorik.ai/v1
-kind: Strategy
-metadata:
-  name: arbitrage-us-equities
-spec:
-  placement:
-    regions: ["us-east4"]  # This strategy only runs in newyork-1
-  venues:
-    - nasdaq
-    - nyse
-  # ... rest of strategy config ...
-```
+## Step 5: Sandbox testing
 
-### At the cell: Order placement preferences
-
-Each order the centre sends includes a **venue preference** (one or more venues). The cell respects this preference subject to:
-
-- **Orderbook depth:** If the order is large, the cell may split across venues
-- **Fees:** If one venue is significantly cheaper, the cell prefers it
-- **Throughput:** If one venue fills faster, the cell favours fill certainty
-- **Feasibility:** Risk gate checks (e.g., account balance, position limits)
-
-The cell's routing decision is recorded in the order journal with the reason.
-
-## Step 5: Testing workflow
-
-### Test in sandbox first
-
-Most venues offer a sandbox (demo) environment with the same API but no money risk.
+Most venues offer a sandbox with the same API and no money at risk. That is
+the only external execution target this platform uses.
 
 ```bash
-# 1. Get the sandbox credentials from the venue
-# 2. Store in Secret Manager as a separate secret
-gcloud secrets create nasdaq-sandbox-key --data-file=- <<< "..."
-
-# 3. Configure the cell to use sandbox (in QIP_BROKERS env)
-# This is an environment configuration, not a Terraform change
-
-# 4. Place test orders in sandbox
-# Observe: order confirms, fills, reconciliation
-# Typical throughput: 10–50 orders/second (test API limits)
-
-# 5. When satisfied: Flip to production credentials
+# 1. Configure the cell to use the sandbox credential (Step 3).
+# 2. Place test orders in the sandbox.
+#    Observe: order confirms, fills, reconciliation.
+# 3. Score the twin against sandbox fills in the LEARN stage.
 ```
 
-### Execute a test trading day (with real money, limited size)
+The cell's pass path runs only against the simulated gateway (`run_pass`
+takes `&mut SimulatedGateway`), and start-up refuses a simulated feed paired
+with any other gateway. A sandbox adapter is exercised by its own adapter
+tests, not by a deployed pass.
 
-Once sandbox tests pass:
+### Monitoring sandbox runs
 
-1. **Capital envelope:** Start with a small allocation (e.g., 10% of regional cap)
-   ```hcl
-   region_allocation = "50000.00"  # 10% of 500k
-   ```
-
-2. **Exit shadow mode:** In a targeted, reviewed change:
-   ```hcl
-   execution_nodes = {
-     "newyork-1" = {
-       shadow_mode = false  # NEW: Out of shadow mode
-       # ... rest ...
-     }
-   }
-   ```
-   This change enables the firewall rules permitting venue egress.
-
-3. **Run for one trading day:** Monitor closely.
-   - Orders placed and confirmed?
-   - Fills received?
-   - Any refusals or errors?
-   - Reconciliation matches?
-
-4. **Review results:** Meeting, with:
-   - Cell operator
-   - Strategy owner
-   - Compliance officer
-   - Risk manager
-
-5. **Scale up:** Increase capital allocation incrementally (10% → 25% → 50% → 100%)
-
-### Monitoring during test trading
-
-Real-time:
 ```bash
-# Watch fills
-watch -n 1 'gcloud logging read "resource.type=gce_instance AND jsonPayload.venue=nasdaq" --limit=5 --format=table(timestamp,jsonPayload.message)'
-
-# Watch refusals
+# Watch refusals — GATE_LIVE_VENUE firing means something tried to route to
+# a live-class venue and was refused; treat every occurrence as an incident.
 gcloud logging read "resource.type=gce_instance AND jsonPayload.gate=GATE_LIVE_VENUE" --limit=20
 
 # Watch reconciliation
 curl -s http://<cell-private-ip>:9002/metrics | grep reconciliation
 ```
 
-Post-trading:
-```bash
-# Export fills and reconcile against venue's API
-# Use: cell's /journal endpoint (if available) + venue's REST API
+## Step 6: Operating a sandbox-integrated cell
 
-# Score the twin against actual fills (LEARN stage)
-# Check: "Did the model predict this fill correctly?"
-```
+### Checklist
 
-## Step 6: Production operations
+- [ ] Operator trained on cell operations (how to halt, adjust the paper envelope)
+- [ ] Incident runbook written (orders stuck, fills missing)
+- [ ] Sandbox session hours recorded
+- [ ] Cell telemetry is scraped (`workload_metrics_exist = true` only with evidence)
+- [ ] Reconciliation break rate understood (systematic errors explained)
 
-### Pre-production checklist
+### Routine review
 
-- [ ] Operator trained on cell operations (how to halt, scale capital, etc.)
-- [ ] Incident runbook written (what to do if orders are stuck or fills don't come)
-- [ ] Venue's trading hours marked in internal calendar
-- [ ] Venue's support contact (phone number, email) is posted
-- [ ] Cell telemetry is scraped (ADR 0032 — workload_metrics_exist = true)
-- [ ] Alert policies for this venue are configured
-- [ ] Reconciliation break rate is < 0.1% (systematic errors understood)
-- [ ] Two operators have practiced manual order cancellation (if needed)
+- **Daily:** cell health and pass count; fills reconciling.
+- **Weekly:** reconciliation breaks; venue sandbox API changes; twin score.
+- **Monthly:** paper activity report; fee model still matches the venue's schedule.
 
-### Post-launch monitoring
+### Adding further regions
 
-**Daily:**
-- Check cell health and pass count
-- Verify fills are reconciling
-- Monitor capital utilization (should stay < 90% of envelope)
-
-**Weekly:**
-- Review reconciliation breaks (any systematic issues?)
-- Check venue's published security incidents or API changes
-- Score the twin (is the model still accurate?)
-
-**Monthly:**
-- Review trading activity report (orders, fills, P&L)
-- Check venue fees are correct
-- Audit credential rotation (if applicable)
-
-### Scaling to multiple regions
-
-Once the first region is proven (4+ weeks of production trading):
-
-1. **Repeat Steps 1–5 for the next region** (e.g., london-1 for europe-west2)
-2. **New region gets its own capital allocation** (independent decision)
-3. **Strategies gradually deployed to new region** (only after both cells proven)
-4. **Monitor cross-region capital management** (centre distributes across regions)
+Once a region's sandbox integration is proven, repeat Steps 1–5 for the next
+region. Each region gets its own paper envelope; strategies move to a new
+region only after both cells are proven against their sandboxes.
 
 ## Troubleshooting
 
-### Cell cannot reach the venue
+### Cell cannot reach the sandbox
 
-**Symptom:** Orders placed but immediately refused with `GATE_CONNECTIVITY` or similar.
+**Symptom:** orders refused with a connectivity gate.
 
-**Checks:**
-1. **Firewall rule exists:**
-   ```bash
-   gcloud compute firewall-rules describe qip-prod-exec-newyork-1-venue-nasdaq
-   ```
+1. Firewall rule exists:
+   `gcloud compute firewall-rules describe <firewall-rule-name>`
+2. DNS resolves: `ssh <cell> nslookup <sandbox-host>`
+3. Egress proxy reaches it: `ssh <cell> curl -v https://<sandbox-host>/health`
 
-2. **DNS resolution works:**
-   ```bash
-   ssh <cell> nslookup api.nasdaq.com
-   ```
+**Fixes:** update the venue `cidr` in tfvars if the sandbox range changed;
+add the hostname to `egress_allowed_upstreams`.
 
-3. **Egress proxy reaches the venue:**
-   ```bash
-   ssh <cell> curl -v https://api.nasdaq.com/health 2>&1 | grep -i "connected"
-   ```
+### Sandbox authentication fails
 
-**Fixes:**
-- Venue's IP range changed? Update `cidr` in tfvars and reapply.
-- Egress proxy bootstrap missing venue's hostname? Add to `egress_allowed_upstreams` in tfvars.
-- Network path blocked upstream (ISP, VPC, firewall)? Check with network team.
+**Symptom:** the sandbox rejects with 401.
 
-### API authentication fails
+1. The credential file is present and readable by the cell process.
+2. The credential is current (sandbox keys are often rotated).
+3. The adapter passes the credential where the sandbox expects it.
 
-**Symptom:** Orders placed but venue rejects with 401 Unauthorized.
-
-**Checks:**
-1. **Credential is readable by the cell:**
-   ```bash
-   ssh <cell> cat /run/qip/secrets/venue-credential
-   ```
-
-2. **Credential is current (not revoked or expired):**
-   ```bash
-   # Contact venue's support
-   ```
-
-3. **Cell is passing the credential in the right place:**
-   ```bash
-   ssh <cell> curl -v https://api.nasdaq.com/orders \
-     -H "Authorization: Bearer $(cat /run/qip/secrets/venue-credential)"
-   ```
-
-**Fixes:**
-- Credential was rotated by the venue? Update Secret Manager
-- Credential was stored incorrectly? Re-create the secret
-- Cell expects a different header? Update the `qip-brokers` adapter
+Do not print the credential while diagnosing; check presence and length.
 
 ### Orders are placed but fills don't come back
 
-**Symptom:** `qip_edge_orders_placed_total` increases but `qip_edge_fills_confirmed_total` does not.
+**Symptom:** `qip_edge_orders_placed_total` increases but
+`qip_edge_fills_confirmed_total` does not.
 
-**Checks:**
-1. **Venue's fill notification API is working:**
-   - Venue's test API accepts orders?
-   - Venue's WebSocket is broadcasting fills?
-   - Venue's REST endpoint `/orders` returns the placed orders?
-
-2. **Cell is listening for fills:**
-   ```bash
-   ssh <cell> curl http://localhost:9002/metrics | grep fills
-   ```
-
-3. **Cell's order book contains the orders:**
-   ```bash
-   # Check the order state via health endpoint or logs
-   ```
-
-**Fixes:**
-- Venue changed their fill notification format? Update adapter
-- Cell's subscription to fill channel failed? Restart the cell
-- Venue is rate-limiting? Reduce order rate or increase QIP_VENUE_RATE_LIMIT
+Check the sandbox's fill channel, the cell's subscription to it, and the
+cell's order book via the health endpoint or logs.
 
 ### Reconciliation breaks keep happening
 
-**Symptom:** `qip_central_reconciliation_breaks_total` or `qip_edge_reconciliation_breaks_total` is high.
-
-**Types of breaks:**
+**Symptom:** `qip_central_reconciliation_breaks_total` or
+`qip_edge_reconciliation_breaks_total` is high.
 
 | Break | Cause | Fix |
 |---|---|---|
-| Cell reports more fills than centre | Cell received extra fills (fills duplicated or cell/centre race condition) | Check venue's fill API for duplicates; compare timestamps |
-| Centre sees fills cell didn't report | Centre saw fills that cell hasn't reported yet | Increase report frequency; check cell→centre network |
-| Fill quantity mismatch | Cell partial-filled differently than centre expected | Normal for venues with complex order types; not necessarily an error |
-
-**Diagnosis:**
-```bash
-# Get the most recent breaks from central plane logs
-gcloud logging read "resource.type=cloud_run_revision AND jsonPayload.reconciliation_break" --limit=10
-
-# Compare with cell's orders
-ssh <cell> curl http://localhost:9002/metrics | grep -i reconciliation
-```
+| Cell reports more fills than centre | Duplicated fills, or a cell/centre race | Check the sandbox fill API for duplicates; compare timestamps |
+| Centre sees fills the cell didn't report | Cell report lag | Increase report frequency; check cell→centre network |
+| Fill quantity mismatch | Partial fills modelled differently | Often expected with sandbox order types |
 
 ## References
 
-- `infrastructure/terraform/modules/execution-node/`: Node provisioning
-- `backend/crates/edge/qip-routing/`: Order routing engine
-- `backend/crates/libs/qip-brokers/`: Venue adapters
-- `docs/operations/deploying-edge-cells.md`: Cell deployment guide
-- ADR 0035: One execution node, in shadow mode
-- ADR 0008: Edge cells decide alone
-- ADR 0003: Paper trading by default
+- `infrastructure/terraform/modules/execution-node/`: node provisioning
+- `backend/crates/edge/qip-routing/`: order routing engine
+- `docs/operations/deploying-edge-cells.md`: cell deployment guide
+- ADR 0003: paper trading by default and in fact — not a phase
+- ADR 0035: one execution node, in shadow mode
+- ADR 0008: edge cells decide alone
+- ADR 0107 (proposed): prerequisites before anything moves beyond paper trading

@@ -43,6 +43,17 @@ variable "execution_nodes" {
     ])
     error_message = "Every node must be configured for at least one venue."
   }
+
+  # `main.tf`'s `cell_ingress_health` opens exactly TCP 8080. A health port
+  # that differs is refused here rather than admitted into a rule that would
+  # either miss it or, if the rule followed it, open whatever it named —
+  # including 22 or 3389 — to every cell's subnet.
+  validation {
+    condition = alltrue([
+      for node_id, config in var.execution_nodes : config.health_port == 8080
+    ])
+    error_message = "Every node's health_port must be 8080, the one port the mesh's health ingress rule opens. Move the binary's health surface to 8080 (QIP_HEALTH_PORT) rather than widening the rule."
+  }
 }
 
 variable "central_plane_ranges" {
@@ -56,11 +67,19 @@ variable "central_plane_ranges" {
 
   type = list(string)
 
+  # Every range here becomes a source on the cells' health-port ingress. The
+  # check used to refuse only the literal "0.0.0.0/0", so "0.0.0.0/1" — half
+  # the internet, admitted by a string comparison — passed, as did any other
+  # spelling of a huge range. The prefix length is the property, not the
+  # string: a range must parse as a CIDR and be no wider than a /8. `try`
+  # because Terraform does not short-circuit `&&`, and an unparsable value
+  # must refuse rather than error.
   validation {
     condition = alltrue([
-      for range in var.central_plane_ranges : range != "0.0.0.0/0"
+      for range in var.central_plane_ranges :
+      can(cidrhost(range, 0)) && try(tonumber(split("/", range)[1]) >= 8, false)
     ])
-    error_message = "The central plane ranges must be specific; the whole internet is not permitted."
+    error_message = "Every central plane range must be a CIDR with a prefix length of at least /8 (the trust-zone subnets and the private Google APIs range); 0.0.0.0/0, 0.0.0.0/1 and any other range wider than a /8 are refused. Name the specific subnets."
   }
 }
 
