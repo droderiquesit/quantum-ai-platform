@@ -32,19 +32,17 @@
 FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bdac73398d6d0a08 AS build
 
 ARG BINARY
+ARG SOURCE_DATE_EPOCH
 
 # musl-dev is the only build dependency: alpine's Rust images target musl, which
 # is what makes the output static.
 #
-# Unpinned deliberately (hadolint DL3018), and the limit of that is stated here
-# rather than left to be discovered: the digest above freezes the alpine minor
-# and the repository list this pulls from, but not the package revision alpine
-# serves today. Pinning the revision would break every time alpine rotates it,
-# and the failure would name a version nobody chose. So this line is the one
-# part of the build that is not byte-reproducible — and it is a C toolchain in
-# the builder, not anything that ships: the final stage is scratch.
-# hadolint ignore=DL3018
-RUN apk add --no-cache musl-dev
+# Pinned to a specific version for byte-reproducible builds. The digest above
+# freezes the alpine minor and the repository list, and pinning musl-dev's
+# version freezes the package revision, ensuring two builds of the same commit
+# produce byte-identical images. SOURCE_DATE_EPOCH, if provided, sets a fixed
+# timestamp for build artifacts.
+RUN apk add --no-cache musl-dev=1.2.5_r0
 
 WORKDIR /src
 # The build context is the repository root; only the Rust workspace under
@@ -54,7 +52,12 @@ COPY backend/ .
 
 # --locked, because a build that resolves a different dependency graph from the
 # one the test suite ran against is not the thing that was tested.
+#
+# SOURCE_DATE_EPOCH sets a fixed timestamp for build artifacts, ensuring
+# reproducible timestamps in the output binary. This is essential for
+# byte-reproducible container images.
 RUN test -n "$BINARY" \
+  && export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}" \
   && cargo build --release --locked --bin "$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
 

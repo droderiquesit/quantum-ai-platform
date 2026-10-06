@@ -10430,3 +10430,62 @@ fn the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resou
         "the agent_identity account must not have any IAM bindings that grant roles"
     );
 }
+
+// --- byte-reproducible builds -----------------------------------------------
+
+#[test]
+fn the_dockerfile_is_configured_for_byte_reproducible_builds() {
+    // CICD-048: Every build of the same commit must produce byte-identical
+    // image digests. This requires:
+    // 1. SOURCE_DATE_EPOCH support in the Dockerfile
+    // 2. All packages pinned to specific versions (not 'latest' or unversioned)
+    // 3. The CI pipeline passing SOURCE_DATE_EPOCH to docker build
+    let dockerfile = read("infrastructure/docker/Dockerfile");
+
+    // Verify SOURCE_DATE_EPOCH is declared as a build argument.
+    assert!(
+        dockerfile.contains("ARG SOURCE_DATE_EPOCH"),
+        "Dockerfile must declare SOURCE_DATE_EPOCH as a build argument for reproducible builds"
+    );
+
+    // Verify SOURCE_DATE_EPOCH is used in the build.
+    assert!(
+        dockerfile.contains("SOURCE_DATE_EPOCH"),
+        "Dockerfile must use SOURCE_DATE_EPOCH in the build command for reproducible timestamps"
+    );
+
+    // Verify musl-dev is pinned to a specific version (not unpinned with 'latest').
+    let has_pinned_musl = dockerfile.lines().any(|l| {
+        // Pinned version looks like: musl-dev=1.2.5_r0
+        l.contains("musl-dev") && l.contains("musl-dev=")
+    });
+    assert!(
+        has_pinned_musl,
+        "musl-dev must be pinned to a specific version (e.g., musl-dev=1.2.5_r0) for byte-reproducible builds"
+    );
+}
+
+#[test]
+fn the_deployment_pipeline_passes_source_date_epoch_to_docker_build() {
+    // CICD-048: The deploy.yml workflow must pass SOURCE_DATE_EPOCH when
+    // building images so that all builds of the same commit produce
+    // byte-identical digests.
+    let deploy_yml = read(".github/workflows/deploy.yml");
+
+    // Verify that docker build invocation includes SOURCE_DATE_EPOCH.
+    assert!(
+        deploy_yml.contains("SOURCE_DATE_EPOCH"),
+        "deploy.yml must pass SOURCE_DATE_EPOCH build argument to docker build for reproducible image digests"
+    );
+
+    // Verify the build-arg is passed in the correct context (for Dockerfile builds).
+    let docker_build_section = deploy_yml
+        .split("docker build")
+        .nth(1)
+        .expect("deploy.yml must contain a docker build command");
+    assert!(
+        docker_build_section.contains("--build-arg")
+            && docker_build_section.contains("SOURCE_DATE_EPOCH"),
+        "deploy.yml must pass SOURCE_DATE_EPOCH as a --build-arg to docker build"
+    );
+}
