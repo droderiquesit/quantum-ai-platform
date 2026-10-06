@@ -57,6 +57,7 @@ pub mod schema;
 pub mod self_model_views;
 pub mod statement;
 pub mod stream;
+pub mod tracing;
 pub mod trust;
 pub mod venue_views;
 pub mod web;
@@ -76,5 +77,6 @@ pub use openobserve::{
 };
 pub use routes::{Api, ROUTES, Route};
 pub use stream::{EventSource, EventStream, SseEvent, StreamKind, StreamLimits};
+pub use tracing::TracingHandler;
 pub use trust::{ENVELOPE_KEY_VARIABLE, KeyProvenance, harden_central};
 pub use web::{Router, Web};

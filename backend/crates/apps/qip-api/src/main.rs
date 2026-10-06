@@ -235,6 +235,9 @@ fn run() -> Result<()> {
     // The registry the request wrapper records the four golden signals into
     // (OBS-018), taken here for the same reason: it is the platform's own.
     let request_metrics = telemetry.metrics.clone();
+    // The tracer for request-scoped spans (OBS-023), cloned before telemetry
+    // is moved into the platform.
+    let tracer = telemetry.tracer.clone();
     // The limit set, read once here and never again: a bound reaches a
     // running process through this file and nothing else (ADR 0061).
     let (limits, limits_banner) = load_risk_limits()?;
@@ -508,6 +511,10 @@ fn run() -> Result<()> {
         request_metrics,
         server_limits.max_concurrent,
     )?);
+
+    // Wrap with request tracing for OBS-023: create a span per request.
+    let handler: Arc<dyn qip_api::http::Handler> =
+        Arc::new(qip_api::TracingHandler::new(handler, tracer));
 
     let server = Server::bind(&address, handler, server_limits)?;
     let bound = server.local_address()?;
