@@ -381,8 +381,8 @@ variable "storage_target" {
   default     = "memory"
 
   validation {
-    condition     = contains(["memory", "file", "engine"], var.storage_target)
-    error_message = "The storage target is memory, file or engine — the three targets this build implements. A managed store here is a service that refuses to start."
+    condition     = contains(["memory", "file", "engine", "cloud_storage"], var.storage_target)
+    error_message = "The storage target is memory, file, engine or cloud_storage. A managed store here is a service that refuses to start."
   }
 }
 
