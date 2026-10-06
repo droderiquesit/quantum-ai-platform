@@ -1287,3 +1287,20 @@ module "dns_zone" {
     },
   )
 }
+
+# Autonomous agent identity — a distinct service account with no roles on
+# capital or custody resources. Agents use this identity to prove they hold
+# no authority over capital envelopes or custodial resources, enforcing the
+# separation between agent operations and financial controls (GOV-026).
+resource "google_service_account" "agent_identity" {
+  account_id   = "qip-agent-identity"
+  display_name = "Autonomous Agent Identity"
+  project      = var.project_id
+
+  depends_on = [module.services]
+}
+
+output "agent_identity_email" {
+  description = "Agent service account email for workload federation"
+  value       = google_service_account.agent_identity.email
+}

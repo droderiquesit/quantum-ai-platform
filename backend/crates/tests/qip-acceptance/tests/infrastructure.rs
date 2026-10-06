@@ -2178,6 +2178,10 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         // bucket — because whatever it carries is what an image with a bug in
         // its provisioning script carries too.
         ("image-bake".to_string(), "builder".to_string()),
+        // The autonomous agent identity — a distinct service account that agents
+        // use to prove they hold no authority over capital envelopes or custodial
+        // resources (GOV-026). It has no roles on capital or custody resources.
+        ("terraform".to_string(), "agent_identity".to_string()),
     ];
     expected.sort();
     assert_eq!(
@@ -10337,5 +10341,50 @@ fn a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the
     assert!(
         priority(body) < priority(deny),
         "the IAP allow ranks below the catch-all deny, so it can never fire"
+    );
+}
+
+#[test]
+fn the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resources() {
+    // GOV-026: agents use a distinct service account to prove they hold no
+    // authority over capital envelopes or custodial resources. The identity
+    // exists structurally in Terraform, and this test verifies it has no IAM
+    // bindings on resources that control capital or custody.
+    let root_module = without_comments(&read("infrastructure/terraform/main.tf"));
+    let agent_accounts = terraform_resources(&root_module, "google_service_account")
+        .iter()
+        .filter(|(name, _)| name == "agent_identity")
+        .count();
+    assert_eq!(
+        agent_accounts, 1,
+        "the autonomous agent service account (agent_identity) does not exist or exists more than once"
+    );
+
+    // Verify no IAM roles are granted to the agent service account on capital
+    // or custody resources. The agent account is defined but deliberately
+    // holds no grants, enforcing that agents cannot mint capital or assume
+    // custodial authority.
+    let all_tf = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .map(|p| {
+            let content = std::fs::read_to_string(&p).expect("readable");
+            without_comments(&content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // The account must not have any grants on qip-capital or qip-lifecycle
+    // service accounts or resources. Parse IAM bindings and verify the agent
+    // account does not appear in any of them.
+    let has_iam_binding_for_agent =
+        terraform_resources(&all_tf, "google_service_account_iam_member")
+            .iter()
+            .any(|(_name, content)| {
+                content.contains("agent_identity") || content.contains("qip-agent-identity")
+            });
+
+    assert!(
+        !has_iam_binding_for_agent,
+        "the agent_identity account must not have any IAM bindings that grant roles"
     );
 }
