@@ -601,12 +601,19 @@
   },
   {
     "id": "CONTRACT-025",
-    "status": "MISSING",
-    "current": "nothing. No ambient-model-mesh or signal type exists.",
-    "evidence": [],
-    "gap": "Nothing implements it.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_contracts::ambient::AmbientSignal carries every CONTRACT-025 field: signal class, observed deviation and expected baseline (Decimal, so the record keeps Eq and replays exactly), horizon, novelty, affected entities, urgency, suggested wake targets (typed as Pathway), evidence lineage and expiry, supplied through the named-field Detection struct. AmbientSignal::new refuses a detection missing or malforming any of them. AttentionRouter::route records a material signal consumed after its expiry -- on arrival or when drained from the hold queue -- as Disposition::Expired: it wakes nothing and charges no budget. Library contract only; no production caller constructs an AmbientSignal.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs AmbientSignal::new, Detection, AmbientSignal::is_expired_at, AttentionRouter::route (Disposition::Expired)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs an_ambient_signal_missing_any_contract_field_is_refused_naming_that_field",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_material_signal_consumed_after_its_expiry_wakes_nothing",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs a_held_signal_that_expires_while_deferred_wakes_nothing_and_spends_no_budget",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs an_ambient_signal_carries_every_contract_field_it_was_given",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs round-trips the full signal through the event log"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -614,11 +621,11 @@
       "CONTRACT-003"
     ],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-contracts --test ambient (11 tests) and cargo test -p qip-acceptance --test ambient_attention. Mutation-verified 2026-10-06: ignoring expiry on arrival, ignoring it on drain, treating the expiry instant as expired, and dropping the wake-target, blank-evidence, horizon and urgency checks each fail a named test.",
     "work_item": "E09-ambient-signal",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-06: lane L023 added the fields; review restored Eq (Decimal in place of f64), typed wake targets as Pathway, moved the nine fields into a named struct so same-typed fields cannot be transposed, implemented the requirement's second clause (an expired signal wakes nothing) which the lane had not, and fixed the acceptance caller the signature change had broken. integrated stays false: no production code builds a signal."
   },
   {
     "id": "CONTRACT-026",
