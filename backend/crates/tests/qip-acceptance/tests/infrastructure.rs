@@ -2124,6 +2124,11 @@ fn no_service_account_key_exists_anywhere_in_the_terraform() {
             "{} creates a service-account key",
             path.display()
         );
+        assert!(
+            !content.contains("google_storage_hmac_key"),
+            "{} creates a storage HMAC key",
+            path.display()
+        );
     }
     assert!(scanned > 1000, "only {scanned} lines were scanned");
 }
@@ -5151,23 +5156,34 @@ fn the_pipeline_authenticates_without_a_long_lived_key() {
     // A service-account key in a repository secret is a credential that never
     // expires, is copied by anyone who can read the secret, and leaves no trace
     // of which run used it.
-    let deploy = read(".github/workflows/deploy.yml");
-    assert!(
-        deploy.contains("id-token: write"),
-        "the pipeline cannot mint an OIDC token"
-    );
-    assert!(
-        deploy.contains("workload_identity_provider:"),
-        "the pipeline does not use workload identity federation"
-    );
-    assert!(
-        !deploy.contains("credentials_json"),
-        "the pipeline authenticates with a key"
-    );
-    assert!(
-        !deploy.contains("service_account_key"),
-        "the pipeline authenticates with a key"
-    );
+    for workflow_path in &[
+        ".github/workflows/deploy.yml",
+        ".github/workflows/infra.yml",
+        ".github/workflows/image.yml",
+        ".github/workflows/vendor.yml",
+    ] {
+        let workflow = read(workflow_path);
+        assert!(
+            workflow.contains("id-token: write"),
+            "{}: the pipeline cannot mint an OIDC token",
+            workflow_path
+        );
+        assert!(
+            workflow.contains("workload_identity_provider:"),
+            "{}: the pipeline does not use workload identity federation",
+            workflow_path
+        );
+        assert!(
+            !workflow.contains("credentials_json"),
+            "{}: the pipeline authenticates with a key",
+            workflow_path
+        );
+        assert!(
+            !workflow.contains("service_account_key"),
+            "{}: the pipeline authenticates with a key",
+            workflow_path
+        );
+    }
 
     // And the pool refuses every repository but this one. Without the
     // condition, any GitHub repository in the world can present a valid token.

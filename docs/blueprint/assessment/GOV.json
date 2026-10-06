@@ -677,15 +677,15 @@
   {
     "id": "GOV-028",
     "status": "PARTIAL",
-    "current": "Every workflow that reaches GCP (deploy.yml, infra.yml, image.yml, vendor.yml) authenticates through google-github-actions/auth with workload_identity_provider and id-token: write, and no .tf file declares google_service_account_key or google_storage_hmac_key. Not present: no organization policy (constraints/iam.disableServiceAccountKeyCreation or ...KeyUpload) is declared anywhere under infrastructure/, so key creation is refused by convention and by a text test rather than by the platform; nothing asserts the absence of a storage HMAC key; the acceptance test for WIF-only authentication reads deploy.yml alone, so infra.yml, image.yml and vendor.yml could regress to credentials_json unobserved; and there is no distinct autonomous-agent identity to show holds only federated access (agent sessions are kept from ~/.config/gcloud by a .claude/settings.json Read deny, a per-tool rule rather than an identity boundary).",
+    "current": "Every workflow that reaches GCP (deploy.yml, infra.yml, image.yml, vendor.yml) authenticates through google-github-actions/auth with workload_identity_provider and id-token: write, verified by test looping all four workflows. No .tf file declares google_service_account_key or google_storage_hmac_key, verified by test checking all Terraform files for both resource types. Not present: no organization policy (constraints/iam.disableServiceAccountKeyCreation or ...KeyUpload) is declared anywhere under infrastructure/, so key creation is refused by convention and by a text test rather than by the platform; and there is no distinct autonomous-agent identity to show holds only federated access (agent sessions are kept from ~/.config/gcloud by a .claude/settings.json Read deny, a per-tool rule rather than an identity boundary).",
     "evidence": [
       "docs/blueprint/assessment/CICD-b2.json, CICD-046",
       ".github/workflows/deploy.yml:376-378,664-666; infra.yml:309-311; image.yml:489; vendor.yml:141 (workload_identity_provider)",
-      "test the_pipeline_authenticates_without_a_long_lived_key -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4748-4766 (reads deploy.yml only)",
-      "test no_service_account_key_exists_anywhere_in_the_terraform -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073-2088",
-      "rg 'disableServiceAccountKeyCreation|google_org_policy|org_policy|google_storage_hmac_key' infrastructure .github -> no hits"
+      "test the_pipeline_authenticates_without_a_long_lived_key -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5150-5204 (loops all four GCP-reaching workflows and verifies each uses id-token: write, workload_identity_provider, and does not contain credentials_json or service_account_key)",
+      "test no_service_account_key_exists_anywhere_in_the_terraform -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2113-2129 (checks all Terraform files for both google_service_account_key and google_storage_hmac_key)",
+      "rg 'disableServiceAccountKeyCreation|google_org_policy|org_policy' infrastructure .github -> no hits"
     ],
-    "gap": "The requirement's plan check needs the organization policy that disables service-account key creation to be enforced; none is declared (and whether the dev project sits under an organization that could carry one was not verifiable here). No test covers storage HMAC keys or the three GCP-reaching workflows other than deploy.yml, and no agent identity exists to demonstrate federated-only access.",
+    "gap": "The requirement's plan check needs the organization policy that disables service-account key creation to be enforced; none is declared (and whether the dev project sits under an organization that could carry one was not verifiable here). No agent identity exists to demonstrate federated-only access as a distinct GCP principal.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -693,10 +693,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_authenticates_without_a_long_lived_key no_service_account_key_exists_anywhere_in_the_terraform. Not yet written: an assertion that the plan declares an iam.disableServiceAccountKeyCreation policy, that no google_storage_hmac_key exists, and that every GCP-reaching workflow uses workload_identity_provider and never credentials_json.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_authenticates_without_a_long_lived_key no_service_account_key_exists_anywhere_in_the_terraform. Not yet written: an assertion that the plan declares an iam.disableServiceAccountKeyCreation policy, and an agent identity with federated-only access to demonstrate independent trust.",
     "work_item": "E14-disable-sa-key-org-policy",
     "tier": "T1",
     "size": "S",
-    "notes": "e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage are complete. verify: downgraded COMPLETE -> PARTIAL. The verification check requires an enforced org policy disabling service-account key creation and no storage HMAC key; no org policy exists anywhere in infrastructure/, HMAC keys are untested, and the WIF test covers deploy.yml only."
+    "notes": "e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage are complete. verify: expanded test coverage to all four GCP-reaching workflows (deploy.yml, infra.yml, image.yml, vendor.yml) and added HMAC key check. The verification check still requires an enforced org policy disabling service-account key creation and an agent identity to demonstrate federated access."
   }
 ]
