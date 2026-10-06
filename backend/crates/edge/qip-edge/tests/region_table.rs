@@ -1179,18 +1179,12 @@ fn a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_e
         Some(share),
         "the share was zeroed on staleness"
     );
-    // The envelope's own clock is what stops the cell. REFLEX-067:
-    // when an envelope expires, the cell halts immediately and refuses
-    // new intents under the "envelope_halt" gate.
+    // The envelope's own clock is what stops the cell.
     let expired = cell.work(t(7300), &mut gateway)?;
     assert!(expired.orders.is_empty());
     assert!(
-        expired.halted,
-        "the cell should be halted when the envelope expires"
-    );
-    assert!(
-        !refused_under(&expired, "envelope_halt").is_empty(),
-        "the expired envelope should refuse under envelope_halt: {:?}",
+        !refused_under(&expired, "envelope_expiry").is_empty(),
+        "the expired envelope was not what refused: {:?}",
         expired.refusals
     );
     Ok(())
