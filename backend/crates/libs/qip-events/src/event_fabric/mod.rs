@@ -15,5 +15,6 @@ pub mod codec;
 pub mod crc32c;
 pub mod envelope;
 pub mod hlc;
+pub mod message_routing;
 pub mod policy;
 pub mod schema_id;
