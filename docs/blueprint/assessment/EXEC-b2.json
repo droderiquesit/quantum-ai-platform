@@ -85,7 +85,7 @@
   },
   {
     "id": "EXEC-023",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "qip_edge::reservation::RegionTable/RegionAllocation (backend/crates/edge/qip-edge/src/reservation.rs:121,150,522) is the one capital ledger any working order in a Cell commits against -- Cell::return_region_capital_for_unfilled and the region_allocation match sites (cell.rs:4337,6405,7386) are generic to any strategy's working order, not scoped to arbitrage -- wired from a composition-root file, backend/crates/apps/qip-edge-node/src/allocation.rs, via Cell::with_region_allocation (cell.rs:1275). Because the ledger is generic to Cell rather than scoped to one strategy kind, any deployed strategy, arbitrage included, reserves through it, and a second hold against already-committed capital is refused whole rather than reduced.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/reservation.rs:121,150,522 (RegionAllocation, Rebase, RegionTable)",
@@ -95,7 +95,7 @@
       "backend/crates/edge/qip-edge/src/reservation.rs:731 one_cells_sweep_leaves_another_cells_holds_standing",
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:13-20 (module doc: no path from market making to an order, a broker or a venue exists)"
     ],
-    "gap": "The ledger is structurally shared (any strategy that reaches Cell::work's order path reserves through it) but no market-making strategy exists in-tree -- qip-strategy has no market-making compiled-strategy type, and the central quote_loop never sends an order by its own module doc's own admission -- so no test interleaves a market-making hold against an arbitrage hold on the same pool. The requirement's specific claim (MM and arbitrage sharing one fabric) is structurally plausible but unverified, because MM never reserves anything.",
+    "gap": "BLOCKED because it depends on EXEC-001 (market making runs as continuous quoting). The requirement needs a test that interleaves market-making and arbitrage reservations on the same pool. The infrastructure (RegionTable/RegionAllocation) is in place and structurally sound, but no market-making strategy exists in-tree yet (qip-strategy has no market-making compiled-strategy type, and the central quote_loop never sends an order by its own module doc's own admission), so the required test cannot be written.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -104,12 +104,12 @@
     "depends_on": [
       "EXEC-001"
     ],
-    "blocked_by": "",
-    "verification": "Test needed: deploy both a market-making strategy and an arbitrage cycle to the same Cell/region and interleave their reservation requests, asserting the pool total is never exceeded. Cannot be written until a market-making strategy exists (EXEC-001/002).",
+    "blocked_by": "EXEC-001",
+    "verification": "Awaiting EXEC-001 (market making runs as continuous quoting). Once a market-making strategy is deployed, test will interleave MM and arbitrage reservation requests on the same Cell/region, asserting the pool total is never exceeded.",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Updated 2026-10-06: Marked BLOCKED on EXEC-001 because the required test (MM + arbitrage interleaving) cannot be written until a market-making strategy exists."
   },
   {
     "id": "EXEC-024",
