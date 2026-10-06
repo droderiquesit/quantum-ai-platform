@@ -670,25 +670,28 @@
   },
   {
     "id": "AGENCY-058",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::knowledge::KnowledgeSource enum with Arbitration and Specialist variants. KnowledgeInput type carrying source, id, and content. KnowledgeLog with BTreeSet-based deduplication and has_inputs(), input_ids() accessors. InterventionPlan carries knowledge_log field and with_knowledge() method for recording inputs (chainable API). Factory methods from_arbitration() and from_specialist(). InterventionPlan::plan() initializes knowledge_log to empty; with_knowledge() records a batch atomically.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/lib.rs:3 (eighteen governed specialist agents) and src/chief.rs:3-12 (ChiefInvestmentIntelligence dispatches to specialists and aggregates coverage and dissent without a view of its own)"
+      "backend/crates/services/qip-agency/src/knowledge.rs (KnowledgeSource, KnowledgeInput, KnowledgeLog with full contract)",
+      "backend/crates/services/qip-agency/src/plan.rs (InterventionPlan.knowledge_log field, with_knowledge() method)",
+      "backend/crates/services/qip-agency/tests/knowledge_inputs.rs -- five test cases covering engine consumption, plan recording, source tracking, chainability, and empty-log invariant; all mutation-verified",
+      "Test evidence: 'test result: ok. 5 passed' (knowledge_inputs.rs); 37 total qip-agency tests pass; cargo fmt, cargo clippy, check-dependencies, check-secrets all pass"
     ],
-    "gap": "No Causal Agency Engine and no InterventionPlan exist to consume knowledge or record which inputs a plan used. A specialist society of sorts does exist — qip-investment-agents' eighteen specialists plus a chief that aggregates their findings — but it serves investment research, emits no typed knowledge message addressed to an agency engine, and there is no Meta/Arbitration Brain arbitrating world-model beliefs. qip-sequencing's arbitration.rs resolves order-sequencing conflicts on the reflex edge path and is unrelated.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "AGENCY-035"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: the engine consumes world-model arbitration outputs and specialist findings as typed knowledge messages, and each InterventionPlan records which of them it used.",
+    "verification": "cargo test -p qip-agency --test knowledge_inputs (mutation-verified: disabling record_batch() in with_knowledge() fails 2 of 5 tests). All five test names: the_engine_consumes_arbitration_and_specialist_knowledge, intervention_plan_records_knowledge_inputs, knowledge_log_tracks_source_of_inputs, plan_with_knowledge_is_chainable, mutation_test_empty_knowledge_log_means_no_inputs_recorded.",
     "work_item": "E16-agency-knowledge-inputs",
     "tier": "T3",
     "size": "M",
-    "notes": "verify: status unchanged (MISSING). The gap said no Specialist Brain Society exists; the specialist agent panel in qip-investment-agents is a real in-tree source a future engine could consume, so the gap and evidence now say so. It is not an upgrade: the consuming engine and InterventionPlan do not exist."
+    "notes": "commit: e34689e 'Implement AGENCY-058: engine takes knowledge from arbitration and specialists' on lane/L003-b-AGENCY-058"
   }
 ]
