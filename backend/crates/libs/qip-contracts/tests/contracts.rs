@@ -903,30 +903,32 @@ fn a_feature_snapshot_immediate_was_not_clamped() {
 }
 
 #[test]
-fn knowable_at_is_a_type_system_barrier_preventing_look_ahead_leakage() {
-    // The KnowableAt type exists to make point-in-time leakage a type error,
-    // not a runtime mistake. A feature constructed with KnowableAt cannot be
-    // read before the sealed instant, and the type system enforces that rather
-    // than a runtime check recovering from the mistake.
+fn knowability_opens_at_the_sealed_instant_and_never_closes_again() {
+    // A feature sealed with KnowableAt cannot be read before its instant —
+    // that is the point-in-time guard, and it is a runtime predicate the
+    // store consults, not a type error. Once open it stays open: a fact
+    // knowable at 160 that read as unknowable at 180 would be a store that
+    // forgets, and every backtest past that instant would silently lose it.
     let knowable_at_160 = KnowableAt::at(t(160));
     let knowable_at_200 = KnowableAt::at(t(200));
 
-    // The same instant is not knowable at an earlier time.
+    // Not knowable before the instant.
     assert!(!knowable_at_160.is_knowable_at(t(150)));
     assert!(!knowable_at_160.is_knowable_at(t(159)));
 
-    // It becomes knowable at exactly the instant.
+    // Knowable at exactly the instant, and afterwards.
     assert!(knowable_at_160.is_knowable_at(t(160)));
     assert!(knowable_at_160.is_knowable_at(t(161)));
+    assert!(knowable_at_160.is_knowable_at(t(180)));
 
-    // Different KnowableAt barriers encode different instants and are not
-    // interchangeable — the type makes it so.
+    // The barrier is specific to its instant: the same query time answers
+    // differently for two seals. This file previously asserted the 160
+    // seal was closed at 180 — contradicting the line above it — and
+    // followed it with `x || !x`, so the one property the comment named
+    // was never checked.
     assert!(knowable_at_160.instant() < knowable_at_200.instant());
-    assert!(!knowable_at_160.is_knowable_at(t(180)));
-    assert!(knowable_at_200.is_knowable_at(t(180)) || !knowable_at_200.is_knowable_at(t(180)));
-    // The last line is a tautology, serving to document that the barrier is
-    // instant-specific: the same query time gives different answers for
-    // different KnowableAt values. That is the whole point of the type.
+    assert!(!knowable_at_200.is_knowable_at(t(180)));
+    assert!(knowable_at_200.is_knowable_at(t(200)));
 }
 
 // --- conviction -------------------------------------------------------------

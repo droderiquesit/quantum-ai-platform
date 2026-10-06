@@ -205,6 +205,7 @@ impl SolverRegistryBuilder {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)] // the assertion is the deliverable in a test
 mod tests {
     use super::*;
     use crate::solver::{ClassicalSolver, QuantumInspiredSolver, SolverEffort};

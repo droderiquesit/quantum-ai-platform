@@ -48,7 +48,7 @@ The response is deterministic: do not post (no double-entry violation), and let 
 
 **Auditability (ADR 0007).** The partition tail is the record of what the ledger has accepted. A gap or a jump in offset is visible as a break in the tail hash, and a human can read the event log to find the cause.
 
-## Cost
+## What it costs
 
 **Three durable tables instead of one.** A ledger that only tracked balances would be simpler, but would lose the chain continuity invariant. The extra tables are small (one row per partition key; the cell has a handful) and accessed on every post. The cost is negligible.
 
