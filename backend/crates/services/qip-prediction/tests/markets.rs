@@ -262,6 +262,42 @@ fn a_market_on_a_venue_that_is_not_a_prediction_market_is_refused() {
 }
 
 #[test]
+fn an_outcome_the_source_does_not_publish_cannot_form_a_market_and_names_the_metric() {
+    // The proposition's source publishes only policy_rate_change_bp,
+    // but the outcome's criteria require inflation_rate, which it doesn't.
+    let published_only_rate = Outcome::new(
+        OutcomeId::new("yes"),
+        "a cut of at least 25bp",
+        ObjectId::from_string("YES"),
+        rate_criteria(Comparison::AtMost, -25),
+    );
+    let needs_unpublished_metric = Outcome::new(
+        OutcomeId::new("inflation_high"),
+        "inflation above 3%",
+        ObjectId::from_string("INF"),
+        ResolutionCriteria::Threshold {
+            metric: "inflation_rate".to_string(),
+            comparison: Comparison::AtLeast,
+            value: Decimal::from_int(3),
+        },
+    );
+
+    let error = EventMarket::new(
+        ObjectId::from_string("MARKET"),
+        VenueId::new("PREDICT-A"),
+        VenueClass::PredictionMarket,
+        proposition(rate_criteria(Comparison::AtMost, -25)),
+        MarketKind::categorical(vec![published_only_rate, needs_unpublished_metric])
+            .expect("distinct outcome ids"),
+        FeeSchedule::FREE,
+    )
+    .expect_err("an outcome needing an unpublished metric cannot be priced");
+    assert_eq!(error.code(), "invalid");
+    assert!(error.message().contains("inflation_rate"));
+    assert!(error.message().contains("does not publish"));
+}
+
+#[test]
 fn a_scalar_markets_buckets_partition_the_range_with_no_gap_and_no_overlap() {
     let edges = vec![
         Decimal::from_int(-50),
