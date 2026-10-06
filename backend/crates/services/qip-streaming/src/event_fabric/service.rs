@@ -54,6 +54,7 @@ use qip_events::event_fabric::catalogue::{Catalogue, Grant, Permission};
 use qip_events::event_fabric::codec::{Batch, DecodeOutcome, MAX_BATCH_LEN};
 use qip_events::event_fabric::policy::{BATCH_SCHEMA_VERSION, QosClass, StreamPolicy};
 use qip_events::event_fabric::schema_id::Shape;
+use qip_events::registry::SchemaRegistry;
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::{
@@ -160,6 +161,9 @@ pub struct Service {
     classes: RwLock<BTreeMap<String, QosClass>>,
     partitions_per_stream: u32,
     segments: SegmentConfigFor,
+    /// Canonical schema registry holding every registered batch schema
+    /// (FABRIC-022: immutable schema IDs and hashes, production caller).
+    schema_registry: RwLock<qip_events::registry::SchemaRegistry>,
 }
 
 /// How a stream's partitions open their segment logs, given the stream's
@@ -203,6 +207,7 @@ impl Service {
             classes: RwLock::new(BTreeMap::new()),
             partitions_per_stream,
             segments,
+            schema_registry: RwLock::new(SchemaRegistry::new()),
         };
         service.apply_catalogue(catalogue)?;
         Ok(service)
@@ -211,6 +216,12 @@ impl Service {
     /// The broker this handler serves.
     pub fn broker(&self) -> &Arc<Broker> {
         &self.broker
+    }
+
+    /// The schema registry holding every registered fabric contract's
+    /// descriptor (FABRIC-022: immutable schema IDs, production caller).
+    pub fn schema_registry(&self) -> &RwLock<SchemaRegistry> {
+        &self.schema_registry
     }
 
     /// Declare every stream in `catalogue`, register its batch schema, and
