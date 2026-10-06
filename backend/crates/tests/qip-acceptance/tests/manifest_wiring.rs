@@ -3448,3 +3448,27 @@ fn every_subnet_keeps_flow_logs_and_every_load_balancer_backend_logs_its_request
          reading the modules that declare them"
     );
 }
+
+// --- API-010: venue execution never runs on Cloud Run ------
+
+#[test]
+fn no_cloud_run_workload_is_qip_edge_node() {
+    // Blueprint API-010 states "No venue-execution path is placed on Cloud
+    // Run." In this platform, venue execution means the simulated venue
+    // (qip-edge-node's role on the execution-node). The verification is:
+    // "No Cloud Run service in the plan runs the edge-node/Reflex execution
+    // binary. Venue execution resolves only to the execution-node Compute
+    // Engine module."
+    //
+    // This test asserts that the Cloud Run catalogue does not list
+    // qip-edge-node. The execution-node's own reference to qip-edge-node is
+    // held separately, in Terraform modules and infrastructure tests.
+    let workloads = catalogue_workloads();
+    for (name, _) in workloads {
+        assert!(
+            name != "qip-edge-node",
+            "qip-edge-node is in the Cloud Run catalogue, but API-010 forbids venue execution \
+             on Cloud Run; qip-edge-node runs only on the execution-node Compute Engine module"
+        );
+    }
+}
