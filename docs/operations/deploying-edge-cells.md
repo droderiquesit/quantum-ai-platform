@@ -357,17 +357,16 @@ After placing an order on a venue:
 
 ### Before first deployment
 
-For each venue the cell will connect to, a **registration record** must exist in `data/venue-registrations.json`:
+For each venue the cell will connect to, a **registration record** must exist in `data/venue-registrations.json` (schema: `data/venue-registrations.template.json`). Venues are provider sandboxes only: paper trading is not a phase (ADR 0003), and a live path requires an accepted ADR (the proposed ADR 0107).
 
 ```json
 {
   "records": [
     {
-      "venue_name": "nasdaq",
-      "operator": "alice@example.com",
-      "account_id": "12345",
-      "api_key_secret": "nasdaq-prod-key",
-      "sandbox_api_key_secret": "nasdaq-test-key"
+      "venue_name": "example-venue",
+      "region": "example-region",
+      "operator_role": "cell-operator",
+      "sandbox_api_key_secret": "example-venue-sandbox-key"
     }
   ]
 }
@@ -375,27 +374,28 @@ For each venue the cell will connect to, a **registration record** must exist in
 
 **Important:**
 
-- `operator`: Name of the person who registered (for audit)
-- `api_key_secret`: Secret Manager secret id (NOT the key itself; the id)
+- `operator_role`: the role that registered (for audit) — never a personal email
+- `sandbox_api_key_secret`: Secret Manager secret id (NOT the key itself; the id)
 - `venue_name`: Must match the key in `venues` map in tfvars
+- There is no production credential field and no venue account id, deliberately
 
 ### Credential management
 
 **Workflow:**
 
-1. **Register at the venue** under the operator's own identity (never a service account)
+1. **Register for the venue's sandbox** under the operator's own identity (never a service account)
 2. **Store the credential** in Google Cloud Secret Manager:
    ```bash
-   gcloud secrets create nasdaq-prod-key --replication-policy="automatic"
-   gcloud secrets versions add nasdaq-prod-key --data-file=- <<< "$(cat ~/.venue-credentials/nasdaq.key)"
+   gcloud secrets create example-venue-sandbox-key --replication-policy="automatic"
+   gcloud secrets versions add example-venue-sandbox-key --data-file=/path/to/sandbox.key
    ```
 
 3. **Record the secret id** in the registration file:
    ```json
    {
-     "venue_name": "nasdaq",
-     "operator": "alice@example.com",
-     "api_key_secret": "nasdaq-prod-key",  # The Secret Manager secret id
+     "venue_name": "example-venue",
+     "operator_role": "cell-operator",
+     "sandbox_api_key_secret": "example-venue-sandbox-key",  # The Secret Manager secret id
      ...
    }
    ```
@@ -415,7 +415,7 @@ For each venue the cell will connect to, a **registration record** must exist in
 5. **Commit the registration record** (with credential id, not the credential itself):
    ```bash
    git add data/venue-registrations.json
-   git commit -m "Register operator alice at NASDAQ for us-east4 cell"
+   git commit -m "Register the cell operator for example-venue's sandbox"
    ```
 
 ### Secrets never in code

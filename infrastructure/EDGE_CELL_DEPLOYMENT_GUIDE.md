@@ -121,8 +121,11 @@ Once observation is complete:
    terraform apply -var-file=environments/dev/terraform.tfvars
    ```
 
-4. **Verify the node can reach venues:**
-   The node will immediately start trading within its capital allocation. Monitor:
+4. **Verify the node can reach the provider sandboxes:**
+   Leaving shadow mode opens network paths; it does not leave paper trading.
+   The cell's ceiling is paper by construction (ADR 0003), and a live order
+   path requires an accepted ADR (the proposed ADR 0107 sets out what would
+   have to be true first). Monitor:
    - Order placement: `qip_edge_orders_placed_total{venue}`
    - Fills: `qip_edge_fills_confirmed_total{venue}`
    - Refusals: `qip_edge_refusals_total` (should stay low)
@@ -330,7 +333,7 @@ See `modules/observability/main.tf` for the full alert policy configuration.
 
 1. Deploy first node in dev/us-east4 (Phase 1)
 2. Observe for 2–4 weeks with Shadow Mode gate enabled (ADR 0035)
-3. Exit shadow mode and confirm live trading (Phase 2)
+3. Exit shadow mode to reach provider sandboxes, still paper trading (Phase 2) — paper is not a phase (ADR 0003); a live path requires an accepted ADR (proposed ADR 0107)
 4. Deploy secondary regions one at a time (Phase 3)
 5. Enable cross-region mirroring and capital sharing (ADR 0039)
 
