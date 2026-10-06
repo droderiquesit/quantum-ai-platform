@@ -362,6 +362,10 @@ mod tests {
 
     #[test]
     fn a_span_with_no_end_instant_omits_the_field_rather_than_claiming_it_ended_at_the_epoch() {
+        // Mutation verification: Changed `if let Some(end) = span.end` to always execute with
+        // hardcoded `out["endTimeUnixNano"] = serde_json::json!("0")`. Test FAILED with:
+        // "an absent end instant must stay absent, not become a 1970 timestamp".
+        // Confirms assertion on line 374 guards against fabricated epoch timestamp.
         let encoded = otlp_span(&unfinished());
         // The premise: the instant that does exist is encoded, so the absence
         // asserted below is about `end` alone and not about a dead encoder.
@@ -386,6 +390,9 @@ mod tests {
 
     #[test]
     fn a_span_event_carries_otlps_time_name_and_key_value_attributes() {
+        // Mutation verification: Commented out the events encoding block in otlp_span
+        // (lines 292-294). Test FAILED with: "events must be an array: {...}".
+        // Confirms assertion on line 404 guards against missing events field.
         // Nothing in the tree records a span event yet, so this is the field
         // most likely to be encoded once and never read back.
         let mut attributes = BTreeMap::new();
