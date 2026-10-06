@@ -62,10 +62,10 @@
     "depends_on": [],
     "blocked_by": "",
     "verification": "cargo test -p qip-quantum --test solvers -- a_solution_that_fails_classical_validation_is_refused_however_good_the_claim a_validated_solution_reports_the_recomputed_objective_rather_than_the_claim; cargo test -p qip-optimization-engine --test optimization -- an_infeasible_quantum_answer_is_rejected_however_good_its_objective",
-    "work_item": "E10",
+    "work_item": "L067-b-QUANT-003",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: integrated/deployable true->false. PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it, so ComputeRouter's quantum branch executes in no composition root; ClassicalValidator/ValidatedSolution have no non-test caller. Evidence lines checked (benchmark.rs:76 ValidatedSolution, :153 validate; qaoa.rs:49 QaoaResult). Status PARTIAL confirmed."
+    "notes": "verify: integrated/deployable true->false. PlatformConfig::quantum_enabled defaults false (config.rs:534) and its only setter with_quantum() (config.rs:573) has no caller in backend/crates/apps/*/src; qip-api builds PlatformConfig::default() (main.rs:139) without it, so ComputeRouter's quantum branch executes in no composition root; ClassicalValidator/ValidatedSolution have no non-test caller. Evidence lines checked (benchmark.rs:76 ValidatedSolution, :153 validate; qaoa.rs:49 QaoaResult). Status PARTIAL confirmed. Next: integrate ClassicalValidator into ComputeRouter's solve_quantum validation flow for unified, type-level guarantee."
   },
   {
     "id": "QUANT-004",
