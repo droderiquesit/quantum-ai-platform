@@ -8,7 +8,6 @@
 //! A routing decision that chooses quantum over classical records both results
 //! and the measured advantage that justified the choice.
 
-use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 

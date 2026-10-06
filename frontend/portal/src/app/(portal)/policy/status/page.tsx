@@ -203,7 +203,7 @@ export default function PolicyStatusPage() {
                   {typeof data.exposure === "object" && data.exposure !== null && "available" in data.exposure && data.exposure.available === true ? (
                     <div className="mt-2 flex flex-col gap-2">
                       <p className="text-[11.5px] text-[color:var(--color-ink-dim)]">
-                        {(data.exposure as any).buckets?.length ?? 0} exposure axes monitored
+                        {((data.exposure as unknown) as { buckets?: unknown[] })?.buckets?.length ?? 0} exposure axes monitored
                       </p>
                       <div className="flex flex-wrap gap-2">
                         <Chip tone="ok">monitored</Chip>
@@ -229,7 +229,7 @@ export default function PolicyStatusPage() {
                   {typeof data.concentrations === "object" && data.concentrations !== null && "available" in data.concentrations && data.concentrations.available === true ? (
                     <div className="mt-2 flex flex-col gap-2">
                       <p className="text-[11.5px] text-[color:var(--color-ink-dim)]">
-                        {(data.concentrations as any).findings?.length ?? 0} findings
+                        {((data.concentrations as unknown) as { findings?: unknown[] })?.findings?.length ?? 0} findings
                       </p>
                     </div>
                   ) : (

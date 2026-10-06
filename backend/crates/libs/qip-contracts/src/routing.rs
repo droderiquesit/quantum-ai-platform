@@ -61,6 +61,7 @@ impl RoutingConfig {
 ///
 /// This type encapsulates the logic for choosing between quantum and classical
 /// solvers based on a DecisionRequest, availability, and performance metrics.
+#[derive(Debug)]
 pub struct QuantumRouter {
     config: RoutingConfig,
 }
