@@ -704,3 +704,56 @@ fn an_envelope_with_any_mandatory_field_absent_or_emptied_is_refused() {
         );
     }
 }
+
+// --- CONTRACT-037: StreamPolicy overload behavior ----------------------
+
+/// CONTRACT-037 requires that every stream declare an overload_policy, and that
+/// under overload a telemetry-class stream sheds records while a control-class
+/// stream does not. This test verifies the catalogue accepts all four valid
+/// overload policies and rejects unknown ones.
+///
+/// Behavioral enforcement (that refusal actually blocks, that shedding actually
+/// drops, that gaps are inserted) is a broker-level responsibility and is
+/// tested in the broker's own suites, not here.
+///
+/// Mutation: change the overload_policy value to "unknown_policy" — the
+/// catalogue refuses it with an invalid-policy error.
+#[test]
+fn every_overload_policy_is_accepted_and_unknown_policies_are_refused() {
+    use qip_events::event_fabric::policy::OverloadPolicy;
+
+    let policies = [
+        ("refuse_producer", OverloadPolicy::RefuseProducer),
+        ("throttle_with_gap", OverloadPolicy::ThrottleWithGap),
+        ("allow_backlog", OverloadPolicy::AllowBacklog),
+        ("sample_or_shed", OverloadPolicy::SampleOrShed),
+    ];
+
+    for (policy_str, expected) in policies {
+        let mut stream = valid_stream_json("test", "p0_control", "quorum", 1, "none", vec![]);
+        stream.as_object_mut().unwrap()["overload_policy"] = serde_json::json!(policy_str);
+
+        let catalogue = Catalogue::parse(&catalogue_bytes(vec![stream], vec![]))
+            .expect(&format!("{policy_str} is a valid overload policy"));
+        assert_eq!(
+            catalogue
+                .stream("test")
+                .expect("test stream exists")
+                .policy
+                .overload_policy(),
+            expected,
+            "{policy_str} policy round-trips through the catalogue"
+        );
+    }
+
+    // An unknown overload policy is refused.
+    let mut stream = valid_stream_json("test", "p0_control", "quorum", 1, "none", vec![]);
+    stream.as_object_mut().unwrap()["overload_policy"] = serde_json::json!("unknown_policy");
+
+    let err = Catalogue::parse(&catalogue_bytes(vec![stream], vec![]))
+        .expect_err("an unknown overload policy must be refused");
+    assert!(
+        err.to_string().contains("overload"),
+        "the refusal names the overload policy: {err}"
+    );
+}
