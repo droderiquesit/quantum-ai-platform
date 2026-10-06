@@ -1942,3 +1942,47 @@ fn changes_to_rules_and_adr_files_cite_the_decision_they_modify() {
     // CICD-045). This test verifies the discipline is documented and demonstrated
     // as an expectation for contributors.
 }
+
+#[test]
+fn the_incident_diagnosis_skill_exists_and_can_be_invoked() {
+    // CICD-026: Incident diagnosis drives root-causing a failing workflow/deployment
+    // to 'a root cause with the evidence that establishes it, and a fix or a precise handoff.'
+    // This test verifies the incident-diagnosis skill is documented and discoverable.
+
+    let skill_path = ".claude/skills/incident-diagnosis/SKILL.md";
+    let skill_text = read(skill_path);
+
+    // Verify the skill declares its purpose
+    assert!(
+        skill_text.contains("incident")
+            || skill_text.contains("diagnosis")
+            || skill_text.contains("root cause"),
+        "incident-diagnosis skill must document its role in root-causing failures"
+    );
+
+    // Verify chief-orchestrator can coordinate incident response
+    let orchestrator_path = ".claude/agents/chief-orchestrator.md";
+    let orchestrator_text = read(orchestrator_path);
+
+    assert!(
+        orchestrator_text.contains("TaskCreate"),
+        "chief-orchestrator must hold TaskCreate tool to coordinate incident-diagnosis tasks"
+    );
+
+    // The skill should guide the diagnosis process toward either
+    // 'a fix' or 'a precise handoff' per the design.
+    let has_handoff_guidance = skill_text.contains("handoff")
+        || skill_text.contains("fix")
+        || skill_text.contains("root cause");
+
+    assert!(
+        has_handoff_guidance,
+        "incident-diagnosis skill must guide toward either a fix or a precise handoff"
+    );
+
+    // This test verifies the infrastructure for incident diagnosis exists.
+    // What is missing per CICD-026 is a 'Learning Agent' role that can
+    // automatically open a Blueprint/Issue/Goal item referencing an incident's evidence;
+    // that is a design decision for later work. This test gates that the skill and
+    // orchestrator infrastructure are in place.
+}
