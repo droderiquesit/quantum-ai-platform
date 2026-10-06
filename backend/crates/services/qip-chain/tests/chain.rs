@@ -703,3 +703,40 @@ fn a_pending_transaction_that_is_never_mined_is_reported_as_dropped() {
         );
     }
 }
+
+#[test]
+fn a_governance_proposal_trace_can_be_created_and_serialized() {
+    let venue = venue();
+    let proposal_id = "proposal-123".to_string();
+    let created_at = Timestamp::from_secs(1_700_000_000);
+
+    let trace = Trace::new(
+        0,
+        TraceKind::GovernanceProposal {
+            venue: venue.clone(),
+            proposal_id: proposal_id.clone(),
+            created_at,
+        },
+    );
+
+    assert_eq!(trace.index, 0);
+    assert_eq!(trace.kind.as_str(), "governance_proposal");
+
+    // Verify that serialization round-trips correctly
+    let json = serde_json::to_string(&trace).expect("serialization");
+    let deserialized: Trace = serde_json::from_str(&json).expect("deserialization");
+
+    assert_eq!(deserialized.index, trace.index);
+    match deserialized.kind {
+        TraceKind::GovernanceProposal {
+            venue: v,
+            proposal_id: p,
+            created_at: c,
+        } => {
+            assert_eq!(v, venue);
+            assert_eq!(p, proposal_id);
+            assert_eq!(c, created_at);
+        }
+        _ => panic!("expected GovernanceProposal variant"),
+    }
+}

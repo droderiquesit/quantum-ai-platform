@@ -263,6 +263,15 @@ pub enum TraceKind {
         object_id: ObjectId,
         amount: Decimal,
     },
+    /// A governance proposal was created or executed on a protocol.
+    GovernanceProposal {
+        /// Protocol identifier where the proposal was created.
+        venue: VenueId,
+        /// Unique proposal identifier within the protocol.
+        proposal_id: String,
+        /// Unix timestamp when the proposal was created.
+        created_at: Timestamp,
+    },
 }
 
 impl TraceKind {
@@ -274,6 +283,7 @@ impl TraceKind {
             Self::Transfer { .. } => "transfer",
             Self::BridgeDeposit { .. } => "bridge_deposit",
             Self::BridgeCredit { .. } => "bridge_credit",
+            Self::GovernanceProposal { .. } => "governance_proposal",
         }
     }
 }
