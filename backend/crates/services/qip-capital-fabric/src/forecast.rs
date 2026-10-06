@@ -54,6 +54,8 @@ pub enum DemandKind {
     Collateral,
     /// Currency that has to be sourced through the FX market to exist at all.
     FxFunding,
+    /// Hedges needed to protect against identified risks.
+    Hedge,
     /// Inventory a market-making or facilitation book needs on hand.
     Inventory,
     /// Margin a clearing house or prime broker will call for.
@@ -67,6 +69,7 @@ impl DemandKind {
             Self::Cash => "cash",
             Self::Collateral => "collateral",
             Self::FxFunding => "fx_funding",
+            Self::Hedge => "hedge",
             Self::Inventory => "inventory",
             Self::Margin => "margin",
         }

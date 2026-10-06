@@ -18,6 +18,7 @@
 
 pub mod causal;
 pub mod confounder;
+pub mod evidence;
 pub mod exposure;
 pub mod falsification;
 pub mod features;
@@ -26,8 +27,10 @@ pub mod granger;
 pub mod graph;
 pub mod inference;
 pub mod liquidity;
+pub mod reaction;
 pub mod relationship;
 pub mod resolution_source;
+pub mod spawning;
 pub mod state;
 pub mod vocabulary;
 pub mod world;
@@ -38,6 +41,7 @@ pub use causal::{
     Retirement,
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
+pub use evidence::{AuthenticitySignal, EvidenceRecord, TemporalConsistency};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SecondOrderReview, SharedDriver, UnheldDependency,
     hidden_concentration, instruments_exposed_to, second_order_exposure, unheld_dependencies,
@@ -46,7 +50,9 @@ pub use falsification::{
     Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,
     SourceCensus, SourceStanding, TrialLedger, Verdict, rolling_statistic,
 };
-pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
+pub use features::{
+    BitemporalFeatureStore, FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue,
+};
 pub use graph::{
     Belief, CONTRADICTION_GAP, Contradiction, EXCERPT_LIMIT, Fact, KnowledgeGraph, Node, NodeKind,
 };
@@ -58,8 +64,10 @@ pub use liquidity::{
     Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
     VenueShift,
 };
+pub use reaction::ReactionEpisode;
 pub use relationship::{Relationship, RelationshipKind};
 pub use resolution_source::{RESOLUTION_SOURCE_PREFIX, ResolutionSourceClaim};
+pub use spawning::{WorldModelBranch, WorldModelSpawner};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};
 pub use vocabulary::{AltMetric, FeatureRead, MacroSeries, SubjectKind, UNWRITTEN, Unwritten};
 pub use world::{MATERIAL_FUNDAMENTAL_SURPRISE, WorldModel};

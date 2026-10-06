@@ -63,6 +63,10 @@ impl FabricdTelemetry {
             "the current leader epoch this broker holds",
         );
         m.describe(
+            names::EVENT_FABRIC_SERVING,
+            "whether the protocol listener is accepting requests (1=yes, 0=no)",
+        );
+        m.describe(
             names::EVENT_FABRIC_SEGMENTS_SEALED,
             "log segments the broker has sealed",
         );
@@ -170,6 +174,20 @@ impl FabricdTelemetry {
         let labels = Labels::new();
         self.metrics
             .gauge(names::EVENT_FABRIC_LEADER_EPOCH, labels, epoch as f64);
+    }
+
+    /// Whether the protocol listener is accepting requests.
+    ///
+    /// A gauge: 1 when serving, 0 when not. Updates whenever the protocol
+    /// listener's state changes, so the metric is observable for liveness
+    /// independent of fabric topics.
+    pub fn serving(&self, accepting: bool) {
+        let labels = Labels::new();
+        self.metrics.gauge(
+            names::EVENT_FABRIC_SERVING,
+            labels,
+            if accepting { 1.0 } else { 0.0 },
+        );
     }
 
     /// Segments that were sealed.

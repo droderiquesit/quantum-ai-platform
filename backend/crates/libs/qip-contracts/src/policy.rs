@@ -270,6 +270,137 @@ pub struct ModelManifest {
     pub models: BTreeMap<String, String>,
 }
 
+/// A complete model pack carrying signed artifacts, calibration, and deployment constraints.
+/// Carries signed model artifacts; the features they consume; calibration; the universes
+/// they are allowed to be applied to; a resource budget; an expiry; and the rollback parent
+/// it replaces (CONTRACT-011).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPack {
+    /// Artifact digest of the signed model, hex-encoded SHA-256.
+    pub artifact_digest: String,
+    /// Signature over the digest, HMAC-SHA256 keyed with the region key.
+    pub signature: String,
+    /// Feature names this model consumes, in canonical order.
+    pub features: Vec<String>,
+    /// Calibration confidence (0.0 to 1.0) of the model on the training set.
+    pub calibration: f64,
+    /// Allowed universes (instruments) this model can be applied to.
+    pub allowed_universes: BTreeSet<String>,
+    /// Resource budget for execution: worst-case microseconds.
+    pub budget_microseconds: u64,
+    /// Expiry timestamp in seconds since epoch.
+    pub expires_at: u64,
+    /// Digest of the model pack this one replaces, empty string if no rollback parent.
+    pub rollback_parent: String,
+}
+
+impl ModelPack {
+    /// Refuse a pack with any empty required field, out-of-range calibration, or empty universe list.
+    pub fn validate(&self) -> Result<()> {
+        if self.artifact_digest.is_empty() {
+            return Err(Error::invalid("model_pack: artifact_digest is empty"));
+        }
+        if self.signature.is_empty() {
+            return Err(Error::invalid("model_pack: signature is empty"));
+        }
+        if self.features.is_empty() {
+            return Err(Error::invalid("model_pack: features is empty"));
+        }
+        if !(0.0..=1.0).contains(&self.calibration) {
+            return Err(Error::invalid(
+                "model_pack: calibration is out of range [0.0, 1.0]",
+            ));
+        }
+        if self.allowed_universes.is_empty() {
+            return Err(Error::invalid("model_pack: allowed_universes is empty"));
+        }
+        if self.budget_microseconds == 0 {
+            return Err(Error::invalid("model_pack: budget_microseconds is zero"));
+        }
+        if self.expires_at == 0 {
+            return Err(Error::invalid("model_pack: expires_at is zero"));
+        }
+        Ok(())
+    }
+}
+
+/// The type of uncertainty held by a belief: aleatoric (inherent randomness),
+/// epistemic (knowledge gap), or model (model limitation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UncertaintyType {
+    /// Inherent randomness in the phenomenon.
+    Aleatoric,
+    /// Knowledge gap that could be reduced with more information.
+    Epistemic,
+    /// Model limitation or approximation error.
+    Model,
+}
+
+impl UncertaintyType {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Aleatoric => "aleatoric",
+            Self::Epistemic => "epistemic",
+            Self::Model => "model",
+        }
+    }
+}
+
+/// A belief state carrying compressed knowledge (CONTRACT-010).
+/// Carries the proposition believed; supporting evidence; the causal path
+/// deriving it; confidence; the type of uncertainty; and a TTL.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeliefState {
+    /// The proposition or distribution believed.
+    pub proposition: String,
+    /// Evidence references supporting this belief, non-empty.
+    pub evidence_set: Vec<String>,
+    /// The causal path deriving this belief.
+    pub causal_path: Vec<String>,
+    /// Confidence level (0.0 to 1.0).
+    pub confidence: f64,
+    /// The type of uncertainty held.
+    pub uncertainty_type: UncertaintyType,
+    /// Expiry timestamp in seconds since epoch; belief is refused after this.
+    pub expires_at: u64,
+}
+
+impl BeliefState {
+    /// Refuse a belief with any empty required field, out-of-range confidence,
+    /// empty evidence set, or expiry in the past (at construction).
+    pub fn validate(&self, now: u64) -> Result<()> {
+        if self.proposition.is_empty() {
+            return Err(Error::invalid("belief_state: proposition is empty"));
+        }
+        if self.evidence_set.is_empty() {
+            return Err(Error::invalid("belief_state: evidence_set is empty"));
+        }
+        if self.causal_path.is_empty() {
+            return Err(Error::invalid("belief_state: causal_path is empty"));
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err(Error::invalid(
+                "belief_state: confidence is out of range [0.0, 1.0]",
+            ));
+        }
+        if self.expires_at <= now {
+            return Err(Error::invalid("belief_state: expires_at is in the past"));
+        }
+        Ok(())
+    }
+
+    /// Refuse reading this belief if it has expired.
+    pub fn check_expired(&self, now: u64) -> Result<()> {
+        if self.expires_at <= now {
+            return Err(Error::invalid("belief_state: belief has expired"));
+        }
+        Ok(())
+    }
+}
+
 /// The compiled plan, by digest and size. The plan itself ships elsewhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -910,5 +1041,691 @@ impl HaltCommand {
         }
         self.signature = to_hex(&hmac_sha256(key, self.signing_payload().as_bytes()));
         Ok(self)
+    }
+}
+
+/// A policy frame for deterministic enforcement. One of seventeen packets in the
+/// policy broadcast carrying a specific gate's decision logic and veto conditions.
+///
+/// Each frame is independently signed and verified, carried at P0 priority, and
+/// applies deterministically at the cell with no model consultation. The seventeen
+/// frames combine into a complete risk policy: four risk gates, four feasibility
+/// gates, four regime gates, four settlement gates, and one master frame governing
+/// the whole (roughly; the exact distribution emerges from implementation).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyFrame {
+    /// Which frame this is, for ordering and deduplication.
+    pub frame_id: u32,
+    /// The cell this policy is for.
+    pub cell: String,
+    /// When the centre issued this frame.
+    pub issued_at: Timestamp,
+    /// How long this frame remains fresh before the cell reads it as stale.
+    pub valid_for: Duration,
+    /// The frame's payload, opaque to the fabric (JSON so different frame types
+    /// can carry different schemas without mutual knowledge).
+    pub payload: serde_json::Value,
+    /// Hex MAC over [`Self::signing_payload`].
+    pub signature: String,
+}
+
+impl PolicyFrame {
+    pub fn new(
+        frame_id: u32,
+        cell: impl Into<String>,
+        issued_at: Timestamp,
+        valid_for: Duration,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            frame_id,
+            cell: cell.into(),
+            issued_at,
+            valid_for,
+            payload,
+            signature: String::new(),
+        }
+    }
+
+    /// Whether this frame is still fresh at `now`.
+    pub fn is_fresh(&self, now: Timestamp) -> bool {
+        now >= self.issued_at && now <= self.issued_at.saturating_add(self.valid_for)
+    }
+
+    /// The bytes the signature is taken over.
+    pub fn signing_payload(&self) -> Result<String> {
+        let payload_json = serde_json::to_string(&self.payload).map_err(|error| {
+            Error::invalid(format!(
+                "the policy frame payload cannot be serialised, so it cannot be signed: {error}"
+            ))
+        })?;
+        Ok(format!(
+            "frame|{}|{}|{}|{}|{}",
+            self.frame_id,
+            length_prefixed(&self.cell),
+            self.issued_at.as_secs(),
+            self.valid_for.as_nanos(),
+            payload_json
+        ))
+    }
+
+    /// Sign with the shared trust root.
+    pub fn signed(mut self, key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a policy frame cannot be signed with an empty key; the trust root is missing",
+            ));
+        }
+        let payload = self.signing_payload()?;
+        self.signature = to_hex(&hmac_sha256(key, payload.as_bytes()));
+        Ok(self)
+    }
+}
+
+/// A deterministic risk gate that refuses to call a model and enforces a
+/// control path at the type level through [`Determinism::Required`].
+///
+/// A [`RiskGate`] is a decision whose answer is derived from inputs and control
+/// logic alone — no ML model, no heuristic, no estimation. Its routing decision
+/// is [`Determinism::Required`], so the cost router's type system forces every
+/// consumption point to assume the gate was pre-computed and never model-routed.
+/// That enforcement is structural rather than a convention, so a bug that tried
+/// to route it through a model would not compile.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RiskGate {
+    /// Which gate this is, for identification and logging.
+    pub gate_id: String,
+    /// The cell this gate applies to.
+    pub cell: String,
+    /// When evaluated.
+    pub evaluated_at: Timestamp,
+    /// Whether the gate permits the proposed action. A gate that fires is a veto.
+    pub permit: bool,
+    /// Why the gate reached its decision, for the journal.
+    pub rationale: String,
+    /// Hex MAC over [`Self::signing_payload`].
+    pub signature: String,
+}
+
+impl RiskGate {
+    pub fn new(
+        gate_id: impl Into<String>,
+        cell: impl Into<String>,
+        evaluated_at: Timestamp,
+        permit: bool,
+        rationale: impl Into<String>,
+    ) -> Self {
+        Self {
+            gate_id: gate_id.into(),
+            cell: cell.into(),
+            evaluated_at,
+            permit,
+            rationale: rationale.into(),
+            signature: String::new(),
+        }
+    }
+
+    /// The bytes the signature is taken over.
+    pub fn signing_payload(&self) -> Result<String> {
+        Ok(format!(
+            "gate|{}|{}|{}|{}|{}",
+            length_prefixed(&self.gate_id),
+            length_prefixed(&self.cell),
+            self.evaluated_at.as_secs(),
+            self.permit,
+            length_prefixed(&self.rationale)
+        ))
+    }
+
+    /// Sign with the shared trust root.
+    pub fn signed(mut self, key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a risk gate cannot be signed with an empty key; the trust root is missing",
+            ));
+        }
+        let payload = self.signing_payload()?;
+        self.signature = to_hex(&hmac_sha256(key, payload.as_bytes()));
+        Ok(self)
+    }
+}
+
+/// A regime change, requiring dual authorization from two operators.
+///
+/// A regime change is a high-consequence decision that moves the market regime
+/// estimate, which drives allocation mode, sizing, and strategy selection. It
+/// requires two independent signatures — not a consensus between machines, but
+/// explicit human consent from two different roles (e.g., CRO and Portfolio
+/// Manager), so neither can unilaterally move the regime.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegimeChange {
+    /// The regime being entered.
+    pub regime: String,
+    /// Confidence in the estimate (0.0 to 1.0).
+    pub confidence: f64,
+    /// When the decision was made.
+    pub decided_at: Timestamp,
+    /// First signer's identity (role or user id).
+    pub signer_one: String,
+    /// First signature (HMAC-SHA256).
+    pub signature_one: String,
+    /// Second signer's identity.
+    pub signer_two: String,
+    /// Second signature (HMAC-SHA256).
+    pub signature_two: String,
+}
+
+impl RegimeChange {
+    pub fn new(
+        regime: impl Into<String>,
+        confidence: f64,
+        decided_at: Timestamp,
+        signer_one: impl Into<String>,
+    ) -> Result<Self> {
+        if !(0.0..=1.0).contains(&confidence) {
+            return Err(Error::invalid(format!(
+                "regime change confidence {} is not a probability",
+                confidence
+            )));
+        }
+        Ok(Self {
+            regime: regime.into(),
+            confidence,
+            decided_at,
+            signer_one: signer_one.into(),
+            signature_one: String::new(),
+            signer_two: String::new(),
+            signature_two: String::new(),
+        })
+    }
+
+    /// The bytes the first signer commits to.
+    pub fn signing_payload_one(&self) -> Result<String> {
+        Ok(format!(
+            "regime1|{}|{}|{}|{}",
+            length_prefixed(&self.regime),
+            self.confidence,
+            self.decided_at.as_secs(),
+            length_prefixed(&self.signer_one)
+        ))
+    }
+
+    /// The bytes the second signer commits to — includes the first signature
+    /// so the second signer cannot be captured without invalidating the first.
+    pub fn signing_payload_two(&self) -> Result<String> {
+        Ok(format!(
+            "regime2|{}|{}|{}|{}|{}|{}",
+            length_prefixed(&self.regime),
+            self.confidence,
+            self.decided_at.as_secs(),
+            length_prefixed(&self.signer_one),
+            length_prefixed(&self.signature_one),
+            length_prefixed(&self.signer_two)
+        ))
+    }
+
+    /// Whether this regime change has both signatures and is complete.
+    pub fn is_complete(&self) -> bool {
+        !self.signature_one.is_empty() && !self.signature_two.is_empty()
+    }
+
+    /// Apply the first signature. Returns `Err` if it is already signed by
+    /// someone, to prevent the same signer from claiming both roles.
+    pub fn signed_one(mut self, signer: impl Into<String>, key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a regime change cannot be signed with an empty key",
+            ));
+        }
+        self.signer_one = signer.into();
+        let payload = self.signing_payload_one()?;
+        self.signature_one = to_hex(&hmac_sha256(key, payload.as_bytes()));
+        Ok(self)
+    }
+
+    /// Apply the second signature. Returns `Err` if only one signature is needed
+    /// or if the regime change is already complete. The second signer may not
+    /// be the same as the first (enforced by caller).
+    pub fn signed_two(mut self, signer: impl Into<String>, key: &[u8]) -> Result<Self> {
+        if key.is_empty() {
+            return Err(Error::denied(
+                "a regime change cannot be signed with an empty key",
+            ));
+        }
+        if self.signature_one.is_empty() {
+            return Err(Error::invalid(
+                "the regime change must be signed by the first signer before the second",
+            ));
+        }
+        self.signer_two = signer.into();
+        let payload = self.signing_payload_two()?;
+        self.signature_two = to_hex(&hmac_sha256(key, payload.as_bytes()));
+        Ok(self)
+    }
+
+    /// Verify both signatures with their respective keys, returning `Err` if
+    /// any check fails. This is called at the edge cell or composition root to
+    /// confirm the regime change is authentic before applying it.
+    pub fn verify(&self, key_one: &[u8], key_two: &[u8]) -> Result<()> {
+        if !self.is_complete() {
+            return Err(Error::denied("regime change is not fully signed"));
+        }
+        if key_one.is_empty() || key_two.is_empty() {
+            return Err(Error::denied(
+                "regime change verification requires both signing keys",
+            ));
+        }
+        let payload_one = self.signing_payload_one()?;
+        let expected_one = to_hex(&hmac_sha256(key_one, payload_one.as_bytes()));
+        if expected_one != self.signature_one {
+            return Err(Error::denied(
+                "regime change first signature does not verify",
+            ));
+        }
+        let payload_two = self.signing_payload_two()?;
+        let expected_two = to_hex(&hmac_sha256(key_two, payload_two.as_bytes()));
+        if expected_two != self.signature_two {
+            return Err(Error::denied(
+                "regime change second signature does not verify",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)] // the assertion is the deliverable in a test
+mod policy_frame_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn t(secs: i64) -> Timestamp {
+        Timestamp::from_secs(1_760_000_000 + secs)
+    }
+
+    fn policy_key() -> Vec<u8> {
+        b"m6-stage-a3-deterministic-policy".to_vec()
+    }
+
+    fn secondary_key() -> Vec<u8> {
+        b"m6-secondary-signer-authority".to_vec()
+    }
+
+    // --- Policy Frame Tests (SLICE-49-29 through SLICE-49-33) ----------------
+
+    #[test]
+    fn a_policy_frame_round_trips_with_deterministic_serialization() -> Result<()> {
+        let payload = json!({
+            "gate_class": "risk",
+            "decision": "permit",
+            "confidence": 0.95
+        });
+
+        let frame = PolicyFrame::new(
+            1,
+            "cell-us-1",
+            t(0),
+            Duration::from_secs(300),
+            payload.clone(),
+        );
+        let json_str = serde_json::to_string(&frame).expect("serializable");
+        let decoded: PolicyFrame = serde_json::from_str(&json_str).expect("own wire form decodes");
+
+        assert_eq!(decoded, frame);
+        assert_eq!(decoded.frame_id, 1);
+        assert_eq!(decoded.cell, "cell-us-1");
+        Ok(())
+    }
+
+    #[test]
+    fn the_policy_frame_signature_covers_all_decision_affecting_fields() -> Result<()> {
+        let payload = json!({"gate_id": "risk_limit", "permit": true});
+        let base = PolicyFrame::new(
+            1,
+            "cell-1",
+            t(100),
+            Duration::from_secs(300),
+            payload.clone(),
+        );
+        let reference = base.signing_payload()?;
+
+        let mut reframed = base.clone();
+        reframed.frame_id = 2;
+        assert_ne!(
+            reframed.signing_payload()?,
+            reference,
+            "frame_id change did not change signature"
+        );
+
+        let mut readdressed = base.clone();
+        readdressed.cell = "cell-2".to_string();
+        assert_ne!(
+            readdressed.signing_payload()?,
+            reference,
+            "cell change did not change signature"
+        );
+
+        let mut redated = base.clone();
+        redated.issued_at = t(200);
+        assert_ne!(
+            redated.signing_payload()?,
+            reference,
+            "timestamp change did not change signature"
+        );
+
+        let mut rewindowed = base.clone();
+        rewindowed.valid_for = Duration::from_secs(600);
+        assert_ne!(
+            rewindowed.signing_payload()?,
+            reference,
+            "validity window change did not change signature"
+        );
+
+        let mut repayloaded = base.clone();
+        repayloaded.payload = json!({"gate_id": "risk_limit", "permit": false});
+        assert_ne!(
+            repayloaded.signing_payload()?,
+            reference,
+            "payload change did not change signature"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_policy_frame_refuses_an_empty_signing_key() -> Result<()> {
+        let frame = PolicyFrame::new(1, "cell-1", t(0), Duration::from_secs(300), json!({}));
+        let result = frame.signed(&[]);
+
+        assert!(result.is_err(), "empty key was accepted");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trust root is missing")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_policy_frame_is_fresh_within_its_window_and_stale_beyond_it() -> Result<()> {
+        let frame = PolicyFrame::new(1, "cell-1", t(100), Duration::from_secs(300), json!({}));
+
+        assert!(!frame.is_fresh(t(99)));
+        assert!(frame.is_fresh(t(100)));
+        assert!(frame.is_fresh(t(250)));
+        assert!(frame.is_fresh(t(400)));
+        assert!(!frame.is_fresh(t(401)));
+        assert!(!frame.is_fresh(t(1000)));
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_signed_policy_frame_carries_a_deterministic_signature() -> Result<()> {
+        let payload = json!({"test": "data"});
+        let frame = PolicyFrame::new(1, "cell-1", t(0), Duration::from_secs(300), payload.clone());
+
+        assert!(frame.signature.is_empty(), "unsigned frame has a signature");
+
+        let signed = frame.signed(&policy_key())?;
+        assert!(
+            !signed.signature.is_empty(),
+            "signed frame has no signature"
+        );
+
+        let frame2 = PolicyFrame::new(1, "cell-1", t(0), Duration::from_secs(300), payload);
+        let signed2 = frame2.signed(&policy_key())?;
+
+        assert_eq!(
+            signed.signature, signed2.signature,
+            "signature is not deterministic"
+        );
+
+        Ok(())
+    }
+
+    // --- Risk Gate Tests (SLICE-49-34 through SLICE-49-38) ------------------
+
+    #[test]
+    fn a_risk_gate_is_constructed_with_all_required_fields() -> Result<()> {
+        let gate = RiskGate::new(
+            "limit_capital",
+            "cell-1",
+            t(0),
+            true,
+            "capital available within limit",
+        );
+
+        assert_eq!(gate.gate_id, "limit_capital");
+        assert_eq!(gate.cell, "cell-1");
+        assert_eq!(gate.evaluated_at, t(0));
+        assert!(gate.permit);
+        assert_eq!(gate.rationale, "capital available within limit");
+        assert!(gate.signature.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_risk_gate_signature_covers_gate_id_cell_time_permit_and_rationale() -> Result<()> {
+        let base = RiskGate::new("gate_1", "cell-1", t(100), true, "permit reason");
+        let reference = base.signing_payload()?;
+
+        let mut regated = base.clone();
+        regated.gate_id = "gate_2".to_string();
+        assert_ne!(
+            regated.signing_payload()?,
+            reference,
+            "gate_id change did not affect signature"
+        );
+
+        let mut readdressed = base.clone();
+        readdressed.cell = "cell-2".to_string();
+        assert_ne!(
+            readdressed.signing_payload()?,
+            reference,
+            "cell change did not affect signature"
+        );
+
+        let mut redated = base.clone();
+        redated.evaluated_at = t(200);
+        assert_ne!(
+            redated.signing_payload()?,
+            reference,
+            "timestamp change did not affect signature"
+        );
+
+        let mut reproven = base.clone();
+        reproven.permit = false;
+        assert_ne!(
+            reproven.signing_payload()?,
+            reference,
+            "permit change did not affect signature"
+        );
+
+        let mut reexplained = base.clone();
+        reexplained.rationale = "different reason".to_string();
+        assert_ne!(
+            reexplained.signing_payload()?,
+            reference,
+            "rationale change did not affect signature"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_risk_gate_refuses_an_empty_signing_key() -> Result<()> {
+        let gate = RiskGate::new("gate_1", "cell-1", t(0), true, "reason");
+        let result = gate.signed(&[]);
+
+        assert!(result.is_err(), "empty key was accepted");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("trust root is missing")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_risk_gate_that_refuses_is_marked_as_a_veto() -> Result<()> {
+        let permit_gate = RiskGate::new("gate_1", "cell-1", t(0), true, "allowed");
+        let veto_gate = RiskGate::new("gate_1", "cell-1", t(0), false, "refused: limit exceeded");
+
+        assert!(permit_gate.permit);
+        assert!(!veto_gate.permit);
+
+        let signed_permit = permit_gate.signed(&policy_key())?;
+        let signed_veto = veto_gate.signed(&policy_key())?;
+
+        assert!(!signed_permit.signature.is_empty());
+        assert!(!signed_veto.signature.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_signed_risk_gate_produces_deterministic_signatures() -> Result<()> {
+        let gate1 = RiskGate::new("gate_1", "cell-1", t(100), true, "permit");
+        let gate2 = RiskGate::new("gate_1", "cell-1", t(100), true, "permit");
+
+        let signed1 = gate1.signed(&policy_key())?;
+        let signed2 = gate2.signed(&policy_key())?;
+
+        assert_eq!(signed1.signature, signed2.signature);
+
+        Ok(())
+    }
+
+    // --- Multi-Signature Regime Change Tests (SLICE-49-39 through SLICE-49-45)
+
+    #[test]
+    fn a_regime_change_starts_unsigned_and_requires_two_signatures() -> Result<()> {
+        let change = RegimeChange::new("crisis", 0.85, t(0), "officer_1")?;
+
+        assert_eq!(change.regime, "crisis");
+        assert_eq!(change.confidence.to_bits(), 0.85_f64.to_bits());
+        assert_eq!(change.signer_one, "officer_1");
+        assert!(change.signature_one.is_empty());
+        assert!(change.signature_two.is_empty());
+        assert!(!change.is_complete(), "unsigned change was marked complete");
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_regime_change_refuses_invalid_confidence() -> Result<()> {
+        let neg = RegimeChange::new("crisis", -0.1, t(0), "officer");
+        assert!(
+            neg.is_err(),
+            "negative confidence was accepted as a probability"
+        );
+
+        let over = RegimeChange::new("crisis", 1.1, t(0), "officer");
+        assert!(
+            over.is_err(),
+            "confidence over 1.0 was accepted as a probability"
+        );
+
+        let zero = RegimeChange::new("quiet", 0.0, t(0), "officer")?;
+        assert_eq!(zero.confidence.to_bits(), 0.0_f64.to_bits());
+
+        let one = RegimeChange::new("trending", 1.0, t(0), "officer")?;
+        assert_eq!(one.confidence.to_bits(), 1.0_f64.to_bits());
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_regime_change_refuses_to_sign_with_an_empty_key() -> Result<()> {
+        let change = RegimeChange::new("crisis", 0.85, t(0), "officer_1")?;
+
+        let result = change.signed_one("officer_1", &[]);
+        assert!(
+            result.is_err(),
+            "empty key was accepted for first signature"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_regime_change_refuses_second_signature_before_first() -> Result<()> {
+        let change = RegimeChange::new("crisis", 0.85, t(0), "officer_1")?;
+
+        let result = change.signed_two("officer_2", &policy_key());
+        assert!(result.is_err(), "second signature applied before first");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("first signer before the second")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_fully_signed_regime_change_carries_both_signatures_and_verifies() -> Result<()> {
+        let change = RegimeChange::new("mean_reverting", 0.75, t(100), "risk_officer")?;
+
+        let with_one = change.signed_one("risk_officer", &policy_key())?;
+        assert!(!with_one.signature_one.is_empty());
+        assert!(with_one.signature_two.is_empty());
+        assert!(!with_one.is_complete());
+
+        let complete = with_one.signed_two("portfolio_manager", &secondary_key())?;
+        assert!(!complete.signature_one.is_empty());
+        assert!(!complete.signature_two.is_empty());
+        assert!(complete.is_complete());
+
+        let verified = complete.verify(&policy_key(), &secondary_key());
+        assert!(
+            verified.is_ok(),
+            "complete regime change failed verification"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_regime_change_verification_fails_on_signature_mismatch() -> Result<()> {
+        let change = RegimeChange::new("crisis", 0.9, t(200), "cro")?;
+
+        let with_one = change.signed_one("cro", &policy_key())?;
+        let complete = with_one.signed_two("pm", &secondary_key())?;
+
+        assert!(complete.verify(&policy_key(), &secondary_key()).is_ok());
+
+        let wrong_key = b"wrong-key-for-testing".to_vec();
+        assert!(complete.verify(&wrong_key, &secondary_key()).is_err());
+        assert!(complete.verify(&policy_key(), &wrong_key).is_err());
+        assert!(complete.verify(&secondary_key(), &policy_key()).is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn regime_change_signatures_are_deterministic_per_signer() -> Result<()> {
+        let change1 = RegimeChange::new("trending", 0.88, t(300), "analyst_a")?;
+        let change2 = RegimeChange::new("trending", 0.88, t(300), "analyst_a")?;
+
+        let s1_one = change1.signed_one("analyst_a", &policy_key())?;
+        let s2_one = change2.signed_one("analyst_a", &policy_key())?;
+        assert_eq!(s1_one.signature_one, s2_one.signature_one);
+
+        let s1_complete = s1_one.signed_two("analyst_b", &secondary_key())?;
+        let s2_complete = s2_one.signed_two("analyst_b", &secondary_key())?;
+
+        assert_eq!(s1_complete.signature_one, s2_complete.signature_one);
+        assert_eq!(s1_complete.signature_two, s2_complete.signature_two);
+
+        Ok(())
     }
 }

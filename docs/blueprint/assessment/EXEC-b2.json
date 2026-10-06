@@ -10,7 +10,7 @@
       "test an_order_in_a_mode_not_enabled_at_its_venue_is_refused_before_an_order_number_is_spent (qip-edge tests/telemetry.rs), mutation-verified: disabling the admit check made it fail at 'work(..).is_err()'",
       "test an_assembled_node_enables_order_taking_and_routing_at_its_venue_and_nothing_else (qip-edge-node tests/pass.rs), mutation-verified: enabling Derivatives in place of Routing failed it on 'Routing'"
     ],
-    "gap": "The edge cell refuses a disabled mode before an order exists, and the node wires it. Not closed: (1) qip-kernel's Platform::submit_order (central path) still demands no ModeAdmission; (2) a Cell built without with_mode_gate is ungated (opt-in, not fail-closed by construction); (3) the other six modes have no order path at all, so 'an order in each mode is refused' is demonstrated only for OrderTaking and Routing.",
+    "gap": "The edge cell refuses a disabled mode before an order exists, and the node wires it. Not closed: (1) qip-kernel's Platform::submit_order (central path) still demands no ModeAdmission -- requires adding ExecutionMode to Order or passing it separately, then calling gate.admit() before orders.submit(); (2) a Cell built without with_mode_gate is ungated (opt-in, not fail-closed by construction); (3) the other six modes have no order path at all, so 'an order in each mode is refused' is demonstrated only for OrderTaking and Routing. Central-path gating is left for its own architectural slice (Platform builder pattern + composition-root configuration).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -67,7 +67,7 @@
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:22-70 (module doc: one venue-agnostic proxy set)",
       "grep -n 'MicrostructureMetrics::compute' backend/crates/runtime backend/crates/apps backend/crates/edge --type rust: no matches outside the definition and a doc comment"
     ],
-    "gap": "No model or parameter set varies by venue anywhere in the pricing path; MicrostructureMetrics is defined and unit-tested in isolation but never called from production code, and the only production pricing loop (quote_loop.rs) applies one QuotePolicy uniformly regardless of venue.",
+    "gap": "No model or parameter set varies by venue anywhere in the pricing path; MicrostructureMetrics is defined and unit-tested in isolation but never called from production code, and the only production pricing loop (quote_loop.rs) applies one QuotePolicy uniformly regardless of venue. Implementation requires: (1) add venue parameter to MicrostructureMetrics or create venue-specific model subtype; (2) wire MicrostructureMetrics::compute into quote_loop or create specialized queue-value/fill-probability estimators; (3) create a replay fixture that runs identical order flow against venues with different microstructure parameters and scores each venue's model against that venue's fills.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -77,15 +77,15 @@
       "EXEC-002"
     ],
     "blocked_by": "",
-    "verification": "Test needed: replay the same order flow against two simulated venues with different microstructure parameters and assert each venue gets its own queue-value/fill-probability estimate, scored against that venue's own replayed fills. No such fixture exists today.",
+    "verification": "Test needed: replay the same order flow against two simulated venues with different microstructure parameters and assert each venue gets its own queue-value/fill-probability estimate, scored against that venue's own replayed fills. No such fixture exists today. Implementation work should be sized after architecture design on model structure (per-venue types vs. parametric dispatch).",
     "work_item": "E11",
     "tier": "T2",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-06: Assessed work needed. No code changes attempted; size L requires coordinated design on MicrostructureMetrics integration and replay fixture architecture."
   },
   {
     "id": "EXEC-023",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "qip_edge::reservation::RegionTable/RegionAllocation (backend/crates/edge/qip-edge/src/reservation.rs:121,150,522) is the one capital ledger any working order in a Cell commits against -- Cell::return_region_capital_for_unfilled and the region_allocation match sites (cell.rs:4337,6405,7386) are generic to any strategy's working order, not scoped to arbitrage -- wired from a composition-root file, backend/crates/apps/qip-edge-node/src/allocation.rs, via Cell::with_region_allocation (cell.rs:1275). Because the ledger is generic to Cell rather than scoped to one strategy kind, any deployed strategy, arbitrage included, reserves through it, and a second hold against already-committed capital is refused whole rather than reduced.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/reservation.rs:121,150,522 (RegionAllocation, Rebase, RegionTable)",
@@ -95,7 +95,7 @@
       "backend/crates/edge/qip-edge/src/reservation.rs:731 one_cells_sweep_leaves_another_cells_holds_standing",
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:13-20 (module doc: no path from market making to an order, a broker or a venue exists)"
     ],
-    "gap": "The ledger is structurally shared (any strategy that reaches Cell::work's order path reserves through it) but no market-making strategy exists in-tree -- qip-strategy has no market-making compiled-strategy type, and the central quote_loop never sends an order by its own module doc's own admission -- so no test interleaves a market-making hold against an arbitrage hold on the same pool. The requirement's specific claim (MM and arbitrage sharing one fabric) is structurally plausible but unverified, because MM never reserves anything.",
+    "gap": "BLOCKED because it depends on EXEC-001 (market making runs as continuous quoting). The requirement needs a test that interleaves market-making and arbitrage reservations on the same pool. The infrastructure (RegionTable/RegionAllocation) is in place and structurally sound, but no market-making strategy exists in-tree yet (qip-strategy has no market-making compiled-strategy type, and the central quote_loop never sends an order by its own module doc's own admission), so the required test cannot be written.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -104,16 +104,16 @@
     "depends_on": [
       "EXEC-001"
     ],
-    "blocked_by": "",
-    "verification": "Test needed: deploy both a market-making strategy and an arbitrage cycle to the same Cell/region and interleave their reservation requests, asserting the pool total is never exceeded. Cannot be written until a market-making strategy exists (EXEC-001/002).",
+    "blocked_by": "EXEC-001",
+    "verification": "Awaiting EXEC-001 (market making runs as continuous quoting). Once a market-making strategy is deployed, test will interleave MM and arbitrage reservation requests on the same Cell/region, asserting the pool total is never exceeded.",
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Updated 2026-10-06: Marked BLOCKED on EXEC-001 because the required test (MM + arbitrage interleaving) cannot be written until a market-making strategy exists."
   },
   {
     "id": "EXEC-024",
-    "status": "MISSING",
+    "status": "BLOCKED",
     "current": "nothing. No 'Market Factory' actor exists anywhere in the tree. qip_execution_engine::origination::OriginationMandate::admit (backend/crates/services/qip-execution-engine/src/origination.rs:223) computes and admits a bound (the five-gate origination check, see EXEC-027) but constructs no market, calls no create/list function and publishes nothing; the module's own header states it deliberately 'does not construct an Order, name a venue, or reach a Broker' (origination.rs:22-26). qip_brokers::exchange::SimulatedExchange::list (exchange.rs:380) and list_synthetic (exchange.rs:405) are the simulated venue's own catalogue: the only non-test caller is qip-edge-node's SimulatedGateway::ensure_listed (backend/crates/apps/qip-edge-node/src/gateway.rs:569-586), which lists a synthetic instrument at the in-process paper venue when an order names one. That models an external venue's catalogue; it is not the platform creating a market and publishes no pricing rules.",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/origination.rs:1-38 (module doc: constructs no Order, names no venue, reaches no Broker)",
@@ -121,7 +121,7 @@
       "backend/crates/apps/qip-edge-node/src/gateway.rs:569-586 (SimulatedGateway::ensure_listed -> list_synthetic: the only non-test caller; unconnected to origination)",
       "grep -rni 'market.factory|MarketFactory|pricing_rule|PricingRule|create_market|CreatedMarket' backend/crates --include=*.rs: no matches"
     ],
-    "gap": "No Market Factory exists to create a market or publish anything about it; only the pre-creation approval gate (OriginationMandate) exists, and it is itself unreached from any composition root (see EXEC-027).",
+    "gap": "No Market Factory exists to create a market or publish anything about it; only the pre-creation approval gate (OriginationMandate) exists, and it is itself unreached from any composition root (see EXEC-027). BLOCKED because it depends on EXEC-006 (market creation capability), which is itself BLOCKED under ADR 0099 conflict C1 (market creation not authorized).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -130,12 +130,12 @@
     "depends_on": [
       "EXEC-006"
     ],
-    "blocked_by": "",
-    "verification": "Test needed once EXEC-006 exists: assert a created simulated market has a versioned pricing-rule document recorded in the event log, and that every quote made in it reproduces from the rule version in force at the time.",
+    "blocked_by": "C1",
+    "verification": "Test needed once EXEC-006 is unblocked: assert a created simulated market has a versioned pricing-rule document recorded in the event log, and that every quote made in it reproduces from the rule version in force at the time.",
     "work_item": "E11",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status unchanged (MISSING confirmed; no Market Factory, pricing-rule document or rule versioning found under backend/, frontend/ or infrastructure/). Corrected a false claim in 'current': SimulatedExchange::list is not called from the qip-cli demo (qip-cli/src/demo/mod.rs has no call to it); its one non-test caller is qip-edge-node's SimulatedGateway::ensure_listed via list_synthetic. Evidence updated to match."
+    "notes": "Status changed MISSING -> BLOCKED; blocked_by '' -> 'C1'. EXEC-024 depends on EXEC-006 (create market capability), which is BLOCKED under ADR 0099 C1. Until C1 is resolved by the owner (market creation authorization decision), EXEC-024 remains BLOCKED. The simulated form cannot be built without EXEC-006."
   },
   {
     "id": "EXEC-025",

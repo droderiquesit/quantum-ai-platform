@@ -210,6 +210,7 @@ pub struct Running {
     service: Arc<Service>,
     health: Arc<Health>,
     metrics: Arc<Metrics>,
+    telemetry: Arc<FabricdTelemetry>,
     stop_data: Arc<AtomicBool>,
     stop_health: Arc<AtomicBool>,
     stop_housekeeping: Arc<AtomicBool>,
@@ -261,6 +262,7 @@ impl Running {
     /// that the protocol is no longer served (FABRIC-073).
     pub fn stop_data_plane(&mut self) {
         self.health.set_serving(false);
+        self.telemetry.serving(false);
         stop_listener(&self.stop_data, &self.address);
         if let Some(thread) = self.data_thread.take() {
             let _ = thread.join();
@@ -398,6 +400,7 @@ pub fn start_with_archive(
     let stop_housekeeping = Arc::new(AtomicBool::new(false));
 
     health.set_serving(true);
+    telemetry.serving(true);
     let data_thread = std::thread::spawn(move || {
         let _ = data.serve();
     });
@@ -412,6 +415,7 @@ pub fn start_with_archive(
     let archive_thread = {
         let service = service.clone();
         let health = health.clone();
+        let telemetry = telemetry.clone();
         let stop = stop_housekeeping.clone();
         let archiver = Archiver::new(archive_store);
         std::thread::spawn(move || {
@@ -447,6 +451,7 @@ pub fn start_with_archive(
         service,
         health,
         metrics,
+        telemetry,
         stop_data,
         stop_health,
         stop_housekeeping,

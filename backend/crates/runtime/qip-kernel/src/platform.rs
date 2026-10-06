@@ -108,6 +108,7 @@ use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::FeasibilityConstraints;
+use qip_contracts::quantum::RoutingDecision;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -2666,6 +2667,19 @@ pub struct CounterfactualJournal {
     /// cap the declined paths share.
     #[serde(default)]
     pub fills_deferred: usize,
+    /// The individual declined path scores priced this cycle. Each record
+    /// names the order, the gate that refused it, and what it would have
+    /// earned over the twin's horizon. Defaulted so a journal written before
+    /// this field existed replays as having declined nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_outcomes: Vec<DeclinedScore>,
+    /// The individual fill scores priced this cycle for sizes not taken.
+    /// Each record names the order, the venue it filled at, and whether
+    /// the twin's sizing recommendations (smaller/larger) would have beaten
+    /// the size actually taken. Defaulted so a journal written before this
+    /// field existed replays as having scored no fill.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_outcomes: Vec<FillScore>,
 }
 
 /// Which solver sized the cycle's proposal, and what the classical baseline
@@ -10447,6 +10461,26 @@ impl Platform {
                     error.message()
                 )
             });
+
+        // After feature synthesis: wire quantum routing decisions into the stage.
+        // M6 A4 Packet 1: journal routing decisions (quantum vs classical path choices).
+        // Each cycle, record which path (quantum/classical) would be chosen for
+        // active optimization problems, both for auditability and for observability.
+        // This runs after features are computed because feature sufficiency
+        // determines whether a problem is ready for routing.
+        let routing_decisions = self.route_quantum_decisions(now);
+        let routing_detail = if routing_decisions.is_empty() {
+            String::new()
+        } else {
+            format!("; {} routing decision(s) recorded", routing_decisions.len())
+        };
+        self.telemetry.metrics.gauge(
+            "qip_platform_routing_decisions",
+            [("decision_count".to_string(), "true".to_string())]
+                .into_iter()
+                .collect(),
+            routing_decisions.len() as f64,
+        );
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
@@ -10454,7 +10488,7 @@ impl Platform {
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
                   {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
-                 {second_order_detail}{statistics_detail}",
+                 {second_order_detail}{statistics_detail}{routing_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -10760,6 +10794,31 @@ impl Platform {
             }
         }
         report
+    }
+
+    /// M6 A4 Packet 1: Compute routing decisions (quantum vs classical) for
+    /// active optimization problems and journal them for auditability.
+    ///
+    /// This runs after feature synthesis because feature sufficiency
+    /// determines whether a problem is ready for routing. Each cycle produces
+    /// zero or more routing decisions, each recording whether a quantum solver
+    /// would be chosen over the classical baseline for that problem.
+    ///
+    /// Returns a vector of routing decisions that were journalled this cycle,
+    /// for observability and for the stage outcome detail.
+    fn route_quantum_decisions(&mut self, _now: Timestamp) -> Vec<RoutingDecision> {
+        // M6 A4 Packet 1: infrastructure wire for quantum routing.
+        // This method will be expanded by later packets to:
+        // - Check for active optimization problems in the portfolio or reasoning engine
+        // - For each problem, compute a classical baseline solution
+        // - For each problem, optionally compute a quantum solution
+        // - Create a RoutingDecision comparing the two
+        // - Journal the decision with metadata for auditability
+        //
+        // For now, return empty vector as no problems may be active yet.
+        // As later packets wire in the quantum router integration, this will
+        // populate the vector with actual routing decisions.
+        Vec::new()
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
@@ -17167,6 +17226,8 @@ impl Platform {
             deferred,
             fills_scored: 0,
             fills_deferred: 0,
+            declined_outcomes: self.declined_scores.clone(),
+            fill_outcomes: Vec::new(),
         });
         let mut summary = format!("{scored} declined path(s) priced, {regrets} regret(s)");
         if deferred > 0 {
@@ -17388,6 +17449,7 @@ impl Platform {
             Some(journal) => {
                 journal.fills_scored = scored;
                 journal.fills_deferred = deferred;
+                journal.fill_outcomes = self.fill_scores.clone();
             }
             None => {
                 self.cycle_counterfactuals = Some(CounterfactualJournal {
@@ -17396,6 +17458,8 @@ impl Platform {
                     deferred: 0,
                     fills_scored: scored,
                     fills_deferred: deferred,
+                    declined_outcomes: Vec::new(),
+                    fill_outcomes: self.fill_scores.clone(),
                 });
             }
         }
@@ -18753,18 +18817,34 @@ impl Platform {
             FxRates::new(Currency::USD),
         )?;
         for forecast in self.forecast_capital_demand(now, horizon) {
-            // Nothing is assumed to be sitting at a venue already. Claiming a
-            // balance the platform has not been told about is how a plan
-            // declines the transfer that turns out to have been needed.
+            // Wire the wallet's reconciled on-hand balance for this location
+            // instead of hardcoding it to zero. The wallet holds what venues
+            // reported via observation; if no observation exists, use zero
+            // (nothing is assumed to be sitting at a venue until observed).
+            let on_hand = self
+                .holdings_observed
+                .get(&VenueAsset {
+                    venue: forecast.location.venue.clone(),
+                    asset: Asset::new(forecast.location.currency.to_string())?,
+                })
+                .map(|obs| obs.observed)
+                .unwrap_or(Decimal::ZERO);
+
             request = request
                 .with_balance(LocationBalance::new(
                     forecast.location.clone(),
                     forecast.kind,
-                    Decimal::ZERO,
+                    on_hand,
                 )?)
                 .with_forecast(forecast);
         }
-        let live = self.pre_positioner.allocator().allocate(&[], 0.0, now)?;
+        // Get the live allocation with the current drawdown. This ensures the
+        // pre-positioning plan respects the authority envelope that governs
+        // the actual resource state, not an idle envelope.
+        let live = self
+            .pre_positioner
+            .allocator()
+            .allocate(&[], self.drawdown(), now)?;
         self.pre_positioner.plan(&request, &live, now)
     }
 

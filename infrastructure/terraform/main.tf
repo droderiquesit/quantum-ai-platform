@@ -119,10 +119,12 @@ locals {
     live_capable = tostring(local.ceiling_reaches_a_venue)
   }
 
-  # Private Google access. The one range through which a workload reaches
-  # Google APIs without leaving the VPC and without a route to anywhere else.
-  # `modules/network`'s private zone resolves every `*.googleapis.com` to it.
-  private_google_apis = "199.36.153.8/30"
+  # Restricted Google APIs range. The one range through which a workload reaches
+  # Google APIs (restricted.googleapis.com) without leaving the VPC and without a
+  # route to anywhere else. `modules/network`'s private zone resolves every
+  # `*.googleapis.com` to it. This is 199.36.153.4/30, not the private range
+  # (199.36.153.8/30).
+  private_google_apis = "199.36.153.4/30"
 
   # Where the central plane is, from a node's point of view: the ranges of
   # the trust zones the catalogue's workloads attach through, and the private
@@ -417,7 +419,12 @@ module "trust_zones" {
   project_id  = var.project_id
   environment = var.environment
   region      = var.region
-  network_id  = module.network.network_id
+
+  # Three separate networks per environment (GCP-009): Reflex for execution
+  # nodes, Fabric for control-plane and event-fabric, Service for all others.
+  reflex_network_id  = module.network.reflex_network_id
+  fabric_network_id  = module.network.fabric_network_id
+  service_network_id = module.network.service_network_id
 
   zones           = var.trust_zones
   permitted_paths = var.permitted_paths
@@ -675,7 +682,8 @@ module "execution_node" {
   region  = each.value.region
   zone    = each.value.zone
 
-  network_id  = module.network.network_id
+  # Execution nodes attach to the Reflex network (GCP-009).
+  network_id  = module.network.reflex_network_id
   subnet_cidr = each.value.subnet_cidr
 
   machine_type = each.value.machine_type

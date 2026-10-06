@@ -267,28 +267,30 @@
   },
   {
     "id": "SEC-037",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "modules/binaryauthorization::google_binary_authorization_policy.platform sets default_admission_rule { evaluation_mode = REQUIRE_ATTESTATION, enforcement_mode = ENFORCED_BLOCK_AND_AUDIT_LOG } with the build attestor. The root instantiates it unconditionally. The GKE control-plane cluster sets binary_authorization { evaluation_mode = PROJECT_SINGLETON_POLICY_ENFORCE }. Every catalogue RunService opts in with binaryAuthorization.useDefault: true, and scripts/deploy-frontends.sh deploys the portal and landing by digest with --binary-authorization=default.",
     "evidence": [
-      "infrastructure/terraform/modules/binaryauthorization/main.tf:199-229 google_binary_authorization_policy.platform, default_admission_rule REQUIRE_ATTESTATION / ENFORCED_BLOCK_AND_AUDIT_LOG",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf:199-232 google_binary_authorization_policy.platform, default_admission_rule REQUIRE_ATTESTATION / ENFORCED_BLOCK_AND_AUDIT_LOG",
       "infrastructure/terraform/main.tf:772 module \"binary_authorization\" (no count)",
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:264-266 binary_authorization { evaluation_mode = \"PROJECT_SINGLETON_POLICY_ENFORCE\" }",
       "infrastructure/gitops/envs/dev/api.yaml binaryAuthorization: { useDefault: true } (repeated per workload per environment)",
-      "test: every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2490) — asserts only the opt-in half: modules/cloudrun names no binary_authorization, the two frontend deploys pass --binary-authorization=default and name a digest"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs (constants: BINARY_AUTH_MODULE line 7698, CONTROL_PLANE_MODULE line 7700)",
+      "test: the_control_plane_binary_authorization_policy_requires_attestation_and_enforces_block (infrastructure.rs after line 2597) — pins evaluation_mode REQUIRE_ATTESTATION and enforcement_mode ENFORCED_BLOCK_AND_AUDIT_LOG in binary authorization module, validates require_attestations_by the build attestor, and asserts cluster's PROJECT_SINGLETON_POLICY_ENFORCE (all three values required for deny-by-default enforcement; mutations: removing enforcement_mode causes test to fail at the assertion 'unapproved images are not refused', restored byte-for-byte)",
+      "test: every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy (infrastructure.rs:2531) — asserts opt-in half: modules/cloudrun names no binary_authorization, the two frontend deploys pass --binary-authorization=default and name a digest"
     ],
-    "gap": "No test asserts the rule that does the refusing. grep over backend/crates/tests and every *.tftest.hcl finds no occurrence of REQUIRE_ATTESTATION, ENFORCED_BLOCK_AND_AUDIT_LOG, PROJECT_SINGLETON_POLICY_ENFORCE or evaluation_mode. Changing the default rule to ALWAYS_ALLOW, or the cluster to DISABLED, fails no test. The module header records that exact failure happening once before. The requirement's integration check has never been observed: an unattested image refused, then the same image admitted after attestation. Nothing currently runs under the policy: the cluster is suspended (ADR 0093), dev has no Cloud Run service since the 2026-09-13 teardown (infra.yml run 52 re-applied infrastructure only), and billing is disabled on the dev project (ADR 0099 C8).",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy -- --exact passes but covers opt-in only. Needed: a test pinning default_admission_rule (REQUIRE_ATTESTATION, ENFORCED_BLOCK_AND_AUDIT_LOG, require_attestations_by the build attestor) and the cluster's PROJECT_SINGLETON_POLICY_ENFORCE, mutation-verified; and an observed refusal of an unattested digest.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_control_plane_binary_authorization_policy_requires_attestation_and_enforces_block -- --exact; test result: ok. 1 passed (mutation verified: enforcement_mode removal fails test at 'unapproved images are not refused', restored, passes again); cargo test -p qip-acceptance --test infrastructure -- --no-fail-fast; infrastructure test result: 114 passed, 3 failed (pre-existing failures in test suite unrelated to this row)",
     "work_item": "E13",
     "tier": "T1",
     "size": "S",
-    "notes": "The module's own header documents a previously fixed gap (enforcement once evaluated the implicit ALWAYS_ALLOW policy) — this is the corrected, applied form. verify: COMPLETE -> NEEDS-VALIDATION, tested/e2e -> false. The cited test proves that workloads opt in to the policy, not that the policy refuses anything, and no test pins the deny rule or the cluster's enforcement mode. The row's claim 'applied in algorik-dev, where api/fastbrain/deepbrain/openobserve all exist under this policy' is stale: those services were deleted on 2026-09-13, and run 52 recreated no Cloud Run service (infrastructure/CLAUDE.md)."
+    "notes": "The module's own header documents a previously fixed gap (enforcement once evaluated the implicit ALWAYS_ALLOW policy) — this is the corrected, applied form. Test added after existing binary authorization opt-in test (line 2531), validating the deny-by-default rule configuration in both the policy module and the cluster enforcement mode. Mutation tested by removing enforcement_mode from default_admission_rule: test correctly failed at 'unapproved images are not refused'; implementation restored byte-for-byte; test passes. The requirement's integration check (observed refusal of an unattested digest) cannot be run until the cluster is deployed and a Cloud Run service under the policy exists; the cluster remains suspended (ADR 0093) and billing disabled (ADR 0099 C8), so integration testing awaits deployment readiness."
   },
   {
     "id": "SEC-038",
@@ -366,14 +368,17 @@
   },
   {
     "id": "SEC-041",
-    "status": "PARTIAL",
-    "current": "modules/gitops-control-plane runs the one GKE cluster in the tree in Autopilot mode, which always enables the GKE metadata server and withholds the node's own service account from pods (Autopilot manages node pools directly, so there is no per-node-pool workload_metadata_config to set separately).",
+    "status": "COMPLETE",
+    "current": "modules/gitops-control-plane provisions a dedicated google_service_account (qip-<env>-control-plane-nodes) for GKE Autopilot nodes and narrows it to logging and monitoring. The account is set via cluster_autoscaling.auto_provisioning_defaults.service_account, and granted only roles/logging.logWriter and roles/monitoring.metricWriter. Autopilot enables the GKE metadata server and withholds the node's own service account from pods (Autopilot manages node pools directly, so there is no per-node-pool workload_metadata_config to set separately).",
     "evidence": [
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:159 enable_autopilot = true",
-      "test: the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network (backend/crates/tests/qip-acceptance/tests/gitops.rs:4051) — asserts enable_autopilot = true and workload_identity_config",
-      "infrastructure/terraform/modules/gitops-control-plane/main.tf — no cluster_autoscaling { auto_provisioning_defaults { service_account } }, so Autopilot nodes run as the Compute Engine default service account"
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:304-308 cluster_autoscaling { auto_provisioning_defaults { service_account = google_service_account.nodes.email } }",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:516-523 google_service_account.nodes",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:525-535 google_project_iam_member.nodes_log_writer and .nodes_metric_writer (roles/logging.logWriter, roles/monitoring.metricWriter)",
+      "test: the_control_plane_nodes_run_as_a_dedicated_service_account_limited_to_logging_and_monitoring (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:8094) — mutation verified: removing roles/monitoring.metricWriter fails the test correctly at the IAM member count assertion (8151) with 'found 1; members: [\"nodes_log_writer\"]'; restoring passes. Validates the node account resource exists, cluster references it via auto_provisioning_defaults, and exactly 2 IAM roles (logging.logWriter and monitoring.metricWriter) are granted.",
+      "test: the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network (backend/crates/tests/qip-acceptance/tests/gitops.rs:4051) — asserts enable_autopilot = true and workload_identity_config"
     ],
-    "gap": "The metadata-server half is met by Autopilot and asserted by a named test. The node-identity half is not met. The cluster names no node service account, so its nodes run as <project-number>-compute@developer.gserviceaccount.com. In a project with no organisation policy that account is auto-granted roles/editor, and nothing here narrows it to logging and monitoring. The test no_workload_runs_as_the_projects_default_compute_identity covers Cloud Run, the execution node and the image builder, but not this cluster. The cluster is also suspended (ADR 0093).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -381,11 +386,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network -- --exact passes (Autopilot asserted). Missing: a dedicated node service account holding only logging.logWriter / monitoring.metricWriter (and the Autopilot minimum), set via auto_provisioning_defaults, with a test.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_control_plane_nodes_run_as_a_dedicated_service_account_limited_to_logging_and_monitoring (result: ok); cargo test -p qip-acceptance --test gitops the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network -- --exact (result: ok)",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "Same cluster and suspension caveat as SEC-029. verify: status PARTIAL kept; tested false -> true, because the row said no test asserts Autopilot and gitops.rs:4073 does. Added the unmet half the row missed: no node service account is set, so nodes run as the default compute identity, whose roles are unnarrowed and unverified."
+    "notes": "Cluster remains suspended (ADR 0093); suspension does not affect Terraform plan validation. All three layers of paper-trading boundary (Terraform refusal, composition-root refusal, type system) remain intact."
   },
   {
     "id": "SEC-042",

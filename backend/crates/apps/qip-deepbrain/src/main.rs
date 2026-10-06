@@ -1459,7 +1459,10 @@ mod tests {
         // its own: this test is about the document, not the socket.
         let mut platform = platform_with(CentralConfig::default())?;
         let mut desk = qip_deepbrain::discovery::DiscoveryDesk::with_probe(
-            qip_deepbrain::discovery::DiscoveryConfig { every_cycles: 1 },
+            qip_deepbrain::discovery::DiscoveryConfig {
+                every_cycles: 1,
+                eligible_jurisdictions: std::collections::BTreeSet::from(["US".to_string()]),
+            },
             parsed,
             Box::new(qip_data_finder::probe::InMemoryProbe::new()),
         );

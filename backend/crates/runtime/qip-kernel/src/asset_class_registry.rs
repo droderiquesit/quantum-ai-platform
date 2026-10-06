@@ -533,6 +533,30 @@ impl AssetClassRegistry {
                 .collect(),
         )?);
 
+        // Prediction — event outcomes that settle to fixed payoffs at a
+        // specified future date. Priced on volatility surface like derivatives,
+        // instant settlement.
+        add(AssetClassRecord::new(
+            AssetClass::Prediction,
+            ValuationEngine::VolatilitySurface,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            listed_grid,
+            TradingCalendar::ExchangeSession,
+            MarginRegime::Isolated,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [
+                F::EventDriven,
+                F::Arbitrage,
+                F::StatisticalArbitrage,
+                F::Volatility,
+                F::ExecutionAlpha,
+            ]
+            .into_iter()
+            .collect(),
+            [AssetClass::Derivative].into_iter().collect(),
+        )?);
+
         // Structured product — §16.1: the volatility surface "Unlocks:
         // structured payoffs".
         add(AssetClassRecord::new(
@@ -594,6 +618,30 @@ impl AssetClassRegistry {
             false,
             TaxTreatment::RealProperty,
             [F::Carry].into_iter().collect(),
+            BTreeSet::new(),
+        )?);
+
+        // Prediction — Event-driven opportunity detection. Markets resolve to
+        // bitemporal outcomes; pricing is mark with method and confidence.
+        // Instant settlement upon resolution, 24/7 trading, families that react
+        // to events.
+        add(AssetClassRecord::new(
+            AssetClass::Prediction,
+            ValuationEngine::IlliquidValuation,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            GridRule::Negotiated,
+            TradingCalendar::Continuous,
+            MarginRegime::Isolated,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [
+                F::EventDriven,
+                F::StatisticalArbitrage,
+                F::Arbitrage,
+                F::ExecutionAlpha,
+            ]
+            .into_iter()
+            .collect(),
             BTreeSet::new(),
         )?);
 
@@ -692,13 +740,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses() -> Result<()> {
-        // The premise first: `AssetClass` really does have thirteen variants,
-        // so "nine registered" is a statement about coverage and not about a
+    fn the_shipped_registry_holds_ten_classes_and_names_the_four_it_refuses() -> Result<()> {
+        // The premise first: `AssetClass` really does have fourteen variants,
+        // so "ten registered" is a statement about coverage and not about a
         // list that happens to be the whole enum.
-        assert_eq!(AssetClass::ALL.len(), 13);
+        assert_eq!(AssetClass::ALL.len(), 14);
         let registry = AssetClassRegistry::shipped()?;
-        assert_eq!(registry.len(), 9);
+        assert_eq!(registry.len(), 10);
         // Named rather than counted: a count would pass if the four swapped
         // for four others, and which four are unsupported is the finding.
         assert_eq!(
@@ -779,6 +827,42 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn prediction_is_registered_as_a_distinct_class_from_derivative() -> Result<()> {
+        let registry = AssetClassRegistry::shipped()?;
+        // Prediction must be in the registry.
+        let prediction_record = registry
+            .get(AssetClass::Prediction)
+            .expect("Prediction is not registered");
+        // Derivative must also be in the registry.
+        let derivative_record = registry
+            .get(AssetClass::Derivative)
+            .expect("Derivative is not registered");
+        // They must be distinct records.
+        assert_ne!(
+            prediction_record, derivative_record,
+            "Prediction and Derivative must be distinct registry entries"
+        );
+        // Prediction must use VolatilitySurface like Derivative.
+        assert_eq!(
+            prediction_record.valuation_engine(),
+            ValuationEngine::VolatilitySurface,
+            "Prediction must use VolatilitySurface valuation engine"
+        );
+        // But must settle T+0 (instant) unlike Derivative's T+0 (which is the
+        // same, but confirm the settlement convention is set correctly).
+        match prediction_record.settlement() {
+            ClassSettlement::Exchange(SettlementConvention::T0) => {}
+            _ => panic!("Prediction must settle on T0 (instant)"),
+        }
+        // Prediction must admit EventDriven family.
+        assert!(
+            prediction_record.admits_family(AlphaFamily::EventDriven),
+            "Prediction must admit EventDriven family"
+        );
         Ok(())
     }
 }

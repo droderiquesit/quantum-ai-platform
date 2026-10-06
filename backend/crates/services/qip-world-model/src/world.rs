@@ -3,7 +3,7 @@
 
 use qip_ai::embedding::{Embedder, HashingEmbedder};
 use qip_ai::retrieval::{Document, RetrievalResult, SearchIndex};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Context, Duration, Timestamp};
 use qip_entity_resolution::entity::{Entity, EntityKind, EntityRecord};
 use qip_entity_resolution::resolver::Resolver;
@@ -344,6 +344,13 @@ impl WorldModel {
     /// absorbing it is the smaller failure.
     pub fn claim_causal(&mut self, edge: CausalEdge) -> Result<()> {
         edge.validate()?;
+        for evidence_id in &edge.evidence {
+            if evidence_id.starts_with("quantum:") {
+                return Err(Error::denied(
+                    "no quantum result is treated as causal proof",
+                ));
+            }
+        }
         let description = format!(
             "{} affects {} via {}",
             edge.cause,
@@ -617,6 +624,7 @@ impl WorldModel {
                             available_at: item.published_at,
                             confidence: item.evidential_weight(),
                             imputed: item.quality.is_imputed,
+                            sources: vec!["world_stream:news".to_string()],
                         },
                     );
                 }
@@ -673,6 +681,7 @@ impl WorldModel {
             available_at: update.provenance.ingestion_time,
             confidence: update.quality.score(),
             imputed: update.quality.is_imputed,
+            sources: vec!["world_stream:fundamental".to_string()],
         };
         self.features
             .record(&update.metric, &update.entity_id, value);
@@ -687,6 +696,7 @@ impl WorldModel {
                     available_at: update.provenance.ingestion_time,
                     confidence: update.quality.score(),
                     imputed: update.quality.is_imputed,
+                    sources: vec!["world_stream:fundamental".to_string()],
                 },
             );
             // The predicate that owns this comparison, rather than a second
@@ -735,6 +745,7 @@ impl WorldModel {
             available_at: observation.provenance.ingestion_time,
             confidence: observation.quality.score(),
             imputed: observation.quality.is_imputed,
+            sources: vec!["world_stream:macro".to_string()],
         };
         if self
             .features
@@ -757,6 +768,7 @@ impl WorldModel {
                     available_at: observation.provenance.ingestion_time,
                     confidence: observation.quality.score(),
                     imputed: observation.quality.is_imputed,
+                    sources: vec!["world_stream:macro".to_string()],
                 },
             );
             if surprise.abs() > 0.1 {
@@ -792,6 +804,7 @@ impl WorldModel {
             available_at: point.provenance.ingestion_time,
             confidence: point.quality.score(),
             imputed: point.quality.is_imputed,
+            sources: vec!["world_stream:alternative".to_string()],
         };
         match AltMetric::recognise(&point.dataset, &point.metric)? {
             Some(metric) => {

@@ -510,6 +510,27 @@ impl RegisteredSource {
         }
     }
 
+    /// Construct a RegisteredSource for testing.
+    pub fn for_test(
+        source: Source,
+        routing: Routing,
+        policy: SourcePolicy,
+        lineage: SourceLineage,
+        entitlements: Vec<Entitlement>,
+        registered_at: Timestamp,
+        category: Option<SourceCategory>,
+    ) -> Self {
+        Self::new(
+            source,
+            routing,
+            policy,
+            lineage,
+            entitlements,
+            registered_at,
+            category,
+        )
+    }
+
     pub fn source(&self) -> &Source {
         &self.source
     }

@@ -266,3 +266,46 @@ run "an_upper_case_country_code_is_admitted" {
     error_message = "a well-formed geographic allowlist produced no policy"
   }
 }
+
+# --- Certificate Manager -------------------------------------------------------
+
+run "the_edge_https_proxy_references_a_certificate_manager_certificate_map" {
+  command = plan
+
+  variables {
+    hostnames = ["console.example.com"]
+  }
+
+  # GCP-056: the platform switched from classic managed SSL certificates to
+  # Certificate Manager. The proxy must reference a certificate map, not a
+  # classic managed certificate. The certificate map is the level of
+  # indirection that allows certificate replacement without the proxy
+  # becoming unable to resolve the certificate's ID.
+  assert {
+    condition     = length(google_certificate_manager_certificate_map.edge) == 1
+    error_message = "the edge has no Certificate Manager certificate map"
+  }
+
+  assert {
+    condition     = length(google_certificate_manager_certificate.edge) == 1
+    error_message = "the edge has no Certificate Manager certificate"
+  }
+
+  assert {
+    condition     = length(google_certificate_manager_certificate_map_entry.edge) == 1
+    error_message = "the edge has no certificate map entry binding the certificate to the map"
+  }
+
+  # The critical assertion: the proxy must reference the certificate map, not
+  # a classic managed certificate. A proxy that references a classic managed
+  # certificate is a proxy the refusal GCP-056 names has not yet reached.
+  assert {
+    condition     = google_compute_target_https_proxy.edge[0].certificate_map != null
+    error_message = "the edge's HTTPS proxy does not reference a Certificate Manager certificate map"
+  }
+
+  assert {
+    condition     = google_compute_target_https_proxy.edge[0].certificate_map == google_certificate_manager_certificate_map.edge[0].id
+    error_message = "the edge's HTTPS proxy references a different certificate map than the one the module created"
+  }
+}

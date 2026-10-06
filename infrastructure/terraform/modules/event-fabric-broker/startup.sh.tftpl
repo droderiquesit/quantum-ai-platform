@@ -1,0 +1,50 @@
+#!/bin/bash
+# Event Fabric Broker startup script.
+# ADR 0100 §1: The broker runs on dedicated GCE VMs with no external address.
+# This script is rendered by Terraform and should refuse to start if preconditions fail.
+
+set -e
+set -u
+
+trap 'echo "ERROR: Startup failed"; exit 1' ERR
+
+# Configuration passed from Terraform as base64-encoded JSON.
+export QIP_EVENTS_CONFIG="${qip_events_config}"
+export QIP_FABRICD_CONFIG="${qip_fabricd_config}"
+export QIP_STORAGE_JOURNAL_DEVICE="${qip_storage_journal_device}"
+export QIP_BROKER_NAME="${broker_instance_name}"
+
+# Verify no external IP is assigned (FABRIC-089).
+EXTERNAL_IP=$(curl -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null || echo "")
+
+if [ ! -z "$EXTERNAL_IP" ] && [ "$EXTERNAL_IP" != "0.0.0.0" ]; then
+  echo "ERROR: Broker has external IP: $EXTERNAL_IP (FABRIC-089 violation)"
+  exit 1
+fi
+
+INTERNAL_IP=$(curl -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip)
+
+echo "Broker starting on internal address: $INTERNAL_IP"
+
+# Journal device validation.
+if [ ! -b "$QIP_STORAGE_JOURNAL_DEVICE" ]; then
+  echo "WARNING: Journal device $QIP_STORAGE_JOURNAL_DEVICE not found (may appear after systemd-udevd)"
+fi
+
+# Create journal mount point and mount filesystem.
+mkdir -p /var/lib/qip/journal
+chmod 700 /var/lib/qip/journal
+
+# Format and mount journal device if needed (with caution).
+if [ ! -f /var/lib/qip/.journal_formatted ]; then
+  echo "Initializing journal device $QIP_STORAGE_JOURNAL_DEVICE"
+  mkfs.ext4 -F "$QIP_STORAGE_JOURNAL_DEVICE" > /dev/null 2>&1 || true
+  touch /var/lib/qip/.journal_formatted
+fi
+
+mount "$QIP_STORAGE_JOURNAL_DEVICE" /var/lib/qip/journal 2>/dev/null || true
+
+# System is ready. The qip-fabricd binary will be started by a systemd unit.
+echo "Event fabric broker preconditions satisfied; waiting for binary startup"

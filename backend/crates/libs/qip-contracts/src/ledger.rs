@@ -23,8 +23,8 @@
 //! the accessors hand out shared references; a correction is a new event that
 //! references the original, which is the writer's business, not this type's.
 
-use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -54,13 +54,14 @@ pub enum Direction {
 
 /// An account in the ledger, by the subledger it belongs to.
 ///
-/// Three kinds and no more: the trading subledger holds positions and cash
+/// Four kinds and no more: the trading subledger holds positions and cash
 /// per cell and strategy (LEDGER-007), the venue account is the counterparty
-/// a fill's two legs are exchanged with, and the fees subledger holds what a
-/// venue charged (LEDGER-011). A structured enum rather than a string so a
-/// reader cannot mistake one kind for another by a prefix; [`fmt::Display`]
-/// renders the `kind:name` text form, which is unambiguous because
-/// [`LedgerEvent::new`] refuses a `:` or `/` inside any name.
+/// a fill's two legs are exchanged with, the fees subledger holds what a
+/// venue charged (LEDGER-011), and the accruals subledger holds amounts earned
+/// or owed over time before cash moves (LEDGER-012). A structured enum rather
+/// than a string so a reader cannot mistake one kind for another by a prefix;
+/// [`fmt::Display`] renders the `kind:name` text form, which is unambiguous
+/// because [`LedgerEvent::new`] refuses a `:` or `/` inside any name.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Account {
@@ -70,6 +71,8 @@ pub enum Account {
     Venue { venue: String },
     /// `fees:<venue>` — what the venue reported charging, and nothing else.
     Fees { venue: String },
+    /// `accrual:<accrual_type>` — amounts earned or owed over time (interest, funding, etc).
+    Accrual { accrual_type: String },
 }
 
 impl Account {
@@ -77,6 +80,7 @@ impl Account {
         match self {
             Self::Trading { cell, strategy } => vec![cell, strategy],
             Self::Venue { venue } | Self::Fees { venue } => vec![venue],
+            Self::Accrual { accrual_type } => vec![accrual_type],
         }
     }
 }
@@ -87,6 +91,7 @@ impl fmt::Display for Account {
             Self::Trading { cell, strategy } => write!(f, "trading:{cell}/{strategy}"),
             Self::Venue { venue } => write!(f, "venue:{venue}"),
             Self::Fees { venue } => write!(f, "fees:{venue}"),
+            Self::Accrual { accrual_type } => write!(f, "accrual:{accrual_type}"),
         }
     }
 }
@@ -328,6 +333,31 @@ impl LedgerEvent {
     pub fn postings(&self) -> &[Posting] {
         &self.postings
     }
+}
+
+/// An accrual entry: an amount earned or owed over time, accruing on a schedule
+/// and cleared by a settlement event (LEDGER-012).
+///
+/// An accrual grows as time passes (daily interest on a position, funding costs,
+/// etc.) and is posted to the ledger both as it accrues (increasing the accrual
+/// account balance) and as it is cleared (when a cash settlement removes the
+/// accrued amount).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccrualEntry {
+    /// The type of accrual (e.g., "interest", "funding").
+    pub accrual_type: String,
+    /// The account that holds the accrued amount.
+    pub account: Account,
+    /// The unit (currency) the accrual is in.
+    pub unit: String,
+    /// The amount accrued so far.
+    pub amount: Decimal,
+    /// When the accrual started.
+    pub from: Timestamp,
+    /// When the accrual ends or is expected to clear.
+    pub to: Timestamp,
+    /// The observed fact that caused this accrual (not updated once set).
+    pub source: SourceEvent,
 }
 
 #[cfg(test)]

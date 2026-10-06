@@ -218,16 +218,17 @@
   {
     "id": "EXPAND-009",
     "status": "PARTIAL",
-    "current": "No RegionalEpisode/ReflexDelta type exists, but each reflex cell does record its local episodes as typed, per-event, hash-chained records: qip_edge::journal::Decision (backend/crates/edge/qip-edge/src/journal.rs:19-375) has typed variants for fills (Filled: order, venue, object, quantity, price, simulated), feed anomalies (GapDetected), failures (Refused{gate,reason}, ReconciliationBreak, HaltChanged, VenueReconciled), expiries and mass cancels, written by Cell::work on the hot path without I/O and drained by the journal Mirror (qip-edge-node/src/mirror.rs). Aggregate CellMetrics counters sit beside this, not instead of it. What is absent: typed microstructure, venue-behaviour, latency and slippage episodes, and a per-record cell/region identity (the journal is per cell; records do not carry region).",
+    "current": "Each reflex cell does record its local episodes as typed, per-event, hash-chained records: qip_edge::journal::Decision (backend/crates/edge/qip-edge/src/journal.rs:19-375) has typed variants for fills (Filled: order, venue, object, quantity, price, simulated), feed anomalies (GapDetected), failures (Refused{gate,reason}, ReconciliationBreak, HaltChanged, VenueReconciled), expiries and mass cancels, written by Cell::work on the hot path without I/O and drained by the journal Mirror (qip-edge-node/src/mirror.rs). Aggregate CellMetrics counters sit beside this, not instead of it. What is absent: typed microstructure, venue-behaviour, latency and slippage episodes, and a per-record cell/region identity (the journal is per cell; records do not carry region). Since 2026-10-06 (PR #39) the cell also keeps typed qip_contracts::regional_episode::RegionalEpisode records naming its cell and region (Cell::episodes, backend/crates/edge/qip-edge/src/cell.rs): Anomaly for an execution report it cannot book, Failure once per reconciliation break, LatencySpike for an order completing more than LATENCY_SPIKE_THRESHOLD (a fixed 100 ms house default) after release, and FillSlippage for a fill away from its limit, signed by side. They are held in memory, bounded at MAX_RETAINED_EPISODES (128), and are not journaled.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/journal.rs:1-40 (hash-chained local decision record; no I/O on the hot path)",
       "backend/crates/edge/qip-edge/tests/fills.rs:253 an_order_the_venue_accepted_is_not_a_fill_until_the_order_entry_channel_reports_one (asserts journaled Decision::Filled)",
       "backend/crates/edge/qip-edge/tests/cell.rs:361 the_journal_chain_catches_an_edited_decision",
       "backend/crates/apps/qip-edge-node/tests/mirror.rs:64 a_shipped_journal_is_readable_after_the_process_that_wrote_it_is_gone",
       "backend/crates/apps/qip-edge-node/src/pass.rs:203 (Cell::work called from the edge-node composition root)",
-      "rg -l 'RegionalEpisode|ReflexDelta' backend/crates -> no matches (re-run 2026-09-25)"
+      "backend/crates/edge/qip-edge/tests/regional_episodes.rs (7 tests driving execution reports through Cell::confirm_execution_reports; each recording site mutation-verified 2026-10-06)",
+      "rg -l 'ReflexDelta' backend/crates --type rust -> only a doc comment saying no such type exists (2026-10-06)"
     ],
-    "gap": "No RegionalEpisode/ReflexDelta artifact; no typed latency, slippage, microstructure or venue-behaviour episode; journal records do not name the region; and qip-edge-node is not deployed anywhere (execution_nodes = {}).",
+    "gap": "No ReflexDelta (nothing in the cell decides anything from an episode yet); no Microstructure or VenueBehaviour episode is recorded though both kinds are named; episodes are in memory only and not journaled, so they are lost when the cell restarts, which is the failure the row's rationale names; the latency threshold is a fixed default rather than a per-venue expectation; and qip-edge-node is not deployed anywhere (execution_nodes = {}).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -235,11 +236,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test fills --test cell; cargo test -p qip-edge-node --test mirror (typed local journal of fills/anomalies/failures). Needed: replay a session with fills, slippage, a latency spike, an anomaly and a failure and assert one typed episode per category naming cell and region.",
+    "verification": "cargo test -p qip-edge --test regional_episodes --test fills --test cell; cargo test -p qip-edge-node --test mirror. regional_episodes replays fills, slippage (both signs), a latency spike, an anomaly and a failure through one cell and asserts the typed episodes per category, naming cell and region. Still needed: microstructure and venue-behaviour episodes, ReflexDelta, and episodes surviving a restart.",
     "work_item": "E04-reflex-episode-recording",
     "tier": "T2",
     "size": "M",
-    "notes": "qip-edge-node itself is not deployable today: execution_nodes = {} in every environment's tfvars, so even once built this would run only under QIP_VENUE_FEED=simulated in tests until a node is provisioned. verify: upgraded MISSING -> PARTIAL. 'current' said only aggregate counters and gauges are recorded; the cell's hash-chained journal (journal.rs Decision) records each fill, gap, refusal, halt and reconciliation break as a typed per-event record, tested in fills.rs/cell.rs and mirrored by qip-edge-node. deployable stays false."
+    "notes": "qip-edge-node itself is not deployable today: execution_nodes = {} in every environment's tfvars, so even once built this would run only under QIP_VENUE_FEED=simulated in tests until a node is provisioned. verify: upgraded MISSING -> PARTIAL. 'current' said only aggregate counters and gauges are recorded; the cell's hash-chained journal (journal.rs Decision) records each fill, gap, refusal, halt and reconciliation break as a typed per-event record, tested in fills.rs/cell.rs and mirrored by qip-edge-node. deployable stays false. 2026-10-06 (PR #39): RegionalEpisode recorded at four seams in Cell (anomaly, failure, latency spike, signed fill slippage); stays PARTIAL - two kinds unrecorded, no ReflexDelta, not journaled."
   },
   {
     "id": "EXPAND-010",
@@ -422,14 +423,17 @@
   },
   {
     "id": "EXPAND-017",
-    "status": "MISSING",
-    "current": "No TickCampaign type or residual-threshold trigger exists. qip-kernel's central plane computes a diagnostic slippage/fill-error histogram (qip_venue_fill_error_bps, per the observability domain notes) but nothing reads it to spawn a research campaign, and no venue-discovery event triggers one either.",
+    "status": "PARTIAL",
+    "current": "qip_expansion::campaigns (backend/crates/services/qip-expansion/src/campaigns.rs) defines TickCampaign, a TickCampaignTrigger enum naming all seven triggers from the statement, and TickCampaignDetector, which opens an UnexplainedSlippage campaign when a residual's magnitude strictly exceeds its threshold (default 0.01, a house default: the blueprint does not define 'grow') and a NewVenue campaign the first time a venue is seen, each scoped to the instruments and venue supplied. Campaign ids are issued in sequence, so the same observations replayed through a fresh detector name the same campaigns. Only the slippage and new-venue triggers have detection logic; the other five variants are named but nothing raises them. Nothing in the tree feeds the detector: the central plane's qip_venue_fill_error_bps histogram is still read by nothing that decides.",
     "evidence": [
-      "rg -l 'TickCampaign' backend/crates -> no matches (2026-09-25)"
+      "backend/crates/services/qip-expansion/src/campaigns.rs (TickCampaignDetector::observe_slippage, ::observe_venue)",
+      "cargo test -p qip-expansion --lib campaigns -- a_window_where_slippage_grows_and_a_venue_appears_opens_one_scoped_campaign_for_each (replays 0.5% -> 0.9% -> 2% slippage then an unseen venue; asserts exactly one scoped campaign for each)",
+      "cargo test -p qip-expansion --lib campaigns -- replaying_the_same_window_through_a_fresh_detector_opens_identical_campaigns",
+      "rg -n 'TickCampaignDetector' backend/crates --glob '!qip-expansion/**' -> no matches (2026-10-06): no production caller"
     ],
-    "gap": "No campaign type and no residual-growth or new-venue trigger exist.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Five of the seven residual triggers (fill/queue prediction error, abnormal lead/lag, world-event reaction, paper-vs-replay divergence) have no detector. No production caller: nothing feeds qip_venue_fill_error_bps or venue discovery into the detector, and an opened campaign schedules no replay or retraining work (it is not yet turned into a curriculum item).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -437,11 +441,11 @@
       "EXPAND-016"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: replay a window in which slippage residuals grow past a threshold and a previously unseen venue appears, and assert a TickCampaign is created for each, scoped to the affected instruments/venue.",
+    "verification": "cargo test -p qip-expansion --lib campaigns (6 tests, each mutation-verified 2026-10-06). The row's replay check is met at library level by a_window_where_slippage_grows_and_a_venue_appears_opens_one_scoped_campaign_for_each; it is not met against a recorded window from a running process, because none feeds the detector.",
     "work_item": "E06-tick-campaign-triggers",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-06: MISSING -> PARTIAL (PR #38). Slippage and new-venue triggers implemented and tested in qip-expansion; five triggers undetected and no production caller, so integrated stays false."
   },
   {
     "id": "EXPAND-018",

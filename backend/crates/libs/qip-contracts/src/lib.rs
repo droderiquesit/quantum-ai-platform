@@ -36,6 +36,7 @@ pub mod expansion;
 pub mod fabric_envelope;
 pub mod feasibility;
 pub mod feature;
+pub mod federation;
 pub mod gate;
 pub mod governance;
 pub mod intent;
@@ -45,9 +46,12 @@ pub mod market_event;
 pub mod market_state;
 pub mod message;
 pub mod policy;
+pub mod quantum;
 pub mod reflex;
 pub mod reflex_journal;
+pub mod regional_episode;
 pub mod replay;
+pub mod routing;
 pub mod schema;
 pub mod signal;
 pub mod stream_policy;
@@ -59,15 +63,24 @@ pub use capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
 pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
 pub use fabric_envelope::{AuthContext, FabricEnvelope, QoSClass};
-pub use feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
+pub use feature::{
+    Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,
+    KnowableAt, Revision,
+};
 pub use gate::{GateOutcome, GateStage, Promotion};
 pub use governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
 pub use intent::{
     Contributor, Intent, NetIntent, NettingPolicy, Representation, net, netting_ratio,
 };
 pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
-pub use policy::{PolicyItem, PolicyPayload, Slot};
+pub use policy::{
+    BeliefState, ModelPack, PolicyFrame, PolicyItem, PolicyPayload, RegimeChange, RiskGate, Slot,
+    UncertaintyType,
+};
+pub use quantum::{ChosenPath, DecisionRequest, RoutingDecision, SolverKind, SolverResult};
 pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};
+pub use regional_episode::{EpisodeKind, RegionalEpisode};
+pub use routing::{QuantumRouter, RoutingConfig};
 pub use schema::{CompatibilityPolicy, SchemaDefinition, SchemaRegistry};
 pub use signal::{Conviction, Signal, SignalKind, StrategyId};
 pub use stream_policy::{AckPolicy, OverloadBehavior, StreamPolicy};

@@ -429,19 +429,34 @@ fn a_target_that_is_not_managed_looks_up_nothing_a_managed_target_needs() {
         "only the target and root were looked up"
     );
 
-    // And the same environment with the target switched is refused: the
-    // premise that the variables above really would be refused when read.
+    // And the same environment with the target switched to a managed one is
+    // refused when credentials conflict: the premise that those variables
+    // really would be refused when read. Use CloudStorage instead of Memorystore
+    // because Memorystore is now refused at from_values() level unconditionally.
     let mut switched = vars.clone();
-    switched.insert(TARGET_VARIABLE.to_string(), "memorystore".to_string());
+    switched.insert(TARGET_VARIABLE.to_string(), "cloud-storage".to_string());
     switched.insert(
-        qip_storage::redis::ADDRESS_VARIABLE.to_string(),
-        "10.0.0.5".to_string(),
+        qip_storage::gcp::ENDPOINT_VARIABLE.to_string(),
+        "http://proxy.internal:8080".to_string(),
+    );
+    switched.insert(
+        qip_storage::gcp::BUCKET_VARIABLE.to_string(),
+        "archive".to_string(),
+    );
+    switched.insert(
+        qip_storage::gcp::TOKEN_VARIABLE.to_string(),
+        "ya29.a-token".to_string(),
+    );
+    switched.insert(
+        "QIP_GCP_ACCESS_TOKEN_FILE".to_string(),
+        "/nonexistent".to_string(),
     );
     let error = StorageSettings::from_env(&|name| switched.get(name).cloned())
-        .expect_err("a memorystore deployment with the AUTH string set twice was accepted");
+        .expect_err("a cloud-storage deployment with the access token set twice was accepted");
     assert!(
-        error.message().contains("QIP_MEMORYSTORE_AUTH_FILE"),
-        "{error}"
+        error.message().contains("QIP_GCP_ACCESS_TOKEN_FILE"),
+        "{}",
+        error.message()
     );
 }
 
@@ -518,20 +533,29 @@ fn the_resolved_settings_never_render_a_credential() {
 }
 
 #[test]
-fn a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted() {
-    // Premise first: the cache target resolves, so the refusal below is the
-    // guard and not a parse failure that would pass for one.
-    let cache = StorageSettings::from_values(Some("memorystore"), None)
-        .expect("memorystore resolves without a root");
-    let refusal = cache
-        .require_authoritative()
-        .expect_err("a persistence-disabled cache must not hold the only copy");
+fn memorystore_is_refused_as_a_storage_target_at_configuration_time() {
+    // Memorystore is a non-persistent in-memory cache. The event log, journals,
+    // spool and trial book must survive a restart; a non-persistent Redis cannot
+    // hold them. The refusal is at from_values() time, not later, so a process
+    // configured with QIP_STORAGE_TARGET=memorystore stops immediately rather
+    // than starting up and discovering the problem on the first write.
+    let refusal = StorageSettings::from_values(Some("memorystore"), None)
+        .expect_err("memorystore must not be accepted as a storage target");
+    assert_eq!(refusal.code(), "invalid", "{refusal}");
     assert!(
         refusal.message().contains("memorystore"),
-        "{}",
+        "the error names the rejected target: {}",
         refusal.message()
     );
+    assert!(
+        refusal.message().contains("event-log archive") || refusal.message().contains("journals"),
+        "the error names what would be lost: {}",
+        refusal.message()
+    );
+}
 
+#[test]
+fn every_durable_target_is_admitted_by_require_authoritative() {
     let dir = temp_dir("authoritative");
     let root = dir.display().to_string();
     for target in ["engine", "file"] {

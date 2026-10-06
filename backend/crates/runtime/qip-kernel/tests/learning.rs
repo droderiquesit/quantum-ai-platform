@@ -1683,3 +1683,69 @@ fn a_resolved_claim_is_scored_against_the_regime_it_resolved_in() -> Result<()> 
     );
     Ok(())
 }
+
+#[test]
+fn counterfactual_outcomes_are_journaled_for_reproducibility() -> Result<()> {
+    // AMBIENT-012: Individual counterfactual outcomes (DeclinedScore and
+    // FillScore records) are journaled so they can be reproduced from the
+    // event log. The journal captures the outcomes known at each cycle,
+    // bounded by a 256-entry history.
+    //
+    // Mutation verified: removing the line that populates fill_outcomes in the
+    // journal causes this test to fail with the assertion that fill_outcomes is
+    // not empty, confirming the implementation is necessary.
+    let mut platform = platform()?;
+    let tape = quiet_bars("AAA", 100);
+    platform.observe(tape);
+
+    // Set up a filled order so there are fill scores to journal
+    const FILLS: usize = 3;
+    for n in 0..FILLS {
+        fill_one(&mut platform, &format!("prop-filled-{n}"), start())?;
+    }
+    assert_eq!(platform.filled_awaiting_score(), FILLS);
+
+    // Run a cycle to score the fills and journal the outcomes
+    let scoring_time = start().saturating_add(Duration::from_days(3));
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(scoring_time);
+
+    // Access the journal and verify that fill_outcomes are present
+    let entries = platform.journal_entries()?;
+    assert!(
+        !entries.is_empty(),
+        "at least one cycle should be journaled"
+    );
+
+    // The journal entry should contain fill_outcomes
+    let journal = &entries.last().expect("last entry exists").counterfactuals;
+    assert!(
+        journal.is_some(),
+        "the cycle with fill scores should journal counterfactual outcomes"
+    );
+
+    let counterfactual = journal.as_ref().expect("journal exists");
+    assert!(
+        !counterfactual.fill_outcomes.is_empty(),
+        "fill_outcomes should be populated when fills are scored"
+    );
+    assert_eq!(
+        counterfactual.fill_outcomes.len(),
+        FILLS,
+        "all fill scores should be journaled"
+    );
+
+    // Verify each fill outcome record has the expected structure
+    for outcome in &counterfactual.fill_outcomes {
+        assert!(
+            !outcome.order_id.as_str().is_empty(),
+            "each fill outcome must have an order_id"
+        );
+        assert!(
+            !outcome.venue.is_empty(),
+            "each fill outcome must have a venue"
+        );
+    }
+
+    Ok(())
+}

@@ -3448,3 +3448,75 @@ fn every_subnet_keeps_flow_logs_and_every_load_balancer_backend_logs_its_request
          reading the modules that declare them"
     );
 }
+
+// --- API-009: service inventory for Cloud Run workloads ------
+
+#[test]
+fn service_inventory_records_statelessness_role_and_cold_start_budgets() {
+    // Blueprint API-009 states: "The service inventory records, for every
+    // Cloud Run service, that it is stateless, what role it serves (webhook,
+    // control API or other) and the cold-start/latency budget it was accepted
+    // against."
+    //
+    // This test verifies the inventory document exists at the expected path
+    // and contains the required sections for each Cloud Run service:
+    // statelessness classification, role description, and cold-start/latency budgets.
+
+    let inventory_content = read("docs/api-service-inventory.md");
+
+    // Verify the three Cloud Run services are documented
+    let required_services = vec!["qip-api", "qip-fastbrain", "qip-deepbrain"];
+    for service in required_services {
+        assert!(
+            inventory_content.contains(service),
+            "Service '{}' not found in inventory; required for API-009",
+            service
+        );
+    }
+
+    // Verify each section has the required fields: Role, Statelessness,
+    // Cold-Start Budget, Latency Budget
+    let required_fields = vec![
+        "Role",
+        "Statelessness",
+        "Cold-Start Budget",
+        "Latency Budget",
+    ];
+    for field in required_fields {
+        assert!(
+            inventory_content.contains(field),
+            "Field '{}' missing from inventory; required for API-009 verification",
+            field
+        );
+    }
+
+    // Verify the inventory has a verification section confirming API-009 compliance
+    assert!(
+        inventory_content.contains("API-009") && inventory_content.contains("Compliance"),
+        "Inventory missing verification section for API-009"
+    );
+}
+
+// --- API-010: venue execution never runs on Cloud Run ------
+
+#[test]
+fn no_cloud_run_workload_is_qip_edge_node() {
+    // Blueprint API-010 states "No venue-execution path is placed on Cloud
+    // Run." In this platform, venue execution means the simulated venue
+    // (qip-edge-node's role on the execution-node). The verification is:
+    // "No Cloud Run service in the plan runs the edge-node/Reflex execution
+    // binary. Venue execution resolves only to the execution-node Compute
+    // Engine module."
+    //
+    // This test asserts that the Cloud Run catalogue does not list
+    // qip-edge-node. The execution-node's own reference to qip-edge-node is
+    // held separately, in Terraform modules and infrastructure tests.
+    let workloads = catalogue_workloads();
+    for (name, _) in workloads {
+        assert!(
+            name != "qip-edge-node",
+            "qip-edge-node is in the Cloud Run catalogue, but API-010 forbids venue execution \
+             on Cloud Run; qip-edge-node runs only on the execution-node Compute Engine module"
+        );
+    }
+}

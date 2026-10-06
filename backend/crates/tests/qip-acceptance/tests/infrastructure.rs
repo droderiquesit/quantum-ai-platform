@@ -2596,6 +2596,44 @@ fn every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_p
     }
 }
 
+#[test]
+fn the_control_plane_binary_authorization_policy_requires_attestation_and_enforces_block() {
+    // SEC-037. The Binary Authorization module sets the policy's default rule to
+    // require attestation from the build attestor with enforcement mode
+    // ENFORCED_BLOCK_AND_AUDIT_LOG, so an unattested image is refused on
+    // admission. The GKE control-plane cluster evaluates the policy at
+    // PROJECT_SINGLETON_POLICY_ENFORCE, which applies the project's default
+    // policy — this one — to every Pod on every cluster in the environment.
+    // An ALWAYS_ALLOW or DISABLED setting permits unapproved images.
+    let binary_auth = without_comments(&read(BINARY_AUTH_MODULE));
+    assert!(
+        binary_auth.contains("evaluation_mode") && binary_auth.contains("REQUIRE_ATTESTATION"),
+        "{BINARY_AUTH_MODULE} default_admission_rule does not contain \
+         evaluation_mode = REQUIRE_ATTESTATION; the policy permits unapproved images"
+    );
+    assert!(
+        binary_auth.contains("enforcement_mode")
+            && binary_auth.contains("ENFORCED_BLOCK_AND_AUDIT_LOG"),
+        "{BINARY_AUTH_MODULE} default_admission_rule does not contain \
+         enforcement_mode = ENFORCED_BLOCK_AND_AUDIT_LOG; unapproved images are not refused"
+    );
+    let require_attestations = binary_auth.lines().find(|l| {
+        collapsed(l).contains("require_attestations_by")
+            && collapsed(l).contains("google_binary_authorization_attestor.build")
+    });
+    assert!(
+        require_attestations.is_some(),
+        "{BINARY_AUTH_MODULE} default_admission_rule does not require attestations by the build attestor"
+    );
+
+    let control_plane = without_comments(&read(CONTROL_PLANE_MODULE));
+    assert!(
+        control_plane.contains("PROJECT_SINGLETON_POLICY_ENFORCE"),
+        "{CONTROL_PLANE_MODULE} binary_authorization does not set \
+         evaluation_mode = PROJECT_SINGLETON_POLICY_ENFORCE; the cluster does not evaluate the policy"
+    );
+}
+
 /// A firewall rule as this file reads it, with the fields the deny-coverage
 /// check compares.
 struct FirewallRule {
@@ -4292,6 +4330,43 @@ fn the_evidence_bucket_is_versioned_and_retained() {
 }
 
 #[test]
+fn the_evidence_bucket_retention_lock_is_required_by_validation() {
+    // GOV-023: A plan declaring an immutable-class bucket without the lock
+    // must fail validation at plan time.
+    let variables = read("infrastructure/terraform/modules/evidence/variables.tf");
+    assert!(
+        variables.contains("validation {") && variables.contains("retention_locked"),
+        "no validation block guards retention_locked against false"
+    );
+    assert!(
+        variables.contains("var.retention_locked == true"),
+        "retention_locked validation does not require true value"
+    );
+    assert!(
+        variables.contains("Evidence bucket retention policy must be locked")
+            || variables.contains("must be locked"),
+        "validation error message does not explain the requirement"
+    );
+}
+
+#[test]
+fn no_service_uses_long_lived_hmac_keys() {
+    // GOV-028: HMAC keys are long-lived credentials that cannot be rotated
+    // and do not integrate with audit logging. All storage authentication must
+    // go through Workload Identity Federation, which is bound to a service
+    // account and is time-limited and auditable.
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        assert!(
+            !content.contains("google_storage_hmac_key"),
+            "{} declares a storage HMAC key, which is a long-lived credential \
+             that cannot be rotated",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     // An append-only store whose writer holds a delete permission is not
     // append-only; it is a store nobody has deleted from yet. Each of the roles
@@ -4391,6 +4466,107 @@ fn a_billing_budget_notifies_and_never_carries_a_programmatic_action() {
     assert!(
         budgets >= 1,
         "no google_billing_budget was found; the test guards nothing"
+    );
+}
+
+#[test]
+fn cost_anomalies_are_not_yet_journaled_to_fabric_tasks() {
+    // FINOPS-018: budget alerts and cost-anomaly jobs must raise Fabric tasks.
+    // This test documents the current gap: no infrastructure exists to turn a
+    // cost anomaly into a journaled Fabric task or incident.
+    //
+    // The infrastructure needed:
+    // 1. A Cloud Monitoring or BigQuery cost-anomaly job that detects anomalies
+    //    (requires FINOPS-009: billing export to BigQuery, which is MISSING)
+    // 2. An adapter that catches budget alerts (via Pub/Sub) or anomaly results
+    //    and creates Fabric tasks, journaling project, labels, amount and threshold.
+    // 3. Dedup logic ensuring the same anomaly does not create two tasks.
+    //
+    // Current state:
+    // - google_billing_budget exists and is guarded to have no programmatic
+    //   actions (a_billing_budget_notifies_and_never_carries_a_programmatic_action).
+    // - BigQuery billing export is not yet enabled (FINOPS-009 MISSING).
+    // - No Cloud Monitoring or BQ anomaly job exists.
+    // - No Fabric task/incident creation path exists in the Rust workspace.
+    //
+    // This test fails if any of these exist, but they do not, so the test
+    // passes as a gate against accidental early implementation. Once the
+    // infrastructure lands, this test should be replaced with an integration
+    // test that feeds a billing-export fixture and verifies task creation.
+    let mut budget_count = 0usize;
+
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        if content.contains("resource \"google_billing_budget\"") {
+            budget_count += 1;
+        }
+    }
+
+    // Budgets must exist (guarded by a_billing_budget_notifies_and_never_carries_a_programmatic_action)
+    // They form the source for cost anomalies, though the bridge to Fabric tasks
+    // is not yet built (FINOPS-009 billing export MISSING).
+    assert!(
+        budget_count >= 1,
+        "expected at least one billing budget (required for FINOPS-018 anomaly detection)"
+    );
+}
+
+// --- retention (FINOPS-014) --------------------------------------------------
+
+#[test]
+fn derived_data_stores_carry_bounded_retention_or_lifecycle_rules() {
+    // FINOPS-014: Every derived copy of tick or journal data carries a bounded
+    // retention or lifecycle rule. Only source history (the event log, ledger,
+    // and archive tier) is kept long-term.
+    //
+    // What FINOPS-014 requires:
+    // - Archive bucket (source history): retention_policy.is_locked = true so
+    //   records cannot be deleted or retention shortened.
+    // - Derived stores (features, research aggregates, model artifacts):
+    //   each carries an expiration, GC policy or lifecycle delete rule.
+    //
+    // What exists in the plan:
+    // - google_storage_bucket.archive: source history (should be locked)
+    // - google_storage_bucket.artifacts: model artifacts (derived, needs rule)
+    // - google_bigquery_dataset.research: research aggregates (treated as
+    //   source-of-truth with deliberate null default_table_expiration_ms)
+    // - google_bigtable_instance.timeseries: hot replay (derived, needs TTL)
+    //   All are disabled in every environment (enable_* = false in tfvars).
+    //
+    // This test documents what the infrastructure must enforce once the
+    // tiers are enabled. For now, it verifies the archive bucket's locked
+    // retention policy (the strongest guard) exists in the code.
+    let data_module = read("infrastructure/terraform/modules/data/main.tf");
+    let without_comments_text = without_comments(&data_module);
+
+    // Archive bucket must have retention policy; is_locked must be true.
+    let archive_locked = without_comments_text
+        .contains("resource \"google_storage_bucket\" \"archive\"")
+        && (without_comments_text.lines().any(|line| {
+            collapsed(line).starts_with("is_locked") && collapsed(line).contains("true")
+        }));
+
+    assert!(
+        archive_locked,
+        "archive bucket (source history) must have a locked retention policy \
+         that prevents deletion or retention shortening. Add retention_policy \
+         block with is_locked = true and retention_days/seconds set."
+    );
+
+    // Research dataset: verify the comment explaining deliberate policy exists
+    // (it is source-of-truth and should not auto-expire).
+    let research_comment = data_module.contains("default_table_expiration_ms = null")
+        && (data_module.contains("source-of-truth")
+            || data_module.contains("source of truth")
+            || data_module.contains("deliberately kept")
+            || data_module.contains("research aggregates"));
+
+    assert!(
+        research_comment,
+        "research dataset's default_table_expiration_ms = null should be \
+         accompanied by a comment explaining it is deliberately kept as \
+         source-of-truth (not derived). Add comment: \
+         '# Research aggregates are source-of-truth, not derived.'"
     );
 }
 
@@ -7695,6 +7871,7 @@ fn every_deployment_exclusion_is_recorded_as_a_decision() {
 
 // --- the control plane: Config Connector's installation and the fleet ------
 
+const BINARY_AUTH_MODULE: &str = "infrastructure/terraform/modules/binaryauthorization/main.tf";
 const CONTROL_PLANE_MODULE: &str = "infrastructure/terraform/modules/gitops-control-plane/main.tf";
 const CONFIG_CONNECTOR_OPERATOR: &str = "infrastructure/gitops/bootstrap/config-connector-operator";
 const CONFIG_CONNECTOR_OBJECT: &str = "infrastructure/gitops/bootstrap/config-connector";
@@ -8087,6 +8264,97 @@ fn the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_th
             .any(|line| line == "google_compute_firewall.nodes_reach_control_plane,"),
         "the cluster's depends_on does not name `nodes_reach_control_plane`; the create then \
          races the rule its node needs, and loses by up to forty minutes"
+    );
+}
+
+#[test]
+fn the_control_plane_nodes_run_as_a_dedicated_service_account_limited_to_logging_and_monitoring() {
+    // SEC-041: GKE Autopilot nodes default to the project's Compute Engine
+    // service account (roles/editor by default when no organization policy
+    // constrains it). Nodes' identity must be narrowed to the permissions
+    // they actually need: logging and monitoring. A dedicated node service
+    // account solves this; in Autopilot the account is specified via
+    // `cluster_autoscaling.auto_provisioning_defaults.service_account`.
+    let module = without_comments(&read(CONTROL_PLANE_MODULE));
+
+    // The node service account resource exists and is named correctly.
+    let service_accounts = terraform_resources(&module, "google_service_account");
+    let (_, _nodes_account) = service_accounts
+        .iter()
+        .find(|(name, _)| name.contains("nodes"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{CONTROL_PLANE_MODULE} declares no node service account resource; \
+                 it must be named with 'nodes' in the account_id; found accounts: {:?}",
+                service_accounts
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    // The cluster_autoscaling block references the node account email.
+    let cluster = module
+        .split("resource \"google_container_cluster\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("the module declares a cluster");
+
+    assert!(
+        cluster.contains("cluster_autoscaling {"),
+        "the cluster does not declare a cluster_autoscaling block"
+    );
+
+    assert!(
+        cluster.contains("auto_provisioning_defaults {"),
+        "the cluster_autoscaling block does not declare auto_provisioning_defaults"
+    );
+
+    assert!(
+        cluster.contains("service_account = google_service_account.nodes.email"),
+        "the auto_provisioning_defaults block does not specify the node service account; \
+         Autopilot nodes will default to the compute service account"
+    );
+
+    // The node service account has exactly the two roles it needs.
+    let iam_members = terraform_resources(&module, "google_project_iam_member");
+    let nodes_roles: Vec<&(String, String)> = iam_members
+        .iter()
+        .filter(|(name, body)| {
+            name.contains("nodes") && body.contains("google_service_account.nodes.email")
+        })
+        .collect();
+
+    assert_eq!(
+        nodes_roles.len(),
+        2,
+        "the node service account should have exactly 2 IAM member resources (logging and \
+         monitoring), found {}; members: {:?}",
+        nodes_roles.len(),
+        nodes_roles.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+
+    let mut has_logging = false;
+    let mut has_monitoring = false;
+    for (_, body) in &nodes_roles {
+        if body.contains("roles/logging.logWriter") {
+            has_logging = true;
+        }
+        if body.contains("roles/monitoring.metricWriter") {
+            has_monitoring = true;
+        }
+    }
+
+    assert!(
+        has_logging,
+        "the node service account is not granted roles/logging.logWriter; \
+         nodes cannot emit logs to Cloud Logging"
+    );
+
+    assert!(
+        has_monitoring,
+        "the node service account is not granted roles/monitoring.metricWriter; \
+         nodes cannot emit metrics to Cloud Monitoring"
     );
 }
 

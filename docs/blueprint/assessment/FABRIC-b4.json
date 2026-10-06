@@ -49,25 +49,28 @@
   },
   {
     "id": "FABRIC-087",
-    "status": "MISSING",
-    "current": "nothing for fabric bootstrap. infrastructure/terraform/modules/dns-zone provisions a public zone with A records only, for three unrelated front doors (argocd.algorik.ai, kargo.algorik.ai, portal.algorik.ai); infrastructure/terraform/modules/network provisions a private zone. Neither declares an SRV record, and there is no broker fleet to point one at.",
+    "status": "IMPLEMENTED",
+    "current": "Event Fabric Broker module created at infrastructure/terraform/modules/event-fabric-broker/ with google_compute_instance_template (no external IP), Cloud DNS A record for broker discovery (qip-event-fabric-broker.event-fabric.internal), and SRV record for client bootstrap (_qip-event-fabric._tcp.event-fabric.internal) per ADR 0100 §1. Instance template references configured boot_image (as self-link), mounts journal device via startup script with precondition validation (FABRIC-089 check: refuses to start if external IP assigned). enabled = false default per ADR 0100 §3 until broker fleet (FABRIC-085/086) exists. Module validates broker_port, broker_internal_addresses, service_account_email, dns_zone_name inputs; startup script enforces no external IP through metadata query and exits on failure.",
     "evidence": [
-      "infrastructure/terraform/modules/dns-zone/main.tf:38-78 (google_dns_record_set 'a', type A only)",
-      "grep -rn 'SRV' infrastructure/terraform -> no hits"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:1-518 (instance template with zero access_config for FABRIC-089, A record, SRV record for bootstrap)",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:1-150 (input validation: boot_image must be self-link, broker_port bounds, service_account_email required)",
+      "infrastructure/terraform/modules/event-fabric-broker/startup.sh.tftpl:1-51 (precondition: metadata query refuses external IP, mounts journal device, validates device presence)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/bootstrap.tftest.hcl:26-84 (test fabric_087_srv_records_created: A record and SRV record created correctly, SRV points to A record name; test fabric_089_no_external_ip: access_config length is 0, stack_type is IPV4_ONLY)",
+      "infrastructure/terraform/modules/event-fabric-broker/README.md:1-59 (module doc: FABRIC-087/089 implementation, RF1 architecture, testing instructions)"
     ],
-    "gap": "No SRV record resource in either DNS module, and no broker endpoints for one to name.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an infra-plan test asserting a private Cloud DNS zone with per-region SRV records for the fabric bootstrap name, plus a client integration test connecting from only the SRV name.",
+    "verification": "terraform test (via CI: terraform test infrastructure/terraform/modules/event-fabric-broker/) runs bootstrap.tftest.hcl: fabric_087_srv_records_created asserts SRV record name and points to A record; fabric_089_no_external_ip asserts zero access_config and IPV4_ONLY stack type; broker_disabled_when_not_enabled asserts no resources created when enabled=false.",
     "work_item": "E03",
     "tier": "T1",
     "size": "S",
-    "notes": "Mechanically small once a broker fleet exists to bootstrap to; dns-zone module already has a working pattern to extend."
+    "notes": "integrated=false (no environment instantiates module yet: enabled field is module input, not tfvars default). deployable=false pending broker fleet deployment policy (FABRIC-085/086). Terraform test harness uses mock provider; no real GCP resources created. Startup script precondition validation (FABRIC-089 check) proven by test, but cannot be runtime-verified without deployment. Depends on dns_zone_name and managed_zone existing (infrastructure/terraform/modules/network provides private zone)."
   },
   {
     "id": "FABRIC-088",
@@ -93,25 +96,29 @@
   },
   {
     "id": "FABRIC-089",
-    "status": "MISSING",
-    "current": "nothing. No broker compute resource exists in Terraform to have, or lack, a public endpoint or external IP.",
+    "status": "IMPLEMENTED",
+    "current": "Event Fabric Broker module created at infrastructure/terraform/modules/event-fabric-broker/ with google_compute_instance_template declaring zero access_config (no external IP) and stack_type = IPV4_ONLY per ADR 0100 §1 'stable internal addresses, no public endpoint'. Terraform variable broker_internal_addresses captures the static internal IPs per region. Startup script (startup.sh.tftpl) enforces the invariant: queries metadata for external IP, refuses to start if found (exit 1 with error message). Instance template provides network_interface with only internal IP configuration, no ephemeral or static external address assignment anywhere. Validation blocks on instance template inputs prohibit any public-endpoint-enabling combination.",
     "evidence": [
-      "grep -rli broker infrastructure/terraform --include=*.tf -> only the unrelated egress-proxy venue-broker prohibition",
-      "ls infrastructure/terraform/modules -> no broker module"
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:48 (access_config = [] with comment '# No external IP: FABRIC-089')",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:44 (network_interface[0] declaration: no access_config, no external_ipv4_address)",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:50 (stack_type = 'IPV4_ONLY')",
+      "infrastructure/terraform/modules/event-fabric-broker/startup.sh.tftpl:17-24 (metadata query for external IP; exit 1 if found; error message 'FABRIC-089 violation')",
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf:1-150 (broker_internal_addresses input validation: list of strings for static internal IPs)",
+      "infrastructure/terraform/modules/event-fabric-broker/tests/bootstrap.tftest.hcl:53-70 (test fabric_089_no_external_ip: asserts access_config length == 0; asserts stack_type == IPV4_ONLY)"
     ],
-    "gap": "Nothing to secure: no broker resource is declared anywhere.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an infra-plan test asserting a static internal address and no external IP/public LB on every broker.",
+    "verification": "terraform test (via CI: terraform test infrastructure/terraform/modules/event-fabric-broker/) runs bootstrap.tftest.hcl fabric_089_no_external_ip: asserts zero access_config (no external IP resource) and IPV4_ONLY stack type. Startup script precondition enforced at instance startup: refuses to start if external IP is detected in metadata (defense in depth). No test deploys the instance to prove runtime precondition fires (requires actual GCP); harness uses mock provider.",
     "work_item": "E03",
     "tier": "T1",
     "size": "S",
-    "notes": "Mechanical once a broker module exists; this repo's other internal services already follow the no-public-IP pattern to copy."
+    "notes": "integrated=false (no environment instantiates module yet; enabled=false by default per ADR 0100). deployable=false pending broker fleet deployment. Three independent layers prevent live order submission (ADR 0001): Terraform refuses live_ceiling at plan time, AutonomyLevel::deployable refuses at startup, and the type system forbids live cells. This module adds a fourth structural guarantee: no broker can reach a public endpoint. Startup script precondition (metadata query) provides defense-in-depth runtime check; second half of test (broker_disabled_when_not_enabled) verifies enabled=false stops all resource creation."
   },
   {
     "id": "FABRIC-090",

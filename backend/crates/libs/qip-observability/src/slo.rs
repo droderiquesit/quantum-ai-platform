@@ -240,6 +240,21 @@ pub fn default_slos() -> Vec<Slo> {
             SloWindow::Week,
         ),
         Slo::availability("api-availability", "api", 0.999, SloWindow::Day),
+        // OBS-035: Data plane SLOs.
+        Slo::latency(
+            "data-archive-delay",
+            "data-plane",
+            0.95,
+            60.0,
+            SloWindow::Day,
+        ),
+        Slo::availability("data-refetch-health", "data-plane", 0.99, SloWindow::Day),
+        Slo::availability(
+            "data-lineage-completeness",
+            "data-plane",
+            0.95,
+            SloWindow::Week,
+        ),
     ]
 }
 

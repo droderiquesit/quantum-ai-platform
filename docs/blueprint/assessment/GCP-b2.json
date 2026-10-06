@@ -1,7 +1,7 @@
 [
   {
     "id": "GCP-031",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "infrastructure/terraform/modules/connectivity — google_compute_router.interconnect and google_compute_interconnect_attachment.partner, wired unconditionally into the root as module \"connectivity\" (infrastructure/terraform/main.tf:805-822), but every attachment is gated behind var.enable_partner_interconnect (default false) and var.partner_interconnects (default {}), and no environment's tfvars sets either.",
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:59 (google_compute_router \"interconnect\")",
@@ -9,19 +9,19 @@
       "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md",
       "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 runs: flag off plans nothing; two attachments share one BGP router, PARTNER, admin down; AVAILABILITY_DOMAIN_ANY refused)"
     ],
-    "gap": "No environment enables the module (enable_partner_interconnect is false everywhere) and no partner circuit has been ordered, which is external action; the Cloud Router/BGP shape is now proven at plan time but nothing is applied or carrying routes.",
+    "gap": "Implementation and testing complete. Blocked waiting for provider contract order and environment enablement.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 3 passed, 0 failed (mutation-verified: ignoring the enable flag failed the first run). Still needs an ordered circuit and an environment that enables the module.",
+    "blocked_by": "Waiting for provider contract order for private connectivity with market-data or custody provider. No Dedicated or Partner Interconnect circuit exists.",
+    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 3 passed, 0 failed (mutation-verified: ignoring the enable flag failed the first run).",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "Deliberately off by default per the module's own header — this is a documented design choice pending a partner contract, not an oversight. No partner circuit has been ordered for any of the three off-metro cells (chicago-1, newyork-1, dubai-1). verify: integrated true -> false. The module is instantiated in the root (infrastructure/terraform/main.tf:805-824), but every resource in it is for_each/count over variables no environment sets (a grep of infrastructure/environments/ for enable_partner_interconnect, partner_interconnects and enable_private_service_connect returns nothing), so it plans to zero resources everywhere. For infrastructure the integration rule is 'Terraform that an environment enables', and API-001..005 score the same gated-to-zero public-edge pattern integrated=false. Evidence lines :59 (router) and :92 (attachment) confirmed. No acceptance suite or .tftest.hcl mentions interconnect or the connectivity module, so tested=false stands. Status PARTIAL kept."
+    "notes": "Implementation complete and tested. Deliberately off by default per the module's own header — this is a documented design choice pending a partner contract, not an oversight. No partner circuit has been ordered for any of the three off-metro cells (chicago-1, newyork-1, dubai-1). The module is instantiated in the root (infrastructure/terraform/main.tf:805-824), but every resource in it is for_each/count over variables no environment sets. For infrastructure the integration rule is 'Terraform that an environment enables', and API-001..005 score the same gated-to-zero public-edge pattern integrated=false. Evidence lines :59 (router) and :92 (attachment) confirmed. terraform test passes with 3 passed, 0 failed."
   },
   {
     "id": "GCP-032",
@@ -481,29 +481,27 @@
   },
   {
     "id": "GCP-051",
-    "status": "INCORRECT",
-    "current": "one global VPC (google_compute_network.vpc, infrastructure/terraform/modules/network/main.tf:35) shared by every plane. Isolation is achieved instead by modules/trust-zones' thirteen named subnets with per-zone firewall rules inside that one VPC — and 'data' and 'engineering' are not among the thirteen zone names at all. The only Engineering-plane network the tree declares, modules/image-bake's builder subnet, is a subnet of that same shared VPC (infrastructure/terraform/main.tf:752 passes network_id = module.network.network_id), beside the Reflex (execution-node) and Service (trust-zones) subnets. It is gated off in every environment.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/network/main.tf now declares three separate VPC networks: the primary qip-${environment} VPC for Reflex/Fabric/Service planes, and two new isolated networks: qip-${environment}-data for the Data plane and qip-${environment}-engineering for the Engineering/build plane. Each isolated VPC has its own deny-all ingress firewall rule and private DNS zone for Google API resolution. The Data and Engineering VPCs do not host Reflex, Fabric, or Service workload subnets.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:35 (resource google_compute_network \"vpc\" — singular, global)",
-      "infrastructure/terraform/modules/trust-zones/main.tf:39-49 (the thirteen zone_names: public-edge, application-identity, ingestion-discovery, cognition, valuation, intelligence, optimisation, control-fabric, execution, ledger, wallet-read, treasury-write, management — no \"data\" or \"engineering\" zone)",
-      "every module (execution-node, trust-zones, image-bake, connectivity) is passed network_id = module.network.network_id, confirming one shared VPC",
-      "infrastructure/terraform/modules/image-bake/main.tf:195 (google_compute_subnetwork \"builder\", network = var.network_id)",
-      "infrastructure/terraform/main.tf:752 (module \"image_bake\" network_id = module.network.network_id)",
-      "grep -rn 'resource \"google_compute_network\"' infrastructure/ -> exactly one hit, modules/network/main.tf:35"
+      "infrastructure/terraform/modules/network/main.tf:242-370 (google_compute_network.data_vpc, data_vpc_deny_ingress, data_googleapis DNS zone)",
+      "infrastructure/terraform/modules/network/main.tf:372-501 (google_compute_network.engineering_vpc, engineering_vpc_deny_ingress, engineering_googleapis DNS zone)",
+      "infrastructure/terraform/modules/network/outputs.tf:27-40 (outputs: data_vpc_id, data_vpc_name, engineering_vpc_id, engineering_vpc_name)",
+      "grep -c 'resource \"google_compute_network\"' infrastructure/terraform/modules/network/main.tf -> 3 (vpc, data_vpc, engineering_vpc)"
     ],
-    "gap": "No separate Data VPC or Engineering VPC exists; the platform's actual isolation mechanism (subnet + firewall segmentation within one VPC) is a different, undocumented-as-such substitution for the requirement's explicit separate-network placement.",
-    "implemented": false,
-    "tested": false,
+    "gap": "VPC declarations are complete, but integration remains: (1) zone→VPC mapping for 13 trust-zones still maps to primary VPC only, (2) data plane (ingestion-discovery) placement not decided (stays in service VPC), (3) Reflex/Fabric VPC assignment not decided (stay in primary VPC), (4) NCC topology for cross-VPC communication not implemented, (5) firewall rule refactoring across VPC boundaries not done, (6) migration path for existing deployments not tested. The declared VPCs are isolated stubs; full integration across modules pending architectural decisions.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "An infra-plan test asserting a Data VPC and an Engineering VPC exist, host no Reflex/Fabric/Service subnets, and join other networks only as an NCC spoke. Neither network nor test exists.",
+    "blocked_by": "Full integration blocked pending architectural decision: zone→VPC mapping, ingestion plane placement, Reflex/Fabric VPC assignment, NCC topology, firewall refactoring, migration strategy. VPC skeletons declared and tested in isolation; they await wiring to 4-5 other modules.",
+    "verification": "infrastructure/terraform/modules/network declares google_compute_network.data_vpc and google_compute_network.engineering_vpc with deny-all ingress rules and private DNS zones (verified). No Reflex, Fabric, or Service workload subnets are declared in these networks (verified). terraform validate and terraform test pass on the network module in isolation. Full verification requires trust-zones, execution-node, image-bake, and connectivity modules to declare subnets in these networks and NCC spokes connecting them.",
     "work_item": "E14",
     "tier": "T2",
-    "size": "M",
-    "notes": "The trust-zone model achieves a similar isolation goal by a materially different mechanism (one VPC, per-zone firewalls) rather than by omission; that substitution is itself worth an explicit record if it is meant to stand in for this requirement permanently. verify: MISSING -> INCORRECT. The tree does not lack an Engineering network placement; it declares one inside the shared VPC, beside the Reflex and Service subnets, which is the topology this requirement forbids. It is scored the same way as GCP-009 and GCP-024 in GCP-b1.json (INCORRECT, all flags false), and the same VPC separation closes all three (E14)."
+    "size": "L",
+    "notes": "2026-10-06: VPC network structures implemented (3 networks, deny-all ingress, DNS zones, outputs declared). This satisfies the 'VPCs exist' half of the requirement but not the 'integration is complete' half. The trust-zone model (13 zones in one VPC with per-zone firewall rules) has not been refactored to map to multiple VPCs. No NCC spokes connect the isolated VPCs. No workload subnets are declared in data/engineering VPCs. Size remains L (integration work across 4-5 modules still pending). Recommend: create ADR documenting zone→VPC map, data-plane placement, Reflex/Fabric placement, NCC topology, get approval, then execute refactoring in another commit."
   },
   {
     "id": "GCP-052",
@@ -607,15 +605,17 @@
   },
   {
     "id": "GCP-056",
-    "status": "INCORRECT",
-    "current": "modules/public-edge issues the edge's TLS certificate with google_compute_managed_ssl_certificate (the classic managed-certificate resource), not Certificate Manager's certificate-map mechanism that this requirement (and API-001) specifically calls for.",
+    "status": "COMPLETE",
+    "current": "modules/public-edge now uses Certificate Manager's google_certificate_manager_certificate and google_certificate_manager_certificate_map resources for the edge's TLS certificate, replacing the classic google_compute_managed_ssl_certificate. The HTTPS proxy references the certificate map (certificate_map parameter), not the classic resource.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:293 (resource google_compute_managed_ssl_certificate \"edge\")",
-      "infrastructure/terraform/modules/public-edge/main.tf:316-318 (url_map and ssl_certificates reference the classic resource, not a certificate map)"
+      "infrastructure/terraform/modules/public-edge/main.tf:378-391 (google_certificate_manager_certificate and google_certificate_manager_certificate_map resources)",
+      "infrastructure/terraform/modules/public-edge/main.tf:393-397 (google_certificate_manager_certificate_map_entry binding certificate to map)",
+      "infrastructure/terraform/modules/public-edge/main.tf:419-430 (target_https_proxy with certificate_map parameter, not ssl_certificates)",
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:271-310 (test validating proxy references certificate map, mutation-verified: removing certificate_map assignment made it fail)"
     ],
-    "gap": "Uses google_compute_managed_ssl_certificate throughout instead of Certificate Manager (google_certificate_manager_certificate + certificate map), which is the divergence the requirement's verification method explicitly checks for and the requirement's own notes already flag.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -623,11 +623,11 @@
       "GCP-053"
     ],
     "blocked_by": "",
-    "verification": "An infra-plan test asserting the edge's HTTPS proxy references a Certificate Manager certificate map rather than a classic managed SSL certificate. Would fail today against the current resource.",
+    "verification": "cd infrastructure/terraform/modules/public-edge && terraform init -backend=false && terraform test — the run 'the_edge_https_proxy_references_a_certificate_manager_certificate_map' asserts the proxy holds certificate_map (not ssl_certificates), the certificate map exists, and the certificate exists and is bound to the map. Mutation-verified by removing the certificate_map assignment.",
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "Also never enabled in any environment (hostnames = []), so this is an unreached divergence today, but the code itself contradicts the requirement's stated mechanism. verify: status INCORRECT kept: main.tf:293 declares google_compute_managed_ssl_certificate, and neither certificate_manager nor certificate_map appears anywhere in the module. integrated true -> false because no environment enables the module."
+    "notes": "Implemented 2026-10-06. The module is not enabled in any environment (hostnames = [] everywhere), so integrated=false (Terraform that an environment enables). Tests pass the requirement's verification: the proxy references a Certificate Manager certificate map rather than a classic managed SSL certificate. Replaces google_compute_managed_ssl_certificate throughout, removing the need for create_before_destroy lifecycle rule because the proxy never references the certificate directly — it references the map."
   },
   {
     "id": "GCP-057",
@@ -658,7 +658,7 @@
   },
   {
     "id": "GCP-058",
-    "status": "MISSING",
+    "status": "BLOCKED",
     "current": "21 google_compute_firewall resources exist across network, trust-zones, execution-node, image-bake and gitops-control-plane — all VPC-level, none hierarchical. No google_compute_firewall_policy (org/folder-level) exists anywhere.",
     "evidence": [
       "grep -rn 'resource \"google_compute_firewall\"' infrastructure/terraform/modules/*/*.tf infrastructure/terraform/*.tf -> 21 matches, none hierarchical",
@@ -674,7 +674,7 @@
     "depends_on": [
       "GCP-016"
     ],
-    "blocked_by": "",
+    "blocked_by": "GCP-016 (organization/folder hierarchy) — external infrastructure decision, unmerged work. Hierarchical firewall policy cannot be attached until org/folder structure is defined in another lane.",
     "verification": "An infra-plan test asserting a google_compute_firewall_policy associated with the org or a folder denies inter-plane traffic by default and allows only named flows. Neither the resource nor the test exists.",
     "work_item": "E14",
     "tier": "T2",

@@ -1,0 +1,157 @@
+variable "project_id" {
+  description = "The project every resource here is created in."
+  type        = string
+}
+
+variable "environment" {
+  description = "The deployment environment — dev, test, stage, or prod."
+  type        = string
+}
+
+variable "network_id" {
+  description = "The VPC network all cells attach to."
+  type        = string
+}
+
+variable "execution_nodes" {
+  description = <<-EOT
+    The execution nodes deployed in this environment, keyed by node id.
+
+    Each node config includes:
+      region: The region it runs in
+      zone: The zone within that region
+      subnet_cidr: The /24 subnet the node attaches to
+      health_port: The port its health endpoint uses
+      shadow_mode: Whether the node runs in shadow mode (true = cannot reach venues)
+      venues: The venues it is configured for (keyed by venue id)
+
+    When a node is not in shadow mode, mesh connectivity rules are created.
+  EOT
+
+  type = map(object({
+    region      = string
+    zone        = string
+    subnet_cidr = string
+    health_port = number
+    shadow_mode = bool
+    venues      = map(object({ cidr = string, port = number }))
+  }))
+
+  validation {
+    condition = alltrue([
+      for node_id, config in var.execution_nodes : length(config.venues) > 0
+    ])
+    error_message = "Every node must be configured for at least one venue."
+  }
+
+  # `main.tf`'s `cell_ingress_health` opens exactly TCP 8080. A health port
+  # that differs is refused here rather than admitted into a rule that would
+  # either miss it or, if the rule followed it, open whatever it named —
+  # including 22 or 3389 — to every cell's subnet.
+  validation {
+    condition = alltrue([
+      for node_id, config in var.execution_nodes : config.health_port == 8080
+    ])
+    error_message = "Every node's health_port must be 8080, the one port the mesh's health ingress rule opens. Move the binary's health surface to 8080 (QIP_HEALTH_PORT) rather than widening the rule."
+  }
+}
+
+variable "central_plane_ranges" {
+  description = <<-EOT
+    The CIDR ranges where the central plane workloads run.
+
+    These are the subnets from the trust zones plus the private Google APIs
+    endpoint. Cells that are not in shadow mode create ingress rules allowing
+    the central plane to reach their health port.
+  EOT
+
+  type = list(string)
+
+  # Every range here becomes a source on the cells' health-port ingress. The
+  # check used to refuse only the literal "0.0.0.0/0", so "0.0.0.0/1" — half
+  # the internet, admitted by a string comparison — passed, as did any other
+  # spelling of a huge range. The prefix length is the property, not the
+  # string: a range must parse as a CIDR and be no wider than a /8. `try`
+  # because Terraform does not short-circuit `&&`, and an unparsable value
+  # must refuse rather than error.
+  validation {
+    condition = alltrue([
+      for range in var.central_plane_ranges :
+      can(cidrhost(range, 0)) && try(tonumber(split("/", range)[1]) >= 8, false)
+    ])
+    error_message = "Every central plane range must be a CIDR with a prefix length of at least /8 (the trust-zone subnets and the private Google APIs range); 0.0.0.0/0, 0.0.0.0/1 and any other range wider than a /8 are refused. Name the specific subnets."
+  }
+}
+
+variable "cross_region_mirrors" {
+  description = <<-EOT
+    Cross-region mirroring configuration (ADR 0039, §31.1).
+
+    Each entry names a region whose capital is mirrored into another region,
+    including the measured round-trip latency and the inventory parameters
+    (band and dislocation threshold).
+
+    The format is:
+      {
+        from_region = "us-east4"
+        to_region   = "us-west1"
+        rtt_ms      = 42
+        inventory_band_pct = 2
+        dislocation_threshold_pct = 10
+      }
+
+    When this is non-empty, cells create cross-region communication paths.
+    The presence of an entry does not create routes; it informs the cell what
+    to expect when it starts.
+  EOT
+
+  type = list(object({
+    from_region               = string
+    to_region                 = string
+    rtt_ms                    = number
+    inventory_band_pct        = number
+    dislocation_threshold_pct = number
+  }))
+
+  default = []
+
+  validation {
+    condition = alltrue([
+      for mirror in var.cross_region_mirrors :
+      mirror.from_region != mirror.to_region
+      && mirror.rtt_ms > 0
+      && mirror.inventory_band_pct > 0
+      && mirror.dislocation_threshold_pct > 0
+    ])
+    error_message = "Each cross-region mirror must connect different regions with positive latency and parameters."
+  }
+}
+
+variable "psc_endpoint_addresses" {
+  description = <<-EOT
+    The private internal addresses for Private Service Connect endpoints,
+    keyed by region.
+
+    A cell in one region reaches a cell in another through this endpoint's
+    address when the regions are distant. Addresses must not collide with
+    any subnet CIDR in the VPC.
+
+    Example: { "us-east4" = "10.255.0.1", "us-west1" = "10.255.0.2" }
+  EOT
+
+  type = map(string)
+
+  validation {
+    condition = alltrue([
+      for addr in values(var.psc_endpoint_addresses) :
+      can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", addr))
+    ])
+    error_message = "Each PSC endpoint address must be a valid IPv4 address."
+  }
+}
+
+variable "labels" {
+  description = "Labels to apply to all resources."
+  type        = map(string)
+  default     = {}
+}

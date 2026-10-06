@@ -61,5 +61,442 @@
       "discovered_at": "2025-09-09T00:00:00.000Z"
     },
     "egress_route": "http://127.0.0.1:9105"
+  },
+  {
+    "candidate": {
+      "identity": {
+        "id": "sku-listings-catalog",
+        "name": "SKU product listings catalog",
+        "publisher": "Commerce Reference"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "api.commerce-ref.example.com",
+        "port": null,
+        "path": "/v1/sku-listings",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 100
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "commodity"
+        ],
+        "regions": [
+          "us_east",
+          "europe"
+        ],
+        "instruments": [
+          "SKU"
+        ],
+        "update_frequency": "hourly",
+        "history_starts": "2024-01-01T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "commerce-ref-sku-api",
+          "permits": [
+            "Derive"
+          ],
+          "attribution_required": true,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "500",
+        "per_request": "0",
+        "included_requests": 18446744073709551615,
+        "currency": "USD"
+      },
+      "region": "us_east",
+      "produces": [
+        "reference_data_updated"
+      ],
+      "discovered_from": "commerce source catalogue for product SKU reference data",
+      "discovered_at": "2025-01-01T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9106"
+  },
+  {
+    "candidate": {
+      "identity": {
+        "id": "inventory-levels",
+        "name": "Warehouse inventory levels API",
+        "publisher": "Global Logistics"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "api.globallogistics.example.com",
+        "port": null,
+        "path": "/v1/inventory",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 50
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "commodity"
+        ],
+        "regions": [
+          "us_east",
+          "europe",
+          "apac"
+        ],
+        "instruments": [
+          "inventory"
+        ],
+        "update_frequency": "hourly",
+        "history_starts": "2024-01-01T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "globallogistics-inventory-api",
+          "permits": [
+            "Derive"
+          ],
+          "attribution_required": false,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "1000",
+        "per_request": "0",
+        "included_requests": 18446744073709551615,
+        "currency": "USD"
+      },
+      "region": "us_east",
+      "produces": [
+        "reference_data_updated"
+      ],
+      "discovered_from": "commerce source catalogue for warehouse inventory data",
+      "discovered_at": "2025-01-01T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9106"
+  },
+  {
+    "candidate": {
+      "identity": {
+        "id": "ecommerce-price-index",
+        "name": "E-commerce price index feed",
+        "publisher": "Price Index Inc"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "api.priceindex.example.com",
+        "port": null,
+        "path": "/v1/prices",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 1000
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "commodity"
+        ],
+        "regions": [
+          "us_east",
+          "europe"
+        ],
+        "instruments": [
+          "commodity_prices"
+        ],
+        "update_frequency": "daily",
+        "history_starts": "2023-01-01T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "priceindex-public-feed",
+          "permits": [
+            "Derive",
+            "Trade"
+          ],
+          "attribution_required": false,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "0",
+        "per_request": "0",
+        "included_requests": 18446744073709551615,
+        "currency": "USD"
+      },
+      "region": "us_east",
+      "produces": [
+        "reference_data_updated"
+      ],
+      "discovered_from": "commerce source catalogue for product price data",
+      "discovered_at": "2025-01-01T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9106"
+  },
+  {
+    "candidate": {
+      "identity": {
+        "id": "shipping-estimates",
+        "name": "Multi-carrier shipping rate estimates",
+        "publisher": "Shipping Partners"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "api.shippingpartners.example.com",
+        "port": null,
+        "path": "/v1/rates",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 100
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "commodity"
+        ],
+        "regions": [
+          "us_east",
+          "europe",
+          "apac"
+        ],
+        "instruments": [
+          "shipping"
+        ],
+        "update_frequency": "daily",
+        "history_starts": "2024-01-01T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "shippingpartners-public-rates",
+          "permits": [
+            "Derive"
+          ],
+          "attribution_required": false,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "0",
+        "per_request": "0.01",
+        "included_requests": 1000000,
+        "currency": "USD"
+      },
+      "region": "us_east",
+      "produces": [
+        "reference_data_updated"
+      ],
+      "discovered_from": "commerce source catalogue for logistics and shipping rate data",
+      "discovered_at": "2025-01-01T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9106"
+  },
+  {
+    "candidate": {
+      "identity": {
+        "id": "marketplace-fee-registry",
+        "name": "Marketplace operator fee structure registry",
+        "publisher": "Marketplace Operators"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "fees.marketplaces.example.com",
+        "port": null,
+        "path": "/v1/fee-registry",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 200
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "commodity"
+        ],
+        "regions": [
+          "us_east",
+          "europe"
+        ],
+        "instruments": [
+          "marketplace_fees"
+        ],
+        "update_frequency": "daily",
+        "history_starts": "2024-01-01T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "marketplace-ops-public-fees",
+          "permits": [
+            "Derive"
+          ],
+          "attribution_required": true,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "0",
+        "per_request": "0",
+        "included_requests": 18446744073709551615,
+        "currency": "USD"
+      },
+      "region": "us_east",
+      "produces": [
+        "reference_data_updated"
+      ],
+      "discovered_from": "commerce source catalogue for marketplace fee structure data",
+      "discovered_at": "2025-01-01T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9106"
+  },
+  {
+    "candidate": {
+      "identity": {
+        "id": "auction-data-feed",
+        "name": "Online auction aggregation feed",
+        "publisher": "Auction Analytics"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "api.auctionanalytics.example.com",
+        "port": null,
+        "path": "/v1/auctions",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 500
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "commodity"
+        ],
+        "regions": [
+          "us_east",
+          "europe"
+        ],
+        "instruments": [
+          "auction_data"
+        ],
+        "update_frequency": "hourly",
+        "history_starts": "2024-06-01T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "auctionanalytics-feed",
+          "permits": [
+            "Derive"
+          ],
+          "attribution_required": false,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "2000",
+        "per_request": "0",
+        "included_requests": 18446744073709551615,
+        "currency": "USD"
+      },
+      "region": "us_east",
+      "produces": [
+        "reference_data_updated"
+      ],
+      "discovered_from": "commerce source catalogue for auction transaction and pricing data",
+      "discovered_at": "2025-01-01T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9106"
+  },
+  {
+    "candidate": {
+      "identity": {
+        "id": "resale-marketplace-api",
+        "name": "Secondary market resale pricing API",
+        "publisher": "Resale Markets Inc"
+      },
+      "endpoint": {
+        "scheme": "https",
+        "host": "api.resalemarkets.example.com",
+        "port": null,
+        "path": "/v1/resales",
+        "mechanism": {
+          "mechanism": "rest",
+          "auth": {
+            "auth": "none"
+          },
+          "incremental_parameter": null,
+          "page_size": 500
+        }
+      },
+      "declared_coverage": {
+        "asset_classes": [
+          "commodity"
+        ],
+        "regions": [
+          "us_east",
+          "europe"
+        ],
+        "instruments": [
+          "resale_prices"
+        ],
+        "update_frequency": "hourly",
+        "history_starts": "2024-01-01T00:00:00.000Z"
+      },
+      "declared_licensing": {
+        "posture": "declared",
+        "license": {
+          "identifier": "resalemarkets-public-api",
+          "permits": [
+            "Derive"
+          ],
+          "attribution_required": false,
+          "expires_at": null,
+          "effective_from": null
+        }
+      },
+      "cost": {
+        "monthly_fee": "750",
+        "per_request": "0",
+        "included_requests": 18446744073709551615,
+        "currency": "USD"
+      },
+      "region": "us_east",
+      "produces": [
+        "reference_data_updated"
+      ],
+      "discovered_from": "commerce source catalogue for secondary market resale pricing data",
+      "discovered_at": "2025-01-01T00:00:00.000Z"
+    },
+    "egress_route": "http://127.0.0.1:9106"
   }
 ]

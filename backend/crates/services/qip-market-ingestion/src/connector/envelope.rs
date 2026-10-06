@@ -119,6 +119,13 @@ impl MarketEventEnvelope {
                 manifest.source_id, raw.event_time, ingest_time
             )));
         }
+        // EVID-025: Refuse records with blank provenance source at the publication gate,
+        // before they reach the world model. A source-less record has no audit trail.
+        if manifest.source_id.trim().is_empty() {
+            return Err(Error::invalid(
+                "a record's source is blank; provenance must name the originating adapter",
+            ));
+        }
         let knowable_at = raw.event_time.saturating_add(manifest.publication_delay());
         let provenance = Provenance::new(manifest.source_id.clone(), raw.event_time, ingest_time)
             .with_licensing(manifest.licensing)
@@ -210,3 +217,7 @@ impl MarketEventEnvelope {
                 .meets(qip_financial::quality::DECISION_QUALITY_FLOOR)
     }
 }
+
+// Test for EVID-025 (blank provenance source validation) is in qip-acceptance
+// integration tests, where SourceManifest fixtures are available.
+// The validation check occurs in MarketEventEnvelope::new() at line ~121.

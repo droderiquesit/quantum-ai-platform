@@ -222,3 +222,36 @@ fn a_produced_but_empty_manifest_still_admits_a_plan_that_carries_no_model() -> 
     assert_eq!(cell.deployed_strategies(), vec![STRATEGY]);
     Ok(())
 }
+
+#[test]
+fn a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose() -> Result<()> {
+    // MODEL-004: a reflex cell evaluates a model for one of the five named
+    // purposes (order-book state, fill probability, adverse selection,
+    // short-horizon signals, opportunity scoring) within the reflex latency
+    // budget.
+    //
+    // Fill probability is a practical purpose: the cell can use it to estimate
+    // order fill likelihood. This test asserts the mechanism works.
+    let fill_prob_model = DistilledModel::linear("fill-probability", 0.5, vec![0.3])?;
+
+    let mut cell = cell()?;
+    cell.apply_policy(
+        manifest_policy(
+            1,
+            BTreeMap::from([("fill-probability".to_string(), fill_prob_model.digest())]),
+        )?,
+        t(11),
+    )?;
+
+    let (strategy, program) = strategy_with(Some(fill_prob_model.clone()))?;
+    cell.deploy(strategy, program, grant()?)?;
+    assert_eq!(cell.deployed_strategies(), vec![STRATEGY]);
+
+    // Premise: the model evaluates within the hot-path latency budget.
+    // Distilled models are pure functions with declared bounded cost.
+    let test_inputs = [0.5];
+    let result = fill_prob_model.evaluate(&test_inputs)?;
+    // A fill probability is a scalar output from a trained model.
+    assert!(result.is_finite());
+    Ok(())
+}

@@ -591,9 +591,10 @@ fn a_short_selling_ban_still_permits_buying_and_exiting() {
 }
 
 #[test]
-fn venue_approval_defaults_to_permissive_but_binds_once_set() {
+fn venue_approval_fails_closed_with_empty_set() {
     let unrestricted = RegulatoryConstraints::unrestricted();
-    assert!(unrestricted.permits_venue("ANY"));
+    assert!(!unrestricted.permits_venue("ANY"));
+    assert!(!unrestricted.permits_venue("XNYS"));
 
     let restricted = RegulatoryConstraints::unrestricted()
         .with_approved_venue("XNYS")

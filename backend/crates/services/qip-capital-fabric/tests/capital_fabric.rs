@@ -876,6 +876,7 @@ fn a_shortfall_is_penalised_harder_than_an_equivalent_surplus() -> Result<()> {
         DemandKind::Cash,
         DemandKind::Collateral,
         DemandKind::FxFunding,
+        DemandKind::Hedge,
         DemandKind::Inventory,
         DemandKind::Margin,
     ] {
@@ -920,6 +921,24 @@ fn a_symmetric_penalty_cannot_be_configured() -> Result<()> {
         "the refusal does not say why symmetry is wrong: {error}"
     );
     assert!(ShortfallAsymmetry::new(1200.0, 400.0).is_ok());
+    Ok(())
+}
+
+#[test]
+fn hedge_is_not_a_contractual_demand() -> Result<()> {
+    assert!(!DemandKind::Hedge.is_contractual());
+    let asymmetry = ShortfallAsymmetry::for_kind(DemandKind::Hedge)?;
+    let cash_asymmetry = ShortfallAsymmetry::for_kind(DemandKind::Cash)?;
+    assert_eq!(
+        asymmetry.multiple(),
+        cash_asymmetry.multiple(),
+        "hedge should apply the same asymmetry as cash (non-contractual demand)"
+    );
+    let margin_asymmetry = ShortfallAsymmetry::for_kind(DemandKind::Margin)?;
+    assert!(
+        asymmetry.multiple() < margin_asymmetry.multiple(),
+        "hedge asymmetry should be weaker than margin (contractual demand)"
+    );
     Ok(())
 }
 

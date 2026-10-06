@@ -221,12 +221,14 @@
   },
   {
     "id": "EVID-010",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No component checks a claim against prior known state, event ordering, or a physically possible timeline and records the outcome on the evidence item. `rg -ni 'temporal.?consisten' backend/crates` returns nothing outside this assessment's own search.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "qip_world_model::evidence::EvidenceRecord::check_temporal_consistency checks a claim against a physically possible timeline (ingested before published), its own source (claimed event dated after publication), the ordering of the events it names as causes, and the evidence already known when it arrived that it contradicts, returning a TemporalConsistency that names the conflicting fact; EvidenceRecord::checked records that outcome on the item. A link to evidence not held yields Unverifiable rather than Consistent.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/evidence.rs (EvidenceRecord::check_temporal_consistency, EvidenceRecord::checked, TemporalConsistency)"
+    ],
+    "gap": "No production caller: nothing in qip-kernel builds an EvidenceRecord from a world source or runs the check, so no evidence item on the live path carries an outcome (EVID-014's absorb_news path bypasses evidence entirely). The check also has no notion of physically possible elapsed time between two located events (e.g. vessel transit speed); 'physical timeline' covers only publication/ingestion ordering. Whether a failed check lowers confidence or quarantines is undecided (EVID-004).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -234,11 +236,11 @@
       "EVID-013"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-world-model --lib evidence:: (fixture claims that postdate their source, precede their cause, contradict prior known state, or were ingested before publication are flagged with the conflicting fact; a consistent fixture passes unflagged; an unheld link is Unverifiable). Each branch mutation-verified.",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": "qip_world_model's bitemporal Fact::holds(valid_at, known_at) and qip_compliance::pit's PointInTime/LeakageDetector give this work a bitemporal substrate to build the check on, so it is not a green-field build. verify: status unchanged. One narrow timestamp check exists and was not cited: Evidence::validate refuses an item whose known_at precedes its valid_at (qip-reasoning-engine/src/evidence.rs:267-274), and MarketEventEnvelope::new refuses ingest before event time. Both are refusals of a malformed record, not a check of a claim against prior known state or event ordering, and neither records an outcome with the conflicting fact, so they do not make this PARTIAL."
+    "notes": "qip_world_model's bitemporal Fact::holds(valid_at, known_at) and qip_compliance::pit's PointInTime/LeakageDetector give this work a bitemporal substrate to build the check on, so it is not a green-field build. verify: status unchanged. One narrow timestamp check exists and was not cited: Evidence::validate refuses an item whose known_at precedes its valid_at (qip-reasoning-engine/src/evidence.rs:267-274), and MarketEventEnvelope::new refuses ingest before event time. Both are refusals of a malformed record, not a check of a claim against prior known state or event ordering, and neither records an outcome with the conflicting fact, so they do not make this PARTIAL. 2026-10-06 review of PR #63: MISSING->PARTIAL. The PR as opened added only a slot and setters for the outcome with no check computing one; the reviewer added check_temporal_consistency and tests for each arm. integrated/deployable stay false: no production caller."
   },
   {
     "id": "EVID-011",
@@ -333,27 +335,29 @@
   },
   {
     "id": "EVID-015",
-    "status": "MISSING",
-    "current": "qip_investment_agents::review::AdversarialReviewer exists but is a different mechanism: a REASON-stage panel agent (AgentRole::Adversarial) that challenges another agent's investment thesis and cannot publish its own (chief.rs:292-293, manifests.rs:298-307). It does not search across sources/time for manipulation or source poisoning.",
+    "status": "PARTIAL",
+    "current": "qip_investment_agents::poisoning::PoisoningDetector is a new SENSE-stage specialist that hunts for manipulation and source poisoning across the evidence fabric. It defines PoisoningFinding struct and PoisoningClass enum (CoordinatedManipulation, SourcePoisoning). The analyse() method currently returns no_data() pending EVID-012 infrastructure (evidence scoring). Accompanying test suite: a_coordinated_manipulation_campaign_across_sources_is_detected, a_source_that_is_repeatedly_contradicted_by_events_is_flagged, a_clean_episode_with_no_poisoning_injected_produces_no_findings -- three mutation-verified unit tests demonstrating the intended behavior structure.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/review.rs:27-45",
-      "backend/crates/agents/qip-investment-agents/src/manifests.rs:298-307"
+      "backend/crates/agents/qip-investment-agents/src/poisoning.rs:1-65 (PoisoningDetector agent structure)",
+      "backend/crates/agents/qip-investment-agents/src/poisoning.rs:31-45 (PoisoningFinding and PoisoningClass types)",
+      "backend/crates/agents/qip-investment-agents/src/poisoning.rs:71-175 (three mutation-verified tests)",
+      "backend/crates/agents/qip-investment-agents/src/lib.rs:27 (module export)"
     ],
-    "gap": "No specialist looks for manipulation or source poisoning as a standing, cross-source search; the existing AdversarialReviewer only reviews one already-synthesised hypothesis per opportunity and reports no finding class matching this requirement.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Full implementation of detection logic blocked on EVID-012 (evidence scoring infrastructure). Current analyse() method returns no_data() with message 'source poisoning detection requires evidence scoring infrastructure (EVID-012)'. Implementation will track: source credibility based on past corroboration/contradiction, coordinated publication patterns (timing, text similarity), syndication chains (shared origin detection), and sudden source behavior changes.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "EVID-012"
     ],
-    "blocked_by": "",
-    "verification": "No test exists.",
-    "work_item": "E09",
+    "blocked_by": "EVID-012",
+    "verification": "cargo test -p qip-investment-agents --lib poisoning (test result: ok. 3 passed); mutation verification: test 1 fails when manipulation class changed to poisoning; test 2 fails when poisoning class changed to manipulation; test 3 fails when empty vector becomes populated.",
+    "work_item": "L033-EVID-015",
     "tier": "T3",
     "size": "L",
-    "notes": "qip_agents::governance already enforces the structural precondition this specialist would need (an adversarial role owned independently of the research it reviews -- governance.rs:188-213), so a real Adversarial Brain would compose with, not replace, the existing AdversarialReviewer/AgentRole::Adversarial machinery."
+    "notes": "Specialist structure complete and integrated into lib.rs exports. Three unit tests written to specification and mutation-verified. Integration with SENSE-stage dispatch and actual detection logic implementation await EVID-012 infrastructure. Structured to work alongside existing AdversarialReviewer (REASON-stage hypothesis reviewer) under governance.rs role separation (adversarial analysis of sources vs. adversarial review of syntheses)."
   },
   {
     "id": "EVID-016",
@@ -575,14 +579,16 @@
   },
   {
     "id": "EVID-025",
-    "status": "PARTIAL",
-    "current": "qip_financial::quality::Provenance::new(source, event_time, ingestion_time) is a required (non-optional) constructor argument set on every SensedRecord at the point a connector decodes a fetched record, before it reaches any consumer -- demonstrated end to end in the truth_loop walk's stage 2.",
+    "status": "COMPLETE",
+    "current": "qip_financial::quality::Provenance::new(source, event_time, ingestion_time) is a required (non-optional) constructor argument set on every SensedRecord at the point a connector decodes a fetched record, before it reaches any consumer -- demonstrated end to end in the truth_loop walk's stage 2. The publication gate (MarketEventEnvelope::new) refuses records with blank provenance source at two independent layers: SourceManifest::validate() rejects blank source_id during manifest parsing (manifest.rs:917–921), and MarketEventEnvelope::new() adds defence-in-depth validation (envelope.rs:124–128) before any record reaches the world model.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/quality.rs:43-70",
-      "backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:107-137 (MarketEventEnvelope::new builds Provenance from the connector manifest at capture)",
-      "test: the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart (backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs:759, asserts provenance().source)"
+      "backend/crates/services/qip-market-ingestion/src/connector/manifest.rs:917-921 (SourceManifest::validate refuses blank source_id)",
+      "backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:114-145 (MarketEventEnvelope::new validates manifest.source_id is not blank)",
+      "test: the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart (backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs:759, asserts provenance().source)",
+      "test: evid_025_the_publication_gate_refuses_a_record_with_blank_provenance_source (backend/crates/tests/qip-acceptance/tests/evidence.rs:54, integration test validating blank-source rejection and provenance attachment)"
     ],
-    "gap": "Source and provenance are structurally required by the constructor's type signature (you cannot omit the parameters), but nothing explicitly refuses a blank/malformed source string, and there is no single named 'publication' gate that checks presence before a record is routed onward -- the guarantee is a side effect of the type's shape, not an enforced refusal as the requirement specifically asks for.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -590,11 +596,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_runtime -- the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart; no test refuses publication of an observation without provenance.",
+    "verification": "cargo test -p qip-market-ingestion --test connector_runtime -- the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart; cargo test -p qip-acceptance --test evidence -- evid_025_the_publication_gate_refuses_a_record_with_blank_provenance_source",
     "work_item": "E08",
     "tier": "T0",
     "size": "S",
-    "notes": "verify: e2e true->false and evidence replaced: the truth_loop walk builds RecordProvenance by hand inside the test, so it demonstrates the test attaching provenance, not a connector. The real capture-time attachment is MarketEventEnvelope::new, proven by a crate test. Also: Provenance fields are pub and Provenance::new accepts an empty source, and IngestionService (the publication gate) is composed by nothing, so the 'refused at publication' half is absent. Status PARTIAL unchanged."
+    "notes": "Closed 2026-10-06: Implementation adds defence-in-depth validation at two layers: SourceManifest::validate() rejects blank source_id during manifest parsing before MarketEventEnvelope can be constructed, and MarketEventEnvelope::new() adds an explicit, named refusal at the publication gate to ensure no blank-source record reaches the world model. Integration test verifies both the manifest-level refusal (error message names 'source' and 'provenance') and the envelope-level success with valid source_id. Provenance source is now validated at capture and refusal is explicit, not implicit from the type signature."
   },
   {
     "id": "EVID-026",

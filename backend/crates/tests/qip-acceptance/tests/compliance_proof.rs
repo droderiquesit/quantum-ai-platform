@@ -770,3 +770,40 @@ fn the_withdrawal_entitlement_still_has_exactly_one_arm_and_every_evaluation_ref
         entitlement.can_withdraw().reason()
     );
 }
+
+#[test]
+fn the_pre_positioning_plan_respects_the_live_drawdown_envelope() -> Result<()> {
+    use qip_core::Duration;
+    use qip_core::{Context, ManualClock};
+    use qip_financial::universe::Universe;
+    use qip_kernel::{Platform, PlatformConfig};
+    use qip_observability::Telemetry;
+    use qip_risk::limits::LimitSet;
+    use std::sync::Arc;
+
+    fn start() -> Timestamp {
+        Timestamp::from_secs(1_700_000_000)
+    }
+
+    fn universe() -> Universe {
+        Universe::new()
+    }
+
+    fn limits() -> LimitSet {
+        LimitSet::new("test-pre-positioning")
+    }
+
+    let clock = Arc::new(ManualClock::new(start()));
+    let context = Context::new(clock, 42u64);
+    let config = PlatformConfig::default();
+    let platform = Platform::new(config, context, Telemetry::silent(), universe(), limits())?;
+
+    let initial_plan = platform.pre_position(start(), Duration::from_hours(24))?;
+
+    assert!(
+        initial_plan.is_within_budget(),
+        "the initial plan must respect its envelope when built with the live drawdown"
+    );
+
+    Ok(())
+}

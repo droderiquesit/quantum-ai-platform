@@ -1,57 +1,52 @@
-# The network.
+# The networks.
 #
-# One global VPC, and almost nothing else here — which is the blueprint's §45
-# shape and is worth stating because the gap used to read larger than it was.
-# §45 asks for one global VPC, regional subnets, no inter-region peering and no
-# overlay. A Google Cloud VPC is a global resource and subnets in different
-# regions share it natively, so there has never been a peering layer to
-# remove. `routing_mode = "REGIONAL"` is not a second VPC and does not
-# partition it; it scopes which Cloud Router BGP routes propagate between
-# regions, which matters only to the interconnect in `modules/connectivity`.
+# Three separate VPCs per environment (GCP-009): Reflex for execution nodes,
+# Fabric for control-plane and event-fabric workloads, Service for all others.
+# Each has its own routing and firewall boundary. §45 asks for regional subnets
+# with no inter-region peering; a Google Cloud VPC is global and subnets in
+# different regions share it natively. Three VPCs partition this at the network
+# level rather than relying on firewall rules alone.
+#
+# This module owns three network resources, the deny-all ingress on each, the
+# private Google APIs zone (which serves all three), the console egress subnet
+# on the Service VPC (ADR 0018), and the egress firewall rules for the console.
 #
 # What this module is *not*, deliberately:
 #
 #   * It is not where workloads live. Every Cloud Run workload attaches to
-#     its trust zone's subnet and every execution node to its own; both are
-#     created by the module that owns the zone or the node, so a range and
-#     the rules that bound it are one declaration. A general-purpose subnet
-#     here would be a range a workload could land in with no zone and no
-#     rule, which is the state the zone model exists to make impossible.
-#   * It has no NAT. A Cloud NAT is regional and `ALL_SUBNETWORKS_ALL_IP_RANGES`
-#     gives a way out to whatever subnet is added next; `modules/trust-zones`
-#     creates one that lists exactly the zones that declared external
-#     egress, and `modules/execution-node` creates one per node that needs
-#     it. Two NATs covering one subnet in one region is a conflict the API
-#     refuses, so this module must not create a third.
+#     its trust zone's subnet on the appropriate network; every execution node
+#     to its own on the Reflex network. A range and the rules that bound it are
+#     one declaration per zone.
+#   * It has no NAT. Cloud NAT is created per network by the zone or node
+#     module that needs egress.
 #   * It does not create a Private Service Connect endpoint for Google APIs.
 #     `modules/connectivity` already has one, gated off.
-#
-# What it does hold: the VPC, the deny-all ingress that makes every allow
-# rule elsewhere mean something, the console's subnet (ADR 0018), and the
-# private DNS zone that sends `*.googleapis.com` to the restricted VIP — the
-# one piece every subnet with private Google access depends on and none of
-# them can own.
 
-resource "google_compute_network" "vpc" {
-  project = var.project_id
-  name    = "qip-${var.environment}"
-
-  # Subnets are declared, not created automatically. An automatic subnet in
-  # every region is a lot of network nobody asked for.
-  auto_create_subnetworks = false
-
-  # Regional routing keeps a failure in one region from affecting another's
-  # routing table.
-  routing_mode = "REGIONAL"
+locals {
+  networks = {
+    reflex  = "qip-${var.environment}-reflex"
+    fabric  = "qip-${var.environment}-fabric"
+    service = "qip-${var.environment}-service"
+  }
 }
 
-# Deny everything inbound that is not explicitly permitted. Declared even
-# though it is the default, because a reviewer should be able to see the
-# posture rather than infer it.
-resource "google_compute_firewall" "deny_ingress" {
+resource "google_compute_network" "vpc" {
+  for_each = local.networks
+
   project = var.project_id
-  name    = "qip-${var.environment}-deny-ingress"
-  network = google_compute_network.vpc.id
+  name    = each.value
+
+  auto_create_subnetworks = false
+  routing_mode            = "REGIONAL"
+}
+
+# Deny everything inbound that is not explicitly permitted on each network.
+resource "google_compute_firewall" "deny_ingress" {
+  for_each = local.networks
+
+  project = var.project_id
+  name    = "${each.value}-deny-ingress"
+  network = google_compute_network.vpc[each.key].id
 
   direction = "INGRESS"
   priority  = 65534
@@ -70,7 +65,7 @@ resource "google_compute_firewall" "deny_ingress" {
 # --- Google APIs without an external address ---------------------------------
 #
 # Every subnet on this platform has private Google access and no external
-# address, and every egress firewall names `199.36.153.8/30` as the one range
+# address, and every egress firewall names `199.36.153.4/30` as the one range
 # a workload may reach Google APIs on. That range answers only if the
 # workload resolves `storage.googleapis.com` *to* it — otherwise the name
 # resolves to a public address, the egress deny drops the packet, and the
@@ -80,21 +75,24 @@ resource "google_compute_firewall" "deny_ingress" {
 # addresses. Cloud Run's direct VPC egress and Compute Engine instances both
 # resolve through the VPC, so one zone serves every tier.
 #
-# `restricted` rather than `private`: the restricted VIP carries only the
-# APIs a VPC Service Controls perimeter can protect, which is the set this
-# platform uses, and it refuses the ones a perimeter cannot — so a workload
-# that reaches for an API outside that set fails to resolve it rather than
-# quietly reaching it.
+# `restricted` (199.36.153.4/30) rather than `private` (199.36.153.8/30): the
+# restricted VIP carries only the APIs a VPC Service Controls perimeter can
+# protect, which is the set this platform uses, and it refuses the ones a
+# perimeter cannot — so a workload that reaches for an API outside that set
+# fails to resolve it rather than quietly reaching it.
 resource "google_dns_managed_zone" "googleapis" {
   project     = var.project_id
   name        = "qip-${var.environment}-googleapis"
   dns_name    = "googleapis.com."
-  description = "Sends every Google API to the restricted VIP, so no subnet needs a route to the internet to reach one."
+  description = "Sends every Google API to the restricted VIP across all three networks (Reflex, Fabric, Service)."
   visibility  = "private"
 
   private_visibility_config {
-    networks {
-      network_url = google_compute_network.vpc.id
+    dynamic "networks" {
+      for_each = local.networks
+      content {
+        network_url = google_compute_network.vpc[networks.key].id
+      }
     }
   }
 
@@ -107,7 +105,7 @@ resource "google_dns_record_set" "restricted_vip" {
   name         = "restricted.googleapis.com."
   type         = "A"
   ttl          = 300
-  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+  rrdatas      = ["199.36.153.4", "199.36.153.5", "199.36.153.6", "199.36.153.7"]
 }
 
 resource "google_dns_record_set" "googleapis_wildcard" {
@@ -132,7 +130,7 @@ resource "google_compute_subnetwork" "console_egress" {
   project = var.project_id
   name    = "qip-${var.environment}-console-egress"
   region  = var.region
-  network = google_compute_network.vpc.id
+  network = google_compute_network.vpc["service"].id
 
   ip_cidr_range = var.console_egress_cidr
 
@@ -170,7 +168,7 @@ locals {
   # `*.googleapis.com` to, and the default `modules/trust-zones` and
   # `modules/execution-node` take for `google_apis_range`. One literal, kept
   # beside the record set that makes it mean something.
-  restricted_vip_range = "199.36.153.8/30"
+  restricted_vip_range = "199.36.153.4/30"
 }
 
 # Priority 65000, `0.0.0.0/0`, all protocols — the zone module's deny. The
@@ -186,7 +184,7 @@ resource "google_compute_firewall" "console_egress_deny_egress" {
   count   = var.console_egress_cidr == null ? 0 : 1
   project = var.project_id
   name    = "qip-${var.environment}-console-egress-deny-egress"
-  network = google_compute_network.vpc.id
+  network = google_compute_network.vpc["service"].id
 
   direction = "EGRESS"
   priority  = 65000
@@ -224,7 +222,7 @@ resource "google_compute_firewall" "console_egress_google_apis" {
   count   = var.console_egress_cidr == null ? 0 : 1
   project = var.project_id
   name    = "qip-${var.environment}-console-egress-google-apis"
-  network = google_compute_network.vpc.id
+  network = google_compute_network.vpc["service"].id
 
   direction = "EGRESS"
   priority  = 1000
@@ -236,4 +234,136 @@ resource "google_compute_firewall" "console_egress_google_apis" {
 
   destination_ranges = [local.restricted_vip_range]
   target_tags        = [local.console_egress_tag]
+}
+
+# --- Data and Engineering VPCs (GCP-051) ----------------------------------------
+#
+# Separate isolated VPC networks for Data and Engineering planes.
+# These networks are isolated from Reflex, Fabric, and Service planes
+# and connect to other networks only as NCC spokes.
+
+resource "google_compute_network" "data_vpc" {
+  project = var.project_id
+  name    = "qip-${var.environment}-data"
+
+  auto_create_subnetworks = false
+  routing_mode            = "REGIONAL"
+
+  description = "Data plane VPC: isolated from Reflex, Fabric, and Service networks"
+}
+
+resource "google_compute_firewall" "data_vpc_deny_ingress" {
+  project = var.project_id
+  name    = "qip-${var.environment}-data-deny-ingress"
+  network = google_compute_network.data_vpc.id
+
+  direction = "INGRESS"
+  priority  = 65534
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_dns_managed_zone" "data_googleapis" {
+  project     = var.project_id
+  name        = "qip-${var.environment}-data-googleapis"
+  dns_name    = "googleapis.com."
+  description = "Restricted Google APIs for Data VPC"
+  visibility  = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.data_vpc.id
+    }
+  }
+
+  labels = var.labels
+}
+
+resource "google_dns_record_set" "data_restricted_vip" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.data_googleapis.name
+  name         = "restricted.googleapis.com."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "data_googleapis_wildcard" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.data_googleapis.name
+  name         = "*.googleapis.com."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["restricted.googleapis.com."]
+}
+
+resource "google_compute_network" "engineering_vpc" {
+  project = var.project_id
+  name    = "qip-${var.environment}-engineering"
+
+  auto_create_subnetworks = false
+  routing_mode            = "REGIONAL"
+
+  description = "Engineering/build plane VPC: isolated from Reflex, Fabric, and Service networks"
+}
+
+resource "google_compute_firewall" "engineering_vpc_deny_ingress" {
+  project = var.project_id
+  name    = "qip-${var.environment}-engineering-deny-ingress"
+  network = google_compute_network.engineering_vpc.id
+
+  direction = "INGRESS"
+  priority  = 65534
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_dns_managed_zone" "engineering_googleapis" {
+  project     = var.project_id
+  name        = "qip-${var.environment}-engineering-googleapis"
+  dns_name    = "googleapis.com."
+  description = "Restricted Google APIs for Engineering VPC"
+  visibility  = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.engineering_vpc.id
+    }
+  }
+
+  labels = var.labels
+}
+
+resource "google_dns_record_set" "engineering_restricted_vip" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.engineering_googleapis.name
+  name         = "restricted.googleapis.com."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "engineering_googleapis_wildcard" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.engineering_googleapis.name
+  name         = "*.googleapis.com."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["restricted.googleapis.com."]
 }

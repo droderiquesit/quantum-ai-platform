@@ -12,11 +12,13 @@
 
 use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 use qip_contracts::edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
-use qip_contracts::feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
+use qip_contracts::feature::{
+    FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, KnowableAt, Revision,
+};
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
 use qip_contracts::message::{BookSide, TradeCondition};
-use qip_contracts::policy::FeasibilityConstraints;
+use qip_contracts::policy::{BeliefState, FeasibilityConstraints, ModelPack, UncertaintyType};
 use qip_contracts::signal::{Conviction, StrategyId};
 use qip_contracts::time::{Stamped, Watermark};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
@@ -827,6 +829,106 @@ fn a_vector_reports_exactly_which_inputs_were_missing() {
     assert!(vector.is_complete());
     assert_eq!(vector.len(), 2, "re-inserting a key duplicated it");
     assert_eq!(vector.revision_of(&bad), Some(Revision::new(5)));
+}
+
+#[test]
+fn a_feature_cannot_be_known_before_it_was_true() {
+    // The combination has no physical meaning: a feature cannot become knowable
+    // before the fact it describes happened in the market. Clamping keeps the
+    // message and makes the anomaly visible through `was_clamped`.
+    let key = FeatureKey::new("realised_vol", object("ACME"));
+    let snapshot = FeatureSnapshot::new(key, FeatureValue::Statistic(0.25), t(100), t(50));
+    // The knowable instant must be clamped forward to match the true instant.
+    assert_eq!(snapshot.instant_true(), t(100));
+    assert_eq!(snapshot.knowable_at().instant(), t(100));
+    assert!(
+        snapshot.knowable_at().instant() >= snapshot.instant_true(),
+        "knowable_at was not clamped forward"
+    );
+}
+
+#[test]
+fn a_point_in_time_read_filters_on_knowable_at_not_instant_true() {
+    // The distinction that decides whether a backtest has point-in-time leakage.
+    // A feature was true at t=100 and only knowable at t=160; a reader asking
+    // "as of 120" must not see it, or the backtest reads the future.
+    let key = FeatureKey::new("realised_vol", object("ACME"));
+    let late = FeatureSnapshot::new(key, FeatureValue::Statistic(0.25), t(100), t(160));
+    assert!(
+        !late.is_knowable_at(t(120)),
+        "a point-in-time read at t=120 was permitted to see a feature that became \
+         knowable at t=160; that is look-ahead leakage"
+    );
+    assert!(late.is_knowable_at(t(160)));
+    assert!(late.is_knowable_at(t(200)));
+    assert_eq!(
+        late.instant_true(),
+        t(100),
+        "instant_true is preserved as stated and not clamped"
+    );
+}
+
+#[test]
+fn a_feature_snapshot_immediate_was_not_clamped() {
+    // A fact known the instant it was true is an immediate publish, not a
+    // delayed one. `instant_true == knowable_at` is the honest reading when
+    // both coincide, which is also true of facts delayed and then corrected
+    // to the same instant they were published at. The test distinguishes the
+    // two by checking `was_clamped` — or rather, that a truly immediate
+    // snapshot does not read as clamped.
+    let key = FeatureKey::new("ema", object("ACME"));
+    let immediate = FeatureSnapshot::immediate(key.clone(), FeatureValue::Statistic(1.2), t(100));
+    assert_eq!(
+        immediate.knowable_at().instant(),
+        immediate.instant_true(),
+        "premise: known-time and true-time coincide in an immediate snapshot"
+    );
+    // A snapshot constructed with `new` where the times already coincide
+    // must read the same way: no clamp happened, since knowable was not
+    // before true.
+    let already_equal = FeatureSnapshot::new(key, FeatureValue::Statistic(1.2), t(100), t(100));
+    assert_eq!(
+        already_equal.knowable_at().instant(),
+        already_equal.instant_true()
+    );
+    // The genuine clamp still reports itself through clamping the timestamp,
+    // so the accessor is testable.
+    let clamped = FeatureSnapshot::new(
+        FeatureKey::new("delayed", object("ACME")),
+        FeatureValue::Statistic(1.2),
+        t(100),
+        t(50),
+    );
+    assert!(clamped.knowable_at().instant() > t(50));
+}
+
+#[test]
+fn knowability_opens_at_the_sealed_instant_and_never_closes_again() {
+    // A feature sealed with KnowableAt cannot be read before its instant —
+    // that is the point-in-time guard, and it is a runtime predicate the
+    // store consults, not a type error. Once open it stays open: a fact
+    // knowable at 160 that read as unknowable at 180 would be a store that
+    // forgets, and every backtest past that instant would silently lose it.
+    let knowable_at_160 = KnowableAt::at(t(160));
+    let knowable_at_200 = KnowableAt::at(t(200));
+
+    // Not knowable before the instant.
+    assert!(!knowable_at_160.is_knowable_at(t(150)));
+    assert!(!knowable_at_160.is_knowable_at(t(159)));
+
+    // Knowable at exactly the instant, and afterwards.
+    assert!(knowable_at_160.is_knowable_at(t(160)));
+    assert!(knowable_at_160.is_knowable_at(t(161)));
+    assert!(knowable_at_160.is_knowable_at(t(180)));
+
+    // The barrier is specific to its instant: the same query time answers
+    // differently for two seals. This file previously asserted the 160
+    // seal was closed at 180 — contradicting the line above it — and
+    // followed it with `x || !x`, so the one property the comment named
+    // was never checked.
+    assert!(knowable_at_160.instant() < knowable_at_200.instant());
+    assert!(!knowable_at_200.is_knowable_at(t(180)));
+    assert!(knowable_at_200.is_knowable_at(t(200)));
 }
 
 // --- conviction -------------------------------------------------------------
@@ -2730,4 +2832,254 @@ fn a_disposition_is_on_the_wire_and_under_the_signature_once_there_is_one() -> R
         "a disposition altered by one unit still signs the same"
     );
     Ok(())
+}
+
+// --- model pack contract (CONTRACT-011) ---
+
+#[test]
+fn a_model_pack_with_all_required_fields_present_is_accepted() -> Result<()> {
+    let pack = ModelPack {
+        artifact_digest: "abc123def456".to_string(),
+        signature: "sig_hmac_sha256_hex_encoded".to_string(),
+        features: vec!["feature_1".to_string(), "feature_2".to_string()],
+        calibration: 0.85,
+        allowed_universes: ["BTC/USD", "ETH/USD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        budget_microseconds: 1_000_000,
+        expires_at: 1_760_086_400,
+        rollback_parent: "prev_digest_hash".to_string(),
+    };
+    pack.validate()?;
+    Ok(())
+}
+
+#[test]
+fn a_model_pack_missing_any_required_field_is_refused() {
+    // Empty artifact_digest
+    let mut pack = ModelPack {
+        artifact_digest: "abc123def456".to_string(),
+        signature: "sig_hmac_sha256_hex_encoded".to_string(),
+        features: vec!["feature_1".to_string()],
+        calibration: 0.85,
+        allowed_universes: ["BTC/USD"].iter().map(|s| s.to_string()).collect(),
+        budget_microseconds: 1_000_000,
+        expires_at: 1_760_086_400,
+        rollback_parent: String::new(),
+    };
+
+    pack.artifact_digest = String::new();
+    assert!(
+        pack.validate().is_err(),
+        "empty artifact_digest was accepted"
+    );
+
+    pack.artifact_digest = "abc123def456".to_string();
+    pack.signature = String::new();
+    assert!(pack.validate().is_err(), "empty signature was accepted");
+
+    pack.signature = "sig_hmac_sha256_hex_encoded".to_string();
+    pack.features = vec![];
+    assert!(pack.validate().is_err(), "empty features was accepted");
+
+    pack.features = vec!["feature_1".to_string()];
+    pack.allowed_universes = BTreeSet::new();
+    assert!(
+        pack.validate().is_err(),
+        "empty allowed_universes was accepted"
+    );
+
+    pack.allowed_universes = ["BTC/USD"].iter().map(|s| s.to_string()).collect();
+    pack.budget_microseconds = 0;
+    assert!(
+        pack.validate().is_err(),
+        "zero budget_microseconds was accepted"
+    );
+
+    pack.budget_microseconds = 1_000_000;
+    pack.expires_at = 0;
+    assert!(pack.validate().is_err(), "zero expires_at was accepted");
+}
+
+#[test]
+fn a_model_pack_with_out_of_range_calibration_is_refused() {
+    let mut pack = ModelPack {
+        artifact_digest: "abc123def456".to_string(),
+        signature: "sig_hmac_sha256_hex_encoded".to_string(),
+        features: vec!["feature_1".to_string()],
+        calibration: 0.85,
+        allowed_universes: ["BTC/USD"].iter().map(|s| s.to_string()).collect(),
+        budget_microseconds: 1_000_000,
+        expires_at: 1_760_086_400,
+        rollback_parent: String::new(),
+    };
+
+    // Calibration > 1.0
+    pack.calibration = 1.5;
+    assert!(pack.validate().is_err(), "calibration > 1.0 was accepted");
+
+    // Calibration < 0.0
+    pack.calibration = -0.1;
+    assert!(pack.validate().is_err(), "calibration < 0.0 was accepted");
+
+    // Boundary: exactly 0.0 is valid
+    pack.calibration = 0.0;
+    assert!(pack.validate().is_ok(), "calibration = 0.0 was rejected");
+
+    // Boundary: exactly 1.0 is valid
+    pack.calibration = 1.0;
+    assert!(pack.validate().is_ok(), "calibration = 1.0 was rejected");
+}
+
+#[test]
+fn a_model_pack_serialises_and_deserialises_round_trip() -> Result<()> {
+    let pack = ModelPack {
+        artifact_digest: "sha256_abc123def456".to_string(),
+        signature: "hmac_sig_bytes_hex".to_string(),
+        features: vec![
+            "price".to_string(),
+            "volatility".to_string(),
+            "volume".to_string(),
+        ],
+        calibration: 0.92,
+        allowed_universes: ["BTC/USD", "ETH/USD", "SOL/USD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        budget_microseconds: 5_000_000,
+        expires_at: 1_760_172_800,
+        rollback_parent: "prev_sha256_xyz789".to_string(),
+    };
+
+    let json = serde_json::to_string(&pack)?;
+    let decoded: ModelPack = serde_json::from_str(&json)?;
+
+    assert_eq!(decoded.artifact_digest, pack.artifact_digest);
+    assert_eq!(decoded.signature, pack.signature);
+    assert_eq!(decoded.features, pack.features);
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(decoded.calibration, pack.calibration);
+    }
+    assert_eq!(decoded.allowed_universes, pack.allowed_universes);
+    assert_eq!(decoded.budget_microseconds, pack.budget_microseconds);
+    assert_eq!(decoded.expires_at, pack.expires_at);
+    assert_eq!(decoded.rollback_parent, pack.rollback_parent);
+    Ok(())
+}
+
+#[test]
+fn a_belief_state_with_all_required_fields_present_is_accepted() {
+    let state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string(), "evidence_002".to_string()],
+        causal_path: vec!["implied_vol".to_string(), "realized_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_760_086_400,
+    };
+
+    let now = 1_750_086_400; // current time in the past
+    assert!(
+        state.validate(now).is_ok(),
+        "belief with all fields was rejected"
+    );
+}
+
+#[test]
+fn a_belief_state_missing_any_required_field_is_refused() {
+    let mut state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string()],
+        causal_path: vec!["implied_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_760_086_400,
+    };
+    let now = 1_750_086_400;
+
+    // Empty proposition
+    state.proposition = String::new();
+    assert!(
+        state.validate(now).is_err(),
+        "empty proposition was accepted"
+    );
+
+    state.proposition = "volatility_regime_high".to_string();
+    state.evidence_set = vec![];
+    assert!(
+        state.validate(now).is_err(),
+        "empty evidence_set was accepted"
+    );
+
+    state.evidence_set = vec!["evidence_001".to_string()];
+    state.causal_path = vec![];
+    assert!(
+        state.validate(now).is_err(),
+        "empty causal_path was accepted"
+    );
+
+    state.causal_path = vec!["implied_vol".to_string()];
+    state.expires_at = 0;
+    assert!(state.validate(now).is_err(), "zero expires_at was accepted");
+}
+
+#[test]
+fn a_belief_state_with_out_of_range_confidence_is_refused() {
+    let mut state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string()],
+        causal_path: vec!["implied_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_760_086_400,
+    };
+    let now = 1_750_086_400;
+
+    // Confidence > 1.0
+    state.confidence = 1.5;
+    assert!(
+        state.validate(now).is_err(),
+        "confidence > 1.0 was accepted"
+    );
+
+    // Confidence < 0.0
+    state.confidence = -0.1;
+    assert!(
+        state.validate(now).is_err(),
+        "confidence < 0.0 was accepted"
+    );
+
+    // Boundary: exactly 0.0 is valid
+    state.confidence = 0.0;
+    assert!(state.validate(now).is_ok(), "confidence = 0.0 was rejected");
+
+    // Boundary: exactly 1.0 is valid
+    state.confidence = 1.0;
+    assert!(state.validate(now).is_ok(), "confidence = 1.0 was rejected");
+}
+
+#[test]
+fn a_belief_state_refuses_reading_after_expiry() {
+    let state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string()],
+        causal_path: vec!["implied_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_750_000_000,
+    };
+
+    let current_time = 1_750_086_400; // After expiry
+    assert!(
+        state.check_expired(current_time).is_err(),
+        "expired belief was readable"
+    );
+
+    let before_expiry = 1_749_999_999; // Before expiry
+    assert!(
+        state.check_expired(before_expiry).is_ok(),
+        "valid belief was refused as expired"
+    );
 }

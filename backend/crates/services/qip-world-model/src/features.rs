@@ -84,6 +84,10 @@ pub struct FeatureValue {
     pub confidence: f64,
     /// True when the value was imputed rather than observed.
     pub imputed: bool,
+    /// Sources this feature value draws from: e.g., ["tick_stream", "world_stream", "world:news"].
+    /// Used to verify that fused features depend on multiple data streams.
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 impl FeatureValue {
@@ -94,6 +98,7 @@ impl FeatureValue {
             available_at,
             confidence: 1.0,
             imputed: false,
+            sources: Vec::new(),
         }
     }
 
@@ -106,6 +111,11 @@ impl FeatureValue {
     pub fn imputed(mut self) -> Self {
         self.imputed = true;
         self.confidence *= 0.7;
+        self
+    }
+
+    pub fn with_sources(mut self, sources: Vec<String>) -> Self {
+        self.sources = sources;
         self
     }
 
@@ -310,6 +320,123 @@ impl Recording {
     pub const fn is_refused(self) -> bool {
         matches!(self, Self::Refused(_))
     }
+}
+
+/// Bitemporal feature store: reads respect both when a value was true
+/// (valid_at) and when it became known (available_at).
+///
+/// The store enforces knowable-instant guards: a value is never returned
+/// for a read before it became available. This prevents the class of bug
+/// where a backtest sees data the live system could not have known yet,
+/// producing strategy that looks excellent and loses money.
+///
+/// Two timestamps define the contract:
+/// - `valid_at`: when the value describes (e.g., the close price from 3pm)
+/// - `available_at`: when the platform learned it (e.g., 3:05pm after exchange
+///   latency and processing)
+///
+/// A read at time T will return the most recent value whose `valid_at <= T`
+/// and `available_at <= T`, or nothing if no such value exists. Neither
+/// timestamp may be violated: a value unavailable at T is not returned even
+/// if valid at T, and a value valid only after T is not returned even if
+/// available before T.
+pub trait BitemporalFeatureStore {
+    /// Record one value for a feature and subject.
+    ///
+    /// The value's `available_at` timestamps the moment it became knowable.
+    /// Returns what happened: stored, or refused with a reason.
+    fn record(&mut self, feature: &str, subject: &str, value: FeatureValue) -> Recording;
+
+    /// Record many values for one series in a single merge.
+    ///
+    /// Semantically identical to calling [`BitemporalFeatureStore::record`]
+    /// once per value, with the same ordering and restatement invariants.
+    fn record_many(&mut self, feature: &str, subject: &str, values: Vec<FeatureValue>)
+    -> Recording;
+
+    /// The value for `subject` as of a point in both time dimensions.
+    ///
+    /// Reads the most recent value where both:
+    /// - `valid_at <= valid_at` (the value describes this instant or earlier)
+    /// - `available_at <= known_at` (the value was knowable by this instant)
+    ///
+    /// Returns `None` if no such value exists or history has been evicted.
+    /// The knowable-instant guard ensures a value never appears before
+    /// `available_at`, even if `valid_at` precedes `known_at`.
+    fn value_as_of(
+        &self,
+        feature: &str,
+        subject: &str,
+        valid_at: Timestamp,
+        known_at: Timestamp,
+    ) -> Option<&FeatureValue>;
+
+    /// The point-in-time read, stating which kind of nothing was found.
+    ///
+    /// Like [`BitemporalFeatureStore::value_as_of`] but distinguishes
+    /// between three cases:
+    /// - `Value`: found and returned
+    /// - `NoValue`: no value ever recorded, or outside availability window
+    /// - `Truncated`: the answer was evicted; consult the event log
+    fn lookup_as_of(
+        &self,
+        feature: &str,
+        subject: &str,
+        valid_at: Timestamp,
+        known_at: Timestamp,
+    ) -> FeatureLookup<'_>;
+
+    /// The current value, given everything known now.
+    fn current(&self, feature: &str, subject: &str, now: Timestamp) -> Option<&FeatureValue>;
+
+    /// The retained history for a subject, as known at `known_at`.
+    ///
+    /// Only values with `available_at <= known_at` are included. Returns
+    /// at most [`FeatureStore::history_limit`] values; older ones are in
+    /// the event log. The knowable-instant guard is enforced by the caller:
+    /// every value returned was knowable by `known_at`.
+    fn history(&self, feature: &str, subject: &str, known_at: Timestamp) -> Vec<&FeatureValue>;
+
+    /// Register a feature definition.
+    fn define(&mut self, feature: Feature);
+
+    /// Retrieve a feature definition by name.
+    fn definition(&self, name: &str) -> Option<&Feature>;
+
+    /// Iterate all registered feature definitions.
+    fn definitions(&self) -> Box<dyn Iterator<Item = &Feature> + '_>;
+
+    /// How many distinct `(feature, subject)` series this store currently holds.
+    fn series_count(&self) -> usize;
+
+    /// How many values this store currently retains (bounded by construction).
+    fn value_count(&self) -> usize;
+
+    /// Values evicted to stay inside bounds. Non-zero means point-in-time
+    /// reads may now return `FeatureLookup::Truncated`.
+    fn evictions(&self) -> u64;
+
+    /// Values evicted from one series. Non-zero means that series cannot
+    /// answer reads before a certain instant without consulting the event log.
+    fn evictions_for(&self, feature: &str, subject: &str) -> u64;
+
+    /// The valid-time window one series still covers, oldest first.
+    ///
+    /// A read before the first element is answered by
+    /// [`FeatureLookup::Truncated`], not by the first element.
+    fn retained_window(&self, feature: &str, subject: &str) -> Option<(Timestamp, Timestamp)>;
+
+    /// The longest key half this store will accept, in characters.
+    fn key_limit(&self) -> usize;
+
+    /// How many distinct series this store will retain at most.
+    fn series_limit(&self) -> usize;
+
+    /// How many values per series this store will retain at most.
+    fn history_limit(&self) -> usize;
+
+    /// Records refused because their key broke a bound.
+    fn refusals(&self) -> u64;
 }
 
 /// Feature values, indexed by feature and subject.
@@ -790,6 +917,98 @@ impl FeatureStore {
     }
 }
 
+impl BitemporalFeatureStore for FeatureStore {
+    fn record(&mut self, feature: &str, subject: &str, value: FeatureValue) -> Recording {
+        // Forward to the concrete implementation
+        FeatureStore::record(self, feature, subject, value)
+    }
+
+    fn record_many(
+        &mut self,
+        feature: &str,
+        subject: &str,
+        values: Vec<FeatureValue>,
+    ) -> Recording {
+        FeatureStore::record_many(self, feature, subject, values)
+    }
+
+    fn value_as_of(
+        &self,
+        feature: &str,
+        subject: &str,
+        valid_at: Timestamp,
+        known_at: Timestamp,
+    ) -> Option<&FeatureValue> {
+        FeatureStore::value_as_of(self, feature, subject, valid_at, known_at)
+    }
+
+    fn lookup_as_of(
+        &self,
+        feature: &str,
+        subject: &str,
+        valid_at: Timestamp,
+        known_at: Timestamp,
+    ) -> FeatureLookup<'_> {
+        FeatureStore::lookup_as_of(self, feature, subject, valid_at, known_at)
+    }
+
+    fn current(&self, feature: &str, subject: &str, now: Timestamp) -> Option<&FeatureValue> {
+        FeatureStore::current(self, feature, subject, now)
+    }
+
+    fn history(&self, feature: &str, subject: &str, known_at: Timestamp) -> Vec<&FeatureValue> {
+        FeatureStore::history(self, feature, subject, known_at)
+    }
+
+    fn define(&mut self, feature: Feature) {
+        FeatureStore::define(self, feature)
+    }
+
+    fn definition(&self, name: &str) -> Option<&Feature> {
+        FeatureStore::definition(self, name)
+    }
+
+    fn definitions(&self) -> Box<dyn Iterator<Item = &Feature> + '_> {
+        Box::new(FeatureStore::definitions(self))
+    }
+
+    fn series_count(&self) -> usize {
+        FeatureStore::series_count(self)
+    }
+
+    fn value_count(&self) -> usize {
+        FeatureStore::value_count(self)
+    }
+
+    fn evictions(&self) -> u64 {
+        FeatureStore::evictions(self)
+    }
+
+    fn evictions_for(&self, feature: &str, subject: &str) -> u64 {
+        FeatureStore::evictions_for(self, feature, subject)
+    }
+
+    fn retained_window(&self, feature: &str, subject: &str) -> Option<(Timestamp, Timestamp)> {
+        FeatureStore::retained_window(self, feature, subject)
+    }
+
+    fn key_limit(&self) -> usize {
+        FeatureStore::key_limit(self)
+    }
+
+    fn series_limit(&self) -> usize {
+        FeatureStore::series_limit(self)
+    }
+
+    fn history_limit(&self) -> usize {
+        FeatureStore::history_limit(self)
+    }
+
+    fn refusals(&self) -> u64 {
+        FeatureStore::refusals(self)
+    }
+}
+
 /// Retention: what the store keeps, what it drops, and what it refuses to
 /// answer once it has dropped something.
 ///
@@ -1028,6 +1247,184 @@ mod retention_tests {
             "612 ticks into a default store retain 512"
         );
         assert_eq!(store.evictions(), 100);
+    }
+}
+
+/// Knowable-instant guards: a value is never returned before it became known.
+///
+/// These tests exist because the entire point-in-time feature store was built
+/// to prevent look-ahead bias: returning a value before it was available makes
+/// a backtest look excellent and causes live losses. The guard is on both
+/// timestamps equally. A value is only returned if both `valid_at <= read_time`
+/// and `available_at <= read_time`. This module verifies the second condition
+/// is never violated.
+#[cfg(test)]
+mod knowable_instant_guard_tests {
+    use super::*;
+
+    fn at(second: i64) -> Timestamp {
+        Timestamp::from_secs(second)
+    }
+
+    /// A value whose available_at is later than the read is not returned,
+    /// even if valid_at is satisfied. This is the core guard.
+    #[test]
+    fn a_value_not_yet_available_is_not_returned_even_if_valid() {
+        let mut store = FeatureStore::new();
+
+        // Record a value that was true at second 100 but did not arrive until
+        // second 110. This 10-second delay is realistic — exchange latency,
+        // network propagation, processing.
+        let value = FeatureValue::new(99.5, at(100), at(110));
+
+        store.record("close", "AAPL", value);
+
+        // At second 105, we know the price was true at second 100
+        // (valid_at <= 105), but we don't know the value yet (available_at = 110).
+        // The guard must refuse this read.
+        let early = store.value_as_of("close", "AAPL", at(105), at(105));
+        assert!(
+            early.is_none(),
+            "a value with available_at=110 must not be returned at known_at=105"
+        );
+
+        // A moment before arrival still returns nothing.
+        let almost = store.value_as_of("close", "AAPL", at(105), at(109));
+        assert!(
+            almost.is_none(),
+            "a value with available_at=110 must not be returned at known_at=109"
+        );
+
+        // At second 110, the value becomes available and is returned.
+        let on_time = store.value_as_of("close", "AAPL", at(105), at(110));
+        assert!(
+            on_time.is_some(),
+            "a value with available_at=110 must be returned at known_at=110"
+        );
+        assert_eq!(on_time.unwrap().value.to_bits(), 99.5_f64.to_bits());
+
+        // After arrival, reads earlier than the value are still answered from
+        // this value if nothing newer has arrived.
+        let later_read = store.value_as_of("close", "AAPL", at(105), at(200));
+        assert_eq!(later_read.unwrap().value.to_bits(), 99.5_f64.to_bits());
+    }
+
+    /// The guard respects both dimensions independently. A value answering to
+    /// valid_at but not available_at is refused; a value answering to available_at
+    /// but not valid_at is also refused.
+    #[test]
+    fn both_timestamps_are_enforced_independently() {
+        let mut store = FeatureStore::new();
+
+        // Value true at 100, available at 110.
+        store.record("price", "AAPL", FeatureValue::new(100.0, at(100), at(110)));
+
+        // Read 1: valid_at is satisfied (100 <= 105) but available_at is not.
+        // Refused on available_at.
+        assert_eq!(
+            store.lookup_as_of("price", "AAPL", at(105), at(105)),
+            FeatureLookup::NoValue,
+            "valid_at satisfied, available_at not: must refuse"
+        );
+
+        // Read 2: available_at is satisfied (110 <= 110) but valid_at is not
+        // (120 > 100). Should return the value since valid_at <= 120 is satisfied.
+        // Actually, valid_at=100 <= 120, so this read should be answered.
+        let future_valid = store.value_as_of("price", "AAPL", at(120), at(110));
+        assert!(
+            future_valid.is_some(),
+            "valid_at=100 <= 120 and available_at=110 <= 110 both satisfied"
+        );
+
+        // Read 3: available_at is satisfied but valid_at is too old (not satisfied
+        // by this value but might by others). Read at a time the value is too old.
+        let way_later = store.value_as_of("price", "AAPL", at(200), at(110));
+        // This depends on staleness — without staleness rules it should be returned.
+        // The value is still the most recent valid_at <= 200 and available_at <= 110.
+        // Actually 110 <= 110 so available check passes; 100 <= 200 so valid_at passes.
+        assert!(
+            way_later.is_some(),
+            "value is still in force for the read even though read time is much later"
+        );
+    }
+
+    /// Multiple values in sequence each respect their own knowable instant.
+    /// A later value arriving in time does not make an earlier value available
+    /// retroactively.
+    #[test]
+    fn each_value_respects_its_own_available_at_independently() {
+        let mut store = FeatureStore::new();
+
+        // Value 1: true at 100, available at 110.
+        store.record("close", "XYZ", FeatureValue::new(50.0, at(100), at(110)));
+
+        // Value 2: true at 105, available at 115.
+        store.record("close", "XYZ", FeatureValue::new(51.0, at(105), at(115)));
+
+        // At time 111, value 1 is available but value 2 is not.
+        let at_111 = store.value_as_of("close", "XYZ", at(105), at(111));
+        assert_eq!(
+            at_111.map(|v| v.value),
+            Some(50.0),
+            "at known_at=111: only value 1 (available_at=110) is available"
+        );
+
+        // At time 115, both are available, so the more recent one (value 2) is returned.
+        let at_115 = store.value_as_of("close", "XYZ", at(105), at(115));
+        assert_eq!(
+            at_115.map(|v| v.value),
+            Some(51.0),
+            "at known_at=115: both are available, return the most recent"
+        );
+
+        // Value 2 arriving does not make value 1 retroactively knowable at 111.
+        // At time 111, reading again after value 2 is stored must still return
+        // value 1 (available at 110), not value 2 (not yet available).
+        let reread_111 = store.value_as_of("close", "XYZ", at(105), at(111));
+        assert_eq!(
+            reread_111.map(|v| v.value),
+            Some(50.0),
+            "arrival of a later value does not retroactively make an earlier one available"
+        );
+    }
+
+    /// The bitemporal trait interface enforces the guard the same way
+    /// the concrete methods do — through the trait methods.
+    #[test]
+    fn the_bitemporal_trait_enforces_knowable_instant_guards() {
+        let mut store: Box<dyn BitemporalFeatureStore> = Box::new(FeatureStore::new());
+
+        // Record through the trait.
+        let value = FeatureValue::new(42.0, at(50), at(60));
+        let recording = store.record("metric", "server-1", value);
+        assert_eq!(recording, Recording::Stored);
+
+        // Read before available through the trait.
+        let too_early = store.value_as_of("metric", "server-1", at(50), at(55));
+        assert!(
+            too_early.is_none(),
+            "trait method value_as_of must also enforce knowable instant"
+        );
+
+        // Read after available through the trait.
+        let on_time = store.value_as_of("metric", "server-1", at(50), at(60));
+        assert!(
+            on_time.is_some(),
+            "trait method value_as_of must return when both conditions are met"
+        );
+
+        // lookup_as_of through the trait.
+        match store.lookup_as_of("metric", "server-1", at(50), at(55)) {
+            FeatureLookup::NoValue => (),
+            other => {
+                panic!("trait method lookup_as_of must refuse before available, got {other:?}")
+            }
+        }
+
+        match store.lookup_as_of("metric", "server-1", at(50), at(60)) {
+            FeatureLookup::Value(v) => assert_eq!(v.value.to_bits(), 42.0_f64.to_bits()),
+            other => panic!("trait method lookup_as_of must return when available, got {other:?}"),
+        }
     }
 }
 

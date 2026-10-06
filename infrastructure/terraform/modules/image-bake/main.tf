@@ -111,7 +111,7 @@ locals {
   # `modules/execution-node` take. One literal per repository would be better
   # than four; four modules naming the same /30 is what exists, and this is the
   # fourth rather than a fifth spelling of it.
-  restricted_vip_range = "199.36.153.8/30"
+  restricted_vip_range = "199.36.153.4/30"
 }
 
 # --- where the payload is staged --------------------------------------------

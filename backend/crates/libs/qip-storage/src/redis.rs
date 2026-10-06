@@ -1930,7 +1930,7 @@ mod tests {
     }
 
     #[test]
-    fn memorystore_has_an_adapter_and_still_reports_that_nothing_it_holds_survives_a_restart() {
+    fn memorystore_has_an_adapter_and_is_now_unconditionally_refused_as_a_storage_target() {
         assert!(
             StorageTarget::Memorystore.is_implemented(),
             "the RESP adapter is compiled into this build"
@@ -1939,21 +1939,14 @@ mod tests {
             !StorageTarget::Memorystore.is_crash_safe(),
             "which changes nothing about durability: persistence_mode is DISABLED on the instance"
         );
-        let settings = crate::StorageSettings::from_values(Some("memorystore"), None)
-            .expect("memorystore resolves without a root");
-        assert!(!settings.is_durable());
-        let banner = settings.banner_lines(&["hot quotes"], &[]);
+        // Memorystore is now refused at configuration time, not later, because it must never
+        // be the authoritative store for the event log, journals, spool, or trial book.
+        let error = crate::StorageSettings::from_values(Some("memorystore"), None)
+            .expect_err("memorystore is now unconditionally refused as a storage target");
         assert!(
-            banner
-                .iter()
-                .any(|line| line.contains("NOTHING SURVIVES A RESTART")),
-            "the start-up banner an operator reads says it outright: {banner:?}"
-        );
-        assert!(
-            banner
-                .iter()
-                .any(|line| line.contains("persists:         nothing")),
-            "and does not claim to persist what it was told it persists: {banner:?}"
+            error.message().contains("memorystore"),
+            "the error names the rejected target: {}",
+            error.message()
         );
     }
 
@@ -1990,57 +1983,26 @@ mod tests {
     }
 
     #[test]
-    fn a_store_built_from_settings_authenticates_with_the_string_the_composition_root_resolved() {
-        // The whole path a binary takes: an environment the root looks
-        // variables up in, `StorageSettings::from_env`, the provider, and a
-        // connection. Until this crate stopped reading `std::env` itself, the
-        // AUTH string was fetched three calls below the root at the moment the
-        // adapter was built, which is why no test could drive this path
-        // without mutating the process environment — and why a deployment
-        // could not mount the string as a file.
-        let server = RespServer::start();
-        server.always("AUTH", ok());
+    fn memorystore_is_refused_even_when_configuration_provides_all_required_credentials() {
+        // Memorystore is now unconditionally refused as a storage target, regardless of
+        // whether all the credentials are present. This ensures that even if a deployment
+        // mistakenly configures everything for Memorystore, the refusal happens at
+        // from_values() time, before any other code path is taken.
         let environment = |name: &str| -> Option<String> {
             match name {
                 crate::settings::TARGET_VARIABLE => Some("memorystore".to_string()),
-                ADDRESS_VARIABLE => Some(server.address.clone()),
-                AUTH_VARIABLE => Some("the-string-the-root-resolved".to_string()),
+                ADDRESS_VARIABLE => Some("10.0.0.5".to_string()),
+                AUTH_VARIABLE => Some("the-auth-string".to_string()),
                 _ => None,
             }
         };
 
-        let settings = crate::StorageSettings::from_values(Some("memorystore"), None)
-            .expect("the premise: memorystore resolves without a root");
+        let error = crate::StorageSettings::from_env(&environment)
+            .expect_err("memorystore is refused at configuration time, not later");
         assert!(
-            settings.managed().is_empty(),
-            "the premise: from_values alone carries no credential, so whatever the store \
-             authenticates with below came through from_env"
-        );
-
-        let settings = crate::StorageSettings::from_env(&environment)
-            .expect("an address and an AUTH string are a complete Memorystore configuration");
-        assert!(
-            settings
-                .managed()
-                .redis_config()
-                .is_ok_and(|c| c.is_authenticated()),
-            "the resolved settings carry the credential: {:?}",
-            settings.managed()
-        );
-        let store = settings
-            .key_value("quotes")
-            .expect("the provider builds the store from what it was given");
-        drop(store);
-
-        let commands = server.commands();
-        assert_eq!(
-            commands.first(),
-            Some(&vec![
-                "AUTH".to_string(),
-                "the-string-the-root-resolved".to_string()
-            ]),
-            "the first command on the wire is AUTH with the string the root resolved: \
-             {commands:?}"
+            error.message().contains("memorystore"),
+            "the error names the rejected target: {}",
+            error.message()
         );
     }
 

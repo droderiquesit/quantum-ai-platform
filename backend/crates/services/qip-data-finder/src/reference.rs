@@ -50,6 +50,7 @@ use crate::admission::AdmittedSource;
 use crate::category::SourceCategory;
 use crate::decision::RegisteredSource;
 use crate::schema::SourceSchema;
+use qip_contracts::governance::Entitlement;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Timestamp};
 use qip_financial::quality::LicensingClass;
@@ -240,6 +241,8 @@ pub struct DataReference {
     /// `[0, 1]` — carried so a research scheduler can weigh a reference from
     /// an unreliable source without re-deriving `SourceHealth` from scratch.
     availability: f64,
+    /// The entitlements granted for this source's usage, empty if none.
+    entitlements: Vec<Entitlement>,
 }
 
 /// Whether `hash` has the shape `qip_core::sha256_hex` writes: sixty-four
@@ -267,6 +270,8 @@ struct DataReferenceWire {
     retrieved_at: Timestamp,
     cost_estimate: Decimal,
     availability: f64,
+    #[serde(default)]
+    entitlements: Vec<Entitlement>,
 }
 
 impl TryFrom<DataReferenceWire> for DataReference {
@@ -302,6 +307,7 @@ impl TryFrom<DataReferenceWire> for DataReference {
             wire.retrieved_at,
             wire.cost_estimate,
             wire.availability,
+            wire.entitlements,
         )
     }
 }
@@ -352,6 +358,7 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            source.entitlements().to_vec(),
         )
     }
 
@@ -385,6 +392,7 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            Vec::new(),
         )
     }
 
@@ -428,6 +436,7 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            Vec::new(),
         )
     }
 
@@ -475,6 +484,7 @@ impl DataReference {
             digest.retrieved_at(),
             cost_estimate,
             availability,
+            Vec::new(),
         )
     }
 
@@ -521,6 +531,7 @@ impl DataReference {
             retrieved_at,
             Decimal::ZERO,
             1.0,
+            Vec::new(),
         )
     }
 
@@ -539,6 +550,7 @@ impl DataReference {
         retrieved_at: Timestamp,
         cost_estimate: Decimal,
         availability: f64,
+        entitlements: Vec<Entitlement>,
     ) -> Result<Self> {
         if bytes.is_empty() {
             return Err(Error::invalid(format!(
@@ -560,6 +572,7 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            entitlements,
         )
     }
 
@@ -578,6 +591,7 @@ impl DataReference {
         retrieved_at: Timestamp,
         cost_estimate: Decimal,
         availability: f64,
+        entitlements: Vec<Entitlement>,
     ) -> Result<Self> {
         if locator.trim().is_empty() {
             return Err(Error::invalid(format!(
@@ -650,6 +664,7 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            entitlements,
         })
     }
 
@@ -706,6 +721,11 @@ impl DataReference {
 
     pub fn availability(&self) -> f64 {
         self.availability
+    }
+
+    /// The entitlements granted for this source's usage.
+    pub fn entitlements(&self) -> &[Entitlement] {
+        &self.entitlements
     }
 
     /// Whether a re-fetch producing `bytes` still matches what this reference

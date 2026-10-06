@@ -284,7 +284,7 @@ run "the_portal_policy_blocks_sql_injection_and_cross_site_scripting_before_the_
   assert {
     condition = length([
       for rule in google_compute_security_policy.edge.rule : rule
-      if rule.action == "deny(403)" && length(rule.match) > 0 && length(rule.match[0].expr) > 0 && strcontains(rule.match[0].expr[0].expression, "evaluatePreconfiguredWaf('sqli-v33-stable'")
+      if rule.action == "deny(403)" && try(strcontains(rule.match[0].expr[0].expression, "evaluatePreconfiguredWaf('sqli-v33-stable'"), false)
     ]) == 1
     error_message = "the portal policy carries no blocking SQL-injection rule; an admitted caller's payload reaches the application"
   }
@@ -292,7 +292,7 @@ run "the_portal_policy_blocks_sql_injection_and_cross_site_scripting_before_the_
   assert {
     condition = length([
       for rule in google_compute_security_policy.edge.rule : rule
-      if rule.action == "deny(403)" && length(rule.match) > 0 && length(rule.match[0].expr) > 0 && strcontains(rule.match[0].expr[0].expression, "evaluatePreconfiguredWaf('xss-v33-stable'")
+      if rule.action == "deny(403)" && try(strcontains(rule.match[0].expr[0].expression, "evaluatePreconfiguredWaf('xss-v33-stable'"), false)
     ]) == 1
     error_message = "the portal policy carries no blocking cross-site-scripting rule"
   }

@@ -96,9 +96,11 @@ resource "google_bigquery_dataset" "research" {
     "became the order book would be a warehouse nobody could query."
   ])
 
-  # No default expiry. A backtest result whose evidence expired is a promotion
-  # decision nobody can re-examine, and the lifecycle ledger keeps references
-  # to these rows for the life of the strategy.
+  # No default expiry. Research aggregates are source-of-truth (not derived
+  # copies), so they are deliberately kept indefinitely. A backtest result
+  # whose evidence expired is a promotion decision nobody can re-examine, and
+  # the lifecycle ledger keeps references to these rows for the life of the
+  # strategy (FINOPS-013, FINOPS-014).
   default_table_expiration_ms = null
 
   default_encryption_configuration {
@@ -135,15 +137,65 @@ resource "google_storage_bucket" "archive" {
 
   # The event log is hash-chained and its value is that it is complete. A
   # retention policy that permitted deletion would let the one record an
-  # investigation needs be the one that aged out.
+  # investigation needs be the one that aged out. The policy is locked so that
+  # no cost-response automation can shorten the retention window and delete
+  # records (FINOPS-014, FINOPS-019).
   retention_policy {
     retention_period = var.archive_retention_days * 24 * 60 * 60
-    is_locked        = false
+    is_locked        = true
   }
 
+  # Market data: Tick/Quote/Book updates (Transient class in event log).
+  # Raw ticks are retained for 30 days in hot storage, then archived to cold storage.
+  # This retention period supports replay and training on recent market regimes
+  # while expiring raw captures to avoid unbounded growth (TICK-037).
   lifecycle_rule {
     condition {
-      age = 90
+      age             = 30
+      prefix_match    = ["lake/class=market/"]
+      matches_storage = ["STANDARD"]
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+  }
+
+  # Market data older than 90 days in COLDLINE is deleted (retention policy
+  # for transient market history per TICK-037; raw bytes not kept beyond this).
+  lifecycle_rule {
+    condition {
+      age          = 90
+      prefix_match = ["lake/class=market/"]
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  # Internal financial history: orders, fills, verdicts, decisions.
+  # Classed as Irreplaceable (Permanent retention, never evicted).
+  # Must be retained indefinitely for audit, compliance and replay.
+  # Transition to COLDLINE for cost optimization but never delete (TICK-037).
+  lifecycle_rule {
+    condition {
+      age             = 180
+      prefix_match    = ["lake/class=internal/"]
+      matches_storage = ["STANDARD"]
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+  }
+
+  # Metadata: retain indefinitely (segment records, manifests, ledgers).
+  # Not prefixed by class=, so stored at lake root or in other paths.
+  lifecycle_rule {
+    condition {
+      age             = 365
+      matches_storage = ["STANDARD"]
+      prefix_match    = ["lake/"]
     }
     action {
       type          = "SetStorageClass"
@@ -153,7 +205,9 @@ resource "google_storage_bucket" "archive" {
 
   lifecycle_rule {
     condition {
-      age = 365
+      age             = 730
+      matches_storage = ["NEARLINE"]
+      prefix_match    = ["lake/"]
     }
     action {
       type          = "SetStorageClass"

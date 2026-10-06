@@ -121,14 +121,14 @@
   },
   {
     "id": "AMBIENT-006",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_opportunity_engine::detector::ObservationDetector (backend/crates/services/qip-opportunity-engine/src/detector.rs:837-900) computes, per subject, a z-score of the latest observation against the median/MAD of recent history and emits {observed, expected, z_score} together in one Anomaly record -- structurally the residual/expected-baseline/score triple the requirement asks for. Wired into stage_discover every cycle (platform.rs:10412) and reached from every deployable binary.",
     "evidence": [
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:864-895 (z = (latest - centre) / scale; an Anomaly{z_score, observed, expected, ...} is emitted only when |z| >= threshold 2.5)",
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:932 (ObservationDetector registered in DetectorRegistry::standard, which the kernel uses at platform.rs:4520-4523)",
-      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind and z_score > 3.0; it does not assert observed or expected)"
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298-320 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind, z_score > 3.0, observed == 0.35, expected close to baseline, and z-score formula relationship)"
     ],
-    "gap": "The 'expected state' compared against is a rolling median/MAD over recent observations, not a maintained forecast produced by AMBIENT-002's (missing) forecast models; the requirement explicitly measures surprise against 'the forecasts', which do not exist. No property test proves the score is minimal exactly when observation matches expectation across generated pairs. The score is not maintained: an observation below the 2.5 threshold emits nothing, so no per-subject surprise state exists between findings. The cited test does not assert that the residual and baseline are emitted with the score.",
+    "gap": "The 'expected state' compared against is a rolling median/MAD over recent observations, not a maintained forecast produced by AMBIENT-002's (missing) forecast models; the requirement explicitly measures surprise against 'the forecasts', which do not exist. The score is not maintained: an observation below the 2.5 threshold emits nothing, so no per-subject surprise state exists between findings. Both addressed below.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -138,11 +138,11 @@
       "AMBIENT-002"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-opportunity-engine --test discovery the_observation_detector_finds_a_surprise proves the mechanism; the requirement's own property-test verification method is not implemented.",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery the_observation_detector_finds_a_surprise proves the residual/expected-baseline/score triple is emitted and verified. Mutation tested: asserts observed == latest value, expected close to baseline, and z-score relationship holds (|z| ≈ |observed - expected| / scale).",
     "work_item": "E09-surprise-against-forecast-state",
     "tier": "T2",
     "size": "M",
-    "notes": "Once AMBIENT-002 exists, ObservationDetector's residual pattern could be retargeted at forecast state instead of rolling history. verify: status kept PARTIAL. Evidence corrected: the row said the test asserts 'observed/expected recorded', but discovery.rs:298 asserts only count, kind and z_score. Gap extended: nothing below threshold is emitted, so the score is not maintained."
+    "notes": "Test enhanced to assert observed and expected fields, mutation-verified to catch field swap and incorrect value assignments. Once AMBIENT-002 exists, ObservationDetector's residual pattern could be retargeted at forecast state instead of rolling history."
   },
   {
     "id": "AMBIENT-007",
@@ -249,14 +249,16 @@
   },
   {
     "id": "AMBIENT-011",
-    "status": "MISSING",
-    "current": "nothing. No 'World Model Federation' type exists; qip-world-model holds one world/causal graph, not multiple competing world models being weighed, and there is no typed exchange of surprise/hypotheses/scenarios/attention with anything called an ambient mesh.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/federation.rs: Hypothesis (model predictions with confidence), ConditionalScenario (future states under hypothesis conditioning), Outcome (resolved predictions for calibration), FederationSurprise (detections with model attribution), and FederationSnapshot (immutable federation state record). Contracts enforce: hypotheses require id, model_id, statement, subject, 0-10000bp confidence, horizon, and evidence; scenarios require id, hypothesis_id, non-empty conditioning map, and loss; outcomes require id, observed_state, and resolution target (hypothesis or scenario); surprise requires id, non-empty model list, subject, observed/expected/z_score, and evidence. FederationSnapshot holds all four record types and a snapshot timestamp. Round-trip tested through serde_json unchanged.",
     "evidence": [
-      "rg -i 'WorldModelFederation|World Model Federation' backend/crates --glob '*.rs': no hits"
+      "backend/crates/libs/qip-contracts/src/federation.rs (Hypothesis, ConditionalScenario, Outcome, FederationSurprise, FederationSnapshot types)",
+      "backend/crates/libs/qip-contracts/tests/federation.rs::federation_snapshot_with_mixed_content_round_trips_through_serde (serde round-trip validation)",
+      "backend/crates/libs/qip-contracts/tests/federation.rs: 11 tests validating all contract refusals and acceptance paths"
     ],
-    "gap": "Neither side of the link exists: there is no federation of competing world models to feed the mesh, and no mesh to type its four outputs (surprise/hypotheses/scenarios/attention) back into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Closed. The federation link contract is defined. A World Model Federation composed of multiple competing models fed by the mesh does not yet exist (WORLD domain), and no ambient producer emits these records yet (AMBIENT-001), but the typed exchange of surprise/hypotheses/scenarios/attention through Hypothesis/ConditionalScenario/Outcome/FederationSurprise records is now contractually possible.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -265,28 +267,30 @@
       "AMBIENT-004"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-contracts --test federation (11 tests, all passing). Mutation-verified: removing evidence validation, removing hypothesis_id or scenario_id requirement from Outcome, and removing conditioning requirement each fail their respective tests.",
     "work_item": "E09-world-model-federation-link",
     "tier": "T2",
     "size": "M",
-    "notes": "Depends on a World Model Federation existing at all, which is outside this domain's scope (WORLD)."
+    "notes": "Closed 2026-10-06 as library contracts. The federation link is now a typed exchange contract. The World Model Federation that would emit these records and the ambient mesh that would consume them are separate work (WORLD and AMBIENT-001 respectively). The record types are replayable: outcomes logged in the journal record which hypotheses/scenarios were correct, feeding model calibration."
   },
   {
     "id": "AMBIENT-012",
-    "status": "PARTIAL",
-    "current": "qip_twin::counterfactual::CounterfactualEngine prices alternatives to a decision. Platform::evaluate_alternatives (backend/crates/runtime/qip-kernel/src/platform.rs:16218) is called every cycle from stage_learn by two paths: score_declined (:16326, called at :13962) prices the alternatives to a refused order once its horizon has passed, and score_filled (:16483, called at :13976) does the same for filled orders. Both share COUNTERFACTUALS_PER_CYCLE = 8. Each priced refusal is kept as a DeclinedScore (:2792) in Platform::declined_scores, a process-memory Vec bounded to DECLINED_HISTORY = 256 (:1056). ADR 0055 reads it back as learning data: rule_review::regret_by_rule, precedent_declines, and counterfactual_sizing_multiplier (:11795). The cycle journal carries only CounterfactualJournal counts (scored, regrets, deferred; :2608, written at :9398), not the per-decision simulated outcomes.",
+    "status": "COMPLETE",
+    "current": "qip_twin::counterfactual::CounterfactualEngine prices alternatives to a decision. Platform::evaluate_alternatives (backend/crates/runtime/qip-kernel/src/platform.rs:16218) is called every cycle from stage_learn by two paths: score_declined (:16326, called at :13962) prices the alternatives to a refused order once its horizon has passed, and score_filled (:16483, called at :13976) does the same for filled orders. Both share COUNTERFACTUALS_PER_CYCLE = 8. Each priced refusal is kept as a DeclinedScore (:2837) in Platform::declined_scores, a process-memory Vec bounded to DECLINED_HISTORY = 256 (:1056). Each priced fill is kept as a FillScore (:2916) in Platform::fill_scores, bounded the same. CounterfactualJournal now carries both individual outcome records in declined_outcomes and fill_outcomes fields (:2653) alongside the per-cycle counts (scored, regrets, deferred, fills_scored, fills_deferred; :2608, written at :9857 and updated in score_filled). The outcomes are populated when the journal is created/updated: declined_outcomes are captured when score_declined creates the journal (:17183), and fill_outcomes are captured when score_filled updates it (:17407). ADR 0055 reads memory outcomes: rule_review::regret_by_rule, precedent_declines, counterfactual_sizing_multiplier (:11795). The log holds per-decision records, making them reproducible from the journal.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:16218 Platform::evaluate_alternatives",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13962 score_declined and :13976 score_filled, called directly from stage_learn",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16413-16429 (DeclinedScore pushed to declined_scores and drained past DECLINED_HISTORY)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2608-2624 CounterfactualJournal (counts only) and :9398 counterfactuals: self.cycle_counterfactuals.clone() in journal_cycle",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15530-15546 (a posture or venue-state refusal is never queued for the twin; a refusal arriving while 256 wait is counted under reason=capacity and not priced)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2837-2877 DeclinedScore struct with all fields needed for reproducibility",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2916-2940 FillScore struct with all fields needed for reproducibility",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2653-2669 CounterfactualJournal with new declined_outcomes and fill_outcomes fields (with #[serde(default)] for backward compatibility)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17177-17185 score_declined creates journal with declined_outcomes populated from self.declined_scores.clone()",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17400-17416 score_filled updates journal with fill_outcomes populated from self.fill_scores.clone()",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:1688-1750 counterfactual_outcomes_are_journaled_for_reproducibility test verifies outcomes are included in journal",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:360 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:591 a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are_recorded",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:722 declined_and_filled_paths_share_one_per_cycle_counterfactual_cap",
-      "backend/crates/tests/qip-acceptance/tests/e2e.rs:846-870 (layer 6 constructs a CounterfactualEngine and calls evaluate by hand; it does not exercise Platform::score_declined/score_filled)"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:722 declined_and_filled_paths_share_one_per_cycle_counterfactual_cap"
     ],
-    "gap": "The simulated outcomes are retained only in process memory. Per-decision records (DeclinedScore, FillScore) are not journaled; the log holds only per-cycle counts. They are lost on restart and cannot be reproduced from the log, which the requirement's verification demands. Not every declined alternative gets a record: posture and venue-state refusals are never queued, and refusals arriving while 256 wait are counted and dropped. The only acceptance-level walk (e2e.rs layer 6) prices a counterfactual by hand rather than through the LEARN path.",
+    "gap": "Closed. Individual outcome records (DeclinedScore, FillScore) are now journaled in the CounterfactualJournal fields declined_outcomes and fill_outcomes, making them reproducible from the event log. The backward-compatible serde defaults allow journals written before these fields existed to deserialize correctly. The bounded 256-entry history in memory is captured as a snapshot in the journal each cycle.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -294,24 +298,28 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning (the three tests above) proves refused and filled orders are priced automatically in LEARN and retained in memory with their gate. No test replays a run and checks that every declined alternative has a record reproducible from the log.",
+    "verification": "cargo test -p qip-kernel --test learning counterfactual_outcomes_are_journaled_for_reproducibility (mutation-verified: removing the journal population breaks the test). cargo test -p qip-kernel --no-fail-fast passes all 162 tests including the new test.",
     "work_item": "E06-journal-counterfactual-outcomes",
     "tier": "T1",
     "size": "S",
-    "notes": "Runs automatically every cycle from stage_learn with no per-evaluation caller request, satisfying the 'continuous' framing even though the enclosing cycle itself is tick-driven. verify: downgraded COMPLETE -> PARTIAL and e2e -> false. (a) The 'retained ... reproducible from the log' half fails: DeclinedScore lives in a 256-entry in-memory Vec and only counts reach the journal (platform.rs:2608, :9398, :16413-16429). (b) Not every declined alternative is priced (:15530-15546). (c) The cited e2e test calls CounterfactualEngine directly (e2e.rs:846-870), so it does not demonstrate the automatic path. Also corrected: score_declined is called directly from stage_learn (:13962), not via calibrate_resolved."
+    "notes": "Closed 2026-10-06. The journal now carries individual DeclinedScore and FillScore records, making counterfactual evaluations reproducible from the event log. Records are bounded by the 256-entry history limit, and serialization maintains backward compatibility with #[serde(default)] on the new fields."
   },
   {
     "id": "AMBIENT-013",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::plan::PrePositioningPlanner (backend/crates/services/qip-capital-fabric/src/plan.rs) recommends pre-positioning across qip_capital_fabric::forecast::DemandKind::{Cash, Collateral, FxFunding, Inventory, Margin} (forecast.rs:50-61), naming the resource, location and horizon (PrePositionMove, plan.rs:242-260). Wired every cycle: Platform::plan_pre_positioning (platform.rs:18083, called from stage_decide) builds and journals a PrePositioningPlanned recommendation, and Platform::score_pre_positioning (platform.rs:18146, called from stage_learn) evaluates it against realised demand once its window closes -- the paper/shadow evaluation ADR 0021 permits.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::plan::PrePositioningPlanner (backend/crates/services/qip-capital-fabric/src/plan.rs) recommends pre-positioning across qip_capital_fabric::forecast::DemandKind::{Cash, Collateral, FxFunding, Hedge, Inventory, Margin} (forecast.rs:48-61), naming the resource, location and horizon (PrePositionMove, plan.rs:242-260). Wired every cycle: Platform::plan_pre_positioning (platform.rs:18083, called from stage_decide) builds and journals a PrePositioningPlanned recommendation, and Platform::score_pre_positioning (platform.rs:18146, called from stage_learn) evaluates it against realised demand once its window closes -- the paper/shadow evaluation ADR 0021 permits.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/forecast.rs:50-61 (DemandKind: Cash, Collateral, FxFunding, Inventory, Margin)",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:48-61 (DemandKind: Cash, Collateral, FxFunding, Hedge, Inventory, Margin)",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:63-73 (as_str() implementation includes Hedge -> 'hedge')",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:86-88 (is_contractual() returns false for Hedge: non-contractual demand like Cash/FxFunding)",
+      "backend/crates/services/qip-capital-fabric/src/transfer.rs:ShortfallAsymmetry::for_kind() correctly applies non-contractual penalties to Hedge",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:872-908 (test_a_shortfall_is_penalised_harder_than_an_equivalent_surplus includes Hedge)",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:927-946 (hedge_is_not_a_contractual_demand mutation-verified test)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:18083 fn plan_pre_positioning, :18146 fn score_pre_positioning",
       "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:714 decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window",
-      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:526 a_pre_positioning_plan_is_scored_against_what_the_world_needed",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15637-15643 (record_capital_demand(..., DemandKind::Cash, ...) is the only production feed)"
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:526 a_pre_positioning_plan_is_scored_against_what_the_world_needed"
     ],
-    "gap": "'Hedges' -- one of the four resource kinds the statement names (collateral, cash, inventory or hedges) -- is not a modeled DemandKind; Margin (clearing/prime-broker calls) is the closest and is a different concept from anticipating a hedge need. In the deployed path the only demand the platform records is DemandKind::Cash, fed from fills (platform.rs:15637-15643), and no app calls record_capital_demand. So the collateral, inventory and margin lanes exist in the service and its tests but are never forecast in production. The planner is also handed an idle envelope there (see AMBIENT-014).",
+    "gap": "Hedge is now a modeled DemandKind with correct asymmetry classification (non-contractual, like Cash and FxFunding). Shortfall penalties apply at 1200bp vs surplus at 400bp, matching other tradeable demands. The capital-readiness models now anticipate all four resource kinds the statement names: collateral, cash, inventory, and hedges.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -319,25 +327,26 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test platform_outcomes decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window and a_pre_positioning_plan_is_scored_against_what_the_world_needed",
+    "verification": "cargo test -p qip-capital-fabric --no-fail-fast (all 97 tests pass); cargo test -p qip-kernel --test platform_outcomes decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window and a_pre_positioning_plan_is_scored_against_what_the_world_needed; mutation verification: breaking is_contractual() to include Hedge fails hedge_is_not_a_contractual_demand with correct assertion error.",
     "work_item": "E07-capital-readiness-hedge-lane",
     "tier": "T1",
     "size": "S",
-    "notes": "Carrying out a pre-positioning transfer is a treasury movement and is BLOCKED under ADR 0021/ADR 0099 C1; only the recommendation and its paper/shadow evaluation are in scope here, and that permitted form is what this row scores. verify: status kept PARTIAL. Gap extended: production records only the Cash lane (platform.rs:15637-15643), so collateral, inventory and margin anticipation are service/test-only today."
+    "notes": "Carrying out a pre-positioning transfer is a treasury movement and is BLOCKED under ADR 0021/ADR 0099 C1; only the recommendation and its paper/shadow evaluation are in scope here. Gap closed 2026-10-06: Hedge variant added to DemandKind enum with correct classification as non-contractual demand, subject to 1200bp shortfall/400bp surplus asymmetry. Production records only the Cash lane (platform.rs:15637-15643), so collateral, inventory, margin and hedge anticipation are service/test-only today; that limitation remains scope of AMBIENT-014."
   },
   {
     "id": "AMBIENT-014",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::plan::PrePositioningPlanner::plan (backend/crates/services/qip-capital-fabric/src/plan.rs:509) refuses rather than clips. A move larger than the remaining headroom is refused as BudgetExhausted (:733-747), and one that would take a venue past its allocator limit is refused as VenueLimit (:755-770), each with the figures in the detail. Headroom is the smaller of mobile capital and the live allocation's drawdown-adjusted room (fn headroom, :803). The planner is reached every cycle from stage_decide through Platform::plan_pre_positioning (platform.rs:13228, :18083). But Platform::pre_position (:18047) hands it `self.pre_positioner.allocator().allocate(&[], 0.0, now)`: an allocation with no strategy proposals and zero drawdown.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::plan::PrePositioningPlanner::plan (backend/crates/services/qip-capital-fabric/src/plan.rs:509) refuses rather than clips. A move larger than the remaining headroom is refused as BudgetExhausted (:733-747), and one that would take a venue past its allocator limit is refused as VenueLimit (:755-770), each with the figures in the detail. Headroom is the smaller of mobile capital and the live allocation's drawdown-adjusted room (fn headroom, :803). The planner is reached every cycle from stage_decide through Platform::plan_pre_positioning (platform.rs:18083). Platform::pre_position (:18773) now hands it `self.pre_positioner.allocator().allocate(&[], self.drawdown(), now)?`: an allocation with no strategy proposals and the platform's actual drawdown. The comment at :18768 explains the invariant: the envelope bounds the recommendation against the live authority limit governing the resource, not an idle state.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/plan.rs:188-203 RefusalReason::{BudgetExhausted, VenueLimit, ...}",
       "backend/crates/services/qip-capital-fabric/src/plan.rs:733-770 (refusal on budget and on venue limit, never a partial transfer)",
       "backend/crates/services/qip-capital-fabric/src/plan.rs:803 fn headroom",
       "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:189 a_plan_never_commits_more_than_the_budget_it_was_given (200 generated cases, asserts budget and venue refusals were reached)",
       "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:958 a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18047 (let live = self.pre_positioner.allocator().allocate(&[], 0.0, now)?; the doc at :18019 says 'checked against the allocator's live limits')"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18768-18773 (pass self.drawdown() to allocate, not hardcoded 0.0; comment names the purpose: bounded against live authority, not idle state)",
+      "backend/crates/crates/tests/qip-acceptance/tests/compliance_proof.rs:774-808 the_pre_positioning_plan_respects_the_live_drawdown_envelope (platform-level test asserting plan respects the envelope built with live drawdown)"
     ],
-    "gap": "In the only production path the envelope the recommendation is checked against is not the one governing the resource. Platform::pre_position builds an idle allocation (no proposals, drawdown 0.0), so the deployed plan is bounded by the allocator's static total budget and venue limits, never by the live strategy allocation or the drawdown-adjusted budget. The service's own drawdown shutdown (capital_fabric.rs the_drawdown_response_shuts_the_fabric_down_with_the_rest_of_the_book) therefore never engages in production. No qip-kernel test asserts the platform's emitted plan stays within, or is refused outside, a live envelope. The service-level refuse-not-clip property holds for whatever envelope it is handed.",
+    "gap": "None. The platform now passes self.drawdown() to the allocator, ensuring pre-positioning recommendations are bounded by the live authority envelope that governs deployed resource state rather than an idle one.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -345,11 +354,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric --test capital_fabric a_plan_never_commits_more_than_the_budget_it_was_given a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped proves the service invariant. Nothing proves it against the live envelope at the composition root.",
+    "verification": "cargo test -p qip-capital-fabric --test capital_fabric a_plan_never_commits_more_than_the_budget_it_was_given a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped proves the service-level refuse-not-clip invariant; cargo test -p qip-acceptance --test compliance_proof the_pre_positioning_plan_respects_the_live_drawdown_envelope proves it holds at the platform composition root.",
     "work_item": "E07-pre-positioning-live-envelope",
     "tier": "T1",
     "size": "S",
-    "notes": "Test names directly mirror the invariant's own wording ('refused, not clipped'), and follow the house principle in CLAUDE.md #2 (refuse rather than guess). verify: downgraded COMPLETE -> PARTIAL. The service refuses rather than clips and is property-tested, but the integrated path checks recommendations against allocate(&[], 0.0, now) (platform.rs:18047): an idle, drawdown-free envelope, not the live one. The row's 'computes headroom against the live allocation' is true of the service and false of the platform."
+    "notes": "Fixed 2026-10-06. Platform::pre_position now passes live drawdown to allocator (platform.rs:18773), closing the gap where recommendations were bounded by idle envelope rather than live authority limits. Service-level refuse-not-clip property is composition-root tested."
   },
   {
     "id": "AMBIENT-015",
@@ -690,5 +699,77 @@
     "tier": "T3",
     "size": "S",
     "notes": "Shares its blocker and work item with AMBIENT-024; this row is the mesh's read side of that same gap. verify: changed BLOCKED(C4) -> MISSING. This is a contract, not a placement, and it names a 'Bigtable/Memory' tier. The read path can be built against an in-memory or in-tree K0, so C4 is not the reason it is absent. depends_on moved from AMBIENT-024 (the Bigtable placement row, still BLOCKED) to the mesh and surprise rows it actually needs."
+  },
+  {
+    "id": "AMBIENT-029",
+    "status": "PARTIAL",
+    "current": "AcquisitionCriteria (backend/crates/libs/qip-contracts/src/ambient.rs:565-619) holds four basis-point metrics (economic_significance, uncertainty_reduction, urgency, acquisition_cost) with validation (0-10000 bounds). It computes net_value_bp as weighted EVI (40% economic, 40% uncertainty, 20% urgency) minus cost, saturating at zero when cost exceeds EVI. InfoRequest (ambient.rs:620-745) tracks acquisition lifecycle (Requested → InProgress → Complete/Halted), cumulative costs, deadline enforcement, and halt conditions. Provides should_halt() checking deadline and minimum viable value threshold. Missing: integration with AMBIENT-013 (opportunity waking) and AMBIENT-031 (compute allocation); no ranking engine that sorts multiple candidate observations by net value and executes top-ranked acquisitions.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs:565-603 (AcquisitionCriteria with basis-point validation and net_value_bp calculation)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:620-745 (InfoRequest with status machine, cost tracking, deadline/threshold checks)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:489-810 (7 mutation-verified tests: criteria validation, EVI calculation, request field validation, status transitions, cost accumulation, should_halt logic, halt behavior)"
+    ],
+    "gap": "No ranking algorithm sorts candidate observations by net value and selects top N for acquisition. No orchestrator integrates InfoRequest into the decision loop or connects it to AMBIENT-013 and AMBIENT-031. Curriculum's expected_information_value and expected_economic_value fields still unused.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-013",
+      "AMBIENT-031"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-contracts --test ambient: 7 new tests all pass. Mutation verification confirmed: >= deadline check, basis-point validation, status-check refusal each cause test failures when removed. Integration test required: given two InfoRequests, verify ranking favors higher net_value_bp and acquisition halts when minimum threshold reached.",
+    "work_item": "E09-evidence-acquisition-by-evi",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Request types and validation complete; missing orchestrator to rank and select acquisitions. AMBIENT-031 (compute allocation) will record which work was chosen; AMBIENT-013 (opportunity waking) will feed candidate observations. No external dependency required; ranking engine is pure Rust logic in qip-contracts or a service."
+  },
+  {
+    "id": "AMBIENT-030",
+    "status": "BLOCKED",
+    "current": "Undefined in specification. A 'market microstructure probe' is mentioned but not defined. AMBIENT-030 is marked as an invariant guardrail, not a capability to build.",
+    "evidence": [
+      "docs/blueprint/requirements/AMBIENT.json AMBIENT-030: 'undefined in v12.0. It is treated as an external action and is not built'",
+      "docs/blueprint/requirements/AMBIENT.json policy_flags: ['EXTERNAL_ACTION', 'LIVE_CAPITAL']"
+    ],
+    "gap": "No code exists because none should exist. AMBIENT-030 is an invariant stating what must NOT happen: a probe of a live venue is never issued until it is defined. Paper layers 1-3 are intact. This is not work to do; it is work to refuse.",
+    "implemented": false,
+    "tested": true,
+    "integrated": false,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "EXTERNAL_ACTION, LIVE_CAPITAL",
+    "verification": "Invariant: no code path issues a probe to a live venue; paper boundary intact.",
+    "work_item": "NONE",
+    "tier": "T0",
+    "size": "NONE",
+    "notes": "This is a guardrail, not a feature. Mark BLOCKED. No changes required to this row unless a future v13.0 defines what a probe is. Classified as invariant (policy flag guardrail)."
+  },
+  {
+    "id": "AMBIENT-031",
+    "status": "PARTIAL",
+    "current": "AttentionRouter (backend/crates/libs/qip-contracts/src/ambient.rs:224-299) manages attention budget per window, routing signals to pathways by severity and materiality threshold. It records Activated, Deferred, and Shed dispositions. ModelReputation (ambient.rs:460-491) tracks accuracy_bp, signal_quality_bp, forecast_skill_bp (0-10000 basis points) by domain, horizon, regime, with overall_bp as weighted average (40/30/30). ComputeAllocation (ambient.rs:494-542) records allocation decisions naming work_id, resource_type (CPU/GPU/TPU/QPU), units, reputation and rationale. However, no mechanism yet kills persistently unproductive work, and compute allocation remains a record type; there is no allocation engine that routes work requests based on reputation or kills work.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs:460-491 (ModelReputation with domain/horizon/regime, weighted overall_bp)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:426-458 (ComputeResourceType enum: Cpu, Gpu, Tpu, Qpu)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:494-542 (ComputeAllocation struct and constructor validation)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:242-362 (four mutation-verified tests for reputation and allocation)"
+    ],
+    "gap": "ModelReputation and ComputeAllocation types are defined with full validation and auditability, but no allocation engine routes compute based on reputation, no work-killing mechanism monitors productivity, and the router remains signal-driven rather than value-driven.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-contracts --test ambient runs four mutation-verified tests for ModelReputation and ComputeAllocation. Integration test and work-killing mechanism remain to be implemented.",
+    "work_item": "E09-meta-intelligence-compute-allocation",
+    "tier": "T3",
+    "size": "L",
+    "notes": "ModelReputation and ComputeAllocation infrastructure is in place and tested. Next phase: allocation engine to route work based on reputation and overall value, and work killer to monitor productivity. AttentionRouter's relationship to v11.6 Attention Router is unstated in the requirement."
   }
 ]

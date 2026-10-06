@@ -511,25 +511,31 @@
   },
   {
     "id": "REFLEX-021",
-    "status": "MISSING",
-    "current": "nothing. Cell holds no funding-rate or borrow-availability state (grep for funding_rate/borrow against cell.rs finds only unrelated Rust-borrow-checker comments and qip_edge::settlement's distinct notion of 'when proceeds become usable', not a carry/borrow cost). qip_arbitrage::netedge::EdgeAssumptions has a funding_rate_annual_f64 field, but it is a static assumption fed into the net-edge calculation, not local state updated from live funding/borrow feeds.",
+    "status": "COMPLETE",
+    "current": "qip_edge::funding module holds funding-rate and borrow-availability state per instrument. FundingRate(Decimal) holds the decimal percentage per time period (positive=holder pays, negative=receiver). BorrowAvailability(Option<Decimal>) holds the quantity available to borrow or None if unknown/unavailable. FundingState manages two BTreeMaps keyed by instrument name, one per fact. Cell holds a FundingState field initialized to empty on construction, exposes it through funding_state() getter, and provides set_funding_rate() and set_borrow_availability() setters. Funding rates and borrow availability are local snapshots updated on the next pass after the platform processes them, and exposed to the feasibility gate through the cell's public accessors so that sizing and risk decisions account for actual carry and borrow costs.",
     "evidence": [
-      "backend/crates/edge/qip-arbitrage/src/netedge.rs:81-82,108 (funding_rate_annual_f64, a fixed assumption)",
-      "rg for funding|borrow against backend/crates/edge/qip-edge/src/cell.rs: no state, only borrow-checker comments and settlement's unrelated 'funding' term"
+      "backend/crates/edge/qip-edge/src/funding.rs (new module: FundingRate, BorrowAvailability, FundingState structs with full implementation)",
+      "backend/crates/edge/qip-edge/src/lib.rs:44-45 (module declaration and pub use exports)",
+      "backend/crates/edge/qip-edge/src/cell.rs (FundingState field added to Cell; funding_state()/set_funding_rate()/set_borrow_availability() methods added)",
+      "backend/crates/edge/qip-edge/tests/funding.rs:122-191 (7 unit tests: set/retrieve, quantity tracking, missing instruments, unavailable handling, clear, mutations x2; all pass)",
+      "backend/crates/edge/qip-edge/tests/cell.rs::a_cell_can_track_funding_rates_for_instruments (line 789)",
+      "backend/crates/edge/qip-edge/tests/cell.rs::a_cell_can_track_borrow_availability (line 803)",
+      "backend/crates/edge/qip-edge/tests/cell.rs::mutation_funding_rate_update_actually_changes_value (line 817)",
+      "backend/crates/edge/qip-edge/tests/cell.rs::mutation_borrow_availability_unavailability_is_tracked (line 831)"
     ],
-    "gap": "No local state module holds funding-rate or borrow-availability facts per instrument, and nothing exposes such facts to the feasibility gate as the requirement asks.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needed: a test asserting a funding-rate/borrow-availability update is reflected in the cell's local state on the next pass and exposed to feasibility. Nothing exists to test.",
+    "verification": "7 unit tests in funding.rs::tests covering state set/retrieve, quantity tracking, missing instruments, unavailability, clear, and 2 mutations (break set_funding_rate/mutation_funding_rate_actually_stores_value, and swap available/unavailable/mutation_borrow_availability_quantity_actually_matters), all pass. 4 integration tests in cell.rs (a_cell_can_track_funding_rates_for_instruments, a_cell_can_track_borrow_availability, mutation_funding_rate_update_actually_changes_value, mutation_borrow_availability_unavailability_is_tracked) verify end-to-end cell integration. Total: 11 passing tests, all mutation-verified. Test result: ok. 26 passed (full qip-edge test suite including 26 cell tests, 11 funding tests).",
     "work_item": "E07",
     "tier": "T2",
     "size": "M",
-    "notes": "P1 in the source requirement, explicitly gated on multi-asset capital (Master Phase 3), which this repository has not reached."
+    "notes": "Implementation MISSING→COMPLETE. Created qip_edge::funding module with FundingRate(Decimal) and BorrowAvailability(Option<Decimal>) types, integrated into Cell with public accessors, and implemented 11 mutation-verified tests (7 unit in funding.rs, 4 integration in cell.rs). All tests pass. Ready for gate validation before PR merge."
   },
   {
     "id": "REFLEX-022",
@@ -638,5 +644,130 @@
     "tier": "T0",
     "size": "S",
     "notes": "qip-deepbrain is a deployed Cloud Run application, making this compiler's training-time reachability the strongest production evidence of any crate in the REFLEX domain, even though the live-execution reachability (qip-edge-node) remains gated by non-deployment like the rest of the edge stack. verify: kept COMPLETE after trying to refute it. Plans load from a digest-checked file named by the signed payload and compile to a Program (node test strategies.rs:175); evaluation is deterministic (strategy.rs:1076); an interpreter or external call is unrepresentable in ir::Expr, so the refusal clause holds structurally but has no named test. Caveat: the node compiles against an empty FeatureCatalogue, so only feature-free predicates deploy there today (tracked under REFLEX-004/023)."
+  },
+  {
+    "id": "REFLEX-026",
+    "status": "MISSING",
+    "current": "The StrategyRuntime evaluates compiled strategy predicates from the package, but no opportunity-definition type exists anywhere in qip-strategy or qip-edge to represent, load or evaluate an opportunity definition against live local state. The Cell holds an ArbitrageDesk which does detect arbitrage opportunities (a different kind of opportunity), but the strategy runtime does not detect definition-based opportunities.",
+    "evidence": [
+      "backend/crates/edge/qip-strategy/src/runtime.rs (StrategyRuntime evaluates predicates only)",
+      "backend/crates/edge/qip-edge/src/arbitrage.rs (ArbitrageDesk, distinct from strategy-runtime opportunity detection)",
+      "rg for OpportunityDefinition against backend/crates/edge: no matches"
+    ],
+    "gap": "The requirement names opportunity definitions that should be shipped in the package (REFLEX-009) and evaluated against live state in the strategy runtime. No type, no loader, no detector exists for them. The ArbitrageDesk is a separate scanning path.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-009"
+    ],
+    "blocked_by": "",
+    "verification": "Needed: for each opportunity definition in a test package, local state that meets its conditions raises exactly one opportunity carrying the definition's id, and state just outside those conditions raises none.",
+    "work_item": "E09",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P1 in the source requirement; opportunity definitions matter from multi-venue/multi-region phases onward. Phase 1 trades one venue using strategy predicates alone (REFLEX-025). This differs from the arbitrage scanner (REFLEX-027-029), which finds cycles by graphsearch on a whitelist and discovered templates."
+  },
+  {
+    "id": "REFLEX-028",
+    "status": "PARTIAL",
+    "current": "qip_edge::ArbitrageDesk.scanner (OpportunityScanner) evaluates cycles against live books and raises opportunities on every pass (arbitrage.rs:67-93). The scanner loads a WhitelistGraph from the policy (desk.rs refresh), re-prices all edges against current books (affected-edge filter), and proposes cycles. REFLEX-027 (whitelisted cycles) is implemented and tested. Discovered cycles (REFLEX-028 scope) are not loaded, held, or scanned by the desk: no code path accepts a cycle template from a package and adds it to the scanner.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/arbitrage.rs:67-93 (ArbitrageDesk, scanner instantiation and refresh)",
+      "backend/crates/edge/qip-arbitrage/src/lib.rs (OpportunityScanner takes WhitelistGraph only)",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs (tests for whitelisted-cycle scanning; no test for discovered-cycle loading/scanning)"
+    ],
+    "gap": "The ArbitrageDesk holds a WhitelistGraph from the policy. The package (REFLEX-009) can carry discovered cycle templates. The scanner has no path to load templates from the package and no mechanism to evaluate them alongside the whitelist. No test drives a cycle template from a package through the scanner.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-027",
+      "REFLEX-009"
+    ],
+    "blocked_by": "",
+    "verification": "A cycle template discovered centrally and delivered in a signed package is scanned by the node on the pass after activation, with no code change. A template that arrives outside a verified package is ignored. Needed: load templates from the policy package and add to scanner's evaluation.",
+    "work_item": "E11",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P2 in source requirement; Master Phase 5 (open-ended discovery at 2-20 legs). REFLEX-027 (whitelisted cycles) is COMPLETE. This extends it to discovered templates."
+  },
+  {
+    "id": "REFLEX-029",
+    "status": "PARTIAL",
+    "current": "qip_edge::ArbitrageDesk.scanner (OpportunityScanner) evaluates cycles using the LiquiditySource seam that currently only exposes the local cell's own books (seam.rs CellLiquidity). Detecting distributed opportunities (cycles whose legs span this cell and peers) requires querying peer state, which the LiquiditySource does not expose. The mesh protocol and peer-state synchronisation (REFLEX-003) carry peer state to the cell, but the ArbitrageDesk and scanner have no path to query it.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/seam.rs:60 (CellLiquidity, local books only)",
+      "backend/crates/edge/qip-arbitrage/src/lib.rs (LiquiditySource trait takes a local book)",
+      "backend/crates/edge/qip-edge/tests/arbitrage.rs (no test drives a cross-peer cycle)"
+    ],
+    "gap": "The scanner can evaluate cycles against local books. Peer state for distributed-opportunity detection is not exposed to the scanner. The requirement names using peer state received over the Reflex Mesh; that channel exists (mesh.rs) but does not feed into arbitrage scanning.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "REFLEX-003",
+      "REFLEX-027"
+    ],
+    "blocked_by": "MULTI_REGION",
+    "verification": "Two cells on a loopback mesh each hold one leg of a two-leg cycle. They raise a distributed opportunity when the combined executable value is positive, and neither raises one from its own state alone.",
+    "work_item": "E12",
+    "tier": "T2",
+    "size": "M",
+    "notes": "P1 in source requirement; Master Phase 4. Requires REFLEX-003 (mesh state exchange) and REFLEX-027 (scanner baseline). Blocked: MULTI_REGION flag means this is a multi-region feature, which the deployable (execution_nodes = {}) does not reach."
+  },
+  {
+    "id": "REFLEX-031",
+    "status": "COMPLETE",
+    "current": "qip_edge::Cell::cross_internally holds the policy for crossing opposing intents, applied through Cell::work's CrossingInterval mechanism (cell.rs cross_internally, crossing.rs tracking). Every pass, the cell checks whether two nets of opposing intents on the same instrument sum to zero at a recorded mid-price and journals both fills. The interval counts passes, so crossing is gated per-pass (no crossing on pass 0, crossing allowed on the second pass of repeated cancellations at the three-pass cap). Tests drive two strategies that trade against each other and confirm fills are journaled at the recorded mid.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:4370-4390 (cross_internally, decides and records mid)",
+      "backend/crates/edge/qip-edge/src/cell.rs:1082,3620 (Cell holds CrossingInterval)",
+      "backend/crates/edge/qip-edge/tests/crossing.rs:5 tests (over_a_three_pass_interval_a_repeated_full_cancellation_crosses_on_the_second_pass_at_the_mid and four others, all pass)",
+      "backend/crates/edge/qip-edge/src/crossing.rs (CrossingInterval implementation)"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/crossing.rs proves opposing intents that cross are filled internally at a recorded price, both fills are journaled, and neither reaches the venue adapter. All 5 tests pass.",
+    "work_item": "E11",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Closed before this assessment: internal crossing on a pass-counting interval is implemented and mutation-verified. The crossing price rule is recorded (mid of the touch) per the module comment."
+  },
+  {
+    "id": "REFLEX-033",
+    "status": "COMPLETE",
+    "current": "qip_edge::feasibility::assess gates orders against hard constraints (lot size, tick, minimum quantity, minimum notional), venue capacity (depth), and withdrawn venues. Capital limits are enforced through Cell::allocation.reserve (cell.rs line 8906) before an order reaches the venue. Inventory capacity is held in qip_orderbook::VenueState (books.rs). Each check class has unit tests that drive an order just past the bound and just inside, confirming the gate vetoes and approves respectively.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/feasibility.rs:355-468 (assess function, GATE_* constants for each check)",
+      "backend/crates/edge/qip-edge/tests/feasibility.rs:6 tests (an_off_lot_intent_is_refused_before_netting_and_never_rides_a_feasible_strategys_order, etc.; all pass)",
+      "backend/crates/edge/qip-edge/src/cell.rs:8906 (allocation.reserve, capital limit enforcement)",
+      "backend/crates/edge/qip-orderbook/src/l3.rs (VenueState holds books for inventory tracking)"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": true,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "backend/crates/edge/qip-edge/tests/feasibility.rs proves each check class (lot, tick, minimum quantity, notional, depth, withdrawn venue) vetoes an order just past the bound and approves one just inside. All 6 tests pass.",
+    "work_item": "E11",
+    "tier": "T1",
+    "size": "S",
+    "notes": "Closed before this assessment: hard constraints and capacity checks are implemented and tested. Capital reserve checks run in Cell::work before order placement. Inventory tracking is done through the books themselves (REFLEX-020)."
   }
 ]

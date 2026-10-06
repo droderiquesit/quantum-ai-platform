@@ -18,6 +18,7 @@
 
 use crate::affordance::AffordanceGraph;
 use crate::comparison::Comparison;
+use crate::knowledge::KnowledgeLog;
 use qip_core::{Decimal, Error};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -115,6 +116,8 @@ pub struct InterventionPlan {
     pub root: PlanNode,
     pub total_cost: Decimal,
     pub total_exposure: Decimal,
+    /// Knowledge inputs that informed this plan.
+    pub knowledge_log: KnowledgeLog,
 }
 
 impl InterventionPlan {
@@ -206,7 +209,14 @@ impl InterventionPlan {
             root,
             total_cost: cost,
             total_exposure: exposure,
+            knowledge_log: KnowledgeLog::new(),
         })
+    }
+
+    /// Record which knowledge inputs informed this plan.
+    pub fn with_knowledge(&mut self, inputs: &[crate::knowledge::KnowledgeInput]) -> &mut Self {
+        self.knowledge_log.record_batch(inputs);
+        self
     }
 }
 

@@ -185,6 +185,28 @@ pub enum LimitKind {
     MaxCounterpartyExposure { limit: f64 },
     /// Minimum cash as a fraction of equity.
     MinCashBuffer { limit: f64 },
+    /// Maximum gross exposure per venue as a fraction of equity.
+    /// Prevents concentration of credit line usage at any single execution venue.
+    ///
+    /// Read from [`RiskState::venue_exposures`]. A venue absent from that map
+    /// is **refused, not read as zero**: an absent figure is one nobody
+    /// computed, and reading it as zero made this limit pass every book whose
+    /// producer never filled the map — which, as of this writing, is every
+    /// book, because nothing outside tests writes `venue_exposures`.
+    MaxVenueExposure { venue: String, limit: f64 },
+    /// Ceiling on the venue's figure in [`RiskState::venue_exposures`],
+    /// compared **as raw notional in the book's currency** — the bound is an
+    /// amount of money, not a fraction of equity and not a multiple of daily
+    /// volume.
+    ///
+    /// This doc used to say "a multiple of daily ADV" while the evaluation
+    /// compared raw notional, so a desk that set a bound of 2.0 meaning "twice
+    /// ADV" got a cap of two units of currency. `RiskState` carries no
+    /// per-venue volume, so the doc now states what is compared rather than
+    /// the arithmetic inventing a denominator. Despite the name it is not
+    /// windowed in time either: it reads whatever exposure the producer filed.
+    /// A venue absent from the map is refused, as for [`Self::MaxVenueExposure`].
+    MaxVenueNotionalRate { venue: String, limit: f64 },
 }
 
 impl LimitKind {
@@ -207,6 +229,8 @@ impl LimitKind {
             Self::MaxDaysToLiquidate { .. } => "max_days_to_liquidate",
             Self::MaxCounterpartyExposure { .. } => "max_counterparty_exposure",
             Self::MinCashBuffer { .. } => "min_cash_buffer",
+            Self::MaxVenueExposure { .. } => "max_venue_exposure",
+            Self::MaxVenueNotionalRate { .. } => "max_venue_notional_rate",
         }
     }
 
@@ -241,6 +265,8 @@ impl LimitKind {
             | Self::MaxDailyLoss { limit }
             | Self::MaxDaysToLiquidate { limit }
             | Self::MaxCounterpartyExposure { limit }
+            | Self::MaxVenueExposure { limit, .. }
+            | Self::MaxVenueNotionalRate { limit, .. }
             | Self::MinCashBuffer { limit } => *limit,
             Self::MinLiquidity { fraction, .. } => *fraction,
         }
@@ -334,6 +360,14 @@ impl LimitKind {
             Self::MaxDaysToLiquidate { .. } => Self::MaxDaysToLiquidate { limit: bound },
             Self::MaxCounterpartyExposure { .. } => Self::MaxCounterpartyExposure { limit: bound },
             Self::MinCashBuffer { .. } => Self::MinCashBuffer { limit: bound },
+            Self::MaxVenueExposure { venue, .. } => Self::MaxVenueExposure {
+                venue: venue.clone(),
+                limit: bound,
+            },
+            Self::MaxVenueNotionalRate { venue, .. } => Self::MaxVenueNotionalRate {
+                venue: venue.clone(),
+                limit: bound,
+            },
         })
     }
 
@@ -375,7 +409,9 @@ impl LimitKind {
             | Self::MinLiquidity { .. }
             | Self::MaxDaysToLiquidate { .. }
             | Self::MaxCounterpartyExposure { .. }
-            | Self::MinCashBuffer { .. } => false,
+            | Self::MinCashBuffer { .. }
+            | Self::MaxVenueExposure { .. }
+            | Self::MaxVenueNotionalRate { .. } => false,
         }
     }
 
@@ -437,6 +473,14 @@ impl LimitKind {
             {
                 Some("horizon")
             }
+            (
+                Self::MaxVenueExposure { venue: v1, .. },
+                Self::MaxVenueExposure { venue: v2, .. },
+            )
+            | (
+                Self::MaxVenueNotionalRate { venue: v1, .. },
+                Self::MaxVenueNotionalRate { venue: v2, .. },
+            ) if v1 != v2 => Some("venue"),
             _ => None,
         }
     }
@@ -697,6 +741,16 @@ pub struct RiskState {
     /// a producer fills this. A state built by a caller that never computes a
     /// liquidity ladder carries no claim about liquidity either way.
     pub unevaluated: BTreeMap<String, String>,
+    /// Gross exposure per venue, keyed by venue ID, read by
+    /// [`LimitKind::MaxVenueExposure`] and [`LimitKind::MaxVenueNotionalRate`].
+    ///
+    /// **No production code writes this map.** That is why neither venue
+    /// limit is in [`LimitSet::conservative_default`]: a venue limit there
+    /// would either never fire (when an absent venue read as zero, which it
+    /// once did) or refuse every order (now that an absent venue is refused).
+    /// A venue limit belongs in a shipped set only alongside a producer — the
+    /// kernel's `risk_state` — that fills this map for the venue it names.
+    pub venue_exposures: BTreeMap<String, Decimal>,
 }
 
 impl RiskState {
@@ -1568,6 +1622,55 @@ impl LimitSet {
                     "cash over equity".into(),
                 );
             }
+            // Both venue arms refuse a venue the state holds no figure for.
+            // They used to read it as `Decimal::ZERO`, and since nothing in
+            // production writes `venue_exposures` that made the shipped
+            // `venue-exposure-simulated` limit pass every real book while
+            // counting in `LimitCheck::evaluated` — the `MaxExpectedShortfall`
+            // defect in a new place. The absence is carried as NaN so it
+            // takes `Assessment::Uncomparable`, the one refusal path this file
+            // already has for a figure that is not a number, and reaches the
+            // desk as Critical naming the producer as the thing to fix.
+            //
+            // This differs deliberately from `MaxAxisWeight`'s absent axis,
+            // which records nothing: an axis is absent because the catalogue
+            // holds no record for an instrument, whereas a venue limit names
+            // its venue, so an absent venue figure can only mean the producer
+            // never computed the number this limit exists to read.
+            LimitKind::MaxVenueExposure {
+                venue,
+                limit: bound,
+            } => match state.venue_exposures.get(venue) {
+                Some(value) => record(
+                    state.ratio(value.abs()),
+                    *bound,
+                    Some(venue.clone()),
+                    format!("gross exposure to venue {venue}"),
+                ),
+                None => record(
+                    f64::NAN,
+                    *bound,
+                    Some(venue.clone()),
+                    format!("gross exposure to venue {venue} has no figure in the risk state"),
+                ),
+            },
+            LimitKind::MaxVenueNotionalRate {
+                venue,
+                limit: bound,
+            } => match state.venue_exposures.get(venue) {
+                Some(value) => record(
+                    value.abs().to_f64(),
+                    *bound,
+                    Some(venue.clone()),
+                    format!("notional to venue {venue} in currency units (circuit breaker)"),
+                ),
+                None => record(
+                    f64::NAN,
+                    *bound,
+                    Some(venue.clone()),
+                    format!("notional to venue {venue} has no figure in the risk state"),
+                ),
+            },
         }
         out
     }
@@ -1736,5 +1839,11 @@ impl LimitSet {
                 Limit::new("cash-buffer", LimitKind::MinCashBuffer { limit: 0.02 })
                     .with_rationale("settlement and margin need headroom"),
             )
+        // No venue limit ships here. `venue-exposure-simulated` did, and
+        // nothing in production writes `RiskState::venue_exposures`, so it
+        // read zero on every book and could not fire. Restore it only in the
+        // same change that gives the kernel's `risk_state` a writer for the
+        // venue it names; with an absent venue now refused, shipping it
+        // without one would refuse every order instead.
     }
 }

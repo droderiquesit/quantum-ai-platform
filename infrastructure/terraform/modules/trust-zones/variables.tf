@@ -19,9 +19,26 @@ variable "region" {
   type        = string
 }
 
-variable "network_id" {
-  description = "The VPC the zone subnets are cut from and every rule below is written in."
+variable "reflex_network_id" {
+  description = "The Reflex VPC (execution nodes)."
   type        = string
+}
+
+variable "fabric_network_id" {
+  description = "The Fabric VPC (control-plane and event-fabric workloads)."
+  type        = string
+}
+
+variable "service_network_id" {
+  description = "The Service VPC (application and workload zones)."
+  type        = string
+}
+
+# Backward compatibility: old single network variable still accepted but deprecated.
+variable "network_id" {
+  description = "DEPRECATED: Use reflex_network_id, fabric_network_id, service_network_id instead. This maps to service_network_id."
+  type        = string
+  default     = ""
 }
 
 variable "zones" {
@@ -171,11 +188,11 @@ variable "zone_identities" {
 variable "google_apis_range" {
   description = <<-EOT
     The range every zone may reach Google APIs on, for the one egress rule
-    that permits it. The restricted VIP by default, which `modules/network`'s
-    private zone resolves every `*.googleapis.com` to.
+    that permits it. The restricted VIP (199.36.153.4/30) by default, which
+    `modules/network`'s private zone resolves every `*.googleapis.com` to.
   EOT
   type        = string
-  default     = "199.36.153.8/30"
+  default     = "199.36.153.4/30"
 
   validation {
     condition     = var.google_apis_range != "0.0.0.0/0"

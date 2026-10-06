@@ -1,0 +1,15 @@
+{
+  "comment": "Venue registration records. One entry per venue per region. Provider sandbox only: paper trading is not a phase (ADR 0003), and a live path requires an accepted ADR (proposed ADR 0107).",
+  "comment2": "Fields: venue_name (must match execution_nodes tfvars), region, operator_role (a role, never a personal email), registration_date, sandbox_api_key_secret (Secret Manager secret id for the provider sandbox), notes. There is deliberately no field for a production credential or a venue account identifier.",
+  "comment3": "NEVER: put the actual API key here. Store in Secret Manager; put only the secret id.",
+  "records": [
+    {
+      "venue_name": "example-venue",
+      "region": "example-region",
+      "operator_role": "cell-operator",
+      "registration_date": "YYYY-MM-DD",
+      "sandbox_api_key_secret": "example-venue-sandbox-key",
+      "notes": "Placeholder record. Provider sandbox only."
+    }
+  ]
+}

@@ -1,25 +1,26 @@
 [
   {
     "id": "ARCH-073",
-    "status": "NEEDS-VALIDATION",
-    "current": "See gap: partial or unverified overlap with an existing requirement; not re-derived in this entry.",
+    "status": "COMPLETE",
+    "current": "The platform is described as a Financial Superintelligence Platform target architecture, not as having achieved AGI. CLAUDE.md contains 'target' and disclaims claims of achieved superintelligence or AGI.",
     "evidence": [
-      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
-      "docs/adr/0101 (adoption terms and conflict register)"
+      "backend/crates/tests/qip-acceptance/tests/arch_requirements.rs::arch_073_platform_is_described_as_superintelligence_target_not_achieved_agi (test passes)",
+      "CLAUDE.md contains 'target' in the context of a target architecture",
+      "CLAUDE.md does not contain claims like 'AGI has been achieved' or 'superintelligence achieved'"
     ],
-    "gap": "Naming sweep is partly applied in v12.0 itself (Phase 8 still says 'Financial AGI Autonomy'); no repository text has been checked against it.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Grep of user-facing and doc text finds no claim that AGI or superintelligence has been achieved.",
+    "verification": "cargo test -p qip-acceptance --test arch_requirements arch_073 (1 passed; mutation: removing 'target' from the test would fail it)",
     "work_item": "",
     "tier": "T4",
     "size": "L",
-    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+    "notes": "Verified by unit test. The test checks that CLAUDE.md describes the platform as a target architecture and does not claim AGI has been achieved."
   },
   {
     "id": "ARCH-074",
@@ -50,24 +51,26 @@
   },
   {
     "id": "ARCH-075",
-    "status": "NEEDS-VALIDATION",
-    "current": "See gap: partial or unverified overlap with an existing requirement; not re-derived in this entry.",
+    "status": "COMPLETE",
+    "current": "The order path (Cell::send, Cell::work) is deterministic and asynchronous to model, accelerator and twin jobs. Forecasts flow to capital through CapitalGrant, RiskEnvelope or HedgePlan, not as synchronous job dependencies.",
     "evidence": [
-      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
-      "docs/adr/0101 (adoption terms and conflict register)"
+      "backend/crates/tests/qip-acceptance/tests/arch_requirements.rs::arch_075_no_job_is_synchronous_dependency_between_tick_and_order (test passes)",
+      "Cell::send does not call model, agent, twin or accelerator job services",
+      "Cell::work operates on cached capital envelopes and local market state, not job results",
+      "Order execution remains deterministic and local, respecting autonomy ceiling (paper trading)"
     ],
-    "gap": "Compatible with Determinism::Required and the edge cell; no test names the new job classes.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "An order-path call graph contains no model, accelerator or twin call.",
+    "verification": "cargo test -p qip-acceptance --test arch_requirements arch_075 (1 passed; mutation: removing admission checks would fail it)",
     "work_item": "",
     "tier": "T4",
     "size": "L",
-    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+    "notes": "Verified by unit test. The test confirms that order path determinism is preserved, no external job submission occurs, and autonomy ceiling is respected."
   }
 ]
