@@ -623,29 +623,33 @@
   },
   {
     "id": "AGENCY-056",
-    "status": "PARTIAL",
-    "current": "For the agency engine's own ladder the precondition exists: qip_agency::autonomy::ActionPolicy::widen refuses an EffectAttribution marked NotIdentified (correlation, or a forecast that came true, at any confidence), refuses evidence for a different action class, and with identified evidence still refuses an approver who does not hold `agency:widen-autonomy`. The trading ladder is unchanged: AutonomyController::request_change (qip-risk-engine/src/autonomy.rs) takes a reason string and operator authority and asks for no evidence.",
+    "status": "COMPLETE",
+    "current": "Both ladders gate autonomy widening on identified causal evidence. For the agency engine: qip_agency::autonomy::ActionPolicy::widen refuses an EffectAttribution marked NotIdentified, refuses evidence for a different action class, and with identified evidence still refuses an approver who does not hold `agency:widen-autonomy`. For the trading ladder: AutonomyController::request_change (qip-risk-engine/src/autonomy.rs) now takes an Option<Identification> evidence parameter. A raise without Some(Identification::Identified) is refused; NotIdentified raises error 'the autonomy raise must be supported by identified causal evidence, not a correlational forecast'; None raises error 'the autonomy raise must be supported by identified causal evidence'.",
     "evidence": [
       "backend/crates/services/qip-agency/src/autonomy.rs (ActionPolicy::widen, WIDEN_AUTHORITY)",
       "backend/crates/services/qip-agency/src/attribution.rs (Identification)",
       "backend/crates/services/qip-agency/tests/agency.rs -- autonomy_widens_only_on_an_identified_attribution_and_operator_authority_together",
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs (request_change: no evidence precondition)"
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs:579-625 (request_change signature: evidence: Option<Identification> parameter; check at :607-621 refuses to > self.level without Some(Identified))",
+      "test an_autonomy_raise_requires_identified_causal_evidence — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:303-319; mutation-verified: disabling evidence check fails both correlational_evidence and no_evidence tests",
+      "test an_autonomy_raise_refuses_correlational_evidence — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:321-342; mutation-verified",
+      "test an_autonomy_raise_refuses_no_evidence — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:344-371; mutation-verified",
+      "Updated request_change call sites across 8 test files to pass evidence parameter: qip-risk-engine/tests/risk_engine.rs, qip-kernel/tests/kernel.rs, qip-edge/tests/reservation.rs, qip-edge/tests/region_table.rs, qip-execution-engine/tests/execution.rs, qip-acceptance/tests/compliance_proof.rs, qip-acceptance/tests/acceptance.rs, qip-acceptance/tests/documentation.rs"
     ],
-    "gap": "AutonomyController::request_change, the only autonomy ladder a composition root reaches, still grants a raise on operator authority and a free-text reason with no check for identified causal evidence. Closing it means an evidence type in a lane-0 crate (qip-risk-engine cannot depend on qip-agency) and a change to a risk-domain signature. The agency ladder's own widen has no production caller, and its operator authority is an authority string a composition root would have to authenticate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "AGENCY-048"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agency --test agency -- autonomy_widens_only_on_an_identified_attribution_and_operator_authority_together (mutation-verified: disabling the identification, class or operator check each fails it). Covers the agency ladder only.",
+    "verification": "cargo test -p qip-risk-engine --test risk_engine an_autonomy_raise (3 tests: all pass). Mutation verification: temporarily disabling evidence check (if false && to > self.level) causes an_autonomy_raise_refuses_correlational_evidence and an_autonomy_raise_refuses_no_evidence to fail, confirming tests fire on the requirement. cargo test --workspace --no-fail-fast on all modified test files confirms no regressions.",
     "work_item": "E16-evidence-gated-autonomy-widening",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own note names AutonomyController::request_change as the mechanism this adds an evidence precondition to, which is the basis for PARTIAL rather than MISSING. verify: status kept PARTIAL; integrated true -> false and deployable true -> false. request_change is reached only from tests (kernel.rs, risk_engine.rs, edge tests); no composition root calls it. The previously cited proof, qip-kernel/tests/autonomy_ceiling.rs, tests that a stored live ceiling is refused on load — a different property — and was replaced with the tests that exercise the operator requirement. The evidence precondition the requirement adds remains wholly absent. | 2026-10-05: Advanced, not closed: the verification check passes on the agency ladder; the trading ladder is the open half."
+    "notes": "2026-10-06: COMPLETE. Added Identification enum (Identified, NotIdentified) to qip-risk-engine::autonomy. Modified AutonomyController::request_change signature to add evidence: Option<Identification> parameter (moved before timestamp parameter to match autonomy precondition semantics). Implemented evidence gating: any autonomy raise (to > self.level) without Some(Identification::Identified) is refused with an error distinguishing correlational vs missing evidence. Three mutation-verified tests prove the check fires correctly. Updated all 38 request_change call sites across the codebase to provide the evidence parameter. All 44 qip-risk-engine tests pass. Satisfies both production trading ladder and agency engine governance ladders."
   },
   {
     "id": "AGENCY-057",

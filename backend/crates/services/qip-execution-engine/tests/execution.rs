@@ -22,7 +22,9 @@ use qip_execution_engine::feasibility;
 use qip_execution_engine::oms::{OrderManager, RefusalReason, order_type_for};
 use qip_execution_engine::order::{Fill, Order, OrderState, OrderType, Side};
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
-use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel, OperatorIdentity};
+use qip_risk_engine::autonomy::{
+    AutonomyController, AutonomyLevel, Identification, OperatorIdentity,
+};
 use qip_risk_engine::pretrade::PreTradeChecker;
 use std::collections::BTreeMap;
 
@@ -163,6 +165,7 @@ fn a_live_autonomy_level_alone_does_not_make_an_unreachable_venue_usable() {
             &OperatorIdentity::verified("alice@example.com", "hardware-token", now())
                 .with_second_approver("bob@example.com"),
             "enabling supervised live trading for the pilot",
+            Some(Identification::Identified),
             now(),
         )
         .unwrap();

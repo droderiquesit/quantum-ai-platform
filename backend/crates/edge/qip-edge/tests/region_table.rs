@@ -34,7 +34,7 @@ use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Labels, Metrics, labels, names};
 use qip_orderbook::venue::VenueState;
-use qip_risk_engine::autonomy::{AutonomyLevel, OperatorIdentity};
+use qip_risk_engine::autonomy::{AutonomyLevel, Identification, OperatorIdentity};
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};
@@ -643,6 +643,7 @@ fn an_expired_orders_capital_returns_once_and_no_later_pass_returns_it_again() -
         AutonomyLevel::Observation,
         &operator,
         "so the passes below propose nothing and the balance moves only on expiry",
+        None,
         t(56),
     )?;
 
