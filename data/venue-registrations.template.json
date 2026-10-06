@@ -1,0 +1,37 @@
+{
+  "comment": "Venue registration records. One entry per venue per region.",
+  "comment2": "Fields: venue_name (must match execution_nodes tfvars), operator (person who registered), account_id (venue's account id), api_key_secret (Secret Manager secret id), sandbox_api_key_secret (Secret Manager secret id for test environment).",
+  "comment3": "NEVER: put the actual API key here. Store in Secret Manager; put only the secret id.",
+  "records": [
+    {
+      "venue_name": "nasdaq",
+      "region": "us-east4",
+      "operator": "alice@example.com",
+      "registration_date": "2026-10-06",
+      "account_id": "ACME-12345",
+      "api_key_secret": "nasdaq-prod-key",
+      "sandbox_api_key_secret": "nasdaq-sandbox-key",
+      "notes": "Production account registered by Alice. Used by newyork-1 cell."
+    },
+    {
+      "venue_name": "nyse",
+      "region": "us-east4",
+      "operator": "alice@example.com",
+      "registration_date": "2026-10-06",
+      "account_id": "ACME-67890",
+      "api_key_secret": "nyse-prod-key",
+      "sandbox_api_key_secret": "nyse-sandbox-key",
+      "notes": "Production account registered by Alice. Used by newyork-1 cell."
+    },
+    {
+      "venue_name": "lse",
+      "region": "europe-west2",
+      "operator": "bob@example.com",
+      "registration_date": "2026-10-15",
+      "account_id": "ACME-LSE-001",
+      "api_key_secret": "lse-prod-key",
+      "sandbox_api_key_secret": "lse-sandbox-key",
+      "notes": "Production account registered by Bob. Used by london-1 cell (future)."
+    }
+  ]
+}

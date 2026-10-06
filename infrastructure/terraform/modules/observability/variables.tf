@@ -62,9 +62,10 @@ variable "workload_metrics_exist" {
       grep -c '^resource "google_monitoring_alert_policy"' main.tf
       grep -c 'count *=.*workload_metrics_exist'           main.tf
 
-    Both answered 9 on 2026-09-06, and they must stay equal — a policy added
-    without the gate is a policy that fails the apply on a project that has
-    ingested nothing.
+    Both must stay equal — a policy added without the gate is a policy that
+    fails the apply on a project that has ingested nothing. Verify the count
+    with the commands above before flipping this gate, and update the comment
+    in the environment's tfvars with what they print.
   EOT
   type        = bool
   default     = false
