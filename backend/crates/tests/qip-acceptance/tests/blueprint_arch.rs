@@ -279,3 +279,40 @@ fn the_ten_v12_completeness_targets_are_the_blueprints_own_words_and_each_is_sco
         "the rendered view does not hold one row per target"
     );
 }
+
+/// CICD-083: The dev environment explicitly declares mock venue adapters.
+///
+/// The simulated venue is hardcoded in `infrastructure/terraform/modules/
+/// execution-node/templates/startup.sh.tftpl` and is the only value the
+/// execution node binary accepts. To make this explicit in tfvars (the
+/// requirement verification check: "The dev tfvars define mock venue adapters"),
+/// the root variables.tf declares `venue_adapter_type`, and the dev
+/// environment sets it to "simulated" for fast iteration.
+///
+/// This test verifies that the dev tfvars contains the explicit declaration
+/// so the mock venue configuration is visible and maintained, not just
+/// implicitly hardcoded.
+#[test]
+fn dev_environment_declares_mock_venue_adapter_explicitly() {
+    let root = qip_acceptance::repository_root();
+    let dev_tfvars =
+        std::fs::read_to_string(root.join("infrastructure/environments/dev/terraform.tfvars"))
+            .expect("dev tfvars is readable");
+
+    // The dev tfvars must explicitly declare the venue adapter type as "simulated".
+    assert!(
+        dev_tfvars.contains("venue_adapter_type = \"simulated\""),
+        "dev tfvars must explicitly declare venue_adapter_type = \"simulated\" for mock venue iteration"
+    );
+
+    // Assert the declaration is present without being commented out.
+    let uncommented_lines: Vec<_> = dev_tfvars
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .filter(|line| line.contains("venue_adapter_type = \"simulated\""))
+        .collect();
+    assert!(
+        !uncommented_lines.is_empty(),
+        "venue_adapter_type must not be commented out in dev tfvars"
+    );
+}

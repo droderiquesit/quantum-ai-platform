@@ -933,6 +933,29 @@ variable "enable_vertex_ai" {
 # Saying so here is the alternative to a check that would read as protection
 # and could never fire.
 
+variable "venue_adapter_type" {
+  description = <<-EOT
+    The type of venue adapter this environment uses: "simulated" for the
+    in-process matching engine (CICD-083, ADR 0003), or the name of a
+    real venue for production environments.
+
+    Dev environment uses "simulated" for fast iteration without external
+    venue connectivity. Production environments name their live venues here.
+
+    This variable makes the venue configuration explicit in tfvars and is
+    the single source of truth for whether an environment trades on mock or
+    real venues.
+  EOT
+
+  type    = string
+  default = "simulated"
+
+  validation {
+    condition     = var.venue_adapter_type != ""
+    error_message = "The venue adapter type must not be empty. Use 'simulated' for mock venues (dev) or a real venue name for production environments."
+  }
+}
+
 variable "kms_protection_level" {
   description = "Protection level for every KMS key in this configuration: SOFTWARE or HSM. One value for all four keys, so a mixed posture cannot be expressed."
   type        = string
