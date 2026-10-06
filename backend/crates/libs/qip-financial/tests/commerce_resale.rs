@@ -387,3 +387,90 @@ fn one_simulated_product_runs_from_discovery_to_a_settled_resale_with_every_stag
     let s = p.settle("s1").expect("settled");
     assert!(s.net > Decimal::ZERO);
 }
+
+// ---- Customs duty (COMMERCE-003)
+
+#[test]
+fn cross_border_purchase_computes_customs_duty_as_fixture_expects() {
+    let declared_value_per_unit = dec!("50");
+    let quantity = dec!("100");
+    let unit_purchase_price = dec!("50");
+    let customs_duty_rate = dec!("0.08");
+    let freight_per_unit = dec!("3");
+    let clearance_fee = dec!("25");
+
+    let terms = LogisticsTerms {
+        route: vec![Leg {
+            from: "Shanghai".into(),
+            to: "Newark".into(),
+            mode: TransportMode::Sea,
+            days: 21,
+            freight_per_unit,
+            freight_per_shipment: Decimal::ZERO,
+        }],
+        customs: Customs {
+            duty_rate: customs_duty_rate,
+            clearance_fee,
+            clearance_days: 2,
+        },
+        spoilage: Spoilage::none("electronics do not perish in transit").expect("stated"),
+        storage_per_unit_per_day: dec!("0.01"),
+        storage_days: 2,
+        fees: MarketplaceFees {
+            ad_valorem: Decimal::ZERO,
+            per_unit: Decimal::ZERO,
+            per_consignment: Decimal::ZERO,
+        },
+        returns: Returns {
+            rate: Decimal::ZERO,
+            cost_per_unit: Decimal::ZERO,
+            recovery_rate: Decimal::ZERO,
+        },
+    };
+
+    let cost = terms
+        .cost(quantity, unit_purchase_price, declared_value_per_unit)
+        .expect("landed cost computed");
+
+    let total_declared_value = declared_value_per_unit * quantity;
+    let expected_customs_duty = total_declared_value * customs_duty_rate;
+    let expected_total_freight = freight_per_unit * quantity;
+    let elapsed_days = dec!("25"); // clearance_days (2) + sea transit (21) + storage_days (2)
+    let expected_storage = quantity * dec!("0.01") * elapsed_days;
+
+    assert_eq!(
+        cost.duty, expected_customs_duty,
+        "customs duty must equal declared value × duty rate: {} = {} × {}",
+        expected_customs_duty, total_declared_value, customs_duty_rate
+    );
+    assert_eq!(
+        cost.clearance, clearance_fee,
+        "clearance fee must match fixture"
+    );
+    assert_eq!(
+        cost.freight, expected_total_freight,
+        "total freight must equal freight_per_unit × quantity"
+    );
+    assert_eq!(
+        cost.storage, expected_storage,
+        "storage must equal quantity × storage_rate × elapsed_days"
+    );
+
+    let expected_total_cost = unit_purchase_price * quantity
+        + expected_total_freight
+        + expected_customs_duty
+        + clearance_fee
+        + expected_storage;
+
+    assert_eq!(
+        cost.total(),
+        expected_total_cost,
+        "total landed cost must equal sum of all components"
+    );
+
+    let cost_per_delivered_unit = cost.per_delivered_unit().expect("delivered unit cost");
+    assert!(
+        cost_per_delivered_unit > unit_purchase_price,
+        "cost per delivered unit must exceed purchase price"
+    );
+}
