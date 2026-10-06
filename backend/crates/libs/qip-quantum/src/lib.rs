@@ -36,6 +36,7 @@ pub mod benchmark;
 pub mod foundry;
 pub mod provider;
 pub mod qaoa;
+pub mod registry;
 pub mod solver;
 pub mod statevector;
 
@@ -48,6 +49,7 @@ pub use provider::{
     ProviderCapabilities, QuantumProvider, SimulatedProvider,
 };
 pub use qaoa::{QaoaResult, QaoaSettings};
+pub use registry::{SolverRegistry, SolverRegistryBuilder};
 pub use solver::{
     ClassicalSearch, ClassicalSolver, IbmQuantumConfig, IbmQuantumSolver, ProviderSolver,
     QuantumInspiredSolver, QuboSolver, QueuePolicy, SearchTrace, SolverCandidate, SolverCostModel,

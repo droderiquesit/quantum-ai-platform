@@ -10,10 +10,12 @@
 //! platform that mixes horizons without tracking them will size a slow signal
 //! as though it were fast.
 
+pub mod contracts;
 pub mod factor;
 pub mod signal;
 pub mod strategy;
 
+pub use contracts::{DecisionRequest, QuantumSolverEngine, SolverRegistry, SolverResult};
 pub use factor::{FactorDefinition, FactorLibrary, FactorScore};
 pub use signal::{Horizon, Signal, SignalKind, SignalSet};
 pub use strategy::{Strategy, StrategyContext, StrategyDecision, TargetWeights};

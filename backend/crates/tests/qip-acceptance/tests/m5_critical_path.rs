@@ -172,16 +172,15 @@ impl Placer for PaperGateway {
 
     fn place(
         &mut self,
-        _order_id: &str,
+        order_id: &str,
         _object_id: &ObjectId,
         _venue: &VenueId,
         _side: BookSide,
-        _quantity: Decimal,
-        _price: Decimal,
+        quantity: Decimal,
+        price: Decimal,
         _at: Timestamp,
     ) -> Result<()> {
-        // MUTATION: comment out the line below to test mutation detection
-        // self.placed.push((order_id.to_string(), quantity, price));
+        self.placed.push((order_id.to_string(), quantity, price));
         Ok(())
     }
 

@@ -185,6 +185,12 @@ pub enum LimitKind {
     MaxCounterpartyExposure { limit: f64 },
     /// Minimum cash as a fraction of equity.
     MinCashBuffer { limit: f64 },
+    /// Maximum gross exposure per venue as a fraction of equity.
+    /// Prevents concentration of credit line usage at any single execution venue.
+    MaxVenueExposure { venue: String, limit: f64 },
+    /// Maximum notional that may be sent to a single venue before
+    /// a circuit breaker pause is triggered, as a multiple of daily ADV.
+    MaxVenueNotionalRate { venue: String, limit: f64 },
 }
 
 impl LimitKind {
@@ -207,6 +213,8 @@ impl LimitKind {
             Self::MaxDaysToLiquidate { .. } => "max_days_to_liquidate",
             Self::MaxCounterpartyExposure { .. } => "max_counterparty_exposure",
             Self::MinCashBuffer { .. } => "min_cash_buffer",
+            Self::MaxVenueExposure { .. } => "max_venue_exposure",
+            Self::MaxVenueNotionalRate { .. } => "max_venue_notional_rate",
         }
     }
 
@@ -334,6 +342,14 @@ impl LimitKind {
             Self::MaxDaysToLiquidate { .. } => Self::MaxDaysToLiquidate { limit: bound },
             Self::MaxCounterpartyExposure { .. } => Self::MaxCounterpartyExposure { limit: bound },
             Self::MinCashBuffer { .. } => Self::MinCashBuffer { limit: bound },
+            Self::MaxVenueExposure { venue, .. } => Self::MaxVenueExposure {
+                venue: venue.clone(),
+                limit: bound,
+            },
+            Self::MaxVenueNotionalRate { venue, .. } => Self::MaxVenueNotionalRate {
+                venue: venue.clone(),
+                limit: bound,
+            },
         })
     }
 
@@ -375,7 +391,9 @@ impl LimitKind {
             | Self::MinLiquidity { .. }
             | Self::MaxDaysToLiquidate { .. }
             | Self::MaxCounterpartyExposure { .. }
-            | Self::MinCashBuffer { .. } => false,
+            | Self::MinCashBuffer { .. }
+            | Self::MaxVenueExposure { .. }
+            | Self::MaxVenueNotionalRate { .. } => false,
         }
     }
 

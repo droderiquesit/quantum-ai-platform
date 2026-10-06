@@ -13,7 +13,7 @@
 project_id     = "algorik-platform-prod"
 project_number = 123456789012
 environment    = "prod"
-region         = "us-east4"  # Default region for resources without an explicit region
+region         = "us-east4" # Default region for resources without an explicit region
 
 autonomy_ceiling = "paper_trading"
 
@@ -139,11 +139,11 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 execution_nodes = {
   # us-east4 (Ashburn) — closest to NY/NJ venues
   "newyork-1" = {
-    region           = "us-east4"
-    zone             = "us-east4-b"
-    subnet_cidr      = "10.64.0.0/24"
-    machine_type     = "c3-highcpu-16"
-    boot_image       = "projects/algorik-platform-prod/global/images/qip-edge-node-us-east4-20261006-abc123"
+    region            = "us-east4"
+    zone              = "us-east4-b"
+    subnet_cidr       = "10.64.0.0/24"
+    machine_type      = "c3-highcpu-16"
+    boot_image        = "projects/algorik-platform-prod/global/images/qip-edge-node-us-east4-20261006-abc123"
     region_allocation = "500000.00"
 
     venues = {
@@ -152,7 +152,7 @@ execution_nodes = {
     }
 
     shadow_mode              = true
-    create_egress_nat        = false    # Simulated venue; no internet
+    create_egress_nat        = false # Simulated venue; no internet
     default_pricing          = ""
     strategy_plan_path       = ""
     cross_region_mirror_path = ""
@@ -217,11 +217,11 @@ execution_nodes = {
 
 # --- Observability ---
 
-workload_metrics_exist = false  # Flip to true when ingestion is proven
+workload_metrics_exist = false # Flip to true when ingestion is proven
 
-metrics_collector_image_digest = null  # null = no sidecar on Cloud Run
+metrics_collector_image_digest = null # null = no sidecar on Cloud Run
 
-vendored_openobserve_image_digest = null  # null = OpenObserve not deployed
+vendored_openobserve_image_digest = null # null = OpenObserve not deployed
 
 # --- Other settings ---
 
@@ -236,14 +236,14 @@ central_horizons_file    = null
 risk_limits_file         = null
 source_candidates_file   = null
 
-enable_bigquery              = false
-enable_cloud_storage         = false
-enable_alloydb               = false
-enable_bigtable              = false
-enable_memorystore           = false
-enable_spanner               = false
-enable_vertex_ai             = false
-enable_partner_interconnect  = false
+enable_bigquery                = false
+enable_cloud_storage           = false
+enable_alloydb                 = false
+enable_bigtable                = false
+enable_memorystore             = false
+enable_spanner                 = false
+enable_vertex_ai               = false
+enable_partner_interconnect    = false
 enable_private_service_connect = false
 
 snapshot_start_time  = "05:00"

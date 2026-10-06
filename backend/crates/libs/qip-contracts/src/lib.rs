@@ -45,6 +45,7 @@ pub mod market_event;
 pub mod market_state;
 pub mod message;
 pub mod policy;
+pub mod quantum;
 pub mod reflex;
 pub mod reflex_journal;
 pub mod replay;
@@ -69,7 +70,8 @@ pub use intent::{
     Contributor, Intent, NetIntent, NettingPolicy, Representation, net, netting_ratio,
 };
 pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
-pub use policy::{PolicyItem, PolicyPayload, Slot};
+pub use policy::{PolicyFrame, PolicyItem, PolicyPayload, RegimeChange, RiskGate, Slot};
+pub use quantum::{ChosenPath, DecisionRequest, RoutingDecision, SolverKind, SolverResult};
 pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};
 pub use schema::{CompatibilityPolicy, SchemaDefinition, SchemaRegistry};
 pub use signal::{Conviction, Signal, SignalKind, StrategyId};

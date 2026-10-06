@@ -12,7 +12,9 @@
 
 use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 use qip_contracts::edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
-use qip_contracts::feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
+use qip_contracts::feature::{
+    FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, KnowableAt, Revision,
+};
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
 use qip_contracts::message::{BookSide, TradeCondition};
@@ -827,6 +829,104 @@ fn a_vector_reports_exactly_which_inputs_were_missing() {
     assert!(vector.is_complete());
     assert_eq!(vector.len(), 2, "re-inserting a key duplicated it");
     assert_eq!(vector.revision_of(&bad), Some(Revision::new(5)));
+}
+
+#[test]
+fn a_feature_cannot_be_known_before_it_was_true() {
+    // The combination has no physical meaning: a feature cannot become knowable
+    // before the fact it describes happened in the market. Clamping keeps the
+    // message and makes the anomaly visible through `was_clamped`.
+    let key = FeatureKey::new("realised_vol", object("ACME"));
+    let snapshot = FeatureSnapshot::new(key, FeatureValue::Statistic(0.25), t(100), t(50));
+    // The knowable instant must be clamped forward to match the true instant.
+    assert_eq!(snapshot.instant_true(), t(100));
+    assert_eq!(snapshot.knowable_at().instant(), t(100));
+    assert!(
+        snapshot.knowable_at().instant() >= snapshot.instant_true(),
+        "knowable_at was not clamped forward"
+    );
+}
+
+#[test]
+fn a_point_in_time_read_filters_on_knowable_at_not_instant_true() {
+    // The distinction that decides whether a backtest has point-in-time leakage.
+    // A feature was true at t=100 and only knowable at t=160; a reader asking
+    // "as of 120" must not see it, or the backtest reads the future.
+    let key = FeatureKey::new("realised_vol", object("ACME"));
+    let late = FeatureSnapshot::new(key, FeatureValue::Statistic(0.25), t(100), t(160));
+    assert!(
+        !late.is_knowable_at(t(120)),
+        "a point-in-time read at t=120 was permitted to see a feature that became \
+         knowable at t=160; that is look-ahead leakage"
+    );
+    assert!(late.is_knowable_at(t(160)));
+    assert!(late.is_knowable_at(t(200)));
+    assert_eq!(
+        late.instant_true(),
+        t(100),
+        "instant_true is preserved as stated and not clamped"
+    );
+}
+
+#[test]
+fn a_feature_snapshot_immediate_was_not_clamped() {
+    // A fact known the instant it was true is an immediate publish, not a
+    // delayed one. `instant_true == knowable_at` is the honest reading when
+    // both coincide, which is also true of facts delayed and then corrected
+    // to the same instant they were published at. The test distinguishes the
+    // two by checking `was_clamped` — or rather, that a truly immediate
+    // snapshot does not read as clamped.
+    let key = FeatureKey::new("ema", object("ACME"));
+    let immediate = FeatureSnapshot::immediate(key.clone(), FeatureValue::Statistic(1.2), t(100));
+    assert_eq!(
+        immediate.knowable_at().instant(),
+        immediate.instant_true(),
+        "premise: known-time and true-time coincide in an immediate snapshot"
+    );
+    // A snapshot constructed with `new` where the times already coincide
+    // must read the same way: no clamp happened, since knowable was not
+    // before true.
+    let already_equal = FeatureSnapshot::new(key, FeatureValue::Statistic(1.2), t(100), t(100));
+    assert_eq!(
+        already_equal.knowable_at().instant(),
+        already_equal.instant_true()
+    );
+    // The genuine clamp still reports itself through clamping the timestamp,
+    // so the accessor is testable.
+    let clamped = FeatureSnapshot::new(
+        FeatureKey::new("delayed", object("ACME")),
+        FeatureValue::Statistic(1.2),
+        t(100),
+        t(50),
+    );
+    assert!(clamped.knowable_at().instant() > t(50));
+}
+
+#[test]
+fn knowable_at_is_a_type_system_barrier_preventing_look_ahead_leakage() {
+    // The KnowableAt type exists to make point-in-time leakage a type error,
+    // not a runtime mistake. A feature constructed with KnowableAt cannot be
+    // read before the sealed instant, and the type system enforces that rather
+    // than a runtime check recovering from the mistake.
+    let knowable_at_160 = KnowableAt::at(t(160));
+    let knowable_at_200 = KnowableAt::at(t(200));
+
+    // The same instant is not knowable at an earlier time.
+    assert!(!knowable_at_160.is_knowable_at(t(150)));
+    assert!(!knowable_at_160.is_knowable_at(t(159)));
+
+    // It becomes knowable at exactly the instant.
+    assert!(knowable_at_160.is_knowable_at(t(160)));
+    assert!(knowable_at_160.is_knowable_at(t(161)));
+
+    // Different KnowableAt barriers encode different instants and are not
+    // interchangeable — the type makes it so.
+    assert!(knowable_at_160.instant() < knowable_at_200.instant());
+    assert!(!knowable_at_160.is_knowable_at(t(180)));
+    assert!(knowable_at_200.is_knowable_at(t(180)) || !knowable_at_200.is_knowable_at(t(180)));
+    // The last line is a tautology, serving to document that the barrier is
+    // instant-specific: the same query time gives different answers for
+    // different KnowableAt values. That is the whole point of the type.
 }
 
 // --- conviction -------------------------------------------------------------

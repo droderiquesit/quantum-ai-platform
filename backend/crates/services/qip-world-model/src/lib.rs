@@ -46,7 +46,9 @@ pub use falsification::{
     Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,
     SourceCensus, SourceStanding, TrialLedger, Verdict, rolling_statistic,
 };
-pub use features::{FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue};
+pub use features::{
+    BitemporalFeatureStore, FEATURE_HISTORY, Feature, FeatureLookup, FeatureStore, FeatureValue,
+};
 pub use graph::{
     Belief, CONTRADICTION_GAP, Contradiction, EXCERPT_LIMIT, Fact, KnowledgeGraph, Node, NodeKind,
 };

@@ -636,7 +636,7 @@ resource "google_monitoring_alert_policy" "policy_gate_overhead" {
 resource "google_monitoring_dashboard" "m6_core_platform" {
   count = var.workload_metrics_exist ? 1 : 0
 
-  project        = var.project_id
+  project = var.project_id
   dashboard_json = jsonencode({
     displayName = "M6 Core Platform (${var.environment})"
     mosaicLayout = {
@@ -652,7 +652,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               content = "Quantum routing, analytics pipeline, and policy gate performance"
             }
           }
-        }
+        },
         # Quantum routing section
         {
           width  = 6
@@ -665,21 +665,21 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.50, qip_quantum_routing_latency_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 },
                 {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.95, qip_quantum_routing_latency_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 },
                 {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.99, qip_quantum_routing_latency_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 }
               ]
@@ -689,7 +689,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         {
           width  = 6
           height = 4
@@ -701,7 +701,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
                   timeSeriesQuery = {
                     prometheusQuery = "rate(qip_quantum_routing_decisions_total[1m])"
                   }
-                  plotType = "STACKED_AREA"
+                  plotType   = "STACKED_AREA"
                   targetAxis = "Y1"
                 }
               ]
@@ -711,7 +711,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         # Analytics section
         {
           width  = 6
@@ -724,14 +724,14 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.50, qip_analytics_pipeline_latency_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 },
                 {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.95, qip_analytics_pipeline_latency_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 }
               ]
@@ -741,7 +741,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         {
           width  = 6
           height = 4
@@ -753,7 +753,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
                   timeSeriesQuery = {
                     prometheusQuery = "qip_analytics_result_staleness_seconds"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 }
               ]
@@ -763,7 +763,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         # Policy gate section
         {
           width  = 6
@@ -776,21 +776,21 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.50, qip_policy_gate_overhead_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 },
                 {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.95, qip_policy_gate_overhead_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 },
                 {
                   timeSeriesQuery = {
                     prometheusQuery = "histogram_quantile(0.99, qip_policy_gate_overhead_ms)"
                   }
-                  plotType = "LINE"
+                  plotType   = "LINE"
                   targetAxis = "Y1"
                 }
               ]
@@ -800,7 +800,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         {
           width  = 6
           height = 4
@@ -812,7 +812,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
                   timeSeriesQuery = {
                     prometheusQuery = "rate(qip_policy_gate_refusals_total[1m])"
                   }
-                  plotType = "STACKED_BAR"
+                  plotType   = "STACKED_BAR"
                   targetAxis = "Y1"
                 }
               ]
@@ -822,7 +822,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         # Performance summary row
         {
           width  = 4
@@ -835,7 +835,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         {
           width  = 4
           height = 3
@@ -847,7 +847,7 @@ resource "google_monitoring_dashboard" "m6_core_platform" {
               }
             }
           }
-        }
+        },
         {
           width  = 4
           height = 3
