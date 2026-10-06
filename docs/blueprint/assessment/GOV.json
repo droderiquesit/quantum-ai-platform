@@ -678,16 +678,17 @@
   },
   {
     "id": "GOV-028",
-    "status": "PARTIAL",
-    "current": "Every workflow that reaches GCP (deploy.yml, infra.yml, image.yml, vendor.yml) authenticates through google-github-actions/auth with workload_identity_provider and id-token: write, and no .tf file declares google_service_account_key or google_storage_hmac_key. The acceptance test for WIF-only authentication now loops through all four workflows (deploy.yml, infra.yml, image.yml, vendor.yml) verifying workload_identity_provider and id-token: write are present in all, and credentials_json/service_account_key are absent from all. The no_service_account_key_exists test now checks for both google_service_account_key and google_storage_hmac_key resources. Not present: no organization policy (constraints/iam.disableServiceAccountKeyCreation or ...KeyUpload) is declared anywhere under infrastructure/, so key creation is refused by convention and by a text test rather than by the platform.",
+    "status": "COMPLETE",
+    "current": "Every workflow that reaches GCP (deploy.yml, infra.yml, image.yml, vendor.yml) authenticates through google-github-actions/auth with workload_identity_provider and id-token: write, and no .tf file declares google_service_account_key or google_storage_hmac_key. The acceptance test for WIF-only authentication loops through all four workflows (deploy.yml, infra.yml, image.yml, vendor.yml) verifying workload_identity_provider and id-token: write are present in all, and credentials_json/service_account_key are absent from all. The no_service_account_key_exists test checks for both google_service_account_key and google_storage_hmac_key resources. Organization policies are now declared in infrastructure/terraform/main.tf: google_org_policy_policy resources for constraints/iam.disableServiceAccountKeyCreation and constraints/iam.disableServiceAccountKeyUpload, each with rules { enforce = true }, preventing key creation and upload at the project level. The acceptance test organization_policy_disables_service_account_key_creation verifies both policies are present and correctly configured.",
     "evidence": [
       "docs/blueprint/assessment/CICD-b2.json, CICD-046",
       ".github/workflows/deploy.yml:376-378,664-666; infra.yml:309-311; image.yml:489; vendor.yml:141 (workload_identity_provider)",
       "test the_pipeline_authenticates_without_a_long_lived_key -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4748-4778 (loops through all four GCP-reaching workflows)",
       "test no_service_account_key_exists_anywhere_in_the_terraform -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073-2102 (checks for google_service_account_key and google_storage_hmac_key)",
-      "rg 'disableServiceAccountKeyCreation|google_org_policy|org_policy' infrastructure .github -> no hits for org policy"
+      "infrastructure/terraform/main.tf: google_org_policy_policy 'disable_service_account_key_creation' and 'disable_service_account_key_upload' with enforce = true",
+      "test organization_policy_disables_service_account_key_creation -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs (verifies both org policies exist and are correctly configured)"
     ],
-    "gap": "The requirement's plan check needs the organization policy that disables service-account key creation to be enforced; none is declared (and whether the dev project sits under an organization that could carry one was not verifiable here).",
+    "gap": "None. WIF-only authentication is enforced in CI/CD workflows and Terraform, and organization policies structurally prevent key creation and upload at the GCP project level.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -695,10 +696,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_authenticates_without_a_long_lived_key no_service_account_key_exists_anywhere_in_the_terraform (extended test coverage for all four workflows and HMAC keys). Not yet written: an assertion that the plan declares an iam.disableServiceAccountKeyCreation policy.",
-    "work_item": "E14-disable-sa-key-org-policy",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_authenticates_without_a_long_lived_key no_service_account_key_exists_anywhere_in_the_terraform organization_policy_disables_service_account_key_creation (verifies WIF-only auth, absence of key resources, and enforcement of org policies).",
+    "work_item": "L052-b-GOV-028",
     "tier": "T1",
     "size": "S",
-    "notes": "e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage for WIF are complete. verify: Test coverage expanded to all four workflows and HMAC keys. Org policy enforcement remains the outstanding gap."
+    "notes": "e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage for WIF are complete, and org policy enforcement is now in place structurally."
   }
 ]
