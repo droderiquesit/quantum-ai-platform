@@ -2666,6 +2666,19 @@ pub struct CounterfactualJournal {
     /// cap the declined paths share.
     #[serde(default)]
     pub fills_deferred: usize,
+    /// The individual declined path scores priced this cycle. Each record
+    /// names the order, the gate that refused it, and what it would have
+    /// earned over the twin's horizon. Defaulted so a journal written before
+    /// this field existed replays as having declined nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declined_outcomes: Vec<DeclinedScore>,
+    /// The individual fill scores priced this cycle for sizes not taken.
+    /// Each record names the order, the venue it filled at, and whether
+    /// the twin's sizing recommendations (smaller/larger) would have beaten
+    /// the size actually taken. Defaulted so a journal written before this
+    /// field existed replays as having scored no fill.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_outcomes: Vec<FillScore>,
 }
 
 /// Which solver sized the cycle's proposal, and what the classical baseline
@@ -17167,6 +17180,8 @@ impl Platform {
             deferred,
             fills_scored: 0,
             fills_deferred: 0,
+            declined_outcomes: self.declined_scores.clone(),
+            fill_outcomes: Vec::new(),
         });
         let mut summary = format!("{scored} declined path(s) priced, {regrets} regret(s)");
         if deferred > 0 {
@@ -17388,6 +17403,7 @@ impl Platform {
             Some(journal) => {
                 journal.fills_scored = scored;
                 journal.fills_deferred = deferred;
+                journal.fill_outcomes = self.fill_scores.clone();
             }
             None => {
                 self.cycle_counterfactuals = Some(CounterfactualJournal {
@@ -17396,6 +17412,8 @@ impl Platform {
                     deferred: 0,
                     fills_scored: scored,
                     fills_deferred: deferred,
+                    declined_outcomes: Vec::new(),
+                    fill_outcomes: self.fill_scores.clone(),
                 });
             }
         }
