@@ -12,7 +12,6 @@
 
 use qip_contracts::quantum::{ChosenPath, DecisionRequest, SolverKind, SolverResult};
 use qip_contracts::routing::{QuantumRouter, RoutingConfig};
-use qip_core::error::Error;
 
 // --- SLICE-49-1: Decision request rejects zero variables ---
 #[test]
@@ -28,8 +27,7 @@ fn a_decision_request_with_zero_variables_is_rejected() {
 // --- SLICE-49-2: Decision request rejects empty QUBO ---
 #[test]
 fn a_decision_request_with_no_qubo_terms_is_rejected() {
-    let err = DecisionRequest::new("test", 1, vec![], 0.0)
-        .expect_err("must reject empty QUBO");
+    let err = DecisionRequest::new("test", 1, vec![], 0.0).expect_err("must reject empty QUBO");
     assert!(
         err.message().contains("at least one QUBO term"),
         "error must name the constraint"
@@ -61,9 +59,8 @@ fn a_solver_result_with_an_empty_assignment_is_rejected() {
 // --- SLICE-49-5: Solver result rejects non-finite objective ---
 #[test]
 fn a_solver_result_with_a_non_finite_objective_is_rejected() {
-    let err =
-        SolverResult::new(SolverKind::Classical, vec![true], f64::INFINITY, 0, "test")
-            .expect_err("must reject non-finite objective");
+    let err = SolverResult::new(SolverKind::Classical, vec![true], f64::INFINITY, 0, "test")
+        .expect_err("must reject non-finite objective");
     assert!(
         err.message().contains("finite"),
         "error must name the constraint"
@@ -79,14 +76,17 @@ fn objective_recomputation_from_assignment_matches_expected() {
     // Objective: 1.0 (constant) + 2.0*1*1 (i=0,j=0) + (-1.0)*1*0 (i=0,j=1) +
     //            3.0*0*0 (i=1,j=1) = 3.0
     let obj = SolverResult::recompute_objective(&assignment, &qubo, constant);
-    assert_eq!(obj, 3.0, "recomputation must match hand calculation");
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(obj, 3.0, "recomputation must match hand calculation");
+    }
 }
 
 // --- SLICE-49-7: Classical baseline always runs first ---
 #[test]
 fn routing_decision_always_has_a_classical_result() {
-    let classical = SolverResult::new(SolverKind::Classical, vec![true], 10.0, 100, "test")
-        .unwrap();
+    let classical =
+        SolverResult::new(SolverKind::Classical, vec![true], 10.0, 100, "test").unwrap();
     let request = DecisionRequest::new("test", 1, vec![(0, 0, 1.0)], 0.0).unwrap();
 
     let router = QuantumRouter::new(RoutingConfig::default());
@@ -109,8 +109,7 @@ fn routing_decision_always_has_a_classical_result() {
 // --- SLICE-49-8: Quantum routing validates classical result kind ---
 #[test]
 fn routing_rejects_non_classical_result_as_classical_baseline() {
-    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 1.0, 100, "test")
-        .unwrap();
+    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 1.0, 100, "test").unwrap();
     let request = DecisionRequest::new("test", 1, vec![(0, 0, 1.0)], 0.0).unwrap();
 
     let router = QuantumRouter::new(RoutingConfig::default());
@@ -127,10 +126,9 @@ fn routing_rejects_non_classical_result_as_classical_baseline() {
 // --- SLICE-49-9: Quantum is rejected if too expensive ---
 #[test]
 fn routing_prefers_classical_when_quantum_exceeds_cost_threshold() {
-    let classical = SolverResult::new(SolverKind::Classical, vec![true], 100.0, 100, "test")
-        .unwrap();
-    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 99.9, 10_000, "test")
-        .unwrap();
+    let classical =
+        SolverResult::new(SolverKind::Classical, vec![true], 100.0, 100, "test").unwrap();
+    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 99.9, 10_000, "test").unwrap();
     let request = DecisionRequest::new("test", 1, vec![(0, 0, 1.0)], 0.0).unwrap();
 
     // Config: quantum can cost at most 5x classical.
@@ -154,16 +152,13 @@ fn routing_prefers_classical_when_quantum_exceeds_cost_threshold() {
 // --- SLICE-49-10: Quantum is accepted if better and cheap enough ---
 #[test]
 fn routing_prefers_quantum_when_it_improves_objective_and_stays_within_cost_budget() {
-    let classical = SolverResult::new(SolverKind::Classical, vec![true], 100.0, 100, "test")
-        .unwrap();
-    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 99.0, 300, "test")
-        .unwrap();
+    let classical =
+        SolverResult::new(SolverKind::Classical, vec![true], 100.0, 100, "test").unwrap();
+    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 99.0, 300, "test").unwrap();
     let request = DecisionRequest::new("test", 1, vec![(0, 0, 1.0)], 0.0).unwrap();
 
     let router = QuantumRouter::new(RoutingConfig::default());
-    let decision = router
-        .route(&request, classical, Some(quantum))
-        .unwrap();
+    let decision = router.route(&request, classical, Some(quantum)).unwrap();
 
     assert_eq!(
         decision.chosen(),
@@ -179,16 +174,13 @@ fn routing_prefers_quantum_when_it_improves_objective_and_stays_within_cost_budg
 // --- SLICE-49-11: Quantum result ignored if worse than classical ---
 #[test]
 fn routing_rejects_quantum_result_when_it_worsens_the_objective() {
-    let classical = SolverResult::new(SolverKind::Classical, vec![true], 100.0, 100, "test")
-        .unwrap();
-    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 101.0, 100, "test")
-        .unwrap();
+    let classical =
+        SolverResult::new(SolverKind::Classical, vec![true], 100.0, 100, "test").unwrap();
+    let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 101.0, 100, "test").unwrap();
     let request = DecisionRequest::new("test", 1, vec![(0, 0, 1.0)], 0.0).unwrap();
 
     let router = QuantumRouter::new(RoutingConfig::default());
-    let decision = router
-        .route(&request, classical, Some(quantum))
-        .unwrap();
+    let decision = router.route(&request, classical, Some(quantum)).unwrap();
 
     assert_eq!(
         decision.chosen(),
@@ -205,12 +197,11 @@ fn routing_rejects_quantum_result_when_it_worsens_the_objective() {
 // --- SLICE-49-12: Routing decision is reproducible from both results ---
 #[test]
 fn routing_decision_records_all_information_needed_for_audit_and_replay() {
-    let classical = SolverResult::new(SolverKind::Classical, vec![true, false], 50.0, 100, "opt1")
-        .unwrap();
-    let quantum = SolverResult::new(SolverKind::Quantum, vec![true, false], 48.0, 200, "opt1")
-        .unwrap();
-    let request = DecisionRequest::new("opt1", 2, vec![(0, 0, 2.0), (0, 1, -1.0)], 1.0)
-        .unwrap();
+    let classical =
+        SolverResult::new(SolverKind::Classical, vec![true, false], 50.0, 100, "opt1").unwrap();
+    let quantum =
+        SolverResult::new(SolverKind::Quantum, vec![true, false], 48.0, 200, "opt1").unwrap();
+    let request = DecisionRequest::new("opt1", 2, vec![(0, 0, 2.0), (0, 1, -1.0)], 1.0).unwrap();
 
     let router = QuantumRouter::new(RoutingConfig::default());
     let decision = router
@@ -221,11 +212,9 @@ fn routing_decision_records_all_information_needed_for_audit_and_replay() {
     assert_eq!(decision.classical_result().request_id(), "opt1");
     assert_eq!(decision.quantum_result().unwrap().request_id(), "opt1");
     assert!(decision.advantage_bps().is_some());
-    
+
     // The choice must be deterministic based on the config.
-    let same_decision = router
-        .route(&request, classical, Some(quantum))
-        .unwrap();
+    let same_decision = router.route(&request, classical, Some(quantum)).unwrap();
     assert_eq!(decision.chosen(), same_decision.chosen());
 }
 
@@ -242,14 +231,14 @@ fn routing_decision_records_all_information_needed_for_audit_and_replay() {
 
 // #[test]
 // fn mutate_router_cost_check() {
-//     // To verify: change `cost_ratio > self.config.max_cost_multiplier` to `>= ` 
+//     // To verify: change `cost_ratio > self.config.max_cost_multiplier` to `>= `
 //     // in routing.rs. This test should fail after the mutation.
 //     let classical = SolverResult::new(SolverKind::Classical, vec![true], 100.0, 100, "test")
 //         .unwrap();
 //     let quantum = SolverResult::new(SolverKind::Quantum, vec![true], 99.0, 500, "test")
 //         .unwrap();
 //     let request = DecisionRequest::new("test", 1, vec![(0, 0, 1.0)], 0.0).unwrap();
-//     
+//
 //     let router = QuantumRouter::new(RoutingConfig::default());
 //     let decision = router.route(&request, classical, Some(quantum)).unwrap();
 //     // At exactly 5x cost, quantum should be accepted. Mutation should break this.
