@@ -108,6 +108,7 @@ use qip_contracts::edge::Deduction;
 use qip_contracts::governance::Usage;
 use qip_contracts::message::BookSide;
 use qip_contracts::policy::FeasibilityConstraints;
+use qip_contracts::quantum::RoutingDecision;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -10447,6 +10448,26 @@ impl Platform {
                     error.message()
                 )
             });
+
+        // After feature synthesis: wire quantum routing decisions into the stage.
+        // M6 A4 Packet 1: journal routing decisions (quantum vs classical path choices).
+        // Each cycle, record which path (quantum/classical) would be chosen for
+        // active optimization problems, both for auditability and for observability.
+        // This runs after features are computed because feature sufficiency
+        // determines whether a problem is ready for routing.
+        let routing_decisions = self.route_quantum_decisions(now);
+        let routing_detail = if routing_decisions.is_empty() {
+            String::new()
+        } else {
+            format!("; {} routing decision(s) recorded", routing_decisions.len())
+        };
+        self.telemetry.metrics.gauge(
+            "qip_platform_routing_decisions",
+            [("decision_count".to_string(), "true".to_string())]
+                .into_iter()
+                .collect(),
+            routing_decisions.len() as f64,
+        );
         let mut outcome = StageOutcome::ran(
             Stage::Understand,
             state.object_count + state.entity_count,
@@ -10454,7 +10475,7 @@ impl Platform {
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
                   {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
-                 {second_order_detail}{statistics_detail}",
+                 {second_order_detail}{statistics_detail}{routing_detail}",
                 state.object_count,
                 state.entity_count,
                 state.relationship_count,
@@ -10760,6 +10781,31 @@ impl Platform {
             }
         }
         report
+    }
+
+    /// M6 A4 Packet 1: Compute routing decisions (quantum vs classical) for
+    /// active optimization problems and journal them for auditability.
+    ///
+    /// This runs after feature synthesis because feature sufficiency
+    /// determines whether a problem is ready for routing. Each cycle produces
+    /// zero or more routing decisions, each recording whether a quantum solver
+    /// would be chosen over the classical baseline for that problem.
+    ///
+    /// Returns a vector of routing decisions that were journalled this cycle,
+    /// for observability and for the stage outcome detail.
+    fn route_quantum_decisions(&mut self, _now: Timestamp) -> Vec<RoutingDecision> {
+        // M6 A4 Packet 1: infrastructure wire for quantum routing.
+        // This method will be expanded by later packets to:
+        // - Check for active optimization problems in the portfolio or reasoning engine
+        // - For each problem, compute a classical baseline solution
+        // - For each problem, optionally compute a quantum solution
+        // - Create a RoutingDecision comparing the two
+        // - Journal the decision with metadata for auditability
+        //
+        // For now, return empty vector as no problems may be active yet.
+        // As later packets wire in the quantum router integration, this will
+        // populate the vector with actual routing decisions.
+        Vec::new()
     }
 
     fn stage_discover(&mut self, now: Timestamp) -> StageOutcome {
