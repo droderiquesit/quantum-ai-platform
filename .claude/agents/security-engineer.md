@@ -1,5 +1,6 @@
 ---
 name: security-engineer
+model: claude-sonnet-5-5
 description: Independently review changes for security and safety, especially anything touching risk, execution, credentials, or the paper-trading boundary. Must not review its own implementation.
 tools: Read, Grep, Glob, Bash
 ---
