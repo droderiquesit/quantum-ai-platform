@@ -2833,3 +2833,140 @@ fn a_disposition_is_on_the_wire_and_under_the_signature_once_there_is_one() -> R
     );
     Ok(())
 }
+
+// --- model pack contract (CONTRACT-011) ---
+
+use qip_contracts::policy::ModelPack;
+
+#[test]
+fn a_model_pack_with_all_required_fields_present_is_accepted() -> Result<()> {
+    let pack = ModelPack {
+        artifact_digest: "abc123def456".to_string(),
+        signature: "sig_hmac_sha256_hex_encoded".to_string(),
+        features: vec!["feature_1".to_string(), "feature_2".to_string()],
+        calibration: 0.85,
+        allowed_universes: ["BTC/USD", "ETH/USD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        budget_microseconds: 1_000_000,
+        expires_at: 1_760_086_400,
+        rollback_parent: "prev_digest_hash".to_string(),
+    };
+    pack.validate()?;
+    Ok(())
+}
+
+#[test]
+fn a_model_pack_missing_any_required_field_is_refused() {
+    // Empty artifact_digest
+    let mut pack = ModelPack {
+        artifact_digest: "abc123def456".to_string(),
+        signature: "sig_hmac_sha256_hex_encoded".to_string(),
+        features: vec!["feature_1".to_string()],
+        calibration: 0.85,
+        allowed_universes: ["BTC/USD"].iter().map(|s| s.to_string()).collect(),
+        budget_microseconds: 1_000_000,
+        expires_at: 1_760_086_400,
+        rollback_parent: String::new(),
+    };
+
+    pack.artifact_digest = String::new();
+    assert!(
+        pack.validate().is_err(),
+        "empty artifact_digest was accepted"
+    );
+
+    pack.artifact_digest = "abc123def456".to_string();
+    pack.signature = String::new();
+    assert!(pack.validate().is_err(), "empty signature was accepted");
+
+    pack.signature = "sig_hmac_sha256_hex_encoded".to_string();
+    pack.features = vec![];
+    assert!(pack.validate().is_err(), "empty features was accepted");
+
+    pack.features = vec!["feature_1".to_string()];
+    pack.allowed_universes = BTreeSet::new();
+    assert!(
+        pack.validate().is_err(),
+        "empty allowed_universes was accepted"
+    );
+
+    pack.allowed_universes = ["BTC/USD"].iter().map(|s| s.to_string()).collect();
+    pack.budget_microseconds = 0;
+    assert!(
+        pack.validate().is_err(),
+        "zero budget_microseconds was accepted"
+    );
+
+    pack.budget_microseconds = 1_000_000;
+    pack.expires_at = 0;
+    assert!(pack.validate().is_err(), "zero expires_at was accepted");
+}
+
+#[test]
+fn a_model_pack_with_out_of_range_calibration_is_refused() {
+    let mut pack = ModelPack {
+        artifact_digest: "abc123def456".to_string(),
+        signature: "sig_hmac_sha256_hex_encoded".to_string(),
+        features: vec!["feature_1".to_string()],
+        calibration: 0.85,
+        allowed_universes: ["BTC/USD"].iter().map(|s| s.to_string()).collect(),
+        budget_microseconds: 1_000_000,
+        expires_at: 1_760_086_400,
+        rollback_parent: String::new(),
+    };
+
+    // Calibration > 1.0
+    pack.calibration = 1.5;
+    assert!(pack.validate().is_err(), "calibration > 1.0 was accepted");
+
+    // Calibration < 0.0
+    pack.calibration = -0.1;
+    assert!(pack.validate().is_err(), "calibration < 0.0 was accepted");
+
+    // Boundary: exactly 0.0 is valid
+    pack.calibration = 0.0;
+    assert!(pack.validate().is_ok(), "calibration = 0.0 was rejected");
+
+    // Boundary: exactly 1.0 is valid
+    pack.calibration = 1.0;
+    assert!(pack.validate().is_ok(), "calibration = 1.0 was rejected");
+}
+
+#[test]
+fn a_model_pack_serialises_and_deserialises_round_trip() -> Result<()> {
+    let pack = ModelPack {
+        artifact_digest: "sha256_abc123def456".to_string(),
+        signature: "hmac_sig_bytes_hex".to_string(),
+        features: vec![
+            "price".to_string(),
+            "volatility".to_string(),
+            "volume".to_string(),
+        ],
+        calibration: 0.92,
+        allowed_universes: ["BTC/USD", "ETH/USD", "SOL/USD"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        budget_microseconds: 5_000_000,
+        expires_at: 1_760_172_800,
+        rollback_parent: "prev_sha256_xyz789".to_string(),
+    };
+
+    let json = serde_json::to_string(&pack)?;
+    let decoded: ModelPack = serde_json::from_str(&json)?;
+
+    assert_eq!(decoded.artifact_digest, pack.artifact_digest);
+    assert_eq!(decoded.signature, pack.signature);
+    assert_eq!(decoded.features, pack.features);
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(decoded.calibration, pack.calibration);
+    }
+    assert_eq!(decoded.allowed_universes, pack.allowed_universes);
+    assert_eq!(decoded.budget_microseconds, pack.budget_microseconds);
+    assert_eq!(decoded.expires_at, pack.expires_at);
+    assert_eq!(decoded.rollback_parent, pack.rollback_parent);
+    Ok(())
+}
