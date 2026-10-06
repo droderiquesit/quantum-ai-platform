@@ -1,183 +1,138 @@
-# Edge mesh validation tests.
+# Plans proving the edge mesh gates connectivity on shadow mode, opens only
+# the one health port it names, and refuses a cell configuration that would
+# make it open anything else.
 #
-# These tests verify that the mesh module correctly gates connectivity based
-# on shadow mode and cross-region configuration.
+# Run from `infrastructure/terraform/modules/edge-mesh`:
+#
+#   terraform init -backend=false && terraform test
+#
+# The provider is mocked, so no run needs a credential or reaches a project.
+#
+# This harness used to declare a `terraform {}` block and a real `provider`
+# block, which `terraform test` refuses outright, and its fourth run was a
+# commented-out bad value above `condition = true` — an assertion Terraform
+# also refuses, because it names nothing. It never ran. "Shadow mode off" is
+# not live trading: every cell is paper-only (ADR 0003), and a cell out of
+# shadow mode reaches only its configured simulated venues.
 
-terraform {
-  required_version = ">= 1.9.0"
-  required_providers {
-    google = {
-      source  = "hashicorp/google"
-      version = "~> 6.12"
+mock_provider "google" {}
+
+variables {
+  project_id  = "test-project"
+  environment = "test"
+  network_id  = "projects/test-project/global/networks/qip-test"
+
+  central_plane_ranges = ["10.250.0.0/24", "199.36.153.8/30"]
+  cross_region_mirrors = []
+
+  psc_endpoint_addresses = {
+    "us-east4" = "10.255.0.1"
+    "us-west1" = "10.255.0.2"
+  }
+
+  labels = {}
+
+  execution_nodes = {
+    "cell-us-east4" = {
+      region      = "us-east4"
+      zone        = "us-east4-a"
+      subnet_cidr = "10.240.0.0/24"
+      health_port = 8080
+      shadow_mode = true
+      venues      = { "sim" = { cidr = "10.0.0.0/8", port = 443 } }
+    }
+    "cell-us-west1" = {
+      region      = "us-west1"
+      zone        = "us-west1-a"
+      subnet_cidr = "10.241.0.0/24"
+      health_port = 8080
+      shadow_mode = true
+      venues      = { "sim" = { cidr = "10.0.0.0/8", port = 443 } }
     }
   }
 }
 
-provider "google" {
-  project = "test-project"
-  region  = "us-east4"
-}
+# --- Admissions --------------------------------------------------------------
 
-# Test 1: Shadow mode blocks inter-cell connectivity
-#
-# When shadow_mode = true for all nodes, no ingress rules should be created.
-# Each cell is isolated from the central plane and from other cells.
-run "shadow_mode_isolates_cells" {
+# The admit half of the central-plane range gate: the specific subnets every
+# other run uses, and a /8 at the boundary, all plan. Without this a gate that
+# refused every range would pass the refusal runs below.
+run "specific_central_plane_ranges_and_a_slash_8_are_admitted" {
   command = plan
 
   variables {
-    project_id  = "test-project"
-    environment = "test"
-    network_id  = "projects/test-project/global/networks/qip-test"
-
-    execution_nodes = {
-      "cell-us-east4" = {
-        region      = "us-east4"
-        zone        = "us-east4-a"
-        subnet_cidr = "10.240.0.0/24"
-        health_port = 8080
-        shadow_mode = true # Shadow mode
-        venues = {
-          "sim" = { cidr = "10.0.0.0/8", port = 443 }
-        }
-      }
-      "cell-us-west1" = {
-        region      = "us-west1"
-        zone        = "us-west1-a"
-        subnet_cidr = "10.241.0.0/24"
-        health_port = 8080
-        shadow_mode = true # Shadow mode
-        venues = {
-          "sim" = { cidr = "10.0.0.0/8", port = 443 }
-        }
-      }
-    }
-
-    central_plane_ranges = [
-      "10.250.0.0/24", # Trust zone subnet
-      "199.36.153.8/30"
-    ]
-
-    cross_region_mirrors = []
-
-    psc_endpoint_addresses = {
-      "us-east4" = "10.255.0.1"
-      "us-west1" = "10.255.0.2"
-    }
-
-    labels = {}
+    central_plane_ranges = ["10.250.0.0/24", "199.36.153.8/30", "10.0.0.0/8"]
   }
+}
 
-  # In shadow mode, no ingress rules are created
+run "shadow_mode_isolates_cells" {
+  command = plan
+
   assert {
     condition     = length(google_compute_firewall.cell_ingress_health) == 0
     error_message = "Shadow mode should create zero ingress rules."
   }
 
-  # But PSC endpoints are still created (for future use)
   assert {
     condition     = length(google_compute_global_address.cell_psc_endpoint) == 2
     error_message = "PSC endpoints should be created for all regions."
   }
 }
 
-# Test 2: Live mode creates ingress rules
-#
-# When at least one node has shadow_mode = false, ingress rules are created
-# from central plane ranges and other node subnets.
-run "live_mode_creates_ingress" {
+run "a_cell_out_of_shadow_admits_only_its_health_port" {
   command = plan
 
   variables {
-    project_id  = "test-project"
-    environment = "test"
-    network_id  = "projects/test-project/global/networks/qip-test"
-
     execution_nodes = {
       "cell-us-east4" = {
         region      = "us-east4"
         zone        = "us-east4-a"
         subnet_cidr = "10.240.0.0/24"
         health_port = 8080
-        shadow_mode = false # Live mode
-        venues = {
-          "sim" = { cidr = "10.0.0.0/8", port = 443 }
-        }
+        shadow_mode = false
+        venues      = { "sim" = { cidr = "10.0.0.0/8", port = 443 } }
       }
       "cell-us-west1" = {
         region      = "us-west1"
         zone        = "us-west1-a"
         subnet_cidr = "10.241.0.0/24"
         health_port = 8080
-        shadow_mode = true # Still in shadow mode
-        venues = {
-          "sim" = { cidr = "10.0.0.0/8", port = 443 }
-        }
+        shadow_mode = true
+        venues      = { "sim" = { cidr = "10.0.0.0/8", port = 443 } }
       }
     }
-
-    central_plane_ranges = [
-      "10.250.0.0/24",
-      "199.36.153.8/30"
-    ]
-
-    cross_region_mirrors = []
-
-    psc_endpoint_addresses = {
-      "us-east4" = "10.255.0.1"
-      "us-west1" = "10.255.0.2"
-    }
-
-    labels = {}
   }
 
-  # One ingress rule is created for the live node
   assert {
     condition     = length(google_compute_firewall.cell_ingress_health) == 1
-    error_message = "Live mode should create one ingress rule for the live cell."
+    error_message = "One cell out of shadow mode should get exactly one ingress rule."
   }
 
-  # The rule targets the correct cell
   assert {
-    condition = alltrue([
-      for rule in google_compute_firewall.cell_ingress_health :
-      contains(rule.target_tags, "qip-exec-cell-us-east4")
-    ])
-    error_message = "Ingress rule should target the live cell."
+    condition     = google_compute_firewall.cell_ingress_health["cell-us-east4"].target_tags == toset(["qip-exec-cell-us-east4"])
+    error_message = "The ingress rule should target only the cell out of shadow mode."
   }
 
-  # The rule permits TCP 8080 (health port)
+  # Exactly one allow block, TCP, exactly one port — not merely "contains
+  # 8080", which a rule opening 22 beside it would also satisfy.
   assert {
     condition = alltrue([
-      for rule in google_compute_firewall.cell_ingress_health :
-      contains([for allow in rule.allow : allow.ports[0]], "8080")
-    ])
-    error_message = "Ingress rule should permit port 8080."
+      for allow in google_compute_firewall.cell_ingress_health["cell-us-east4"].allow :
+      allow.protocol == "tcp" && allow.ports == tolist(["8080"])
+    ]) && length(google_compute_firewall.cell_ingress_health["cell-us-east4"].allow) == 1
+    error_message = "The ingress rule should open TCP 8080 and nothing else."
   }
 
-  # The rule sources from central plane ranges
   assert {
-    condition = alltrue([
-      for rule in google_compute_firewall.cell_ingress_health :
-      contains(rule.source_ranges, "10.250.0.0/24")
-    ])
-    error_message = "Ingress rule should permit central plane ranges."
+    condition     = google_compute_firewall.cell_ingress_health["cell-us-east4"].source_ranges == toset(["10.250.0.0/24", "199.36.153.8/30", "10.241.0.0/24"])
+    error_message = "The ingress rule should admit the central plane ranges and the other cell's subnet, and nothing else."
   }
 }
 
-# Test 3: Cross-region configuration gates PSC endpoints
-#
-# PSC endpoints are created for all regions regardless of cross-region config,
-# because they may be needed when mirrors are added. The presence of mirrors
-# is informational, not gatekeeping.
 run "cross_region_mirrors_create_no_extra_resources" {
   command = plan
 
   variables {
-    project_id  = "test-project"
-    environment = "test"
-    network_id  = "projects/test-project/global/networks/qip-test"
-
     execution_nodes = {
       "cell-us-east4" = {
         region      = "us-east4"
@@ -185,9 +140,7 @@ run "cross_region_mirrors_create_no_extra_resources" {
         subnet_cidr = "10.240.0.0/24"
         health_port = 8080
         shadow_mode = false
-        venues = {
-          "sim" = { cidr = "10.0.0.0/8", port = 443 }
-        }
+        venues      = { "sim" = { cidr = "10.0.0.0/8", port = 443 } }
       }
       "cell-us-west1" = {
         region      = "us-west1"
@@ -195,16 +148,9 @@ run "cross_region_mirrors_create_no_extra_resources" {
         subnet_cidr = "10.241.0.0/24"
         health_port = 8080
         shadow_mode = false
-        venues = {
-          "sim" = { cidr = "10.0.0.0/8", port = 443 }
-        }
+        venues      = { "sim" = { cidr = "10.0.0.0/8", port = 443 } }
       }
     }
-
-    central_plane_ranges = [
-      "10.250.0.0/24",
-      "199.36.153.8/30"
-    ]
 
     cross_region_mirrors = [
       {
@@ -215,56 +161,104 @@ run "cross_region_mirrors_create_no_extra_resources" {
         dislocation_threshold_pct = 10
       }
     ]
-
-    psc_endpoint_addresses = {
-      "us-east4" = "10.255.0.1"
-      "us-west1" = "10.255.0.2"
-    }
-
-    labels = {}
   }
 
-  # PSC endpoints exist for both regions
   assert {
     condition     = length(google_compute_global_address.cell_psc_endpoint) == 2
     error_message = "PSC endpoints should be created for all regions with nodes."
   }
 
-  # Ingress rules are created for both nodes
   assert {
     condition     = length(google_compute_firewall.cell_ingress_health) == 2
-    error_message = "Ingress rules should be created for both live nodes."
+    error_message = "Ingress rules should be created for both cells out of shadow mode."
   }
 
-  # No additional resources are created just because mirrors are defined
   assert {
-    condition     = local.has_cross_region_mirror == true
+    condition     = local.has_cross_region_mirror
     error_message = "Cross-region mirror flag should be set."
   }
 }
 
-# Test 4: Venue ID validation (in the execution_nodes variable)
-#
-# Venue IDs must follow a pattern (lowercase, hyphens, no special chars).
-# This test is implicit; the variable validation rejects bad values.
-run "venue_id_validation_prevents_injection" {
+# --- Refusals ----------------------------------------------------------------
+
+# The rule used to open `tostring(each.value.health_port)`, so this value
+# would have opened SSH to the central plane and every other cell's subnet.
+run "a_health_port_of_22_is_refused" {
   command = plan
 
-  # This should fail at variable validation if uncommented:
-  # variables {
-  #   execution_nodes = {
-  #     "test" = {
-  #       venues = {
-  #         "bad-venue$(id)" = { cidr = "10.0.0.0/8", port = 443 }  # Injection attempt
-  #       }
-  #       # ...
-  #     }
-  #   }
-  # }
-
-  # For now, test passes because the bad config is commented out.
-  assert {
-    condition     = true
-    error_message = "Venue ID validation is enforced at the edge-mesh module boundary."
+  variables {
+    execution_nodes = {
+      "cell-us-east4" = {
+        region      = "us-east4"
+        zone        = "us-east4-a"
+        subnet_cidr = "10.240.0.0/24"
+        health_port = 22
+        shadow_mode = false
+        venues      = { "sim" = { cidr = "10.0.0.0/8", port = 443 } }
+      }
+    }
   }
+
+  expect_failures = [var.execution_nodes]
+}
+
+run "a_cell_with_no_venue_is_refused" {
+  command = plan
+
+  variables {
+    execution_nodes = {
+      "cell-us-east4" = {
+        region      = "us-east4"
+        zone        = "us-east4-a"
+        subnet_cidr = "10.240.0.0/24"
+        health_port = 8080
+        shadow_mode = true
+        venues      = {}
+      }
+    }
+  }
+
+  expect_failures = [var.execution_nodes]
+}
+
+# The gate used to compare against the literal "0.0.0.0/0", so half the
+# internet in one range passed it.
+run "a_central_plane_range_of_0_0_0_0_slash_1_is_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["10.250.0.0/24", "0.0.0.0/1"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
+}
+
+run "a_central_plane_range_of_the_whole_internet_is_still_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["0.0.0.0/0"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
+}
+
+run "a_central_plane_range_wider_than_a_slash_8_is_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["10.0.0.0/7"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
+}
+
+run "a_central_plane_range_that_is_not_a_cidr_is_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["not-a-range"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
 }

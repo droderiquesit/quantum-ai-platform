@@ -31,6 +31,11 @@
 //! | `MaxVenueExposure` | `a_venue_inside_its_exposure_limit_passes` | `a_venue_beyond_its_exposure_limit_is_vetoed` |
 //! | `MaxVenueNotionalRate` | `a_venue_inside_its_notional_rate_passes` | `a_venue_beyond_its_notional_rate_is_vetoed` |
 //!
+//! The two venue rules carry a third fixture,
+//! `a_venue_with_no_exposure_figure_is_vetoed_by_both_venue_rules`, because
+//! their lookup is keyed by a venue the limit names, and an absent key once
+//! read as zero.
+//!
 //! `every_limit_kind_has_both_fixtures` closes the table: it matches on every
 //! arm of `LimitKind`, so adding an arm without a row here fails to compile.
 
@@ -86,9 +91,10 @@ fn state() -> RiskState {
         // about a limit rather than about a missing number.
         unevaluated: BTreeMap::new(),
         // One venue carrying 15% of equity. Both venue rules read this map
-        // and treat a venue missing from it as zero, so a fixture that left
-        // it empty would pass every pass-test and prove nothing — and in
-        // production nothing writes it yet, which is reported separately.
+        // and refuse a venue missing from it (they once read it as zero,
+        // which passed every pass-test while proving nothing). In production
+        // nothing writes it yet, which is why no venue rule ships in
+        // `LimitSet::conservative_default`.
         venue_exposures: BTreeMap::from([("simulated".to_string(), Decimal::from_int(150_000))]),
     }
 }
@@ -561,14 +567,54 @@ fn a_venue_beyond_its_exposure_limit_is_vetoed() {
     assert!((breach.observed - 0.15).abs() < 1e-9);
 }
 
+#[test]
+fn a_venue_with_no_exposure_figure_is_vetoed_by_both_venue_rules() {
+    // Both venue rules once read a venue missing from `venue_exposures` as
+    // zero. Nothing in production writes that map, so the shipped
+    // `venue-exposure-simulated` limit passed every real book and could
+    // never fire. The fixture state carries "simulated"; these limits name a
+    // venue it does not carry, at bounds generous enough that any finite
+    // figure — zero included — would pass, so only the absence can veto.
+    let exposure = |venue: &str| LimitKind::MaxVenueExposure {
+        venue: venue.into(),
+        limit: 10.0,
+    };
+    let notional = |venue: &str| LimitKind::MaxVenueNotionalRate {
+        venue: venue.into(),
+        limit: 1.0e12,
+    };
+    let pairs = [
+        (exposure("absent"), exposure("simulated")),
+        (notional("absent"), notional("simulated")),
+    ];
+    for (kind, carried) in pairs {
+        let label = kind.label();
+        // Premise: the same rule at the same bound admits the venue the
+        // state does carry, so the veto below is the absence and not the
+        // bound.
+        assert!(
+            !check(carried, &state()).is_blocked(),
+            "{label}: premise failed"
+        );
+
+        let verdict = check(kind, &state());
+        assert_eq!(verdict.evaluated, 1);
+        assert!(verdict.is_blocked(), "{label}: an absent venue passed");
+        let blocking = verdict.blocking();
+        assert_eq!(blocking[0].subject.as_deref(), Some("absent"), "{label}");
+        assert!(
+            blocking[0].observed.is_nan(),
+            "{label}: a figure was invented"
+        );
+    }
+}
+
 // --- MaxVenueNotionalRate ---------------------------------------------------
 //
-// The variant's doc says its bound is "a multiple of daily ADV"; the
-// evaluation compares the venue's raw notional against it, with no ADV in
-// the arithmetic. These fixtures state bounds in the unit the code actually
-// uses and deliberately assert no observed figure, so they prove the rule
-// reads the state and can fire without enshrining the unit. The mismatch is
-// reported as a defect rather than resolved in a test.
+// The variant's doc used to say its bound was "a multiple of daily ADV"
+// while the evaluation compared raw notional. The doc now states the unit the
+// code uses — currency — so the veto fixture asserts the observed figure in
+// that unit: 150,000 of exposure, not 0.15 of equity and not a volume ratio.
 
 #[test]
 fn a_venue_inside_its_notional_rate_passes() {
@@ -587,6 +633,7 @@ fn a_venue_beyond_its_notional_rate_is_vetoed() {
     };
     let breach = vetoes(at(100_000.0), at(200_000.0), &state());
     assert_eq!(breach.subject.as_deref(), Some("simulated"));
+    assert!((breach.observed - 150_000.0).abs() < 1e-6);
 }
 
 // --- the table is closed ----------------------------------------------------

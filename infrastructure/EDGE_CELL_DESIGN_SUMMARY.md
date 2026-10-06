@@ -116,7 +116,7 @@ Phase-by-phase guide for deploying and observing edge cells:
 - Turn off shadow mode
 - Plan shows venue egress rules
 - Apply creates firewall rules
-- Node immediately begins trading
+- Node reaches provider sandboxes and is still paper trading (ADR 0003)
 
 **Phase 3: Scale to Seven Regions** — sequential per-region deployments
 - Add secondary regions in shadow mode
@@ -132,7 +132,7 @@ Phase-by-phase guide for deploying and observing edge cells:
 - Cost breakdown per region
 - Metrics and alert policies
 
-### 4. `environments/MULTI_REGION_TEMPLATE.tfvars` — Reference Configuration
+### 4. `templates/MULTI_REGION_TEMPLATE.tfvars` — Reference Configuration
 
 Template showing all seven regional cells:
 
