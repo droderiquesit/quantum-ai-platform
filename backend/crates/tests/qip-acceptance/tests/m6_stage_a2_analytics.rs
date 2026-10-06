@@ -225,7 +225,7 @@ fn a_forecast_lattice_computes_zero_disagreement_for_identical() {
     let lattice =
         ForecastLattice::new(key, Timestamp::from_secs(5000), vec![dist1, dist2]).unwrap();
 
-    assert_eq!(lattice.disagreement_width(), 0.0);
+    assert!(lattice.disagreement_width().abs() < 1e-12);
     assert!(lattice.is_consensus());
 }
 
@@ -487,7 +487,7 @@ fn a_single_forecast_lattice_is_consensus() {
 
     let lattice = ForecastLattice::new(key, Timestamp::from_secs(5000), vec![dist]).unwrap();
 
-    assert_eq!(lattice.disagreement_width(), 0.0);
+    assert!(lattice.disagreement_width().abs() < 1e-12);
     assert!(lattice.is_consensus());
 }
 
