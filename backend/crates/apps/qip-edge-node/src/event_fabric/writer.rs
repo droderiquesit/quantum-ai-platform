@@ -237,7 +237,11 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::VenueChosen { .. }
         | Decision::DispositionIntent { .. }
         | Decision::KnowledgeReconciled { .. }
-        | Decision::DegradationChanged { .. } => false,
+        | Decision::DegradationChanged { .. }
+        | Decision::LatencyEpisode { .. }
+        | Decision::SlippageEpisode { .. }
+        | Decision::MicrostructureEpisode { .. }
+        | Decision::VenueBehaviorEpisode { .. } => false,
         // A requote's two halves act on the venue, and by that argument they
         // are outcomes. They are on P2 alone because ADR 0100 §5's P1 row
         // names six kinds and these are not among them: widening that row is

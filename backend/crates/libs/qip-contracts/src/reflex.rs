@@ -548,6 +548,69 @@ pub enum Decision {
         narrowed: Vec<String>,
         sizing_multiplier: String,
     },
+    /// A latency anomaly was observed: order-entry-to-fill time exceeded bounds.
+    ///
+    /// Region and cell capture the reflex cell's identity. The venue and object
+    /// bound the latency to a specific instrument at a specific venue. The
+    /// expected latency is what the cell's model predicted; the observed is
+    /// what the venue reported. Both are in milliseconds. This episode is
+    /// recorded when a fill's latency crosses the anomaly threshold.
+    LatencyEpisode {
+        region: String,
+        cell: String,
+        venue: String,
+        object: String,
+        expected_ms: i64,
+        observed_ms: i64,
+    },
+    /// Execution slippage was observed: the realized price differed from what
+    /// the cost model expected.
+    ///
+    /// Region and cell identify the reflex cell. Venue and object bound the
+    /// slippage to a specific instrument at a specific venue. Expected price
+    /// is what the cost model forecast; realized price is what the venue
+    /// reported. The slippage magnitude is in basis points, with sign: negative
+    /// means the execution was better than forecast.
+    SlippageEpisode {
+        region: String,
+        cell: String,
+        venue: String,
+        object: String,
+        expected_price: String,
+        realized_price: String,
+        slippage_bps: i64,
+    },
+    /// A microstructure pattern was learned or updated: lead/lag relationship,
+    /// volatility regime, or correlation change.
+    ///
+    /// Region and cell identify the reflex cell that observed this. The pattern
+    /// kind names the type of microstructure learned (e.g., "lead_lag",
+    /// "volatility_regime", "correlation"). The evidence is how strongly the
+    /// pattern was established (as a confidence score, 0..=100). The pattern is
+    /// recorded with cell and region identity so it can be propagated to global
+    /// training and debated across specialized models.
+    MicrostructureEpisode {
+        region: String,
+        cell: String,
+        pattern_kind: String,
+        evidence: u8,
+    },
+    /// A venue's behavior changed: latency profile, order acceptance patterns,
+    /// or fill dynamics.
+    ///
+    /// Region and cell identify the reflex cell. Venue bounds the behavior
+    /// observation to a specific market. The behavior_kind names what changed
+    /// (e.g., "latency_profile", "acceptance_rate", "fill_dynamics"). The
+    /// severity indicates how significant the change is (0..=100), where 0 is
+    /// negligible and 100 is critical. This episode drives venue monitoring
+    /// and potential tactical avoidance.
+    VenueBehaviorEpisode {
+        region: String,
+        cell: String,
+        venue: String,
+        behavior_kind: String,
+        severity: u8,
+    },
 }
 
 impl Decision {
@@ -590,6 +653,10 @@ impl Decision {
             Self::RequoteWithdrawn { .. } => "requote_withdrawn",
             Self::OrderReplaced { .. } => "order_replaced",
             Self::DegradationChanged { .. } => "degradation_changed",
+            Self::LatencyEpisode { .. } => "latency_episode",
+            Self::SlippageEpisode { .. } => "slippage_episode",
+            Self::MicrostructureEpisode { .. } => "microstructure_episode",
+            Self::VenueBehaviorEpisode { .. } => "venue_behavior_episode",
         }
     }
 }
