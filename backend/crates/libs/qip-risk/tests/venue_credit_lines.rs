@@ -82,9 +82,10 @@ fn a_venue_credit_line_is_satisfied_when_exposure_is_within_limit() {
 
 #[test]
 fn circuit_breaker_triggers_on_venue_notional_rate() {
-    // A circuit breaker is a rate-of-orders control. It counts the absolute
-    // notional sent to a venue in a period and halts further orders when that
-    // rate exceeds capacity, as a multiple of daily ADV or a fixed threshold.
+    // The bound is raw notional in the book's currency. This comment used to
+    // say "a multiple of daily ADV or a fixed threshold"; the evaluation has
+    // only ever compared raw notional, and `RiskState` carries no volume to
+    // divide by, so the doc on the variant now says so too.
     let mut venues = BTreeMap::new();
     venues.insert("XLON".to_string(), exposure(5_000_000)); // Very large order
 
@@ -156,75 +157,92 @@ fn multiple_venue_credit_lines_can_be_enforced_simultaneously() {
 }
 
 #[test]
-fn absent_venue_exposures_do_not_trigger_limits() {
-    // A venue not in the exposures map records nothing, just like an absent
-    // concentration axis records nothing. The limit is not evaluated against
-    // a venue the book made no statement about.
-    let state = RiskState {
-        equity: equity(1_000_000),
-        venue_exposures: BTreeMap::new(), // No venues
-        ..Default::default()
-    };
+fn a_venue_limit_refuses_a_venue_the_state_holds_no_figure_for() {
+    // This test was `absent_venue_exposures_do_not_trigger_limits` and
+    // asserted the opposite: a venue missing from the map read as zero and
+    // passed. Nothing in production writes `venue_exposures`, so that rule
+    // made every venue limit pass every real book — the shipped
+    // `venue-exposure-simulated` limit could not fire. An absent figure is
+    // one nobody computed, and it is now refused as Critical, for both venue
+    // rules, rather than passed.
+    let kinds = [
+        LimitKind::MaxVenueExposure {
+            venue: "XTSE".to_string(),
+            limit: 0.20,
+        },
+        LimitKind::MaxVenueNotionalRate {
+            venue: "XTSE".to_string(),
+            limit: 2_000_000.0,
+        },
+    ];
+    for kind in kinds {
+        let label = kind.label();
+        let limits = LimitSet::new("test").with(Limit::new("venue-tokyo", kind));
 
-    let limits = LimitSet::new("test").with(
-        Limit::new(
-            "venue-credit-tokyo",
-            LimitKind::MaxVenueExposure {
-                venue: "XTSE".to_string(),
-                limit: 0.20,
-            },
-        )
-        .with_rationale("Tokyo venue limit"),
-    );
+        // Premise: the same limit admits the same venue once a figure inside
+        // the bound is filed, so the refusal below is about the absence and
+        // not a limit that refuses everything.
+        let present = RiskState {
+            equity: equity(1_000_000),
+            venue_exposures: BTreeMap::from([("XTSE".to_string(), exposure(100_000))]),
+            ..Default::default()
+        };
+        assert!(
+            !limits.check(&present).is_blocked(),
+            "{label}: premise failed, a venue inside its bound was refused"
+        );
 
-    let check = limits.check(&state);
-    // No exposure to Tokyo = no breach
-    assert!(!check.is_blocked());
-    assert!(check.breaches.is_empty());
+        // A figure for a different venue is not a figure for this one.
+        let absent = RiskState {
+            equity: equity(1_000_000),
+            venue_exposures: BTreeMap::from([("XNYS".to_string(), exposure(100_000))]),
+            ..Default::default()
+        };
+        let check = limits.check(&absent);
+        assert!(check.is_blocked(), "{label}: a venue with no figure passed");
+        let blocking = check.blocking();
+        assert_eq!(blocking.len(), 1, "{label}");
+        assert_eq!(blocking[0].subject.as_deref(), Some("XTSE"), "{label}");
+        assert_eq!(
+            blocking[0].severity,
+            qip_risk::limits::Severity::Critical,
+            "{label}: an unevaluable figure is Critical, not an ordinary breach"
+        );
+        assert!(
+            blocking[0]
+                .detail
+                .contains("has no figure in the risk state"),
+            "{label}: {}",
+            blocking[0].detail
+        );
+    }
 }
 
 #[test]
-fn the_default_set_admits_the_simulated_venue_up_to_equity_and_refuses_beyond() {
-    // This test was `paper_trading_venue_has_unlimited_credit_line_in_default_set`
-    // and asserted that ten times equity at the simulated venue did not breach
-    // a bound of 1.0 — arithmetic that cannot hold, in a file that had never
-    // compiled. The shipped `venue-exposure-simulated` limit is a real bound
-    // of 100% of equity, whatever its rationale string says, so this states
-    // both halves of that bound: admitted at it, refused past it.
-    let at = |notional: i64| {
-        let state = RiskState {
-            equity: equity(1_000_000),
-            venue_exposures: BTreeMap::from([("simulated".to_string(), exposure(notional))]),
-            ..Default::default()
-        };
-        // Other defaults (the cash floor, for one) bind on this sparse
-        // state; only the venue limit is under test here.
-        LimitSet::conservative_default()
-            .check(&state)
-            .blocking()
-            .into_iter()
-            .filter(|b| b.limit_name == "venue-exposure-simulated")
-            .cloned()
-            .collect::<Vec<_>>()
-    };
-
-    // Premise: past the bound the default limit fires, so the admit half
-    // below is a statement about the bound and not about a limit that is
-    // absent or never reads the map.
-    let refused = at(1_500_000);
-    assert_eq!(
-        refused.len(),
-        1,
-        "the default venue limit did not fire at 1.5x equity"
-    );
-    assert_eq!(refused[0].subject.as_deref(), Some("simulated"));
-    assert!((refused[0].observed - 1.5).abs() < 1e-9);
-    assert!((refused[0].bound - 1.0).abs() < 1e-9);
-
-    // At exactly equity the venue is admitted.
+fn the_default_set_ships_no_venue_limit_while_nothing_writes_venue_exposures() {
+    // The default set used to carry `venue-exposure-simulated`. Nothing in
+    // production writes `RiskState::venue_exposures`, so under the old
+    // absent-is-zero rule it passed every book, and under the absent-is-
+    // refused rule it would refuse every order. Either way it was not a
+    // control. This pins its absence until a producer exists.
+    let shipped = LimitSet::conservative_default();
+    // Premise: the set is non-empty, so "no venue limit" is a statement about
+    // its contents and not about an empty list.
+    assert!(!shipped.is_empty());
+    let venue_limits: Vec<&str> = shipped
+        .limits
+        .iter()
+        .filter(|l| {
+            matches!(
+                l.kind,
+                LimitKind::MaxVenueExposure { .. } | LimitKind::MaxVenueNotionalRate { .. }
+            )
+        })
+        .map(|l| l.name.as_str())
+        .collect();
     assert!(
-        at(1_000_000).is_empty(),
-        "the simulated venue was refused at 100% of equity"
+        venue_limits.is_empty(),
+        "the shipped set carries venue limits {venue_limits:?} that no production code can feed"
     );
 }
 

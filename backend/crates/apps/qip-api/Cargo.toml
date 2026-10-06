@@ -40,6 +40,8 @@ qip-transport.workspace = true
 # evaluated before any socket is opened.
 qip-market-ingestion.workspace = true
 qip-data-finder.workspace = true
+qip-market.workspace = true
+qip-portfolio.workspace = true
 
 [dev-dependencies]
 # The tests publish genuine cell deltas and verify dispatched grants with the

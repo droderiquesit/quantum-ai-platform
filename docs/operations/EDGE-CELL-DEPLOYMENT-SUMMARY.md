@@ -36,7 +36,7 @@ Complete walkthrough of edge cell deployment across regions, covering:
 
 ### 3. Terraform configuration templates
 **Files:**
-- `infrastructure/environments/MULTI-REGION-TEMPLATE.tfvars` — Annotated template for 7-region deployment (us-east4, europe-west2, us-west1, +4 future regions)
+- `infrastructure/templates/MULTI-REGION-TEMPLATE.tfvars` — Annotated template for 7-region deployment (us-east4, europe-west2, us-west1, +4 future regions)
 - `infrastructure/terraform/modules/edge-cells-deployment/` — Multi-region orchestration module (fixed configuration error; now validates cleanly)
 - `infrastructure/terraform/modules/edge-mesh/` — Mesh networking module (firewall rules, peer connectivity, central plane ranges)
 
@@ -51,17 +51,16 @@ Complete walkthrough of edge cell deployment across regions, covering:
 ### 4. Venue integration guide
 **File:** `docs/operations/integrating-production-venues.md`
 
-End-to-end workflow for production venue integration:
+End-to-end workflow for venue integration against provider sandboxes, paper trading only (ADR 0003; a live path requires an accepted ADR — proposed ADR 0107):
 - **Step 1:** Venue reconnaissance (connectivity info, business terms, compliance)
-- **Step 2:** Operator registration (human identity, KYC/AML, account creation)
+- **Step 2:** Sandbox registration (one named operator, sandbox credentials)
 - **Step 3:** Credential storage (Secret Manager; never in code)
 - **Step 4:** Order routing configuration (strategies, venues, preferences)
-- **Step 5:** Testing workflow (sandbox first; test trading day; incremental scaling)
-- **Step 6:** Production operations (monitoring, incident response, multi-region scaling)
+- **Step 5:** Sandbox testing (orders, fills, reconciliation, twin scoring)
+- **Step 6:** Operating a sandbox-integrated cell (monitoring, incident response, further regions)
 
 **Testing procedures:**
 - Sandbox order placement and fills
-- Real-money test trading (10% → 25% → 50% → 100% capital scaling)
 - Reconciliation validation (cell vs. centre vs. venue agreement)
 - Model scoring (twin accuracy verification)
 
@@ -69,9 +68,8 @@ End-to-end workflow for production venue integration:
 **File:** `data/venue-registrations.template.json`
 
 Example venue registration records showing:
-- Venue name, region, operator
-- Account ID (venue-specific identifier)
-- Secret Manager secret IDs (api_key_secret, sandbox_api_key_secret)
+- Venue name, region, operator role (never a personal email)
+- Sandbox Secret Manager secret id only — no production credential, no venue account id
 - Never the actual credentials (always reference by id)
 
 ## Infrastructure validation results
@@ -143,7 +141,7 @@ Total platform capital = sum of region_allocation values (per-region decision, n
 3. **Propose:** ADR for london-1 deployment (with evidence, capital allocation)
 4. **Observe:** Run london-1 in shadow mode for 7+ days
 5. **Propose:** ADR for oakland-1 and additional regions
-6. **Exit shadow mode:** Separate ADR per region (requires 4+ weeks production trading first)
+6. **Exit shadow mode:** Separate ADR per region, with sandbox evidence attached; the cell remains paper trading (ADR 0003)
 
 **Why sequential:** Deploying all seven regions at once multiplies every first-deployment surprise by seven. One region teaches what matters.
 
@@ -191,7 +189,7 @@ Total platform capital = sum of region_allocation values (per-region decision, n
 - `docs/operations/EDGE-CELL-DEPLOYMENT-SUMMARY.md` — This file
 
 ### New templates
-- `infrastructure/environments/MULTI-REGION-TEMPLATE.tfvars` — 7-region example
+- `infrastructure/templates/MULTI-REGION-TEMPLATE.tfvars` — 7-region example
 - `data/venue-registrations.template.json` — Venue record schema
 
 ### Fixed bugs
