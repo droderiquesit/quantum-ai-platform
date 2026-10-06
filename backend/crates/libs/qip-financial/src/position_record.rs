@@ -14,6 +14,7 @@
 
 use crate::asset_class::AssetClass;
 use crate::cashflow::Commitment;
+use crate::physical::LandedCost;
 use crate::valuation::AssetValuation;
 use qip_core::{Decimal, Duration, Error, Result, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -112,6 +113,7 @@ pub struct PositionRecordBuilder {
     corporate_actions: Option<Declared<Vec<String>>>,
     commitments: Option<Declared<Commitment>>,
     exit_plan: Option<ExitPlan>,
+    product_economics: Option<LandedCost>,
 }
 
 macro_rules! setter {
@@ -145,6 +147,7 @@ impl PositionRecordBuilder {
     setter!(corporate_actions, Declared<Vec<String>>);
     setter!(commitments, Declared<Commitment>);
     setter!(exit_plan, ExitPlan);
+    setter!(product_economics, LandedCost);
 
     /// Refuses, naming the field, the first of the nine that is absent.
     pub fn build(self) -> Result<PositionRecord> {
@@ -196,6 +199,15 @@ impl PositionRecordBuilder {
         hedges.check("hedges")?;
         corporate_actions.check("corporate actions")?;
         commitments.check("commitments")?;
+
+        // Validate that product_economics is only present for RealAsset class
+        if self.product_economics.is_some() && class != AssetClass::RealAsset {
+            return Err(Error::invalid(
+                "product economics are only applicable to RealAsset positions; supply \
+                 product_economics only for physical goods",
+            ));
+        }
+
         Ok(PositionRecord {
             asset,
             class,
@@ -208,6 +220,7 @@ impl PositionRecordBuilder {
             corporate_actions,
             commitments,
             exit_plan,
+            product_economics: self.product_economics,
         })
     }
 }
@@ -228,6 +241,7 @@ pub struct PositionRecord {
     corporate_actions: Declared<Vec<String>>,
     commitments: Declared<Commitment>,
     exit_plan: ExitPlan,
+    product_economics: Option<LandedCost>,
 }
 
 impl TryFrom<PositionRecordBuilder> for PositionRecord {
@@ -252,6 +266,9 @@ impl PositionRecord {
     }
     pub fn exit_plan(&self) -> &ExitPlan {
         &self.exit_plan
+    }
+    pub fn product_economics(&self) -> Option<&LandedCost> {
+        self.product_economics.as_ref()
     }
 }
 
@@ -409,6 +426,107 @@ mod tests {
         assert!(ExitPlan::new(expiry, ExitRoute::Sale, Some(expiry)).is_ok());
         // No lockup, no constraint: the refusal is the lockup's, not a blanket.
         assert!(ExitPlan::new(Timestamp::EPOCH, ExitRoute::Sale, None).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn a_real_asset_position_carries_product_level_economics() -> Result<()> {
+        let landed_cost = crate::physical::LandedCost {
+            origin: "port-of-origin".into(),
+            destination: "warehouse".into(),
+            route: vec!["port-of-origin".into(), "warehouse".into()],
+            elapsed_days: 45,
+            quantity_shipped: Decimal::from_int(1000),
+            quantity_delivered: Decimal::from_int(980),
+            quantity_sold: Decimal::from_int(960),
+            goods: Decimal::from_int(10000),
+            freight: Decimal::from_int(2000),
+            duty: Decimal::from_int(1500),
+            clearance: Decimal::from_int(500),
+            storage: Decimal::from_int(800),
+            marketplace: Decimal::from_int(400),
+            returns: Decimal::from_int(200),
+        };
+
+        let record = complete(AssetClass::RealAsset)?
+            .product_economics(landed_cost.clone())
+            .build()?;
+
+        assert_eq!(
+            record.product_economics(),
+            Some(&landed_cost),
+            "product economics must be preserved in position record"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn product_economics_are_refused_for_non_real_asset_positions() -> Result<()> {
+        let landed_cost = crate::physical::LandedCost {
+            origin: "port-of-origin".into(),
+            destination: "warehouse".into(),
+            route: vec!["port-of-origin".into(), "warehouse".into()],
+            elapsed_days: 45,
+            quantity_shipped: Decimal::from_int(1000),
+            quantity_delivered: Decimal::from_int(980),
+            quantity_sold: Decimal::from_int(960),
+            goods: Decimal::from_int(10000),
+            freight: Decimal::from_int(2000),
+            duty: Decimal::from_int(1500),
+            clearance: Decimal::from_int(500),
+            storage: Decimal::from_int(800),
+            marketplace: Decimal::from_int(400),
+            returns: Decimal::from_int(200),
+        };
+
+        // Try adding product economics to an Equity position
+        let err = complete(AssetClass::Equity)?
+            .product_economics(landed_cost)
+            .build()
+            .err()
+            .map(|e| format!("{e:?}"))
+            .unwrap_or_default();
+
+        assert!(
+            err.contains("only applicable to RealAsset"),
+            "product economics must be refused for non-RealAsset positions: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn product_economics_survive_serialisation_for_real_assets() -> Result<()> {
+        let landed_cost = crate::physical::LandedCost {
+            origin: "shanghai".into(),
+            destination: "los-angeles".into(),
+            route: vec!["shanghai".into(), "port-of-la".into(), "warehouse".into()],
+            elapsed_days: 21,
+            quantity_shipped: Decimal::from_int(500),
+            quantity_delivered: Decimal::from_int(495),
+            quantity_sold: Decimal::from_int(490),
+            goods: Decimal::from_int(5000),
+            freight: Decimal::from_int(1200),
+            duty: Decimal::from_int(800),
+            clearance: Decimal::from_int(150),
+            storage: Decimal::from_int(300),
+            marketplace: Decimal::from_int(200),
+            returns: Decimal::from_int(100),
+        };
+
+        let record = complete(AssetClass::RealAsset)?
+            .product_economics(landed_cost.clone())
+            .build()?;
+
+        let json = serde_json::to_string(&record)
+            .map_err(|e| Error::invalid(format!("serialise: {e}")))?;
+        let restored: PositionRecord =
+            serde_json::from_str(&json).map_err(|e| Error::invalid(format!("deserialise: {e}")))?;
+
+        assert_eq!(
+            restored.product_economics(),
+            Some(&landed_cost),
+            "product economics must survive serialisation round-trip"
+        );
         Ok(())
     }
 }
