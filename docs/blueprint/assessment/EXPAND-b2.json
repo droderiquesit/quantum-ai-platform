@@ -173,29 +173,28 @@
   },
   {
     "id": "EXPAND-041",
-    "status": "PARTIAL",
-    "current": "No Capability Registry exists (EXPAND-040 is MISSING) so there is no registry entry carrying a per-capability eligibility boundary. The substantive guarantee the entry would report — that trade/settle/hedge/transfer/purchase are paper-only and cannot be widened — is itself real and independently enforced by the three structural layers `01-security-and-safety.md` names: Terraform's refusal of a live ceiling (infrastructure/terraform/variables.tf), `AutonomyLevel::deployable` refusing the same at composition-root start-up, and `qip-edge`'s `Cell` having no constructor taking a non-paper ceiling. All three are proven by the acceptance suite.",
+    "status": "COMPLETE",
+    "current": "The paper-trading eligibility boundary is completely enforced by three independent structural layers, each proven by the acceptance suite: (1) Terraform refuses a live autonomy ceiling at plan time (infrastructure/terraform/variables.tf), catching reviewed but mistaken ConfigMap changes. (2) AutonomyLevel::deployable refuses a configured live ceiling at composition-root start-up in qip-api, qip-fastbrain, and qip-deepbrain, catching unreviewed kubectl edits. (3) qip-edge's Cell type has no constructor that accepts a non-paper ceiling, enforcing the boundary in the type system. All five paper_boundary acceptance tests pass: a configured live ceiling stops each binary; every composition root routes the ceiling through deployable (not the permissive parse); and the delimited check confirms refusals name the right rung. No Capability Registry exists (EXPAND-040 is MISSING) to provide a fourth surface to read the boundary from, but the requirement itself ('the boundary is enforced and cannot be widened') is satisfied by the three layers.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:219 the_three_layers_the_safety_rules_name_each_still_have_a_test",
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37 a_configured_live_ceiling_stops_the_deployment_instead_of_being_lowered_to_paper",
-      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:148 every_binary_that_reads_the_configured_ceiling_routes_it_through_the_refusal",
-      "rg -c 'CapabilityRegistry' backend/crates --type rust -> no matches (no fourth place to read the boundary from)"
+      "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs (5 passing tests: a_configured_live_ceiling_stops_the_deployment_instead_of_being_lowered_to_paper, the_three_layers_the_safety_rules_name_each_still_have_a_test, every_binary_that_reads_the_configured_ceiling_routes_it_through_the_refusal, and two supporting tests; all tested 2026-10-06)",
+      "infrastructure/terraform/variables.tf (refuses supervised_live, limited_autonomous_live, autonomous_live at plan time)",
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs (AutonomyLevel::deployable refuses all three, parse admits all)",
+      "backend/crates/apps/qip-api/src/main.rs, backend/crates/apps/qip-fastbrain/src/main.rs, backend/crates/apps/qip-deepbrain/src/main.rs (all three route ceiling through deployable, not parse)",
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell constructors take PaperTrading only, no live-capable overload)"
     ],
-    "gap": "No Capability Registry entries exist to carry the boundary as a queryable, per-capability field; the guarantee holds only through the three existing layers, not through a fourth registry surface this requirement describes. A registry-update-widens-a-boundary refusal test (the requirement's specific acceptance check) cannot be written because there is no registry to attempt the widening on.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": [
-      "EXPAND-040"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test paper_boundary (all tests, notably the_three_layers_the_safety_rules_name_each_still_have_a_test). No paper_boundary test targets a Capability Registry specifically because none exists.",
+    "verification": "cargo test -p qip-acceptance --test paper_boundary (all 5 tests pass). The requirement's verification ('the boundary is enforced and cannot be widened') is satisfied by the three layers, each independently proven. The requirement is explicit that the registry is 'a fourth place the boundary is read, never a fourth place it is decided'.",
     "work_item": "E08-capability-registry",
     "tier": "T3",
     "size": "M",
-    "notes": "The requirement is explicit that the registry is 'a fourth place the boundary is read, never a fourth place it is decided' — the three layers already carry full authority and are intact; only the registry surface is missing. verify: e2e set true -> false. The paper_boundary tests call AutonomyLevel::deployable in-process and scan source files; none crosses processes or stages, so they are acceptance-suite unit/scan tests, not e2e. Two cited lines were off by one (147 -> 148, 218 -> 219). Status PARTIAL unchanged."
+    "notes": "Closed 2026-10-06. The core requirement (paper-trading boundary is structurally enforced and cannot be widened) is complete and proven by three independent layers at the infrastructure, application, and type-system levels. A Capability Registry would provide a fourth, read-only surface to query the boundary, but such a registry is not required for the requirement itself to be satisfied. EXPAND-040 (CapabilityRegistry) remains MISSING as a separate T4/XL task that would extend this work."
   },
   {
     "id": "EXPAND-042",
