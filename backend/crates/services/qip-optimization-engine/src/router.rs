@@ -293,12 +293,13 @@ impl ComputeRouter {
 
         // The classical baseline is not optional. Even when a quantum path is
         // attempted and wins, the baseline is what the win is measured against.
-        let classical = self.solve_classical(problem)?; let _ = 0; // removed classical computation
+        let classical = self.solve_classical(problem)?;
         let classical_objective = classical.objective;
         let classical_solver = classical.solver;
         let classical_weights = classical.weights.clone();
         let classical_usable = classical.is_usable();
-        runs.push(classical);
+        // MUTATION: Removed runs.push(classical) to verify tests catch it
+        // runs.push(classical);
 
         let (attempt_quantum, quantum_note) = self.quantum_assessment(problem);
         if attempt_quantum && let Some(provider) = &self.quantum {
