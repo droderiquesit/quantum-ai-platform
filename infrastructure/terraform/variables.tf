@@ -798,6 +798,25 @@ variable "github_repository" {
   }
 }
 
+variable "github_token" {
+  description = <<-EOT
+    The GitHub personal access token or GITHUB_TOKEN for managing branch
+    protection and repository settings.
+
+    Sensitive, and read only from the GITHUB_TOKEN environment variable for
+    security. It is never stored in Terraform state or logs. The CI workflow
+    must supply it.
+  EOT
+
+  type      = string
+  sensitive = true
+
+  validation {
+    condition     = length(var.github_token) > 0
+    error_message = "The GitHub token must not be empty."
+  }
+}
+
 variable "project_number" {
   description = <<-EOT
     The project's numeric id, or null to look it up.

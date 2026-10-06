@@ -1,0 +1,44 @@
+# CODEOWNERS file for branch protection (CICD-045).
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Every change requires review by a code owner. Pattern matching is top-to-bottom,
+# last match wins. Paths are from the repository root.
+#
+# Critical infrastructure and security paths require the platform maintainers.
+# Risk is scaled: the paper-trading boundary, the event log, and credentials require
+# the highest scrutiny; feature changes require one independent reviewer.
+
+# Default: all changes require one independent reviewer
+* @droderiquesit
+
+# The three paper-trading boundary layers (ADR 0003, ADR 0021)
+# Terraform refusal of live autonomy levels
+infrastructure/terraform/variables.tf @droderiquesit
+infrastructure/terraform/tests/ @droderiquesit
+
+# Composition roots that refuse live levels
+backend/crates/apps/qip-api/src/main.rs @droderiquesit
+backend/crates/apps/qip-fastbrain/src/main.rs @droderiquesit
+backend/crates/apps/qip-deepbrain/src/main.rs @droderiquesit
+
+# The type system's paper-only Cell
+backend/crates/edge/qip-edge/src/cell.rs @droderiquesit
+
+# The event log hash chain (ADR 0007)
+backend/crates/libs/qip-events/src/ @droderiquesit
+
+# Secrets and credentials (security-and-safety.md)
+.claude/rules/01-security-and-safety.md @droderiquesit
+infrastructure/terraform/modules/cicd/ @droderiquesit
+infrastructure/terraform/main.tf @droderiquesit
+
+# CI/CD gates (change-management.md)
+.github/workflows/ @droderiquesit
+Makefile @droderiquesit
+scripts/check-dependencies.sh @droderiquesit
+scripts/check-secrets.sh @droderiquesit
+
+# Architecture decisions
+docs/adr/ @droderiquesit
+CLAUDE.md @droderiquesit
+.claude/rules/ @droderiquesit

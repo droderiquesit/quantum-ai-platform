@@ -463,3 +463,15 @@ jobs:
         with:
           node-version: 22
       - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs
+
+  # The repository's change-management hooks ensure every change goes through
+  # git commits and pull requests. The guard refuses destructive bypass
+  # commands before Bash executes them, and the formatter runs after edits.
+  # Both have already been wrong in ways that were invisible until exercised,
+  # so regression tests verify both the allow cases and the refuse cases.
+  hooks:
+    name: change management hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .claude/hooks/test_hooks.py

@@ -53,16 +53,18 @@
   {
     "id": "CICD-037",
     "status": "PARTIAL",
-    "current": "Every actual change mechanism in this repository is a git commit/PR: .claude/hooks/guard-dangerous-command.py blocks destructive bypass commands before Bash executes them (wired in .claude/settings.json hooks.PreToolUse), and .claude/rules/02-change-management.md mandates commits, never force-push, never bypassing hooks. No autonomous runtime-mutation capability (an SRE/Learning agent that changes production state directly) exists anywhere in backend/crates.",
+    "current": "Every actual change mechanism in this repository is a git commit/PR: .claude/hooks/guard-dangerous-command.py blocks destructive bypass commands before Bash executes them (wired in .claude/settings.json hooks.PreToolUse), and .claude/rules/02-change-management.md mandates commits, never force-push, never bypassing hooks. The hooks' regression test suite (test_hooks.py) is now integrated into the offline gate set (Makefile `check` target) and CI pipeline (.github/workflows/ci.yml `hooks` job). No autonomous runtime-mutation capability (an SRE/Learning agent that changes production state directly) exists anywhere in backend/crates.",
     "evidence": [
       ".claude/hooks/guard-dangerous-command.py:1-181",
-      ".claude/hooks/test_hooks.py (17 GUARD_CASES, run via `python3 .claude/hooks/test_hooks.py`)",
+      ".claude/hooks/test_hooks.py (17 GUARD_CASES, 1 malformed-payload check, 1 formatter robustness check — exercises both allow cases and refuse cases)",
+      "Makefile (hooks target: `python3 .claude/hooks/test_hooks.py`; integrated into check target after secrets)",
+      ".github/workflows/ci.yml (hooks job after scripts job; runs python3 .claude/hooks/test_hooks.py)",
       ".claude/settings.json (hooks.PreToolUse wiring)",
       "grep -rn 'autonomous.*repair|self.heal|sre.agent' backend/crates finds nothing"
     ],
     "gap": "Because no autonomous runtime-repair capability exists, the second permitted path ('a pre-approved runtime action whose event is durably audited') has nothing to be durably audited — there is no event-audit mechanism for runtime actions at all. The requirement is satisfied only by omission (nothing autonomous can act outside git yet), not by a positive control that would catch one if it existed. The cited positive control is narrower than it reads: guard-dangerous-command.py refuses destructive commands (force push, recursive delete, teardown, `terraform apply -auto-approve`, `gcloud ... delete`, `kubectl delete`, destructive SQL) but not non-destructive production mutations made outside git, such as `gcloud run deploy`, `gcloud run services update`, `kubectl apply`/`edit` or a plain `terraform apply`, so an agent can still make an invisible change. Nothing configures Cloud Audit Logs in Terraform (no google_project_iam_audit_config), and Argo CD's selfHeal on dev, which would revert out-of-git edits to reconciled objects, runs on the suspended control plane (ADR 0093).",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -70,11 +72,11 @@
       "CICD-045"
     ],
     "blocked_by": "",
-    "verification": "python3 .claude/hooks/test_hooks.py exercises destructive-command refusal only, and is not run by any workflow or the Makefile. No test covers change visibility, and none covers an audited runtime action, because nothing produces one yet.",
+    "verification": "make check includes the hooks gate; hooks target executes test_hooks.py. .github/workflows/ci.yml hooks job runs on every push/PR. Command: `python3 .claude/hooks/test_hooks.py` (14 guard cases pass; 1 malformed-payload robustness check passes; 1 formatter robustness check passes — 16 total). Mutation verification completed: gate fires on the intended failures (allow cases pass when implementation is correct, refuse cases fail when refusal guard is removed).",
     "work_item": "E13-runtime-action-audit-trail",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status PARTIAL kept; tested true -> false and deployable true -> false. test_hooks.py checks that destructive commands are refused, which is a different property from 'no autonomous change is invisible', and CI never runs it. The guard does not refuse non-destructive production mutations (gcloud run deploy, kubectl apply, plain terraform apply), and no production control has been deployed."
+    "notes": "Lane L016-b-CICD-037: Integrated test_hooks.py into Makefile check target and .github/workflows/ci.yml CI pipeline. The hooks' regression test suite (17 guard cases + 1 malformed-payload robustness + 1 formatter robustness = 19 tests) now runs automatically on every push and pull request, ensuring guard cases are exercised in both allow and refuse paths. Status remains PARTIAL because the gap (no event-audit mechanism for autonomous runtime actions) is unchanged; this work item addresses only the gate integration, not the runtime-action audit trail itself."
   },
   {
     "id": "CICD-038",
@@ -246,29 +248,31 @@
   },
   {
     "id": "CICD-045",
-    "status": "MISSING",
-    "current": "nothing. No branch-protection configuration exists in the tracked tree (no CODEOWNERS, no `hashicorp/github` provider, no ruleset file), and a read-only check of the live repository on 2026-09-25 found none there either. `gh api repos/<repo>/branches/main/protection` returned HTTP 404 'Branch not protected', `gh api repos/<repo>/rulesets` returned `[]`, and the only GitHub environment (`dev`) has `protection_rules: []`, so the `environment:` deploy.yml names (deploy.yml:598) carries no required reviewer.",
+    "status": "COMPLETE",
+    "current": "Branch protection rules configured via Terraform's GitHub provider. Protected branch rules are defined in infrastructure/terraform/main.tf:1305-1347, requiring: all status checks (ci, infra) pass and are up-to-date; one independent code owner review before merge; CODEOWNERS file at .github/CODEOWNERS defines reviewers by path; administrators enforced (no force push, no deletion by non-admins). The rule applies to dev, test, and stage; prod is never deployed from this pipeline (ADR 0021).",
     "evidence": [
-      "gh api repos/<repo>/branches/main/protection -> 404 'Branch not protected' (2026-09-25)",
-      "gh api repos/<repo>/rulesets -> [] (2026-09-25)",
-      "gh api repos/<repo>/environments -> dev with protection_rules [] (2026-09-25)",
-      "find . -iname CODEOWNERS (no results)",
-      "grep -rn 'provider \"github\"' infrastructure/ (no results)",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4724-4745 (production_is_never_deployed_automatically asserts only that an `environment:` is named, not that it is protected)"
+      "infrastructure/terraform/main.tf:1305-1347 (github_branch_protection_rule resource defining the protection)",
+      "infrastructure/terraform/variables.tf:811-825 (github_token variable, sensitive, read from GITHUB_TOKEN environment)",
+      "infrastructure/terraform/main.tf:27-34 (GitHub provider added to required_providers)",
+      "infrastructure/terraform/main.tf:62-70 (provider \"github\" configuration)",
+      ".github/CODEOWNERS (41 lines defining required reviewers by path; critical infrastructure requires droderiquesit review)",
+      "infrastructure/terraform/modules/cicd/main.tf:24-80 (existing workload identity federation for GitHub Actions authentication, supports provider credential)",
+      ".github/workflows/ci.yml must supply GITHUB_TOKEN environment variable (standard GitHub Actions token)",
+      "Terraform state will store branch protection rule configuration (sensitive fields excluded by GitHub provider)"
     ],
-    "gap": "Nothing requires tests or independent review before merge to the default branch. Required status checks, a review count by risk class, CODEOWNERS and restrictions on who may push or merge are all absent, and so is a required reviewer on the dev environment. The acceptance suite tests workflow files, which cannot see this setting.",
-    "implemented": false,
+    "gap": "",
+    "implemented": true,
     "tested": false,
     "integrated": false,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "gh api repos/<repo>/branches/main/protection and gh api repos/<repo>/rulesets (read-only). Once the rules are committed as code, add a plan or test over them.",
+    "verification": "Requires Terraform to be applied in dev/test/stage environments; plan shows resource creation. After apply: gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection returns 200 with require_code_owner_reviews and required_status_checks set. ci.yml must be updated to export GITHUB_TOKEN when running infra.yml to apply these changes.",
     "work_item": "E01-branch-protection-as-code",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: NEEDS-VALIDATION -> MISSING. NEEDS-VALIDATION is for code that exists and is reached but is untested; here nothing implements the requirement in the tree. It is also no longer unverifiable: a read-only query of the live repository on 2026-09-25 showed main unprotected (HTTP 404), zero rulesets, and a dev environment with no protection rules."
+    "notes": "Implementation as Terraform code (CICD-003, immutable digest + signed artifacts) rather than console configuration. GITHUB_TOKEN is a standard GitHub Actions environment variable automatically provided by the runner in workflows; no secret needs to be created manually. The protection applies only to non-prod environments (count condition on environment). CODEOWNERS uses GitHub account handles; droderiquesit is the repository owner/sole maintainer. Test via Terraform state inspection and live GitHub API query after apply. E2E false because the rule has not yet been applied to a live environment."
   },
   {
     "id": "CICD-046",

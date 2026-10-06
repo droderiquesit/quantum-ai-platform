@@ -39,6 +39,10 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "~> 6.12"
     }
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
   }
 
   # State holds secret material references and the full topology. It lives in
@@ -58,6 +62,15 @@ provider "google-beta" {
   project = var.project_id
   region  = var.region
 }
+
+provider "github" {
+  # Read from GITHUB_TOKEN environment variable for security; it is not stored
+  # in state or logs. The workflow `ci.yml` and `deploy.yml` must provide this
+  # token through the GitHub Actions environment.
+  token = var.github_token
+  owner = split("/", var.github_repository)[0]
+}
+
 
 # The project's numeric id, asked for rather than typed in.
 #
@@ -1294,6 +1307,52 @@ module "dns_zone" {
       }
     },
   )
+}
+
+# --- GitHub branch protection for the main branch (CICD-045) -------------------
+#
+# Branch protection requires all commits to pass tests and receive an
+# independent review before merging, enforcing the paper-trading boundary
+# and the audit trail. This resource configures the required checks and
+# review policy for the main branch.
+#
+# The protection applies only to dev, test, and stage environments; prod is
+# never deployed from this pipeline and its access model is separate (ADR 0021).
+resource "github_branch_protection_rule" "main" {
+  count = var.environment != "prod" ? 1 : 0
+
+  repository_id = split("/", var.github_repository)[1]
+
+  # The main branch is the only one permitted to merge; feature branches are
+  # required and code review gates the merge.
+  pattern = "main"
+
+  # Every commit to main must pass CI. The status check names are those the
+  # CI workflows declare in their outputs.
+  required_status_checks {
+    strict   = true
+    contexts = [
+      "ci",
+      "infra",
+    ]
+  }
+
+  # Every commit requires review before merge.
+  required_pull_request_reviews {
+    dismiss_stale_reviews           = true
+    require_code_owner_reviews      = true
+    required_approving_review_count = 1
+  }
+
+  # Who may push to main and merge PRs: repository administrators only. CODEOWNERS
+  # enforces the required reviewers per file path.
+  push_restrictions   = []
+  allows_force_pushes = false
+  allows_deletions    = false
+
+  # Require all checks to pass before merge, even if they were successful on
+  # an earlier commit. This ensures every final merge is against the latest base.
+  enforce_admins = true
 }
 
 # Autonomous agent identity — a distinct service account with no roles on
