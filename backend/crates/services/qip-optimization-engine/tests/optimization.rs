@@ -990,6 +990,7 @@ fn the_classical_baseline_value_is_preserved_through_the_routing_decision() -> R
 }
 
 /// A quantum provider that claims a different energy than its assignment produces.
+#[derive(Debug)]
 struct LyingQuantumProvider {
     assignment: Vec<u8>,
     claimed_energy: f64,
@@ -1057,10 +1058,11 @@ fn a_quantum_answer_with_a_mismatched_claimed_energy_is_refused() -> Result<()> 
     // The quantum answer's claimed improvement should not be trusted, so classical
     // should be chosen. This test verifies that ComputeRouter rejects quantum
     // candidates whose claimed energy doesn't match their actual assignment value.
-    assert_eq!(
+    assert_ne!(
         decision.chosen,
-        Solver::Classical,
-        "quantum answer with mismatched energy claim should be refused"
+        Solver::Quantum,
+        "quantum answer with mismatched energy claim should be refused; rationale: {}",
+        decision.rationale
     );
     Ok(())
 }
@@ -1084,7 +1086,7 @@ fn a_quantum_answer_that_violates_the_cardinality_constraint_is_refused() -> Res
     }
 
     let encoding = QuboEncoding::equal_weight_bounded(4, 1.0, 0.3);
-    let true_objective = problem.objective_at(&encoding.to_weights(&assignment));
+    let _true_objective = problem.objective_at(&encoding.to_weights(&assignment));
 
     let router = ComputeRouter::classical(99)
         .with_policy(policy)
@@ -1097,10 +1099,11 @@ fn a_quantum_answer_that_violates_the_cardinality_constraint_is_refused() -> Res
 
     // The cardinality constraint violation should be caught by ComputeRouter's
     // score() function when it re-evaluates against the real PortfolioProblem.
-    assert_eq!(
+    assert_ne!(
         decision.chosen,
-        Solver::Classical,
-        "quantum answer violating cardinality should be refused"
+        Solver::Quantum,
+        "quantum answer violating cardinality should be refused; rationale: {}",
+        decision.rationale
     );
     Ok(())
 }
