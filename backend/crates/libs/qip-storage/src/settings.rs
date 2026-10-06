@@ -145,6 +145,18 @@ impl StorageSettings {
                      durable store, or unset {ROOT_VARIABLE} to run in memory deliberately"
                 ))),
             },
+            // Memorystore is a cache, not an authoritative store. The event log,
+            // trial book, journals and spool must survive a restart; a
+            // non-persistent Redis cannot hold them. Only Terraform's config
+            // validation prevents this mistake at deployment time; the runtime check
+            // catches an unreviewed QIP_STORAGE_TARGET=memorystore override (DATA-045).
+            StorageTarget::Memorystore => Err(Error::invalid(format!(
+                "{TARGET_VARIABLE} is memorystore, a non-persistent in-memory cache; this \
+                 process's event-log archive, journals, spool and trial book are all kept here, \
+                 and a restart or failover would take the only copy. Set {TARGET_VARIABLE}=engine \
+                 with {ROOT_VARIABLE}, or file, to run this process. Keep Memorystore for a \
+                 separate cache port whose values are recomputable"
+            ))),
             StorageTarget::File | StorageTarget::Engine => match root {
                 Some(root) => Ok(Self {
                     target,
