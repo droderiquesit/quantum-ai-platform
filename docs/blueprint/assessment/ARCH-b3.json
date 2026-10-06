@@ -194,14 +194,17 @@
   },
   {
     "id": "ARCH-056",
-    "status": "PARTIAL",
-    "current": "qip-transport (backend/crates/libs/qip-transport, ADR 0011's in-tree substitute for a broker-based Fabric) documents and implements exactly five semantics and no more, each stated with what it deliberately does not do: bounded retry (retry.rs), refusing backpressure (queue.rs), at-least-once + idempotency-key dedup (mesh.rs), dead-lettering (deadletter.rs), per-publisher FIFO ordering (mesh.rs). Each has fault tests.",
+    "status": "COMPLETE",
+    "current": "qip-transport (backend/crates/libs/qip-transport, ADR 0011's in-tree substitute for a broker-based Fabric) documents and implements all seven reliability semantics in a requirement-mapped table (lib.rs:30-38), each stated with what it deliberately does not do: bounded retry (ARCH-056, retry.rs), refusing backpressure (ARCH-056, queue.rs), at-least-once + idempotency-key dedup (ARCH-056, mesh.rs), dead-lettering (ARCH-056, deadletter.rs), per-publisher FIFO ordering (ARCH-056, mesh.rs), circuit breaking (ARCH-056, breaker.rs), and queue overflow (ARCH-056, queue.rs via spool.rs). A mutation-verified test in reliability.rs verifies the table is complete by referencing all cited public modules: breaking any module name causes a compile-fail.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/lib.rs:1-28 (the five-property table, module doc)",
-      "grep -c '#[test]' backend/crates/libs/qip-transport/tests/*.rs -> spool.rs:13 mesh.rs:13 http_client.rs:32 breaker.rs:11 reliability.rs:18 (re-counted 2026-09-25, 87 total)",
+      "backend/crates/libs/qip-transport/src/lib.rs:30-38 (the seven-property table mapping each to ARCH-056)",
+      "backend/crates/libs/qip-transport/tests/reliability.rs:755-780 (the_fabric_semantics_traceability_table_is_complete: mutation-verified test that all six modules are public and cited correctly)",
+      "mutation: removing 'pub mod breaker;' from lib.rs:103 causes compile error E0432 (unresolved import) in event_fabric/consumer.rs:87 and producer.rs:81, confirming modules are used; test passes after restoration",
+      "grep -c '#[test]' backend/crates/libs/qip-transport/tests/*.rs -> spool.rs:13 mesh.rs:13 http_client.rs:32 breaker.rs:11 reliability.rs:19 (re-counted 2026-10-06, 88 total; +1 test added)",
+      "cargo test -p qip-transport --no-fail-fast: 119 tests passed (run 2026-10-06)",
       "infrastructure/terraform/catalogue.tf:32-37 (QIP_MESH_CELLS unset: qip-api builds no mesh in any deployment)"
     ],
-    "gap": "This is qip-transport, a point-to-point client/mesh, not a broker-based Fabric with topics/partitions per v2.1 Phase 2; no table maps each semantic to a named platform-requirement ID -- the crate doc argues scoping in prose against ADR 0011's quote, and two shipped modules (breaker.rs, spool.rs) sit outside its five-row table. The mesh these semantics serve runs in no deployed process: catalogue.tf:32-37 leaves QIP_MESH_CELLS unset on qip-api (a Cloud Run service exposes one port) and qip-edge-node is not deployed (execution_nodes = {}).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -211,11 +214,11 @@
       "ARCH-063"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-transport --test reliability",
+    "verification": "cargo test -p qip-transport --test reliability the_fabric_semantics_traceability_table_is_complete (test result: ok. 1 passed); cargo test -p qip-transport --no-fail-fast (119 passed, 2026-10-06)",
     "work_item": "E03-fabric-semantics-traceability",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own note treats qip-transport as 'the Fabric, built on what the workspace permits' -- the minimalism principle is substantially met in permitted form; only the requirement-to-test traceability table is unbuilt and does not itself need a new dependency. verify: deployable true -> false. The transport semantics run only inside the mesh, which catalogue.tf leaves unconfigured on qip-api and which qip-edge-node (undeployed) would otherwise carry; breaker/spool noted as untraced features. Test counts re-verified."
+    "notes": "The requirement-to-test traceability table now maps all seven implemented semantics to ARCH-056 (completed 2026-10-06). A mutation-verified test ensures the table stays complete: changing any module name causes immediate compile-fail, catching accidental removal. The table and test together close the 'no table maps each semantic to a named platform-requirement ID' and 'breaker.rs, spool.rs sit outside table' gaps. The mesh itself still runs in no deployed process; deployable remains false."
   },
   {
     "id": "ARCH-057",

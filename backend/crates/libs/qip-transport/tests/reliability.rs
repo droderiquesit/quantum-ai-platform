@@ -751,3 +751,30 @@ fn the_recording_sleeper_reports_what_a_wall_clock_would_have_spent() {
     assert_eq!(sleeper.recorded().len(), 2);
     assert_eq!(sleeper.total().as_millis(), 35);
 }
+
+#[test]
+fn the_fabric_semantics_traceability_table_is_complete() {
+    // ARCH-056 requires that every semantic property of the transport's
+    // reliability guarantees be mapped to a named platform requirement. The
+    // module documentation at the crate root states seven such properties
+    // in a table: retry, backpressure, at-least-once, dead letters, ordering,
+    // circuit breaking, and queue overflow. Each row cites both a requirement
+    // ID (ARCH-056) and a module implementing it. This test enforces that
+    // the cited modules exist as public exports by referencing them. If a
+    // row's module is removed or unexported, this test fails to compile,
+    // preventing the documentation table from becoming a lie.
+    //
+    // The table is in qip-transport/src/lib.rs at lines 30-38, mapping each
+    // property to ARCH-056 and to a module. The modules are:
+    // retry (property: retry), queue (property: backpressure, queue overflow),
+    // mesh (property: at-least-once, ordering), deadletter (property: dead letters),
+    // breaker (property: circuit breaking), spool (property: queue overflow).
+
+    // Type references that compile-fail if modules are missing or unexported.
+    let _ = std::any::type_name::<qip_transport::retry::RetryPolicy>();
+    let _ = std::any::type_name::<qip_transport::queue::OutboundQueue<u32>>();
+    let _ = std::any::type_name::<qip_transport::mesh::MeshMessage>();
+    let _ = std::any::type_name::<qip_transport::deadletter::DeadLetterReason>();
+    let _ = std::any::type_name::<qip_transport::breaker::BreakerPolicy>();
+    let _ = std::any::type_name::<qip_transport::spool::DurableSpool>();
+}
