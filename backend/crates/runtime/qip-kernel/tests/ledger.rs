@@ -2631,6 +2631,145 @@ fn the_learn_stage_halts_a_statement_beyond_its_floor_and_not_one_inside_it() ->
 }
 
 #[test]
+fn economic_exposure_reconciles_against_settled_ownership_with_fills_that_fail_settlement()
+-> Result<()> {
+    // ASSET-016: economic exposure is reconciled against settled ownership.
+    // A fill that is booked economically (a matching order exists) but cannot
+    // settle (detail mismatch: shares don't sum to fill quantity) raises a
+    // settlement refusal. The fill is not booked to any ledger.
+    let mut platform = platform(PlatformConfig::default())?;
+
+    let strategy = StrategyId::new("alpha");
+    let order = DeltaOrder {
+        order_id: "ord-1".to_string(),
+        object_id: ObjectId::from_string(INSTRUMENT),
+        venue: VenueId::new("XNYS"),
+        side: BookSide::Ask,
+        quantity: dec!("100"),
+        price: dec!("50"),
+        simulated: true,
+        strategy: strategy.clone(),
+        contributors: vec![Contributor {
+            strategy: strategy.clone(),
+            signed_size: dec!("100"),
+            inputs: vec![("alpha-feature".to_string(), 1)],
+        }],
+    };
+
+    // Fill with shares that sum to 50, but fill quantity is 100 -- settlement refusal
+    let broken_fill = FillRecord {
+        order_id: "ord-1".to_string(),
+        object_id: ObjectId::from_string(INSTRUMENT),
+        venue: VenueId::new("XNYS"),
+        side: BookSide::Ask,
+        quantity: dec!("100"),
+        price: dec!("50"),
+        simulated: true,
+        at: start(),
+        shares: vec![FillShare {
+            strategy: strategy.clone(),
+            quantity: dec!("50"),
+        }],
+    };
+
+    let report = CellReport::new(CELL, start())
+        .with_orders(vec![order])
+        .with_fills(vec![broken_fill]);
+
+    // Premise: the order exists, so the fill is not unsent; it's a settlement detail mismatch.
+    assert_eq!(report.orders.len(), 1);
+    assert_eq!(report.fills.len(), 1);
+
+    let ingestion = platform.ingest_cell_report(report, start())?;
+
+    // Settlement refusal: the fill's shares do not sum to its quantity.
+    // No fill is settled, and the refusal is tracked.
+    assert_eq!(ingestion.settlement.fills_settled, 0);
+    assert_eq!(ingestion.settlement.refused.len(), 1);
+    assert!(
+        ingestion.settlement.refused[0].contains("sum"),
+        "the refusal does not name the share-sum failure: {}",
+        ingestion.settlement.refused[0]
+    );
+
+    // Premise: settlement was refused, so no position is booked.
+    let desk = platform.user_ledger().desk();
+    assert_eq!(
+        settled(&platform, &desk, &strategy),
+        None,
+        "a refused fill was booked to the desk"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn economic_exposure_reconciles_against_settled_ownership_with_a_settled_holding_and_no_economic_position()
+-> Result<()> {
+    // ASSET-016: economic exposure is reconciled against settled ownership.
+    // A fill that exists in settlement (a claim of execution) but has no matching
+    // order in the economic record raises a reconciliation break and halts the
+    // cell. This prevents silent reconciliation mismatches where settlement and
+    // economics diverge, a core invariant for auditability.
+    let mut platform = platform(PlatformConfig::default())?;
+
+    let strategy = StrategyId::new("alpha");
+
+    // A fill on an order the centre never authorized: economically orphaned.
+    let orphaned_fill = FillRecord {
+        order_id: "ord-orphan".to_string(),
+        object_id: ObjectId::from_string(INSTRUMENT),
+        venue: VenueId::new("XNYS"),
+        side: BookSide::Bid,
+        quantity: dec!("100"),
+        price: dec!("50"),
+        simulated: true,
+        at: start(),
+        shares: vec![FillShare {
+            strategy: strategy.clone(),
+            quantity: dec!("100"),
+        }],
+    };
+
+    let report = CellReport::new(CELL, start()).with_fills(vec![orphaned_fill]);
+
+    // Premise: the report has no order, so the fill is economically orphaned.
+    assert!(
+        report.orders.is_empty(),
+        "the premise is a fill with no matching order"
+    );
+
+    let ingestion = platform.ingest_cell_report(report, start())?;
+
+    // A reconciliation break: the fill exists in the settlement record but
+    // the centre has no order to match it against. This is exactly the case
+    // the requirement names: 'a settled holding with no economic position'.
+    // The break is recorded for investigation.
+    assert!(
+        ingestion.settlement.breaks.len() > 0,
+        "an orphaned fill should raise a reconciliation break"
+    );
+
+    // The cell is halted to prevent silent divergence between settlement and
+    // the economic record. An unsent fill is a halt condition.
+    assert!(
+        ingestion.halted.is_some(),
+        "the cell should be halted for a settled holding with no order"
+    );
+
+    // The position is not booked economically (no order exists) and settlement
+    // is not recorded, preserving auditability.
+    let desk = platform.user_ledger().desk();
+    assert_eq!(
+        settled(&platform, &desk, &strategy),
+        None,
+        "an orphaned fill should not be booked"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn two_venues_holding_dollars_keep_their_own_floors_through_the_learn_stage() -> Result<()> {
     // The failure this prevents has already happened here: the kernel held
     // its tolerances keyed by *asset*, so the second statement naming USD

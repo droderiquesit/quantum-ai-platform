@@ -630,10 +630,8 @@ fn an_unpriced_instrument_is_not_tradable() {
 fn a_decision_request_requires_nonempty_portfolio_and_strategy_ids() {
     // A request without a portfolio identifier is useless because a solve
     // cannot be attributed to the thing it applies to. Same for strategy.
-    let mut qubo = qip_numerics::anneal::Qubo::new(2);
-    qubo.add(0, 0, 1.0);
-    qubo.add(0, 1, 0.5);
-    qubo.add(1, 1, 2.0);
+    let qubo =
+        qip_numerics::anneal::Qubo::new(vec![vec![1.0, 0.5], vec![0.5, 2.0]]).expect("valid QUBO");
 
     let empty_portfolio = "";
     let strategy_id = "STRATEGY_001";
@@ -673,7 +671,7 @@ fn a_decision_request_refuses_a_problem_with_no_variables() {
     // A QUBO with zero variables has nothing to optimize. Accepting it would
     // let a badly-formed request pass silently to a solver, which would produce
     // a meaningless result.
-    let empty_qubo = qip_numerics::anneal::Qubo::new(0);
+    let empty_qubo = qip_numerics::anneal::Qubo::new(vec![]).expect("empty QUBO");
     let result = qip_quant::DecisionRequest::new(
         empty_qubo,
         "PORT_001".to_string(),
@@ -693,10 +691,8 @@ fn a_decision_request_refuses_a_problem_with_no_variables() {
 fn a_solver_result_validates_assignment_size_against_request() {
     // A solver result that claims to answer a request with 4 variables but
     // provides only 3 is incoherent. The assignment size must match exactly.
-    let mut qubo = qip_numerics::anneal::Qubo::new(2);
-    qubo.add(0, 0, 1.0);
-    qubo.add(0, 1, 0.5);
-    qubo.add(1, 1, 2.0);
+    let qubo =
+        qip_numerics::anneal::Qubo::new(vec![vec![1.0, 0.5], vec![0.5, 2.0]]).expect("valid QUBO");
     let request = qip_quant::DecisionRequest::new(
         qubo,
         "PORT_001".to_string(),
@@ -723,8 +719,7 @@ fn a_solver_result_refuses_non_binary_variable_assignments() {
     // A QUBO solver produces binary assignments: each variable is either 0 or 1.
     // A result claiming to have a variable set to 2 or higher is not an answer
     // to the binary problem.
-    let mut qubo = qip_numerics::anneal::Qubo::new(1);
-    qubo.add(0, 0, 1.0);
+    let qubo = qip_numerics::anneal::Qubo::new(vec![vec![1.0]]).expect("valid QUBO");
     let request = qip_quant::DecisionRequest::new(
         qubo,
         "PORT_001".to_string(),
