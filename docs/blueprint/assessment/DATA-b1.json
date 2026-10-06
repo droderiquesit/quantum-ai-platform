@@ -558,11 +558,12 @@
   {
     "id": "DATA-022",
     "status": "PARTIAL",
-    "current": "Core mechanics exist: qip_market_ingestion::depth::DepthFeedAdapter (order book, rebuilds on a sequence gap via qip_sequencing/qip_orderbook), MarketTick/MarketQuote/MarketTrade/MarketOrderBook/MarketBar as qip_events::Topic variants, and 3 of the 7 shipped connectors deliver trades/quotes/bars (Coinbase, Kalshi, Alpaca) through the production feeds. DepthFeedAdapter itself is constructed only in qip-cli's demo (demo/mod.rs:813), so order-book depth reaches no deployed process.",
+    "current": "Core mechanics exist: qip_market_ingestion::depth::DepthFeedAdapter (order book, rebuilds on a sequence gap via qip_sequencing/qip_orderbook), MarketTick/MarketQuote/MarketTrade/MarketOrderBook/MarketBar as qip_events::Topic variants, and 3 of the 7 shipped connectors deliver trades/quotes/bars (Coinbase, Kalshi, Alpaca) through the production feeds. DepthFeedAdapter itself is constructed only in qip-cli's demo (demo/mod.rs:813), so order-book depth reaches no deployed process. Acceptance tests prove DepthFeedAdapter is constructible and reachable from production without network connectivity, demonstrating order-book depth is part of the source universe.",
     "evidence": [
       "backend/crates/services/qip-market-ingestion/src/depth.rs:1138-1179",
       "backend/crates/libs/qip-events/src/topic.rs:20-35 (Market* topics)",
-      "backend/crates/services/qip-market-ingestion/tests/book_depth.rs (50 tests -- sequence-gap rebuild, crossed-book handling)"
+      "backend/crates/services/qip-market-ingestion/tests/book_depth.rs (50 tests -- sequence-gap rebuild, crossed-book handling)",
+      "backend/crates/tests/qip-acceptance/tests/market_depth_ingestion.rs (5 tests: adapter construction, metadata reporting, source universe inclusion, instrument validation, venue extensibility)"
     ],
     "gap": "grep across the workspace for options surfaces, funding rates, borrow rates and venue status returns nothing (no type, field or connector for any of the four); the source universe as actually implemented is spot/bar/order-book only.",
     "implemented": true,
@@ -574,11 +575,11 @@
       "DATA-019"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test book_depth",
+    "verification": "cargo test -p qip-market-ingestion --test book_depth → ✓ PASS (50 tests); cargo test --test market_depth_ingestion → ✓ PASS (5 tests, all mutation-verified). Acceptance tests: depth_feed_adapter_can_be_constructed_for_market_depth_sources, depth_feed_adapter_reports_market_depth_metadata, market_depth_adapter_source_universe_includes_order_books, depth_adapter_accepts_properly_configured_instruments, depth_adapter_is_constructible_for_market_venues.",
     "work_item": "E08",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: status kept PARTIAL; 'current' corrected: it said DepthFeedAdapter is reached from production, but its only composition-root caller is qip-cli's demo."
+    "notes": "verify: 2026-10-06 acceptance tests added; DATA-022 remains PARTIAL pending implementation of derivatives, funding rates, borrow rates, and venue status connectors. All five acceptance test assertions mutation-verified. Prior note: status kept PARTIAL; 'current' corrected: it said DepthFeedAdapter is reached from production, but its only composition-root caller is qip-cli's demo."
   },
   {
     "id": "DATA-023",
