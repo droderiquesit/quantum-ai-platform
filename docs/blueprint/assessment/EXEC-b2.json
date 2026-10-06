@@ -113,7 +113,7 @@
   },
   {
     "id": "EXEC-024",
-    "status": "MISSING",
+    "status": "BLOCKED",
     "current": "nothing. No 'Market Factory' actor exists anywhere in the tree. qip_execution_engine::origination::OriginationMandate::admit (backend/crates/services/qip-execution-engine/src/origination.rs:223) computes and admits a bound (the five-gate origination check, see EXEC-027) but constructs no market, calls no create/list function and publishes nothing; the module's own header states it deliberately 'does not construct an Order, name a venue, or reach a Broker' (origination.rs:22-26). qip_brokers::exchange::SimulatedExchange::list (exchange.rs:380) and list_synthetic (exchange.rs:405) are the simulated venue's own catalogue: the only non-test caller is qip-edge-node's SimulatedGateway::ensure_listed (backend/crates/apps/qip-edge-node/src/gateway.rs:569-586), which lists a synthetic instrument at the in-process paper venue when an order names one. That models an external venue's catalogue; it is not the platform creating a market and publishes no pricing rules.",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/origination.rs:1-38 (module doc: constructs no Order, names no venue, reaches no Broker)",
@@ -121,7 +121,7 @@
       "backend/crates/apps/qip-edge-node/src/gateway.rs:569-586 (SimulatedGateway::ensure_listed -> list_synthetic: the only non-test caller; unconnected to origination)",
       "grep -rni 'market.factory|MarketFactory|pricing_rule|PricingRule|create_market|CreatedMarket' backend/crates --include=*.rs: no matches"
     ],
-    "gap": "No Market Factory exists to create a market or publish anything about it; only the pre-creation approval gate (OriginationMandate) exists, and it is itself unreached from any composition root (see EXEC-027).",
+    "gap": "No Market Factory exists to create a market or publish anything about it; only the pre-creation approval gate (OriginationMandate) exists, and it is itself unreached from any composition root (see EXEC-027). BLOCKED because it depends on EXEC-006 (market creation capability), which is itself BLOCKED under ADR 0099 conflict C1 (market creation not authorized).",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -130,12 +130,12 @@
     "depends_on": [
       "EXEC-006"
     ],
-    "blocked_by": "",
-    "verification": "Test needed once EXEC-006 exists: assert a created simulated market has a versioned pricing-rule document recorded in the event log, and that every quote made in it reproduces from the rule version in force at the time.",
+    "blocked_by": "C1",
+    "verification": "Test needed once EXEC-006 is unblocked: assert a created simulated market has a versioned pricing-rule document recorded in the event log, and that every quote made in it reproduces from the rule version in force at the time.",
     "work_item": "E11",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status unchanged (MISSING confirmed; no Market Factory, pricing-rule document or rule versioning found under backend/, frontend/ or infrastructure/). Corrected a false claim in 'current': SimulatedExchange::list is not called from the qip-cli demo (qip-cli/src/demo/mod.rs has no call to it); its one non-test caller is qip-edge-node's SimulatedGateway::ensure_listed via list_synthetic. Evidence updated to match."
+    "notes": "Status changed MISSING -> BLOCKED; blocked_by '' -> 'C1'. EXEC-024 depends on EXEC-006 (create market capability), which is BLOCKED under ADR 0099 C1. Until C1 is resolved by the owner (market creation authorization decision), EXEC-024 remains BLOCKED. The simulated form cannot be built without EXEC-006."
   },
   {
     "id": "EXEC-025",
