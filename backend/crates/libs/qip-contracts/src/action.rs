@@ -121,11 +121,58 @@ pub struct ShadowRecord {
 }
 
 impl ShadowRecord {
+    pub fn new(opportunity: String, instrument: String) -> Self {
+        Self {
+            opportunity,
+            instrument,
+        }
+    }
+
     pub fn opportunity(&self) -> &str {
         &self.opportunity
     }
     pub fn instrument(&self) -> &str {
         &self.instrument
+    }
+}
+
+/// CAPITAL-036: Shadow portfolio holding counterfactual allocations beside
+/// every paper allocation. Aggregates alternate-size and rejected-opportunity
+/// shadows for a single allocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShadowPortfolio {
+    /// Identifier for the allocation this portfolio shadows.
+    pub allocation_id: String,
+    /// Alternate-size shadows: smaller or larger sizes of the actual allocation.
+    pub size_alternatives: Vec<ShadowRecord>,
+    /// Rejected-opportunity shadows: paths that were declined but would have
+    /// been profitable (regrets) or venues/hedges not taken.
+    pub rejected_opportunities: Vec<ShadowRecord>,
+}
+
+impl ShadowPortfolio {
+    pub fn new(allocation_id: String) -> Self {
+        Self {
+            allocation_id,
+            size_alternatives: Vec::new(),
+            rejected_opportunities: Vec::new(),
+        }
+    }
+
+    /// Checks if this shadow portfolio has all required shadows for CAPITAL-036:
+    /// at least one alternate-size and one rejected-opportunity shadow.
+    pub fn is_complete(&self) -> bool {
+        !self.size_alternatives.is_empty() && !self.rejected_opportunities.is_empty()
+    }
+
+    /// Adds a size alternative shadow.
+    pub fn add_size_alternative(&mut self, shadow: ShadowRecord) {
+        self.size_alternatives.push(shadow);
+    }
+
+    /// Adds a rejected opportunity shadow.
+    pub fn add_rejected_opportunity(&mut self, shadow: ShadowRecord) {
+        self.rejected_opportunities.push(shadow);
     }
 }
 
