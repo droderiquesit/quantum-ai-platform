@@ -16,8 +16,10 @@
 //! the customer's price is a claim, with a mechanism, a lag, a strength and
 //! evidence behind it. Conflating the two is how a correlation becomes a thesis.
 
+pub mod arbitrage_state;
 pub mod causal;
 pub mod confounder;
+pub mod execution_state;
 pub mod exposure;
 pub mod falsification;
 pub mod features;
@@ -25,19 +27,26 @@ pub mod federation;
 pub mod granger;
 pub mod graph;
 pub mod inference;
+pub mod lead_lag;
 pub mod liquidity;
+pub mod order_flow;
+pub mod price_impact;
 pub mod relationship;
 pub mod resolution_source;
 pub mod state;
 pub mod vocabulary;
 pub mod world;
 
+pub use arbitrage_state::{
+    ArbitrageOpportunity, ArbitrageState, OpportunityClass, TrackedOpportunity,
+};
 pub use causal::{
     CausalEdge, CausalGraph, ConditionFailures, ConditionStanding, EdgeStanding, Effect,
     FailureRun, Mechanism, PropagationResult, RETIREMENT_CONSECUTIVE_FAILURES, RetiredEdge,
     Retirement,
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
+pub use execution_state::{ExecutionRecord, ExecutionState, VenueExecutionStats};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SecondOrderReview, SharedDriver, UnheldDependency,
     hidden_concentration, instruments_exposed_to, second_order_exposure, unheld_dependencies,
@@ -56,10 +65,15 @@ pub use inference::{
     Abduction, Candidate, CausalPath, Counterfactual, EdgeCitation, Identification, Intervention,
     Surprise,
 };
+pub use lead_lag::{
+    LeadLagNetwork, LeadLagRelationship, LeadLagState, LeadPosition, VenueLeadLagProfile,
+};
 pub use liquidity::{
     Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
     VenueShift,
 };
+pub use order_flow::{FlowDirection, FlowObservation, OrderFlowState};
+pub use price_impact::{ImpactMap, ImpactObservation, ImpactState, VenueImpactModel};
 pub use relationship::{Relationship, RelationshipKind};
 pub use resolution_source::{RESOLUTION_SOURCE_PREFIX, ResolutionSourceClaim};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};
