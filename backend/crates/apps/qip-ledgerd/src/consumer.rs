@@ -49,8 +49,11 @@ pub struct PostingStream {
 }
 
 impl PostingStream {
-    /// Yield the next posting from the stream, or None if the stream is closed.
-    pub fn next(&mut self) -> Result<Option<()>> {
+    /// Poll the next posting from the stream, or None if the stream is closed.
+    ///
+    /// This method is a placeholder and will be replaced with the actual
+    /// stream implementation when the fabric consumer is fully integrated.
+    pub fn poll_next(&mut self) -> Result<Option<()>> {
         // Placeholder
         Ok(None)
     }
