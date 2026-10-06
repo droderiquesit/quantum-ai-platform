@@ -1271,6 +1271,7 @@ pub mod names {
     pub const EVENT_FABRIC_SHED: &str = "qip_event_fabric_shed_total";
     pub const EVENT_FABRIC_FENCED: &str = "qip_event_fabric_fenced_total";
     pub const EVENT_FABRIC_LEADER_EPOCH: &str = "qip_event_fabric_leader_epoch";
+    pub const EVENT_FABRIC_SERVING: &str = "qip_event_fabric_serving";
     pub const EVENT_FABRIC_SEGMENTS_SEALED: &str = "qip_event_fabric_segments_sealed_total";
     pub const EVENT_FABRIC_ARCHIVE_LAG: &str = "qip_event_fabric_archive_lag_segments";
     pub const EVENT_FABRIC_GROUP_LAG: &str = "qip_event_fabric_group_lag";

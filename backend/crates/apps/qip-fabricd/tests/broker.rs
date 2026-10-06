@@ -1230,6 +1230,10 @@ fn health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_s
         has(&["qip_event_fabric_refusals", r#"reason="key_out_of_scope""#]),
         "the refused append is counted by its reason:\n{exposition}"
     );
+    assert!(
+        exposition.contains("qip_event_fabric_serving 1"),
+        "the serving gauge is 1 when accepting requests:\n{exposition}"
+    );
 
     fabric.running.as_mut().unwrap().stop_data_plane();
     let dead = fabric
@@ -1253,6 +1257,10 @@ fn health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_s
     let (status, exposition) = fabric.health("/metrics");
     assert_eq!(status, 200, "metrics are still scrapable");
     assert!(exposition.contains("qip_event_fabric_leader_epoch"));
+    assert!(
+        exposition.contains("qip_event_fabric_serving 0"),
+        "the serving gauge is 0 when the data plane stops:\n{exposition}"
+    );
 }
 
 // --- FABRIC-034 -----------------------------------------------------------------
