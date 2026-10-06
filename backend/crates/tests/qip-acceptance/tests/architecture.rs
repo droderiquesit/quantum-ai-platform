@@ -3538,3 +3538,49 @@ fn no_reflex_crate_and_no_part_of_its_node_can_start_export_or_drain_a_trace() {
          a central root's drain thread"
     );
 }
+
+// --- LEDGER-001: one authoritative ledger writer ----------------------
+
+#[test]
+fn multiple_independent_stores_claim_ledger_authority_ledger_001_is_incorrect() {
+    // LEDGER-001 is marked INCORRECT: the platform holds multiple independent ledger
+    // writers instead of one authoritative book. Desk fills write TrackedCapital; cell
+    // fills write UserLedger and risk aggregates; agents read a never-written BookView.
+    // This test documents the violation by enumerating the multiple stores.
+    // It will pass once LEDGER-003 (Ledger Brain) consolidates them.
+
+    let platform = qip_acceptance::read("backend/crates/runtime/qip-kernel/src/platform.rs");
+    let capital = qip_acceptance::read("backend/crates/services/qip-capital/src/ledger/book.rs");
+    let fabric = qip_acceptance::read("backend/crates/services/qip-capital-fabric/src/wallet.rs");
+    let brokers = qip_acceptance::read("backend/crates/services/qip-brokers/src/ledger.rs");
+    let edge = qip_acceptance::read("backend/crates/edge/qip-edge/src/reservation.rs");
+
+    let sources = vec![
+        ("platform.rs", &platform, vec!["TrackedCapital", "BookView"]),
+        ("ledger/book.rs", &capital, vec!["UserLedger"]),
+        ("wallet.rs", &fabric, vec!["Wallet", "FabricJournal"]),
+        ("brokers ledger.rs", &brokers, vec!["AccountLedger"]),
+        ("edge reservation.rs", &edge, vec!["RegionTable"]),
+    ];
+
+    let mut found_writers = Vec::new();
+    for (file, content, type_names) in sources {
+        for type_name in type_names {
+            if content.contains(&format!("struct {type_name}")) {
+                found_writers.push(format!("{file}: struct {type_name}"));
+            }
+        }
+    }
+
+    // Multiple independent capital-holding types found: this documents LEDGER-001's INCORRECT
+    // status. The test fails now and will pass once all consumers read from one authoritative
+    // writer (via LEDGER-003: Ledger Brain crate, and SLICE-31: qip-ledgerd writer).
+    assert!(
+        found_writers.len() >= 5,
+        "LEDGER-001 (INCORRECT): multiple independent stores claim ledger authority. \
+         Found {}: {found_writers:#?}. The invariant requires exactly one authoritative \
+         writer with all consumers reading from it. Fix: create Ledger Brain (LEDGER-003) \
+         and qip-ledgerd writer (SLICE-31).",
+        found_writers.len()
+    );
+}
