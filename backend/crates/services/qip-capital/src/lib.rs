@@ -152,6 +152,7 @@ pub mod ledger;
 pub mod margin;
 pub mod recall;
 pub mod reservation;
+pub mod survival;
 pub mod treasury;
 
 pub use allocation::{
@@ -180,3 +181,4 @@ pub use margin::{
 };
 pub use recall::{RecallOrder, RecallReason, RecallRegister, RecallState};
 pub use reservation::{MAXIMUM_RESERVATION_VALIDITY, Reservation, ReservationLedger};
+pub use survival::{CapitalSurvivalState, SurvivalReport};
