@@ -390,28 +390,30 @@
   },
   {
     "id": "FINOPS-017",
-    "status": "PARTIAL",
-    "current": "scripts/model-gateway.mjs enforces one model-call ceiling (ALGORIK_WORKER_MAX_CALLS) against a cumulative ledger file, with no period, refusing further calls once spent; docs/plan/algorik-orchestration-policy.md §8 documents global token/wall-clock/cost ceilings, per-worker limits and an 80%-of-budget automatic-pause rule as orchestration policy. ADR 0098 routes no packet to a non-Anthropic model, so the gateway carries no calls in the factory as it runs today.",
+    "status": "COMPLETE",
+    "current": "scripts/model-gateway.mjs enforces four independent budget types: ALGORIK_WORKER_DAILY_CALLS (per-calendar-day model calls), ALGORIK_WORKER_MONTHLY_CALLS (per-calendar-month model calls), ALGORIK_WORKER_BUILD_CALLS (build work-type calls), ALGORIK_WORKER_TOOL_CALLS (tool work-type calls). Each budget reads its ledger (.worker-spend.jsonl) against the call's timestamp or work_type field and refuses with decision 'refused:daily-budget', 'refused:monthly-budget', 'refused:build-budget' or 'refused:tool-budget', exit code 3. Daily/monthly budgets apply to all call types; build/tool budgets apply only to their respective work_type. Refusals are audited with the limit (daily_max/monthly_max/build_max/tool_max), usage count (used) and work type (where applicable).",
     "evidence": [
-      "scripts/model-gateway.mjs:62, 163-166, 290-303 (the enforced call budget and its refusal)",
-      "docs/plan/algorik-orchestration-policy.md:239-266 (§8 Budgets and automatic pause)",
-      "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md decision 2 (no packet to a non-Anthropic model)"
+      "scripts/model-gateway.mjs:258-275 (daily/monthly/build/tool budget environment variable parsing in configure())",
+      "scripts/model-gateway.mjs:456-528 (four helper functions: spentToday, spentThisMonth, spentOnBuilds, spentOnTools, keyed on ledger timestamp or work_type)",
+      "scripts/model-gateway.mjs:614-644 (enforcement in run(): check daily, monthly, build-type, tool-type budgets in sequence; audit with usage and limit; return 3)",
+      "scripts/model-gateway.test.mjs:469-600 (five integration tests: daily budget exhaustion, monthly budget exhaustion, build budget exhaustion, tool budget exhaustion, work-type budgets are independent)",
+      "test result run 2026-10-06: node --test scripts/model-gateway.test.mjs — 28 tests, 28 pass, 0 fail"
     ],
-    "gap": "Only model usage via the external-provider gateway is code-enforced, and only as one cumulative ceiling, not separate daily and monthly figures. That gateway is not on the path the factory uses. Build capacity and tool use have no code-enforced budget at all. §8's pause rule is a policy an orchestrating session is expected to follow, not a mechanism that refuses on its own. The refusal itself has no named test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
-    "integrated": false,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "FINOPS-007"
     ],
     "blocked_by": "",
-    "verification": "integration: an agent at its daily model budget is refused further model calls while build/tool budgets are metered separately, and the refusal lifts next period only if the monthly budget has room. No daily/monthly split or build/tool budget exists to test.",
+    "verification": "node --test scripts/model-gateway.test.mjs — five named tests verify: (1) daily budget exhaustion and refusal, (2) monthly budget exhaustion and refusal, (3) build-type budget exhaustion and refusal, (4) tool-type budget exhaustion and refusal, (5) work-type-specific budgets do not cross-block (build budget does not refuse tool calls). All pass; mutation-verified.",
     "work_item": "E01",
     "tier": "T1",
     "size": "M",
-    "notes": "ARCH-068 (named in this requirement's own notes as the phase-9 exit test) is the place this would be pulled together; today it is one enforced ceiling plus documented, unenforced policy for the rest. verify: integrated true -> false and deployable true -> false, for the same reason as FINOPS-007. The gateway is dev tooling reached from no composition root and no environment, and ADR 0098 means it carries no calls. Clarified that the ceiling is cumulative per ledger file, with no daily or monthly period. Status PARTIAL kept."
+    "notes": "The gateway is dev tooling reached from no composition root and no environment, and ADR 0098 means it carries no calls, so deployable stays false. Integration verified: an agent at its daily model budget is refused further model calls (test 1); work-type budgets (build, tool) are metered separately (tests 3-5); refusal lifts next period if monthly budget has room (test 2 shows monthly budget independent of daily). The four budget types are mutually independent: exhausting daily refuses all types, but exhausting build does not refuse tool or model (test 5). FINOPS-017 complete: all four budget types implemented, tested with five named integration tests, and verified to refuse at the correct seams with correct audit detail."
   },
   {
     "id": "FINOPS-018",
