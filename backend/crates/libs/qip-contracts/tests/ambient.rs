@@ -4,8 +4,8 @@
 #![allow(clippy::expect_used)]
 
 use qip_contracts::ambient::{
-    Advisory, AmbientSignal, AttentionRouter, Disposition, Pathway, PromotionCase, RoutingPolicy,
-    SignalClass, Trigger, promote,
+    Advisory, AmbientSignal, AttentionRouter, ComputeAllocation, ComputeResourceType, Disposition,
+    ModelReputation, Pathway, PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
 };
 use qip_core::{Duration, Timestamp};
 use std::collections::BTreeSet;
@@ -222,4 +222,140 @@ fn an_ambient_output_without_evidence_a_pass_an_approver_and_held_controls_is_re
         let refused = promote(advisory(), &case).expect_err("must refuse");
         assert!(refused.message().contains("advisory until promoted"));
     }
+}
+
+#[test]
+fn a_model_reputation_requires_all_three_dimensions_and_all_metrics_within_bounds() {
+    let good = || ModelReputation::new("equities", "1h", "stable", 8_000, 7_500, 8_500);
+    good().expect("a well-formed reputation");
+
+    let bad_cases = [
+        (
+            "empty domain",
+            ModelReputation::new("", "1h", "stable", 8_000, 7_500, 8_500),
+        ),
+        (
+            "empty horizon",
+            ModelReputation::new("equities", "", "stable", 8_000, 7_500, 8_500),
+        ),
+        (
+            "empty regime",
+            ModelReputation::new("equities", "1h", "", 8_000, 7_500, 8_500),
+        ),
+        (
+            "accuracy out of range",
+            ModelReputation::new("equities", "1h", "stable", 10_001, 7_500, 8_500),
+        ),
+        (
+            "quality out of range",
+            ModelReputation::new("equities", "1h", "stable", 8_000, 10_001, 8_500),
+        ),
+        (
+            "skill out of range",
+            ModelReputation::new("equities", "1h", "stable", 8_000, 7_500, 10_001),
+        ),
+    ];
+    for (name, result) in bad_cases {
+        let refused = result.expect_err(&format!("{name} is refused"));
+        assert!(refused.message().contains("must not") || refused.message().contains("exceeds"));
+    }
+}
+
+#[test]
+fn a_model_reputation_overall_score_is_weighted_average() {
+    // 40% accuracy, 30% quality, 30% skill
+    let rep = ModelReputation::new("equities", "1h", "stable", 10_000, 10_000, 10_000)
+        .expect("valid reputation");
+    assert_eq!(rep.overall_bp(), 10_000);
+
+    let rep = ModelReputation::new("equities", "1h", "stable", 5_000, 5_000, 5_000)
+        .expect("valid reputation");
+    assert_eq!(rep.overall_bp(), 5_000);
+
+    // (8000 * 40 + 6000 * 30 + 7000 * 30) / 100 = (320000 + 180000 + 210000) / 100 = 7100
+    let rep = ModelReputation::new("equities", "1h", "stable", 8_000, 6_000, 7_000)
+        .expect("valid reputation");
+    assert_eq!(rep.overall_bp(), 7_100);
+}
+
+#[test]
+fn a_compute_allocation_requires_nonempty_fields_and_positive_units() {
+    let good_rep = || {
+        ModelReputation::new("equities", "1h", "stable", 8_000, 7_500, 8_500)
+            .expect("valid reputation")
+    };
+
+    let good = || {
+        ComputeAllocation::new(
+            "work-123",
+            ComputeResourceType::Cpu,
+            100,
+            at(100),
+            good_rep(),
+            "high expected value",
+        )
+    };
+    good().expect("a well-formed allocation");
+
+    let bad_cases = [
+        (
+            "empty work_id",
+            ComputeAllocation::new(
+                "",
+                ComputeResourceType::Cpu,
+                100,
+                at(100),
+                good_rep(),
+                "high value",
+            ),
+        ),
+        (
+            "empty rationale",
+            ComputeAllocation::new(
+                "work-123",
+                ComputeResourceType::Cpu,
+                100,
+                at(100),
+                good_rep(),
+                "",
+            ),
+        ),
+        (
+            "zero units",
+            ComputeAllocation::new(
+                "work-123",
+                ComputeResourceType::Cpu,
+                0,
+                at(100),
+                good_rep(),
+                "high value",
+            ),
+        ),
+    ];
+    for (name, result) in bad_cases {
+        let refused = result.expect_err(&format!("{name} is refused"));
+        assert!(refused.message().contains("must not") || refused.message().contains("positive"));
+    }
+}
+
+#[test]
+fn a_compute_allocation_records_all_metadata_for_auditability() {
+    let rep = ModelReputation::new("equities", "1h", "stable", 8_000, 7_500, 8_500)
+        .expect("valid reputation");
+    let alloc = ComputeAllocation::new(
+        "work-789",
+        ComputeResourceType::Gpu,
+        500,
+        at(200),
+        rep.clone(),
+        "strong forecast accuracy needed",
+    )
+    .expect("valid allocation");
+
+    assert_eq!(alloc.work_id(), "work-789");
+    assert_eq!(alloc.resource_type(), ComputeResourceType::Gpu);
+    assert_eq!(alloc.units(), 500);
+    assert_eq!(alloc.model_reputation().domain(), "equities");
+    assert_eq!(alloc.model_reputation().overall_bp(), 8_000); // (8000*40 + 7500*30 + 8500*30)/100
+    assert_eq!(alloc.rationale(), "strong forecast accuracy needed");
 }
