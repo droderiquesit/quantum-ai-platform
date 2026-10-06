@@ -935,24 +935,22 @@ variable "enable_vertex_ai" {
 
 variable "venue_adapter_type" {
   description = <<-EOT
-    The type of venue adapter this environment uses: "simulated" for the
-    in-process matching engine (CICD-083, ADR 0003), or the name of a
-    real venue for production environments.
+    The venue adapter this environment declares: "simulated", the in-process
+    matching engine (CICD-083, ADR 0003), and nothing else.
 
-    Dev environment uses "simulated" for fast iteration without external
-    venue connectivity. Production environments name their live venues here.
-
-    This variable makes the venue configuration explicit in tfvars and is
-    the single source of truth for whether an environment trades on mock or
-    real venues.
+    The execution node's startup template already pins QIP_VENUE_FEED to the
+    simulated feed and the binary refuses any other value; this variable makes
+    that explicit in tfvars. It admits no other value on purpose: the platform
+    is paper trading in every environment, and a variable that accepted a real
+    venue's name would be a fourth place a live path could be spelled.
   EOT
 
   type    = string
   default = "simulated"
 
   validation {
-    condition     = var.venue_adapter_type != ""
-    error_message = "The venue adapter type must not be empty. Use 'simulated' for mock venues (dev) or a real venue name for production environments."
+    condition     = var.venue_adapter_type == "simulated"
+    error_message = "The venue adapter type is \"simulated\" in every environment (ADR 0003): the platform is paper trading only and has no real-venue adapter."
   }
 }
 
