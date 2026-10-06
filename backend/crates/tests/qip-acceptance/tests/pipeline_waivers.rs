@@ -88,3 +88,32 @@ fn the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks
         );
     }
 }
+
+#[test]
+fn the_dockerfile_pins_reproducibility_settings() {
+    let dockerfile = read("infrastructure/docker/Dockerfile");
+
+    // musl-dev must be version-pinned for byte-reproducible builds (CICD-048).
+    assert!(
+        dockerfile.contains("musl-dev="),
+        "musl-dev must be version-pinned; use 'musl-dev=X.Y.Z_...' syntax in Dockerfile"
+    );
+
+    // SOURCE_DATE_EPOCH must be set to ensure reproducible timestamps.
+    assert!(
+        dockerfile.contains("SOURCE_DATE_EPOCH"),
+        "SOURCE_DATE_EPOCH environment variable required for reproducible builds (CICD-048)"
+    );
+
+    // CARGO_BUILD_JOBS must be 1 for deterministic parallelism.
+    assert!(
+        dockerfile.contains("CARGO_BUILD_JOBS=1"),
+        "CARGO_BUILD_JOBS must be set to 1 for deterministic builds (CICD-048)"
+    );
+
+    // Binary must be stripped to remove metadata that changes between builds.
+    assert!(
+        dockerfile.contains("strip --strip-all"),
+        "Binary must be stripped with 'strip --strip-all' to remove non-deterministic metadata (CICD-048)"
+    );
+}

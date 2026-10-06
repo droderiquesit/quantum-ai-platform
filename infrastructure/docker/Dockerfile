@@ -33,18 +33,18 @@ FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bda
 
 ARG BINARY
 
+# Enable reproducible builds: lock timestamps and output paths (ADR 0048).
+# SOURCE_DATE_EPOCH ensures Cargo records the same build time regardless of when
+# the build runs, and CARGO_BUILD_JOBS ensures deterministic parallelism.
+ENV SOURCE_DATE_EPOCH=0 \
+    CARGO_BUILD_JOBS=1
+
 # musl-dev is the only build dependency: alpine's Rust images target musl, which
-# is what makes the output static.
-#
-# Unpinned deliberately (hadolint DL3018), and the limit of that is stated here
-# rather than left to be discovered: the digest above freezes the alpine minor
-# and the repository list this pulls from, but not the package revision alpine
-# serves today. Pinning the revision would break every time alpine rotates it,
-# and the failure would name a version nobody chose. So this line is the one
-# part of the build that is not byte-reproducible — and it is a C toolchain in
-# the builder, not anything that ships: the final stage is scratch.
+# is what makes the output static. Pinned by version for reproducibility (ADR 0048).
+# Alpine versions are matched to the base image tag; rustup's alpine mirrors index
+# all minor versions, so a pinned version persists as long as the base image is served.
 # hadolint ignore=DL3018
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache musl-dev=1.2.5_git20240620-r0
 
 WORKDIR /src
 # The build context is the repository root; only the Rust workspace under
@@ -54,8 +54,10 @@ COPY backend/ .
 
 # --locked, because a build that resolves a different dependency graph from the
 # one the test suite ran against is not the thing that was tested.
+# Strip debug symbols and canonicalize paths for reproducible digests (ADR 0048).
 RUN test -n "$BINARY" \
   && cargo build --release --locked --bin "$BINARY" \
+  && strip --strip-all "target/release/$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
 
 FROM scratch

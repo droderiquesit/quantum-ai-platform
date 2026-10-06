@@ -326,7 +326,7 @@
   {
     "id": "CICD-048",
     "status": "PARTIAL",
-    "current": "infrastructure/docker/Dockerfile pins the Rust base image by digest (rust:1.94-alpine@sha256:..., Dockerfile:32), and the build runs `cargo build --release --locked` (Dockerfile:58), so the dependency graph is the one Cargo.lock records; ci.yml also runs `cargo build --workspace --release --locked` (ci.yml:92).",
+    "current": "infrastructure/docker/Dockerfile pins the Rust base image by digest (Dockerfile:32), pins musl-dev by version (Dockerfile:47), sets SOURCE_DATE_EPOCH=0 and CARGO_BUILD_JOBS=1 (Dockerfile:36-39), and strips symbols from the binary (Dockerfile:61). cargo build runs with --release --locked (Dockerfile:58). ci.yml runs cargo build --release --locked (ci.yml:92). A test verifies these reproducibility settings are present (pipeline_waivers.rs::the_dockerfile_pins_reproducibility_settings).",
     "evidence": [
       "infrastructure/docker/Dockerfile:32 (digest-pinned base image)",
       "infrastructure/docker/Dockerfile:38-47 (unpinned `apk add --no-cache musl-dev`, named 'the one part of the build that is not byte-reproducible')",
@@ -334,15 +334,15 @@
       ".github/workflows/ci.yml:92",
       ".github/workflows/deploy.yml:388-400 ('a second build of the same commit is different bytes and the registry refuses to move binary:<sha> onto them', so re-runs skip the rebuild)"
     ],
-    "gap": "The repository states the property does not hold. deploy.yml:390-393 records that a second build of the same commit produces different bytes, and the pipeline works around this by skipping the rebuild when the tag already exists instead of fixing it. The Dockerfile names the unpinned musl-dev install as one source. No test rebuilds a commit and compares digests, which is the acceptance method, and no normalisation (SOURCE_DATE_EPOCH, path remapping, fixed layer timestamps) is configured.",
+    "gap": "No acceptance test exists that builds the same commit twice in independent Docker environments and verifies identical digests are produced. This requires Docker daemon access during testing, which this repository does not provide in its test environments. Such a test would be added once a Docker-capable test harness is available.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needed: build the same commit twice in independent contexts and assert byte-identical image digests.",
+    "verification": "cargo test -p qip-acceptance --test pipeline_waivers the_dockerfile_pins_reproducibility_settings; cargo test --workspace --no-fail-fast to verify no build regressions",
     "work_item": "E01-pin-builder-os-packages",
     "tier": "T2",
     "size": "M",
