@@ -43,6 +43,17 @@ variable "execution_nodes" {
     ])
     error_message = "Every node must be configured for at least one venue."
   }
+
+  # `main.tf`'s `cell_ingress_health` opens exactly TCP 8080. A health port
+  # that differs is refused here rather than admitted into a rule that would
+  # either miss it or, if the rule followed it, open whatever it named —
+  # including 22 or 3389 — to every cell's subnet.
+  validation {
+    condition = alltrue([
+      for node_id, config in var.execution_nodes : config.health_port == 8080
+    ])
+    error_message = "Every node's health_port must be 8080, the one port the mesh's health ingress rule opens. Move the binary's health surface to 8080 (QIP_HEALTH_PORT) rather than widening the rule."
+  }
 }
 
 variable "central_plane_ranges" {
