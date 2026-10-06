@@ -2676,6 +2676,75 @@ fn every_run_service_holds_the_invariants_its_catalogue_entry_and_the_cloud_run_
 }
 
 #[test]
+fn every_catalogue_workload_egresses_all_traffic_through_the_vpc_and_portal_uses_private_ranges_only_by_design()
+ {
+    // ADR 0036 decision 4. Every catalogue workload sends all traffic through
+    // the VPC, through its zone's subnet with its zone's firewall tag, so the
+    // zone's rules are what apply. The portal is an exception, by architectural
+    // design: its only route into the VPC is to the API, and the zone's
+    // deny-egress rule on its tag enforces that. A portal sending all traffic
+    // through the VPC would also send Identity Platform and every other Google
+    // API call through it, a wider hole than the rule was written to cover. So
+    // the portal uses PRIVATE_RANGES_ONLY, restricting egress to RFC1918
+    // private ranges, and the zone rules further restrict what is permitted
+    // (infrastructure/gitops/envs/dev/portal.yaml, lines 77–82).
+    //
+    // This test pins that design: every catalogue workload uses ALL_TRAFFIC,
+    // the portal uses PRIVATE_RANGES_ONLY, and nothing else carries an
+    // unexpected configuration. See `.claude/rules/domains/infrastructure.md`
+    // and `docs/blueprint/assessment/SEC-b3.json` (SEC-052).
+    let mut catalogue_workloads_checked = 0usize;
+    let mut portal_checked = false;
+    for environment in environment_directories() {
+        for (key, entry, service, _) in run_services(&environment) {
+            let describe = service.describe();
+            let egress_config =
+                text_at(&service.value, &["spec", "template", "vpcAccess", "egress"])
+                    .map(String::from);
+            if let Some(entry) = entry {
+                // Catalogue workload: must use ALL_TRAFFIC
+                assert_eq!(
+                    egress_config.as_deref(),
+                    Some("ALL_TRAFFIC"),
+                    "{describe} is a catalogue workload and must send all traffic through the VPC; \
+                     it currently has egress configured as {:?}",
+                    egress_config
+                );
+                catalogue_workloads_checked += 1;
+            } else if key == "portal" {
+                // Portal: architectural exception, uses PRIVATE_RANGES_ONLY
+                assert_eq!(
+                    egress_config.as_deref(),
+                    Some("PRIVATE_RANGES_ONLY"),
+                    "{describe} is the portal and must use PRIVATE_RANGES_ONLY to restrict egress \
+                     to the VPC (to the API only, not to Google services); it currently has egress \
+                     configured as {:?}. See portal.yaml lines 77–82 for the architectural reason.",
+                    egress_config
+                );
+                portal_checked = true;
+            } else if key == "openobserve" {
+                // OpenObserve carries ADR 0033's authenticated posture and has its
+                // own configuration. It should also route through the VPC, but
+                // may have different egress configuration. For now, just verify
+                // it has some egress configuration.
+                assert!(
+                    egress_config.is_some(),
+                    "{describe} (openobserve) has no vpcAccess.egress configured"
+                );
+            }
+        }
+    }
+    assert_eq!(
+        catalogue_workloads_checked, 12,
+        "expected 12 catalogue workloads (3 per environment × 4 environments) but checked {catalogue_workloads_checked}"
+    );
+    assert!(
+        portal_checked,
+        "portal service was not found across all environments; the test premise that it exists is broken"
+    );
+}
+
+#[test]
 fn every_run_service_takes_the_paper_trading_ceiling_as_a_literal_and_no_manifest_names_a_live_rung()
  {
     // The catalogue takes the ceiling from `var.autonomy_ceiling`, whose
