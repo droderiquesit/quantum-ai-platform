@@ -48,6 +48,19 @@ impl SchemaRegistry {
         Self::default()
     }
 
+    /// Register multiple event body types by their samples.
+    ///
+    /// Convenience method for bulk registration of known types at startup.
+    pub fn register_samples<T: EventBody>(
+        &mut self,
+        samples: impl IntoIterator<Item = T>,
+    ) -> Result<()> {
+        for sample in samples {
+            self.register(&sample)?;
+        }
+        Ok(())
+    }
+
     /// Register a body type by serialising a sample instance to learn its shape.
     ///
     /// A sample is required because the fields are read off the serialised
