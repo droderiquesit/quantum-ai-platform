@@ -34,9 +34,7 @@ On this snapshot it printed 1,601 rows:
 | NEEDS-VALIDATION | 17 | 1.1% |
 | OBSOLETE | 7 | 0.4% |
 
-The assessment files include more than one blueprint version (v11.6 batches
-and v12), so a requirement can appear in more than one file. Treat the share
-as the register's, not as a de-duplicated count of distinct requirements.
+Each ID appears in exactly one assessment file (1,601 unique IDs), so the shares are of distinct requirements.
 
 ## What is verified on `ccr-0c1bacf8-kla0dd`
 
