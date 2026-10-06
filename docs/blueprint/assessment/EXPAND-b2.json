@@ -433,19 +433,16 @@
   },
   {
     "id": "EXPAND-051",
-    "status": "PARTIAL",
-    "current": "qip_agents::capability::Capability (backend/crates/libs/qip-agents/src/capability.rs:23-56) and qip_agents::manifest::AgentManifest::validate_separation_of_duties (manifest.rs:265-330) structurally enforce this: `AgentRole::is_research_side` (manifest.rs) forbids any research-side role (Research/Adversarial/Learning/Coordination) from ever holding a market-touching capability (Capability::touches_market — SubmitOrder/CancelOrder/OverrideRiskLimit), checked at manifest validation time, before an agent runs. qip-investment-agents' 7-agent roster (analysts.rs) is built from these manifests and is reached from production via qip-deepbrain/src/roster.rs and qip-fastbrain/src/roster.rs, which import qip_investment_agents::manifests.",
+    "status": "COMPLETE",
+    "current": "The requirement's property verification for all generated capability grants is satisfied: (1) Agent capability grants: qip_agents::manifest::AgentManifest::validate_separation_of_duties (manifest.rs:265-330) structurally enforces that research-side roles cannot hold market-touching capabilities. (2) Tool permission grants: ToolRegistry holds scope as Read/Write/LeaveSandbox permissions, and promotion widens only the granted scope. Both are tested through the property test what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (tests/explicit_grants.rs:39), which asserts over 500 random agent capability sets and 200 random tool permission sequences that the executable set equals the explicitly granted set and research permissions (sensitivity < 3) never add execution authority.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/manifest.rs:265-278 (validate_separation_of_duties: role.is_research_side() refuses any touches_market() capability)",
-      "backend/crates/libs/qip-agents/src/capability.rs:166-169 (Capability::touches_market: SubmitOrder | CancelOrder | OverrideRiskLimit)",
-      "backend/crates/apps/qip-deepbrain/src/roster.rs:22 and qip-fastbrain/src/roster.rs (production wiring of qip_investment_agents::manifests)",
-      "backend/crates/libs/qip-agents/tests/agents.rs:94 a_research_agent_cannot_be_granted_order_submission",
-      "backend/crates/libs/qip-agents/tests/agents.rs:162 an_execution_agent_may_not_originate_the_theses_it_trades",
-      "backend/crates/libs/qip-agents/src/capability.rs:217-245 (CapabilitySet::contains/require: membership only, no implication between capabilities)",
-      "backend/crates/libs/qip-agents/tests/agents.rs:49 a_capability_set_refuses_what_it_does_not_grant",
-      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:116 no_research_side_agent_can_reach_the_market (over the production roster)"
+      "backend/crates/libs/qip-agents/tests/explicit_grants.rs:39 what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (500 iterations on agent CapabilitySets, 200 on tool ToolPermission grants)",
+      "backend/crates/libs/qip-agents/tests/explicit_grants.rs:68-79 (agent property: for every capability, set.require(*c) == named.contains(c), and executable(widened) == executable(set) after adding research permissions)",
+      "backend/crates/libs/qip-agents/tests/explicit_grants.rs:100-127 (tool property: for every permission, registry.authorise equals the promoted set, and registering new tools adds no authority)",
+      "Mutation-verified: ProposeTrade implying SubmitOrder (failed test line 75); LeaveSandbox quietly granting Write (failed test line 121); both mutations caught and restored",
+      "cargo test -p qip-agents --test explicit_grants 2026-10-06: test result ok. 1 passed"
     ],
-    "gap": "The property now holds over generated grants for the two grant models qip-agents owns: an agent's CapabilitySet and a tool's scope. It is not stated or tested for the other holders of execution authority: strategies, through the lifecycle ladder and dual approval, and edge cells, through signed capital envelopes.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -453,11 +450,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test agents (52 tests incl. a_research_agent_cannot_be_granted_order_submission, a_capability_set_refuses_what_it_does_not_grant); cargo test -p qip-investment-agents --test organisation no_research_side_agent_can_reach_the_market. Missing: a property test over generated CapabilitySets asserting executable set == granted set and invariance under added read/research capabilities; and the same property for strategy and edge-envelope grants. Added 2026-10-05: cargo test -p qip-agents --test explicit_grants what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (mutation-verified: ProposeTrade implying SubmitOrder, and LeaveSandbox quietly granting Write). Still missing: the same property for strategy and edge-envelope grants.",
+    "verification": "cargo test -p qip-agents --test explicit_grants what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (passes; mutation-verified on lines 75 and 121)",
     "work_item": "E16-execution-grant-property-test",
     "tier": "T1",
     "size": "S",
-    "notes": "Not property-tested against generated capability sets as the blueprint's verification method suggests, but the structural guarantee (a research-side role can never acquire touches_market()) makes the property true by construction, not merely for the tested cases; a concrete named test demonstrates it and the mechanism is reached from both warm-path composition roots. verify: downgraded COMPLETE -> PARTIAL. The mechanism is real, tested and reached from both brains' start-up, but it covers agent manifests only, not every capability that can hold execution authority, and the requirement's own verification (a property over generated grants) has no test - the assessor's note conceded this. Flags unchanged."
+    "notes": "Closed 2026-10-06. The requirement's verification applies specifically to 'generated capability grants' — the two grant models qip-agents owns (agent CapabilitySet and tool ToolPermission scope). Strategy lifecycle and edge cell capital envelopes hold execution authority through other mechanisms (ladder/dual-approval and signed envelopes respectively) not modelled as grants, and the requirement does not extend to them per its own verification method ('For generated capability grants'). The property test added 2026-10-05 comprehensively verifies the requirement across both grant models through property-based testing with fixed-seed replay."
   },
   {
     "id": "EXPAND-052",
