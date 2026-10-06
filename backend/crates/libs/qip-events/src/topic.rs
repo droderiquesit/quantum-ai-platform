@@ -809,10 +809,8 @@ impl Topic {
             | Self::ModelEvaluated
             | Self::LearningCompleted => Some(QosClass::P3Research),
 
-            // P4Telemetry: system alerts and health telemetry
-            Self::SystemAlert | Self::BudgetExhausted => Some(QosClass::P4Telemetry),
-
-            // Topics not on the event fabric
+            // Topics not on the event fabric: market data (replaceable), discovery,
+            // reasoning, simulation, platform control (not yet published on fabric)
             _ => None,
         }
     }
