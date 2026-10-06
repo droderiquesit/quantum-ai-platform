@@ -41,6 +41,32 @@
 //! trade that caused it. An unwind path with its own private route to a venue
 //! would be a way around every control, opened for the one case that most
 //! needs them.
+//!
+//! # Saga compensation paths
+//!
+//! Each multi-leg order represents a distributed saga across venues. The
+//! module implements saga compensation (unwind) paths for the following flows:
+//!
+//! 1. **Partial fill saga**: Buy leg fills but sell leg does not. Unwind sends
+//!    a reversing sell order at the buy fill quantity to exit the unintended
+//!    position. The unwind order is submitted to the same venue as the buy and
+//!    must be risk-checked like any other order.
+//!
+//! 2. **Deadline exceeded saga**: All legs are submitted within the deadline
+//!    window defined by `max_leg_risk` and deadline checks. If legs do not
+//!    complete by the deadline (checked via [`LegGroup::assess`] clock), a
+//!    compensation unwind is triggered for all filled legs. Each filled leg
+//!    receives a reversing order at the filled quantity.
+//!
+//! 3. **Risk bound exceeded saga**: If a group's leg risk (unmatched notional)
+//!    exceeds `max_leg_risk`, an immediate unwind is triggered before the
+//!    deadline is checked. This prevents naked position accumulation.
+//!
+//! Each unwind path preserves the invariant: **a group that cannot complete
+//! is unwound, never abandoned.** The [`LegGroup::settle`] method applies
+//! compensation by generating reversing orders that cancel out the filled
+//! quantity of each leg, maintaining a consistent audit trail through the
+//! standard order submission path.
 
 use crate::order::{Fill, Order, OrderType, Side};
 use qip_core::Decimal;
@@ -1490,6 +1516,134 @@ mod tests {
         assert!(
             !group.state.is_terminal(),
             "an unwinding group is not finished; its reversals have not been placed"
+        );
+    }
+
+    #[test]
+    fn saga_compensation_replay_applies_reversing_orders_and_reaches_safe_end_deterministically() {
+        // Replay test for saga compensation path. Demonstrates that the unwind
+        // saga executes deterministically and reaches a safe terminal state.
+        //
+        // Scenario: Buy leg fills 100 @ 10 (notional 1000), sell leg does not.
+        // Group decides to unwind (Verdict::Unwind). Compensation path generates
+        // reversing sell order at 100 qty. Applying the reversing order fill
+        // must bring the group to a safe terminal state (Closed) with zero exposure.
+        //
+        // Replay invariant: if we crash after recording unwind decision and
+        // replay by applying the same reversing fills, we reach the exact same
+        // terminal state and position.
+        let mut group = pair();
+        group
+            .record_fill(&fill("ord-buy", "100", "10"))
+            .expect("buy leg fills");
+
+        // Assert premise: group has exposure
+        assert_eq!(group.leg_risk(), d("1000"));
+        assert!(group.has_exposure());
+
+        // Assess and decide to unwind (deadline passed)
+        let verdict = group.assess(at(61));
+        assert!(matches!(verdict, Verdict::Unwind { .. }));
+
+        // Begin unwind (records decision, generates reversal orders)
+        group
+            .begin_unwind("deadline exceeded", at(61))
+            .expect("begins unwind");
+
+        // Capture the reversing orders before settlement
+        let reversing_orders = group.unwind_orders(at(61));
+        assert_eq!(
+            reversing_orders.len(),
+            1,
+            "partial fill unwind must generate exactly one reversing order"
+        );
+        assert_eq!(
+            reversing_orders[0].side,
+            Side::Sell,
+            "must reverse buy with sell"
+        );
+        assert_eq!(
+            reversing_orders[0].quantity,
+            d("100"),
+            "reversing order qty must match filled qty"
+        );
+
+        // Settle with the reversing orders (validates reversals and transitions to Unwound)
+        group
+            .settle(&verdict, &reversing_orders, at(61))
+            .expect("settlement succeeds");
+        // settle() for Unwind verdict transitions: Unwinding -> Unwound
+        assert!(
+            matches!(group.state, GroupState::Unwound { .. }),
+            "after settle with Unwind verdict, group is Unwound"
+        );
+
+        // Apply the reversal fill (completing the saga compensation)
+        group
+            .confirm_unwind(&fill("ord-buy-unwind", "100", "10"))
+            .expect("reversing fill confirms");
+
+        // All fills are now reversed; assess determines the next verdict is Close
+        let close_verdict = group.assess(at(61).saturating_add(Duration::from_millis(1)));
+        assert!(
+            matches!(close_verdict, Verdict::Close),
+            "after all reversals are filled, assess returns Close verdict"
+        );
+
+        // Settle with Close to reach terminal state
+        group
+            .settle(&close_verdict, &[], at(61))
+            .expect("closes group");
+
+        // Verify safe terminal state reached
+        assert!(group.state.is_terminal());
+        assert!(
+            matches!(group.state, GroupState::Closed { at: _ }),
+            "after compensation unwind completes, group is Closed"
+        );
+        // The unreversed quantity (open position) must be zero after full reversal
+        assert_eq!(
+            group.unreversed_quantity(),
+            d("0"),
+            "saga compensation must fully reverse the filled position"
+        );
+
+        // Replay invariant: start fresh group, apply exact same fills in order
+        let mut replay_group = pair();
+        replay_group
+            .record_fill(&fill("ord-buy", "100", "10"))
+            .expect("replay: buy");
+        replay_group
+            .begin_unwind("deadline exceeded", at(61))
+            .expect("replay: begin_unwind");
+        replay_group
+            .settle(&verdict, &reversing_orders, at(61))
+            .expect("replay: settle");
+        replay_group
+            .confirm_unwind(&fill("ord-buy-unwind", "100", "10"))
+            .expect("replay: confirm_unwind");
+
+        // Replay also reaches Close verdict and settles to Closed
+        let replay_close_verdict =
+            replay_group.assess(at(61).saturating_add(Duration::from_millis(1)));
+        replay_group
+            .settle(&replay_close_verdict, &[], at(61))
+            .expect("replay: closes");
+
+        // Replay reaches identical final state
+        assert_eq!(
+            group.state, replay_group.state,
+            "replay must reach identical state"
+        );
+        assert_eq!(
+            group.unreversed_quantity(),
+            replay_group.unreversed_quantity(),
+            "replay must have identical unreversed quantity"
+        );
+        assert_eq!(
+            group.legs.len(),
+            replay_group.legs.len(),
+            "replay must have same leg count"
         );
     }
 }
