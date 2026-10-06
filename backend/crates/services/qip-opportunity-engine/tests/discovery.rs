@@ -310,6 +310,61 @@ fn the_observation_detector_finds_a_surprise() {
 }
 
 #[test]
+fn observation_detector_emits_observed_and_expected_state() {
+    let mut surprises = vec![
+        0.01, -0.02, 0.005, 0.0, -0.01, 0.015, -0.005, 0.02, 0.0, -0.015, 0.01, 0.0,
+    ];
+    let centre = qip_numerics::stats::median(&surprises);
+    surprises.push(0.35);
+    let anomalies = ObservationDetector::new(AnomalyKind::FundamentalSurprise).detect(
+        &DetectionContext::new(now())
+            .with_observations("ent-northwind/revenue_surprise", surprises),
+    );
+    assert_eq!(anomalies.len(), 1);
+    let anomaly = &anomalies[0];
+    assert!(
+        approx_eq(anomaly.observed, 0.35, 1e-9),
+        "observed must be the latest value, got {}",
+        anomaly.observed
+    );
+    assert!(
+        approx_eq(anomaly.expected, centre, 1e-9),
+        "expected must be the median of history"
+    );
+    assert!(
+        anomaly.z_score != 0.0,
+        "z-score must be non-zero for a surprise"
+    );
+}
+
+#[test]
+fn observation_detector_z_score_is_zero_when_observation_equals_expectation() {
+    let uniform = vec![1.0; 20];
+    let anomalies = ObservationDetector::new(AnomalyKind::MacroSurprise)
+        .detect(&DetectionContext::new(now()).with_observations("steady_metric", uniform));
+    assert!(
+        anomalies.is_empty(),
+        "when observation equals the median, z-score is zero and below threshold"
+    );
+}
+
+#[test]
+fn observation_detector_emits_no_record_when_below_threshold() {
+    let mut surprises = vec![
+        0.01, -0.02, 0.005, 0.0, -0.01, 0.015, -0.005, 0.02, 0.0, -0.015, 0.01, 0.0,
+    ];
+    surprises.push(0.011);
+    let anomalies = ObservationDetector::new(AnomalyKind::FundamentalSurprise).detect(
+        &DetectionContext::new(now())
+            .with_observations("ent-northwind/revenue_surprise", surprises),
+    );
+    assert!(
+        anomalies.is_empty(),
+        "a small surprise below the 2.5-sigma threshold must not be emitted"
+    );
+}
+
+#[test]
 fn detectors_do_nothing_with_insufficient_history() {
     let short = DetectionContext::new(now())
         .with_prices("X", vec![100.0, 101.0, 99.0])

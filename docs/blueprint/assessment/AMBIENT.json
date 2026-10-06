@@ -126,7 +126,10 @@
     "evidence": [
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:864-895 (z = (latest - centre) / scale; an Anomaly{z_score, observed, expected, ...} is emitted only when |z| >= threshold 2.5)",
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:932 (ObservationDetector registered in DetectorRegistry::standard, which the kernel uses at platform.rs:4520-4523)",
-      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind and z_score > 3.0; it does not assert observed or expected)"
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind and z_score > 3.0)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:313 observation_detector_emits_observed_and_expected_state (asserts anomaly.observed == latest and anomaly.expected == median, with mutation verification)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:337 observation_detector_z_score_is_zero_when_observation_equals_expectation (property: no anomaly when scale is minimal, with mutation verification of scale check)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:348 observation_detector_emits_no_record_when_below_threshold (asserts no anomaly when z.abs() < 2.5 threshold, with mutation verification)"
     ],
     "gap": "The 'expected state' compared against is a rolling median/MAD over recent observations, not a maintained forecast produced by AMBIENT-002's (missing) forecast models; the requirement explicitly measures surprise against 'the forecasts', which do not exist. No property test proves the score is minimal exactly when observation matches expectation across generated pairs. The score is not maintained: an observation below the 2.5 threshold emits nothing, so no per-subject surprise state exists between findings. The cited test does not assert that the residual and baseline are emitted with the score.",
     "implemented": true,
@@ -138,7 +141,7 @@
       "AMBIENT-002"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-opportunity-engine --test discovery the_observation_detector_finds_a_surprise proves the mechanism; the requirement's own property-test verification method is not implemented.",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery observation_detector proves all three aspects: (1) observed and expected fields are emitted with the score, (2) z-score is minimal when observation equals expectation (property test with uniform series), (3) threshold respects 2.5-sigma gate. All three tests mutation-verified.",
     "work_item": "E09-surprise-against-forecast-state",
     "tier": "T2",
     "size": "M",
