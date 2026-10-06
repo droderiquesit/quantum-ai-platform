@@ -17,7 +17,9 @@
 // `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_contracts::reflex::{Decision, chain_digest_v1};
+use qip_contracts::reflex::{
+    Decision, EpisodeKind, KnowledgeDelta, KnowledgeKind, RegionalEpisode, chain_digest_v1,
+};
 use qip_core::Timestamp;
 
 #[test]
@@ -202,5 +204,210 @@ fn a_session_with_multiple_episode_types_records_all_kinds() {
     for episode in episodes {
         let json = serde_json::to_string(&episode).expect("serialises");
         let _back: Decision = serde_json::from_str(&json).expect("deserialises");
+    }
+}
+
+#[test]
+fn a_regional_episode_with_latency_round_trips_through_json() {
+    let at = Timestamp::from_secs(1_700_000_000);
+    let episode = RegionalEpisode {
+        region: "us-east".to_string(),
+        cell: "cell-001".to_string(),
+        recorded_at: at,
+        episode: EpisodeKind::Latency {
+            venue: "NYSE".to_string(),
+            object: "AAPL".to_string(),
+            expected_ms: 50,
+            observed_ms: 125,
+        },
+    };
+
+    assert_eq!(episode.episode.as_str(), "latency");
+    let json = serde_json::to_string(&episode).expect("serialises");
+    let back: RegionalEpisode = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(episode, back);
+}
+
+#[test]
+fn a_regional_episode_with_slippage_round_trips_through_json() {
+    let at = Timestamp::from_secs(1_700_000_000);
+    let episode = RegionalEpisode {
+        region: "us-west".to_string(),
+        cell: "cell-002".to_string(),
+        recorded_at: at,
+        episode: EpisodeKind::Slippage {
+            venue: "NASDAQ".to_string(),
+            object: "MSFT".to_string(),
+            expected_price: "380.50".to_string(),
+            realized_price: "381.25".to_string(),
+            slippage_bps: 20,
+        },
+    };
+
+    assert_eq!(episode.episode.as_str(), "slippage");
+    let json = serde_json::to_string(&episode).expect("serialises");
+    let back: RegionalEpisode = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(episode, back);
+}
+
+#[test]
+fn a_regional_episode_with_microstructure_round_trips_through_json() {
+    let at = Timestamp::from_secs(1_700_000_000);
+    let episode = RegionalEpisode {
+        region: "eu-west".to_string(),
+        cell: "cell-003".to_string(),
+        recorded_at: at,
+        episode: EpisodeKind::Microstructure {
+            pattern_kind: "lead_lag".to_string(),
+            evidence: 85,
+        },
+    };
+
+    assert_eq!(episode.episode.as_str(), "microstructure");
+    let json = serde_json::to_string(&episode).expect("serialises");
+    let back: RegionalEpisode = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(episode, back);
+}
+
+#[test]
+fn a_regional_episode_with_venue_behavior_round_trips_through_json() {
+    let at = Timestamp::from_secs(1_700_000_000);
+    let episode = RegionalEpisode {
+        region: "ap-south".to_string(),
+        cell: "cell-004".to_string(),
+        recorded_at: at,
+        episode: EpisodeKind::VenueBehavior {
+            venue: "SGX".to_string(),
+            behavior_kind: "order_acceptance".to_string(),
+            severity: 60,
+        },
+    };
+
+    assert_eq!(episode.episode.as_str(), "venue_behavior");
+    let json = serde_json::to_string(&episode).expect("serialises");
+    let back: RegionalEpisode = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(episode, back);
+}
+
+#[test]
+fn a_knowledge_delta_with_temporal_precedence_round_trips_through_json() {
+    let at = Timestamp::from_secs(1_700_000_000);
+    let delta = KnowledgeDelta {
+        origin: "world_model".to_string(),
+        discovered_at: at,
+        confidence: 87,
+        knowledge: KnowledgeKind::TemporalPrecedence {
+            first: "ES".to_string(),
+            second: "NQ".to_string(),
+            lag_bars: 3,
+        },
+    };
+
+    assert_eq!(delta.knowledge.as_str(), "temporal_precedence");
+    let json = serde_json::to_string(&delta).expect("serialises");
+    let back: KnowledgeDelta = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(delta, back);
+}
+
+#[test]
+fn a_knowledge_delta_with_venue_latency_profile_round_trips_through_json() {
+    let at = Timestamp::from_secs(1_700_000_000);
+    let delta = KnowledgeDelta {
+        origin: "learning_engine".to_string(),
+        discovered_at: at,
+        confidence: 92,
+        knowledge: KnowledgeKind::VenueLatencyProfile {
+            venue: "CBOE".to_string(),
+            median_ms: 45,
+            percentile_95_ms: 120,
+        },
+    };
+
+    assert_eq!(delta.knowledge.as_str(), "venue_latency_profile");
+    let json = serde_json::to_string(&delta).expect("serialises");
+    let back: KnowledgeDelta = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(delta, back);
+}
+
+#[test]
+fn a_knowledge_delta_with_regime_transition_round_trips_through_json() {
+    let at = Timestamp::from_secs(1_700_000_000);
+    let delta = KnowledgeDelta {
+        origin: "expansion_engine".to_string(),
+        discovered_at: at,
+        confidence: 75,
+        knowledge: KnowledgeKind::RegimeTransition {
+            regime_from: "low_volatility".to_string(),
+            regime_to: "high_volatility".to_string(),
+            trigger_kind: "vix_spike".to_string(),
+        },
+    };
+
+    assert_eq!(delta.knowledge.as_str(), "regime_transition");
+    let json = serde_json::to_string(&delta).expect("serialises");
+    let back: KnowledgeDelta = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(delta, back);
+}
+
+#[test]
+fn multiple_regional_episodes_and_knowledge_deltas_coexist() {
+    let at = Timestamp::from_secs(1_700_000_000);
+
+    let episodes = vec![
+        RegionalEpisode {
+            region: "us-east".to_string(),
+            cell: "cell-001".to_string(),
+            recorded_at: at,
+            episode: EpisodeKind::Latency {
+                venue: "NYSE".to_string(),
+                object: "AAPL".to_string(),
+                expected_ms: 50,
+                observed_ms: 125,
+            },
+        },
+        RegionalEpisode {
+            region: "eu-west".to_string(),
+            cell: "cell-003".to_string(),
+            recorded_at: at,
+            episode: EpisodeKind::Microstructure {
+                pattern_kind: "lead_lag".to_string(),
+                evidence: 85,
+            },
+        },
+    ];
+
+    let deltas = vec![
+        KnowledgeDelta {
+            origin: "world_model".to_string(),
+            discovered_at: at,
+            confidence: 87,
+            knowledge: KnowledgeKind::TemporalPrecedence {
+                first: "ES".to_string(),
+                second: "NQ".to_string(),
+                lag_bars: 3,
+            },
+        },
+        KnowledgeDelta {
+            origin: "learning_engine".to_string(),
+            discovered_at: at,
+            confidence: 92,
+            knowledge: KnowledgeKind::VenueLatencyProfile {
+                venue: "CBOE".to_string(),
+                median_ms: 45,
+                percentile_95_ms: 120,
+            },
+        },
+    ];
+
+    // Verify all episodes serialize and deserialize
+    for episode in &episodes {
+        let json = serde_json::to_string(episode).expect("episode serialises");
+        let _back: RegionalEpisode = serde_json::from_str(&json).expect("episode deserialises");
+    }
+
+    // Verify all deltas serialize and deserialize
+    for delta in &deltas {
+        let json = serde_json::to_string(delta).expect("delta serialises");
+        let _back: KnowledgeDelta = serde_json::from_str(&json).expect("delta deserialises");
     }
 }

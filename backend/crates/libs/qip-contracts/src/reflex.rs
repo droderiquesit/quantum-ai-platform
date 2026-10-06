@@ -613,6 +613,116 @@ pub enum Decision {
     },
 }
 
+/// A regional learning episode exported from a reflex cell for global training.
+///
+/// This wrapper carries an episode from the reflex cell along with metadata
+/// for attribution and ingestion into the global learning pipeline.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionalEpisode {
+    /// The region this episode originates from.
+    pub region: String,
+    /// The cell that recorded this episode.
+    pub cell: String,
+    /// The instant the episode was recorded.
+    pub recorded_at: Timestamp,
+    /// The typed episode: latency, slippage, microstructure or venue behavior.
+    pub episode: EpisodeKind,
+}
+
+/// The typed episodes exportable from a reflex cell.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data")]
+pub enum EpisodeKind {
+    /// A latency measurement from a venue.
+    Latency {
+        venue: String,
+        object: String,
+        expected_ms: i64,
+        observed_ms: i64,
+    },
+    /// A slippage measurement from a fill.
+    Slippage {
+        venue: String,
+        object: String,
+        expected_price: String,
+        realized_price: String,
+        slippage_bps: i32,
+    },
+    /// A microstructure pattern observed in market data.
+    Microstructure { pattern_kind: String, evidence: u8 },
+    /// A venue behavior change.
+    VenueBehavior {
+        venue: String,
+        behavior_kind: String,
+        severity: u8,
+    },
+}
+
+impl EpisodeKind {
+    /// Short label for the episode kind.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Latency { .. } => "latency",
+            Self::Slippage { .. } => "slippage",
+            Self::Microstructure { .. } => "microstructure",
+            Self::VenueBehavior { .. } => "venue_behavior",
+        }
+    }
+}
+
+/// A knowledge delta: typed knowledge from global training to be merged back
+/// into regional cells and other specialists.
+///
+/// This type represents a unit of knowledge that improved model performance
+/// or uncovered new relationships, attributed to its origin and ready for
+/// replication across regions.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeDelta {
+    /// The specialist or process that produced this knowledge.
+    pub origin: String,
+    /// The instant the knowledge was discovered.
+    pub discovered_at: Timestamp,
+    /// The confidence or strength of this knowledge (0..=100).
+    pub confidence: u8,
+    /// The typed knowledge: a learned relationship, pattern, or model improvement.
+    pub knowledge: KnowledgeKind,
+}
+
+/// The typed knowledge pieces exportable from global training.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "data")]
+pub enum KnowledgeKind {
+    /// A temporal-precedence relationship between instruments.
+    TemporalPrecedence {
+        first: String,
+        second: String,
+        lag_bars: u32,
+    },
+    /// A venue's observed latency profile.
+    VenueLatencyProfile {
+        venue: String,
+        median_ms: u32,
+        percentile_95_ms: u32,
+    },
+    /// A market regime transition pattern.
+    RegimeTransition {
+        regime_from: String,
+        regime_to: String,
+        trigger_kind: String,
+    },
+}
+
+impl KnowledgeKind {
+    /// Short label for the knowledge kind.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::TemporalPrecedence { .. } => "temporal_precedence",
+            Self::VenueLatencyProfile { .. } => "venue_latency_profile",
+            Self::RegimeTransition { .. } => "regime_transition",
+        }
+    }
+}
+
 impl Decision {
     /// A short label for the kind of decision, for counting without matching.
     pub const fn kind(&self) -> &'static str {

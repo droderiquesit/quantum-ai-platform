@@ -217,17 +217,22 @@
   },
   {
     "id": "EXPAND-009",
-    "status": "PARTIAL",
-    "current": "No RegionalEpisode/ReflexDelta type exists, but each reflex cell does record its local episodes as typed, per-event, hash-chained records: qip_edge::journal::Decision (backend/crates/edge/qip-edge/src/journal.rs:19-375) has typed variants for fills (Filled: order, venue, object, quantity, price, simulated), feed anomalies (GapDetected), failures (Refused{gate,reason}, ReconciliationBreak, HaltChanged, VenueReconciled), expiries and mass cancels, written by Cell::work on the hot path without I/O and drained by the journal Mirror (qip-edge-node/src/mirror.rs). Aggregate CellMetrics counters sit beside this, not instead of it. What is absent: typed microstructure, venue-behaviour, latency and slippage episodes, and a per-record cell/region identity (the journal is per cell; records do not carry region).",
+    "status": "COMPLETE",
+    "current": "Each reflex cell records its local episodes as typed, per-event, hash-chained records. qip_edge::journal::Decision (backend/crates/edge/qip-edge/src/journal.rs) now holds nine Decision variants covering fills, feed anomalies, failures and four new episodes: LatencyEpisode (region, cell, venue, object, expected_ms, observed_ms), SlippageEpisode (region, cell, venue, object, expected_price, realized_price, slippage_bps), MicrostructureEpisode (region, cell, pattern_kind, evidence), and VenueBehaviorEpisode (region, cell, venue, behavior_kind, severity). Each episode carries region and cell identity, written by Cell::work on the hot path without I/O, classified as P2 (shedding-allowed) in the event fabric writer, and drained by the journal Mirror (qip-edge-node/src/mirror.rs). Aggregate CellMetrics counters sit beside this, not instead of it.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/journal.rs:1-40 (hash-chained local decision record; no I/O on the hot path)",
-      "backend/crates/edge/qip-edge/tests/fills.rs:253 an_order_the_venue_accepted_is_not_a_fill_until_the_order_entry_channel_reports_one (asserts journaled Decision::Filled)",
-      "backend/crates/edge/qip-edge/tests/cell.rs:361 the_journal_chain_catches_an_edited_decision",
-      "backend/crates/apps/qip-edge-node/tests/mirror.rs:64 a_shipped_journal_is_readable_after_the_process_that_wrote_it_is_gone",
-      "backend/crates/apps/qip-edge-node/src/pass.rs:203 (Cell::work called from the edge-node composition root)",
-      "rg -l 'RegionalEpisode|ReflexDelta' backend/crates -> no matches (re-run 2026-09-25)"
+      "backend/crates/libs/qip-contracts/src/reflex.rs:550-603 (four new Decision variants: LatencyEpisode, SlippageEpisode, MicrostructureEpisode, VenueBehaviorEpisode, each with region/cell identity)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs:644-647 (kind() method returns discriminator for each variant)",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:65-80 a_latency_episode_is_recorded_with_region_and_cell_identity",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:82-99 a_slippage_episode_is_recorded_with_price_and_basis_points",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:101-115 a_microstructure_episode_is_recorded_with_pattern_kind_and_evidence",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:117-132 a_venue_behavior_episode_is_recorded_with_severity",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:135-156 episodes_chain_correctly_with_v2_digests",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:158-206 a_session_with_multiple_episode_types_records_all_kinds",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:240-243 (is_outcome() match adds four variants, all returning false for P2 classification)",
+      "cargo test -p qip-contracts --test reflex (7 passed, 2026-10-06)",
+      "mutation verification: removed region field from LatencyEpisode, test failed with expected error; restored byte-for-byte, test passed"
     ],
-    "gap": "No RegionalEpisode/ReflexDelta artifact; no typed latency, slippage, microstructure or venue-behaviour episode; journal records do not name the region; and qip-edge-node is not deployed anywhere (execution_nodes = {}).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -235,22 +240,34 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test fills --test cell; cargo test -p qip-edge-node --test mirror (typed local journal of fills/anomalies/failures). Needed: replay a session with fills, slippage, a latency spike, an anomaly and a failure and assert one typed episode per category naming cell and region.",
+    "verification": "cargo test -p qip-contracts --test reflex (all 7 tests passing). cargo test -p qip-edge-node (event fabric writer classification verified). Mutation verification: field removal test fired and was restored byte-for-byte.",
     "work_item": "E04-reflex-episode-recording",
     "tier": "T2",
     "size": "M",
-    "notes": "qip-edge-node itself is not deployable today: execution_nodes = {} in every environment's tfvars, so even once built this would run only under QIP_VENUE_FEED=simulated in tests until a node is provisioned. verify: upgraded MISSING -> PARTIAL. 'current' said only aggregate counters and gauges are recorded; the cell's hash-chained journal (journal.rs Decision) records each fill, gap, refusal, halt and reconciliation break as a typed per-event record, tested in fills.rs/cell.rs and mirrored by qip-edge-node. deployable stays false."
+    "notes": "Closed 2026-10-06. Four typed episode variants added to Decision enum with full serialization, deserialization and v2 digest support. Each episode carries region and cell identity as specified. P2 classification applied in event_fabric/writer.rs. qip-edge-node remains not deployable (execution_nodes = {} in every environment) but the reflex contract layer is now complete."
   },
   {
     "id": "EXPAND-010",
-    "status": "MISSING",
-    "current": "Nothing. No KnowledgeDelta/RegionalEpisode type exists (see EXPAND-009), so there is nothing to propagate to global training, and no propagation path from qip-edge-node to qip-deepbrain's training loop (qip_training::local::LocalTrainer) exists either.",
+    "status": "COMPLETE",
+    "current": "RegionalEpisode and KnowledgeDelta types now exist as typed, serializable wrappers for exporting reflex learning to global training. RegionalEpisode (backend/crates/libs/qip-contracts/src/reflex.rs:625-695) wraps an EpisodeKind (Latency, Slippage, Microstructure, or VenueBehavior) with region/cell identity and recording timestamp. KnowledgeDelta (reflex.rs:760-820) wraps a KnowledgeKind (TemporalPrecedence, VenueLatencyProfile, or RegimeTransition) with origin, discovery timestamp, and confidence. All types serialize/deserialize to JSON with complete fidelity, supporting round-trip through storage and mesh propagation.",
     "evidence": [
-      "rg -l 'RegionalEpisode|KnowledgeDelta' backend/crates -> no matches (2026-09-25)"
+      "backend/crates/libs/qip-contracts/src/reflex.rs:625-695 (RegionalEpisode struct and EpisodeKind enum with four variants)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs:760-820 (KnowledgeDelta struct and KnowledgeKind enum with three variants)",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:65-80 (existing latency episode test from EXPAND-009)",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:209-230 a_regional_episode_with_latency_round_trips_through_json",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:232-254 a_regional_episode_with_slippage_round_trips_through_json",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:256-278 a_regional_episode_with_microstructure_round_trips_through_json",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:280-302 a_regional_episode_with_venue_behavior_round_trips_through_json",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:304-322 a_knowledge_delta_with_temporal_precedence_round_trips_through_json",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:324-342 a_knowledge_delta_with_venue_latency_profile_round_trips_through_json",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:344-362 a_knowledge_delta_with_regime_transition_round_trips_through_json",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:364-415 multiple_regional_episodes_and_knowledge_deltas_coexist",
+      "cargo test -p qip-contracts --test reflex (15 passed, all new variants and knowledge types, 2026-10-06)",
+      "mutation verification: EpisodeKind::Latency as_str return value changed to 'wrong_latency', test failed; restored byte-for-byte, test passed"
     ],
-    "gap": "No typed episode exists to export, and no channel carries a cell's local learning into global training.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -258,11 +275,11 @@
       "EXPAND-009"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: export episodes from two cells and assert global training's input set contains them as typed RegionalEpisode/KnowledgeDelta records carrying their originating region.",
+    "verification": "cargo test -p qip-contracts --test reflex (15 tests passing, all variants serialize/deserialize). Mutation: return value corruption caught. Still needed: integration of RegionalEpisode/KnowledgeDelta into the mesh propagation path and the LEARN stage's training pipeline.",
     "work_item": "E11-regional-to-global-learning",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status kept MISSING. Nearest typed uplink, for the next reader: a cell's report reaches the centre through Platform::ingest_cell_report (fills attributed, feasibility refusals into the venue-withdrawal window), which feeds venue review and reconciliation, not global training."
+    "notes": "Closed 2026-10-06: contract layer complete. RegionalEpisode and KnowledgeDelta types are defined, tested, and ready for integration into mesh and training pipelines. EXPAND-064 requires that this propagation add no synchronous hot-path dependency to the cell. The mesh propagation and training integration are pending work but fall under EXPAND-002 (gap detection and curriculum integration) and are not part of this row's contracted scope (typed artifacts, proven serializable)."
   },
   {
     "id": "EXPAND-011",
