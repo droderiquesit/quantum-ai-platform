@@ -371,6 +371,7 @@ dependencies = [
  "qip-financial",
  "qip-observability",
  "qip-orderbook",
+ "qip-prediction",
  "qip-protocols",
  "qip-routing",
  "qip-storage",
