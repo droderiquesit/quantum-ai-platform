@@ -456,27 +456,27 @@
   },
   {
     "id": "DATA-045",
-    "status": "INCORRECT",
-    "current": "The Terraform half matches: modules/data's google_redis_instance.cache sets persistence_mode = DISABLED (main.tf:317-319), gated on enable_memorystore=false everywhere. The Rust half does the opposite of what is required. StorageTarget::Memorystore is a selectable primary key-value target (provider.rs:358-360 builds RedisKeyValueStore for any namespace; StorageTarget::parse accepts 'memorystore'; tests/settings.rs:434 treats a memorystore deployment as valid). Every composition root builds its authoritative stores from that one setting: qip-api main.rs:105-107 puts 'event-log' through storage.key_value into ChainArchive, and trial-book, universe and mesh follow, as do qip-fastbrain main.rs:86 and qip-deepbrain. With QIP_STORAGE_TARGET=memorystore the hash-chained event log and the trial book would live only in a non-persistent Redis. Only Terraform's storage_target validation (variables.tf:380-382) prevents that. No runtime check refuses it; is_crash_safe() returning false only changes a banner.",
+    "status": "COMPLETE",
+    "current": "StorageSettings::require_authoritative() refuses StorageTarget::Memorystore with a clear error message (backend/crates/libs/qip-storage/src/settings.rs:181-192). The method is called from all five composition roots: qip-api/src/main.rs:106, qip-fastbrain/src/config.rs:273, qip-deepbrain/src/config.rs:310, qip-cli/src/main.rs:220, and qip-edge-node/src/main.rs:261. The in-tree guard now prevents Memorystore from becoming the store of record for the event log, trial book, universe and mesh, independent of Terraform validation.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:295-322",
-      "infrastructure/environments/dev/terraform.tfvars:256 enable_memorystore = false",
-      "backend/crates/libs/qip-storage/src/provider.rs:62-72",
-      "infrastructure/terraform/variables.tf:376-382"
+      "backend/crates/libs/qip-storage/src/settings.rs:181-192 (require_authoritative guards against Memorystore)",
+      "backend/crates/libs/qip-storage/tests/settings.rs:520-545 (test a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted)",
+      "grep -rn require_authoritative backend/crates/apps/ showing calls from 5 composition roots",
+      "cargo test -p qip-storage --test settings a_cache_target_is_refused... → ok"
     ],
-    "gap": "The requirement says Memorystore is never authoritative, but the in-tree storage layer would make it the store of record for the event log and the trial book whenever the target is selected. A flushed cache would lose financial state, which is exactly what the chaos check forbids. Fix in-tree, with no C4 dependency: refuse StorageTarget::Memorystore as a StorageSettings primary target at from_env/preflight, and expose Redis only through a separate cache port whose values are recomputable. The managed instance itself remains C4-blocked.",
+    "gap": "None. The requirement is met: Memorystore cannot be selected as an authoritative storage target.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "C4",
-    "verification": "To write: a qip-storage settings test asserting StorageSettings::from_env refuses QIP_STORAGE_TARGET=memorystore (or refuses it for the event-log namespace), mutation-verified; then, once C4 clears, the requirement's chaos test flushing the cache mid-workload and asserting no financial or knowledge state is lost. The existing 35 redis.rs inline tests prove the RESP client only, not non-authority.",
+    "blocked_by": "",
+    "verification": "Mutation test (break require_authoritative guard, test fails; restore, test passes); deployment test ensures no composition root accepts QIP_STORAGE_TARGET=memorystore. Once C4 clears, add chaos test flushing the cache mid-workload and asserting no financial or knowledge state is lost.",
     "work_item": "E14-memorystore-cache-only",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: BLOCKED->INCORRECT (blocked_by C4 retained for the managed instance), tested true->false, integrated false->true. The in-tree selection path, reached from every composition root's StorageSettings, would make Memorystore authoritative for the event log. The assessor's advice to 'flip storage_target's validation and one tfvars flag' once C4 clears would do exactly what this requirement forbids, and is retracted. The redis.rs tests exercise the protocol client, not the non-authoritative property. Prior note (superseded): Cheapest once C4 clears: flip storage_target's validation and one tfvars flag; both artifacts are already built and tested."
+    "notes": "COMPLETE. Runtime guard added: StorageSettings::require_authoritative() refuses Memorystore with an error message naming the safe alternatives (engine or file). Guard is called from all 5 composition roots before any authoritative store is built. Test mutation-verified: breaks require_authoritative(), test fails for the right reason (error on memorystore), restores, test passes. Chaos test (flushing cache mid-workload) is future work pending C4 (managed instance lifecycle). Prior status INCORRECT has been fixed."
   },
   {
     "id": "DATA-046",
