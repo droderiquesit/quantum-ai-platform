@@ -1,13 +1,18 @@
-//! Seven worked connectors: five against endpoints that need no key and no
-//! signup, and the two candidates ADR 0034 names for equities and
-//! prediction markets.
+//! Fifteen connectors across two groups: seven shipped market-data connectors,
+//! and eight BLOCKED/PARTIAL placeholder connectors for alternative data sources.
 //!
-//! They are here rather than in a test file because an example nobody compiles
-//! is an example that stops being true. All seven are ordinary
-//! [`crate::connector::SourceConnector`] implementations, all seven ship their
-//! manifest and a fixture, and all seven are run through
+//! The seven market-data connectors are ordinary
+//! [`crate::connector::SourceConnector`] implementations that ship their
+//! manifest and a fixture, and are run through
 //! [`crate::connector::ContractHarness`] in `tests/connector_contract.rs` with
 //! no network.
+//!
+//! The eight alternative-data placeholders (geospatial, shipping, flight, traffic,
+//! commodity, energy, IoT, port) are stubs documenting why each family is blocked
+//! or partial: most require external paid subscriptions, C3 egress infrastructure,
+//! and/or licensing review under ADR 0034. They exist so that the data-universe
+//! intent (DATA-028) is visible and the blocking reasons are recorded, rather than
+//! leaving a gap in the codebase.
 //!
 //! | connector | source | what it produces |
 //! |---|---|---|
@@ -92,6 +97,15 @@ pub mod kalshi_markets;
 pub mod nws_station_observations;
 pub mod nyfed_effr;
 
+pub mod commodity_flow;
+pub mod energy_grid;
+pub mod flight_data;
+pub mod geospatial_satellite;
+pub mod port_congestion;
+pub mod public_iot;
+pub mod shipping_ais;
+pub mod traffic_data;
+
 pub use alpaca_bars::AlpacaBarsConnector;
 pub use coinbase_ticker::CoinbaseTickerConnector;
 pub use ecb_key_rates::EcbKeyRatesConnector;
@@ -99,3 +113,12 @@ pub use frankfurter_rates::FrankfurterRatesConnector;
 pub use kalshi_markets::KalshiMarketsConnector;
 pub use nws_station_observations::NwsStationObservationsConnector;
 pub use nyfed_effr::NyFedEffrConnector;
+
+pub use commodity_flow::CommodityFlowConnector;
+pub use energy_grid::EnergyGridConnector;
+pub use flight_data::FlightDataConnector;
+pub use geospatial_satellite::GeospatialSatelliteConnector;
+pub use port_congestion::PortCongestionConnector;
+pub use public_iot::PublicIotConnector;
+pub use shipping_ais::ShippingAisConnector;
+pub use traffic_data::TrafficDataConnector;
