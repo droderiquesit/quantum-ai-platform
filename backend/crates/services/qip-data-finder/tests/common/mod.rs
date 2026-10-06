@@ -10,15 +10,18 @@
 
 #![allow(dead_code)]
 
-use qip_contracts::governance::Usage;
+use qip_contracts::governance::{Entitlement, Usage};
 use qip_core::error::Result;
 use qip_core::{Currency, Decimal, Duration, Timestamp};
+use qip_data_finder::category::SourceCategory;
 use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
+use qip_data_finder::decision::RegisteredSource;
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
-use qip_data_finder::legal::{LicensingPosture, SourceLicense};
+use qip_data_finder::legal::{LicensingPosture, SourceLicense, SourcePolicy};
 use qip_data_finder::probe::{HeadResponse, InMemoryProbe, PayloadSample, RobotsFetch};
 use qip_data_finder::quality::SourceCost;
-use qip_data_finder::source::{SourceCandidate, SourceIdentity};
+use qip_data_finder::scoring::Routing;
+use qip_data_finder::source::{Source, SourceCandidate, SourceIdentity, SourceLineage};
 use qip_events::Topic;
 use qip_financial::asset_class::AssetClass;
 
@@ -148,4 +151,98 @@ pub(crate) fn robots_absent() -> RobotsFetch {
 /// A robots.txt that permits everything this crawler asks for.
 pub(crate) fn permissive_robots() -> RobotsFetch {
     robots_served("User-agent: *\nAllow: /\n")
+}
+
+/// A RegisteredSource with a Trade entitlement.
+pub(crate) fn tradeable_source(id: &str, at: Timestamp) -> Result<RegisteredSource> {
+    use qip_data_finder::legal::{LegalAssessment, Legality};
+    use qip_data_finder::probe::ProbeEvidence;
+    use qip_data_finder::scoring::SourceScores;
+
+    let url = "https://example.com/data";
+    let src_candidate = candidate(id, url, licensed_for(&[Usage::Trade])?, &["EUR/USD"])?;
+    let mut probe = probe_for(url, "example.com", permissive_robots());
+
+    let evidence = ProbeEvidence::gather(&mut probe, src_candidate.endpoint(), at)?;
+    let source = Source::from_evidence(src_candidate, evidence);
+
+    let legality = LegalAssessment::combine(
+        Legality::permitted("test"),
+        Legality::permitted("test"),
+        licensed_for(&[Usage::Trade])?.legality_for(Usage::Trade, at),
+        Usage::Trade,
+    );
+    let scores = SourceScores::new(1.0, 1.0, 1.0, 1.0, 1.0)?;
+    let routing = Routing::decide(&legality.overall(), &scores);
+    let policy = SourcePolicy::assemble(
+        source.candidate().identity().publisher(),
+        AGENT,
+        None,
+        None,
+        Vec::new(),
+        true,
+    );
+    let lineage = SourceLineage::new(&source, at);
+
+    let entitlements = vec![Entitlement::Granted {
+        dataset: id.to_string(),
+        usage: Usage::Trade,
+        expires_at: Timestamp::from_millis(2_000_000_000_000),
+    }];
+
+    let category = SourceCategory::Marketplace;
+
+    Ok(RegisteredSource::for_test(
+        source,
+        routing,
+        policy,
+        lineage,
+        entitlements,
+        at,
+        Some(category),
+    ))
+}
+
+/// A RegisteredSource with no entitlements.
+pub(crate) fn unentitled_source(id: &str, at: Timestamp) -> Result<RegisteredSource> {
+    use qip_data_finder::legal::{LegalAssessment, Legality};
+    use qip_data_finder::probe::ProbeEvidence;
+    use qip_data_finder::scoring::SourceScores;
+
+    let url = "https://example.com/data";
+    let src_candidate = candidate(id, url, licensed_for(&[Usage::Derive])?, &["EUR/USD"])?;
+    let mut probe = probe_for(url, "example.com", permissive_robots());
+
+    let evidence = ProbeEvidence::gather(&mut probe, src_candidate.endpoint(), at)?;
+    let source = Source::from_evidence(src_candidate, evidence);
+
+    let legality = LegalAssessment::combine(
+        Legality::permitted("test"),
+        Legality::permitted("test"),
+        licensed_for(&[Usage::Derive])?.legality_for(Usage::Derive, at),
+        Usage::Derive,
+    );
+    let scores = SourceScores::new(1.0, 1.0, 1.0, 1.0, 1.0)?;
+    let routing = Routing::decide(&legality.overall(), &scores);
+    let policy = SourcePolicy::assemble(
+        source.candidate().identity().publisher(),
+        AGENT,
+        None,
+        None,
+        Vec::new(),
+        true,
+    );
+    let lineage = SourceLineage::new(&source, at);
+
+    let category = SourceCategory::CorporateSelfDisclosure;
+
+    Ok(RegisteredSource::for_test(
+        source,
+        routing,
+        policy,
+        lineage,
+        Vec::new(),
+        at,
+        Some(category),
+    ))
 }

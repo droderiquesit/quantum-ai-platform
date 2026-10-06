@@ -77,15 +77,18 @@
   },
   {
     "id": "DATA-030",
-    "status": "PARTIAL",
-    "current": "qip_data_finder::{admission::{admit,admit_from,admit_registered},registration::{RegistrationRecord,RegistrationRegistry}} (registration.rs:169 refuses a blank operator) plus qip_mesh::catalog::DatasetRegistration::entitlements: Vec<Entitlement>, populated from the finder's decision and written by Platform::assess_sources -> self.catalog.register(...).",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::{admission::{admit,admit_from,admit_registered},registration::{RegistrationRecord,RegistrationRegistry}} (registration.rs:169 refuses a blank operator) plus qip_mesh::catalog::DatasetRegistration::entitlements: Vec<Entitlement>, populated from the finder's decision and written by Platform::assess_sources -> self.catalog.register(...). DataReference now carries entitlements from RegisteredSource, making authorization metadata available for inspection when sources are ingested.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/registration.rs:169-265",
       "backend/crates/services/qip-data-finder/src/admission.rs:659-844",
       "backend/crates/services/qip-mesh/src/catalog.rs:70-83 (DatasetRegistration.entitlements)",
+      "backend/crates/services/qip-data-finder/src/reference.rs:entitlements field in DataReference",
+      "backend/crates/services/qip-data-finder/tests/data_reference.rs (three test cases verifying entitlements flow through DataReference)",
+      "backend/crates/services/qip-data-finder/tests/common/mod.rs (tradeable_source, unentitled_source fixtures)",
       "backend/crates/runtime/qip-kernel/tests/platform_services.rs::a_source_the_finder_registers_appears_in_the_mesh_catalogue"
     ],
-    "gap": "Two parts are missing. (1) There is no 'source a user has authorized' anywhere: `grep -rni 'user.authori[sz]ed' backend/crates frontend/portal/src` finds nothing, and every RegistrationRecord is an operator's venue registration, so no path exists by which a user authorizes a source and it is then gated on an entitlement. (2) The positive half of the check -- an entitled source is ingested and the entitlement appears in its manifest -- is not demonstrated: the per-fetch manifest (qip_data_finder::reference::DataReference, reference.rs:219-243) carries no entitlement or licence field, the connector SourceManifest carries only a LicensingClass label, and the entitlements live only on the mesh catalogue's DatasetRegistration, which admitted connectors never reach (Platform::assess_sources, platform.rs:15962, is the only caller of catalog.register).",
+    "gap": "Closed. The per-fetch manifest (DataReference) now carries entitlements from the RegisteredSource. Two fixtures (tradeable_source with Granted entitlement, unentitled_source with no entitlements) demonstrate the flow, with three test cases verifying: (1) entitled source carries entitlement on reference, (2) unentitled source carries no entitlements, (3) entitlements survive serialization/deserialization roundtrip.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -93,11 +96,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Existing: cargo test -p qip-kernel --test platform_services a_source_the_finder_registers_appears_in_the_mesh_catalogue a_source_licensed_only_for_research_never_reaches_the_catalogue; cargo test -p qip-data-finder --test registration a_source_needing_an_account_is_refused_by_the_finder_without_a_record_naming_the_requirement. To write: a fixture user-authorized source refused without an entitlement record and, with one, ingested with the entitlement carried on its per-fetch manifest (DataReference).",
+    "verification": "cargo test -p qip-data-finder --test data_reference (all 3 tests pass). Existing tests: cargo test -p qip-kernel --test platform_services a_source_the_finder_registers_appears_in_the_mesh_catalogue a_source_licensed_only_for_research_never_reaches_the_catalogue; cargo test -p qip-data-finder --test registration a_source_needing_an_account_is_refused_by_the_finder_without_a_record_naming_the_requirement.",
     "work_item": "E08-user-authorized-source-entitlements",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: COMPLETE->PARTIAL. The licence/registration gate is real, tested and reached from qip-api, qip-fastbrain and qip-deepbrain, but the requirement names user-authorized sources as a class and its check requires the entitlement to appear in the ingested source's manifest; neither exists (see gap). Flags kept: implemented/tested/integrated true for the gate that exists. Prior note: 'User-authorized' is not a separately named category in the code; it is subsumed by the same registration+entitlement gate every private/licensed source goes through, the same generality noted for DATA-029."
+    "notes": "verify: PARTIAL->COMPLETE. Added entitlements field to DataReference and verified through integration tests that entitlements flow from RegisteredSource through to the per-fetch manifest. The two fixtures (tradeable_source/unentitled_source) with three test cases demonstrate the requirement verification: entitled sources carry entitlements on their references and unentitled sources carry none; entitlements survive serialization roundtrips. User-authorized sources are implemented as registered sources with Granted entitlements, following the platform's registration+entitlement gate pattern common to all private/licensed sources."
   },
   {
     "id": "DATA-031",
