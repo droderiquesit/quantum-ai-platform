@@ -162,6 +162,21 @@ Two things are still true and matter more than the change:
 `infrastructure/images/execution-node/README.md` is the contract and records
 what has been exercised and what has not.
 
+## Region selection
+
+Each execution region's choice is documented in `docs/ops/execution-region-selection.md` with measured findings from six dimensions: venue RTT, market-data RTT, legal residency, available machine series, Interconnect options, and proximity to counterparties (GCP-008).
+
+Before provisioning an execution node in a region:
+
+1. **Verify the region was chosen by measurement.** Check `docs/ops/execution-region-selection.md` for the dated selection record.
+2. **Verify the Interconnect configuration.** If the region requires a partner Interconnect circuit, check `modules/connectivity/main.tf` for the reserved capacity and the on-demand order reference.
+3. **Verify venue and market-data RTT.** The selection record must cite venue RTT and market-data RTT measurements from the region to primary trading venues.
+
+The three v2.1 execution regions are:
+- **Americas** — serves US-listed equities and futures (CME Group, NYSE, NASDAQ)
+- **Europe** — serves EU-listed equities and derivatives (Eurex, Euronext, ICE Europe)
+- **APAC** — serves APAC-listed equities and derivatives (Japan Exchange, HKEX, Singapore Exchange)
+
 ## The tfvars entry
 
 ```hcl
