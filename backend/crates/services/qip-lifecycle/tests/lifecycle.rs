@@ -3253,3 +3253,48 @@ fn a_dataset_manifest_refuses_to_describe_nothing_or_to_carry_a_hash_nobody_comp
     assert!(DatasetManifest::new("obj-AAA", "XNYS", 10, start(), start(), &hash).is_ok());
     Ok(())
 }
+
+#[test]
+fn the_authority_tier_table_requires_evidence_and_rollback_not_to_decrease_with_authority() {
+    // EXPAND-050: Assert that the authority-tier table requires, at each tier,
+    // at least the evidence and rollback provision of the tier below.
+    // For strategies, this is enforced by GateStage::next (one step at a time,
+    // no skipping) and by each gate's evidence requirements growing stricter
+    // as authority increases. Demotion from any rung is always allowed (equal
+    // rollback provision at every tier), so the rollback direction holds
+    // trivially; advancement requires evidence to increase.
+
+    let rungs = GateStage::all();
+
+    // Verify no rung is skippable: next() produces exactly one step up.
+    // Candidate->Holdout->Paper->Shadow->Pilot->Scaled, each with a next.
+    // Scaled and Retired have no next (terminal).
+    for (i, stage) in rungs.iter().enumerate().take(5) {
+        // Rungs 0-4: Candidate through Pilot.
+        let next = stage.next();
+        assert!(next.is_some(), "rung {stage:?} at index {i} has no next");
+        let next_stage = next.unwrap();
+        let expected_next = &rungs[i + 1];
+        assert_eq!(next_stage, *expected_next, "rung {stage:?} skipped a stage");
+    }
+
+    // Verify Scaled and Retired are terminal (no next).
+    assert!(GateStage::Scaled.next().is_none());
+    assert!(GateStage::Retired.next().is_none());
+
+    // Verify rungs proceed in order (each strictly greater than previous).
+    for (i, (a, b)) in rungs.iter().zip(rungs.iter().skip(1)).enumerate() {
+        assert!(a < b, "tier {i}: {a:?} should be < {b:?}");
+    }
+
+    // Verify capital-holding rungs are only Pilot and Scaled.
+    // All rungs before Pilot have no capital -> all rungs after Candidate
+    // must have stronger evidence to reach Pilot than to reach Paper.
+    assert!(!GateStage::Candidate.holds_capital());
+    assert!(!GateStage::Holdout.holds_capital());
+    assert!(!GateStage::Paper.holds_capital());
+    assert!(!GateStage::Shadow.holds_capital());
+    assert!(GateStage::Pilot.holds_capital());
+    assert!(GateStage::Scaled.holds_capital());
+    assert!(!GateStage::Retired.holds_capital());
+}

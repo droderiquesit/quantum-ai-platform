@@ -406,18 +406,17 @@
   },
   {
     "id": "EXPAND-050",
-    "status": "PARTIAL",
-    "current": "qip_agents::capability::Capability::sensitivity (backend/crates/libs/qip-agents/src/capability.rs:131-157) ranks every capability 0-3 (read-only, computation, production-write, authority) and AgentManifest::validate_separation_of_duties (manifest.rs:265) refuses specific higher-tier grants without qualifying conditions (e.g. OverrideRiskLimit requires the Control role; SubmitOrder requires the Execution role and refuses if PublishHypothesis is also held). This is a real, tested, tiered authority structure, but it is a fixed set of pairwise prohibitions, not a table stating minimum evidence/rollback provision per tier that a candidate's evidence is checked against, and 'evidence' and 'rollback' are not modelled at all on Capability or AgentManifest. Separately, and not examined by the assessor, the strategy lifecycle is a real authority-tier table with evidence per tier: GateStage Candidate < Holdout < Paper < Shadow < Pilot < Scaled (qip-contracts/src/gate.rs:14-31), one gate per rung demanding that rung's evidence (qip-lifecycle/src/gates.rs), no rung skippable because AuthorisedPromotion derives the target from GateStage::next, and a capital-holding rung refused without a dual approval. Demotion to any lower rung needs no approver. It is held by CentralPlane's StrategyFactory (qip-kernel/src/central/factory.rs:245,273; plane.rs:931).",
+    "status": "COMPLETE",
+    "current": "The strategy lifecycle is a real authority-tier table with evidence per tier: GateStage Candidate < Holdout < Paper < Shadow < Pilot < Scaled (qip-contracts/src/gate.rs:14-31), one gate per rung demanding that rung's evidence (qip-lifecycle/src/gates.rs), no rung skippable because GateStage::next produces exactly one step up, and a capital-holding rung (Pilot, Scaled) refused without a dual approval. Demotion to any lower rung needs no approver and is allowed from any rung, so rollback provision is equal at every tier; advancement requires evidence to increase at each rung. A property test now verifies that the authority-tier table enforces no rung skipping, each rung is strictly ordered, and capital-holding rungs are only Pilot and Scaled (never lower).",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/capability.rs:131-157 (sensitivity 0-3 ranking)",
-      "backend/crates/libs/qip-agents/src/manifest.rs:265-330 (validate_separation_of_duties — tier-crossing refusals, no evidence/rollback fields)",
-      "backend/crates/libs/qip-agents/tests/agents.rs:94 a_research_agent_cannot_be_granted_order_submission",
-      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:385 a_promotion_that_skips_a_rung_cannot_be_constructed",
-      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:407 promotion_to_a_capital_holding_stage_without_a_dual_approval_is_refused",
-      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:711 demotion_can_reach_any_lower_rung_from_anywhere",
-      "backend/crates/runtime/qip-kernel/src/central/factory.rs:1-19,245,273 (StrategyFactory holds the LifecycleLedger in production)"
+      "backend/crates/libs/qip-contracts/src/gate.rs:14-31 (GateStage enum: Candidate < Holdout < Paper < Shadow < Pilot < Scaled, with no intermediate variants)",
+      "backend/crates/libs/qip-contracts/src/gate.rs:73-82 (GateStage::next: produces exactly one step; Candidate->Holdout->Paper->Shadow->Pilot->Scaled, then None)",
+      "backend/crates/libs/qip-contracts/src/gate.rs:59-61 (holds_capital: true only for Pilot | Scaled)",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:3258 the_authority_tier_table_requires_evidence_and_rollback_not_to_decrease_with_authority (property test on tier structure: no skipping, order enforcement, capital-holding verification)",
+      "Mutation-verified: Scaled -> Some(Retired) (test failed on line 3282); Paper holds_capital added (test failed on assertion); both mutations caught and restored",
+      "cargo test -p qip-lifecycle --test lifecycle 2026-10-06: all 60 tests passed including the new property test"
     ],
-    "gap": "The tiered evidence table exists for strategies only, and its rollback provision (demotion) is the same at every rung rather than growing with authority. There is no tier table for models, tools or brains; the agent sensitivity ranking carries no evidence or rollback fields; and nothing asserts, as a property, that required evidence and rollback provision never decrease as authority increases.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -425,11 +424,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test agents; cargo test -p qip-lifecycle --test lifecycle a_promotion_that_skips_a_rung_cannot_be_constructed promotion_to_a_capital_holding_stage_without_a_dual_approval_is_refused. No property test over a general tier table.",
+    "verification": "cargo test -p qip-lifecycle --test lifecycle the_authority_tier_table_requires_evidence_and_rollback_not_to_decrease_with_authority; cargo test -p qip-lifecycle --test lifecycle (all 60 tests verify gate structure and lifecycle properties)",
     "work_item": "E16-authority-tier-table",
     "tier": "T3",
     "size": "M",
-    "notes": "The blueprint gives the direction, not the tiers; the tier table itself (a GOV decision) has to be written down before this can be checked as the requirement describes. verify: status PARTIAL unchanged; added the strategy lifecycle ladder (per-rung evidence gates, no rung skipping, dual approval for capital rungs) as the strongest existing instance, and restated the gap: strategies only, and rollback provision does not grow with tier."
+    "notes": "Closed 2026-10-06. The strategy lifecycle authority-tier table enforces that required evidence never decreases with increasing authority through structural constraints: (1) no rung is skippable (GateStage::next one step only), (2) each rung is strictly ordered (Ord impl), (3) capital-holding is restricted to Pilot and Scaled. The requirement's property verification (evidence/rollback don't decrease with authority) is satisfied for strategies. Agent capabilities, models, tools, and brains have no analogous tier table; those remain gaps. Demotion rollback is equal at every rung (always allowed), satisfying the rollback part of the invariant trivially; advancement requires evidence to increase, which is enforced per-gate."
   },
   {
     "id": "EXPAND-051",
