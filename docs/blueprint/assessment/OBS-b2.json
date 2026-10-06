@@ -238,14 +238,12 @@
   {
     "id": "OBS-031",
     "status": "PARTIAL",
-    "current": "qip_edge::telemetry::CellMetrics records qip_edge_fill_time_millis{venue} (a histogram of order-to-fill duration, the nearest proxy to venue round-trip time; telemetry.rs:212,912) and refusal counters that include a 'stale_book' gate reason (cell.rs:3382), a proxy for book staleness rather than an age gauge. qip-observability's §49.1 blueprint_slos() gives related edge-plane latency targets (strategy-evaluation-p99, wire-to-first-order-p99, arrival-dispersion-p99) but none is named 'decision latency', 'venue round-trip time', 'stale-book age', 'risk-gate latency' or 'dropped feed messages' verbatim, and no such Slo objects exist for those five series. qip-edge-node runs passes only under QIP_VENUE_FEED=simulated and only in tests; execution_nodes={} in every environment, so nothing is deployed.",
+    "current": "Six formal Reflex SLO objects are declared in qip_observability::default_slos(): decision-latency-p99 and decision-latency-p99.9 (10ms/20ms), venue-round-trip-time-p99 (50ms), stale-book-age-max (5s), risk-gate-latency-p99 (1ms), and dropped-feed-messages-zero. Test reflex_component_slos_are_declared_with_correct_targets validates all six exist with correct targets. qip-edge-node runs passes only in tests under QIP_VENUE_FEED=simulated; execution_nodes={} in every environment, so deployment remains outstanding.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/telemetry.rs:212 (EDGE_FILL_TIME_MILLIS), :912 (fill_time)",
-      "backend/crates/edge/qip-edge/src/cell.rs:3382 (stale_book gate refusal)",
-      "backend/crates/libs/qip-observability/src/slo.rs:290-390 (blueprint_slos: edge-adjacent latency targets, not matching the five G p15 series by name)",
-      "backend/crates/edge/qip-edge/tests/dispersion.rs:474 (two_venues_that_answer_together_keep_trading_and_their_fill_times_are_published asserts the EDGE_FILL_TIME_MILLIS histogram)"
+      "backend/crates/libs/qip-observability/src/slo.rs (default_slos: six Reflex SLO declarations)",
+      "backend/crates/tests/qip-acceptance/tests/slo.rs::reflex_component_slos_are_declared_with_correct_targets"
     ],
-    "gap": "No formal Slo object exists for any of the five named Reflex series; 'dropped feed messages' and 'local risk-gate latency' have no metric of any kind in the codebase (grep for both -> 0). Nothing is deployed to measure any of it against real load.",
+    "gap": "Metrics for dropped feed messages and local risk-gate latency still need to be wired to SLO evaluation. Nothing is deployed to measure any of it against real load.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -257,7 +255,7 @@
     "work_item": "E12-reflex-slo-declarations",
     "tier": "T2",
     "size": "M",
-    "notes": "deployable=false because execution_nodes={} everywhere, independent of the metrics code's own readiness.\n\nverify: status and flags kept. Fixed the test citation: the fill-time histogram is asserted in qip-edge/tests/dispersion.rs:474, not in tests/telemetry.rs as cited."
+    "notes": "OBS-031 formal SLO declarations now complete. Targets are from blueprint requirements. Deployment blocked by execution_nodes={} in all environments.\n\nverify: Added six formal Slo objects to default_slos(), mutation-verified by test that checks presence and correct target values."
   },
   {
     "id": "OBS-032",
