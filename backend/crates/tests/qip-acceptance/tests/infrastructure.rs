@@ -4292,6 +4292,43 @@ fn the_evidence_bucket_is_versioned_and_retained() {
 }
 
 #[test]
+fn the_evidence_bucket_retention_lock_is_required_by_validation() {
+    // GOV-023: A plan declaring an immutable-class bucket without the lock
+    // must fail validation at plan time.
+    let variables = read("infrastructure/terraform/modules/evidence/variables.tf");
+    assert!(
+        variables.contains("validation {") && variables.contains("retention_locked"),
+        "no validation block guards retention_locked against false"
+    );
+    assert!(
+        variables.contains("var.retention_locked == true"),
+        "retention_locked validation does not require true value"
+    );
+    assert!(
+        variables.contains("Evidence bucket retention policy must be locked")
+            || variables.contains("must be locked"),
+        "validation error message does not explain the requirement"
+    );
+}
+
+#[test]
+fn no_service_uses_long_lived_hmac_keys() {
+    // GOV-028: HMAC keys are long-lived credentials that cannot be rotated
+    // and do not integrate with audit logging. All storage authentication must
+    // go through Workload Identity Federation, which is bound to a service
+    // account and is time-limited and auditable.
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        assert!(
+            !content.contains("google_storage_hmac_key"),
+            "{} declares a storage HMAC key, which is a long-lived credential \
+             that cannot be rotated",
+            path.display()
+        );
+    }
+}
+
+#[test]
 fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     // An append-only store whose writer holds a delete permission is not
     // append-only; it is a store nobody has deleted from yet. Each of the roles
