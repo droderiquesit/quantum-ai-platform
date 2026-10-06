@@ -18,7 +18,7 @@ use qip_contracts::feature::{
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
 use qip_contracts::message::{BookSide, TradeCondition};
-use qip_contracts::policy::FeasibilityConstraints;
+use qip_contracts::policy::{BeliefState, FeasibilityConstraints, ModelPack, UncertaintyType};
 use qip_contracts::signal::{Conviction, StrategyId};
 use qip_contracts::time::{Stamped, Watermark};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
@@ -2836,8 +2836,6 @@ fn a_disposition_is_on_the_wire_and_under_the_signature_once_there_is_one() -> R
 
 // --- model pack contract (CONTRACT-011) ---
 
-use qip_contracts::policy::ModelPack;
-
 #[test]
 fn a_model_pack_with_all_required_fields_present_is_accepted() -> Result<()> {
     let pack = ModelPack {
@@ -2969,4 +2967,119 @@ fn a_model_pack_serialises_and_deserialises_round_trip() -> Result<()> {
     assert_eq!(decoded.expires_at, pack.expires_at);
     assert_eq!(decoded.rollback_parent, pack.rollback_parent);
     Ok(())
+}
+
+#[test]
+fn a_belief_state_with_all_required_fields_present_is_accepted() {
+    let state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string(), "evidence_002".to_string()],
+        causal_path: vec!["implied_vol".to_string(), "realized_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_760_086_400,
+    };
+
+    let now = 1_750_086_400; // current time in the past
+    assert!(
+        state.validate(now).is_ok(),
+        "belief with all fields was rejected"
+    );
+}
+
+#[test]
+fn a_belief_state_missing_any_required_field_is_refused() {
+    let mut state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string()],
+        causal_path: vec!["implied_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_760_086_400,
+    };
+    let now = 1_750_086_400;
+
+    // Empty proposition
+    state.proposition = String::new();
+    assert!(
+        state.validate(now).is_err(),
+        "empty proposition was accepted"
+    );
+
+    state.proposition = "volatility_regime_high".to_string();
+    state.evidence_set = vec![];
+    assert!(
+        state.validate(now).is_err(),
+        "empty evidence_set was accepted"
+    );
+
+    state.evidence_set = vec!["evidence_001".to_string()];
+    state.causal_path = vec![];
+    assert!(
+        state.validate(now).is_err(),
+        "empty causal_path was accepted"
+    );
+
+    state.causal_path = vec!["implied_vol".to_string()];
+    state.expires_at = 0;
+    assert!(state.validate(now).is_err(), "zero expires_at was accepted");
+}
+
+#[test]
+fn a_belief_state_with_out_of_range_confidence_is_refused() {
+    let mut state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string()],
+        causal_path: vec!["implied_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_760_086_400,
+    };
+    let now = 1_750_086_400;
+
+    // Confidence > 1.0
+    state.confidence = 1.5;
+    assert!(
+        state.validate(now).is_err(),
+        "confidence > 1.0 was accepted"
+    );
+
+    // Confidence < 0.0
+    state.confidence = -0.1;
+    assert!(
+        state.validate(now).is_err(),
+        "confidence < 0.0 was accepted"
+    );
+
+    // Boundary: exactly 0.0 is valid
+    state.confidence = 0.0;
+    assert!(state.validate(now).is_ok(), "confidence = 0.0 was rejected");
+
+    // Boundary: exactly 1.0 is valid
+    state.confidence = 1.0;
+    assert!(state.validate(now).is_ok(), "confidence = 1.0 was rejected");
+}
+
+#[test]
+fn a_belief_state_refuses_reading_after_expiry() {
+    let state = BeliefState {
+        proposition: "volatility_regime_high".to_string(),
+        evidence_set: vec!["evidence_001".to_string()],
+        causal_path: vec!["implied_vol".to_string()],
+        confidence: 0.85,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: 1_750_000_000,
+    };
+
+    let current_time = 1_750_086_400; // After expiry
+    assert!(
+        state.check_expired(current_time).is_err(),
+        "expired belief was readable"
+    );
+
+    let before_expiry = 1_749_999_999; // Before expiry
+    assert!(
+        state.check_expired(before_expiry).is_ok(),
+        "valid belief was refused as expired"
+    );
 }
