@@ -81,6 +81,7 @@ fn evid_025_the_publication_gate_refuses_a_record_with_blank_provenance_source()
     let at = Timestamp::parse_rfc3339("2026-08-24T15:00:00Z").unwrap();
     let raw = RawEvent::new("EUR/USD", at, serde_json::json!({}));
     let quote = Quote {
+        capture_time: None,
         object_id: ObjectId::from_string("OBJ0000000000000000000001"),
         venue: "TEST".to_string(),
         at,

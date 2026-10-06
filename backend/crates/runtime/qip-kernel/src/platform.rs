@@ -9153,11 +9153,14 @@ impl Platform {
                     self.ensure_world_object(trade.object_id.as_str(), trade.at);
                     // "Last traded price" is the feature store's own
                     // definition of `close`, and a trade is exactly that.
+                    // Use capture_time for known_at to preserve bitemporal distinction:
+                    // instant_true (when it happened) vs knowable_at (when we found out).
+                    let known_at = trade.capture_time.unwrap_or(trade.at);
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
                             trade.object_id.as_str(),
-                            FeatureValue::new(trade.price.to_f64(), trade.at, trade.at),
+                            FeatureValue::new(trade.price.to_f64(), trade.at, known_at),
                         );
                     });
                     self.market
@@ -9166,11 +9169,14 @@ impl Platform {
                 }
                 SensedRecord::Tick(tick) => {
                     self.ensure_world_object(tick.object_id.as_str(), tick.at);
+                    // Use capture_time for known_at to preserve bitemporal distinction:
+                    // instant_true (when it happened) vs knowable_at (when we found out).
+                    let known_at = tick.capture_time.unwrap_or(tick.at);
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
                             tick.object_id.as_str(),
-                            FeatureValue::new(tick.price.to_f64(), tick.at, tick.at),
+                            FeatureValue::new(tick.price.to_f64(), tick.at, known_at),
                         );
                     });
                     absorbed += 1;
@@ -21799,6 +21805,7 @@ mod retention_tests {
                     object_id: ObjectId::from_string("obj-AAA"),
                     venue: "XNYS".to_string(),
                     at: start().saturating_sub(Duration::from_secs((count - index) as i64)),
+                    capture_time: None,
                     bid: Decimal::from_f64(100.0 - half_spread).unwrap(),
                     ask: Decimal::from_f64(100.0 + half_spread).unwrap(),
                     bid_size: Decimal::from_int(500),

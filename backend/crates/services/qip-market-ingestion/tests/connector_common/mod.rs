@@ -149,6 +149,7 @@ impl SourceConnector for TestConnector {
             object_id: self.object_id.clone(),
             venue: "TEST".to_string(),
             at: event.event_time,
+            capture_time: None,
             price,
             volume: Decimal::parse("1").unwrap_or_default(),
             quality: DataQuality::clean(),

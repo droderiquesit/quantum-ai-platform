@@ -390,6 +390,7 @@ impl SyntheticEnvironment {
             object_id: object_id.clone(),
             venue: venue.clone(),
             at,
+            capture_time: None,
             price: Decimal::from_f64(price).unwrap_or(Decimal::ONE),
             volume: Decimal::ZERO,
             quality: Default::default(),

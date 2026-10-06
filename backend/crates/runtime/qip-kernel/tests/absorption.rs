@@ -709,6 +709,7 @@ fn both_world_stream_and_tick_stream_are_required_and_fused() -> Result<()> {
     // Premise 2: Absorb a tick-stream record (price movement).
     let tick_time = start().saturating_sub(Duration::from_secs(10));
     let tick = qip_market::quote::Tick {
+        capture_time: None,
         object_id: qip_core::Id::from_string(object_id),
         venue: "test-venue".to_string(),
         at: tick_time,

@@ -70,6 +70,7 @@ pub(crate) fn research_source() -> SourceIdentity {
 
 pub(crate) fn tick(price: i64, when: Timestamp) -> Tick {
     Tick {
+        capture_time: None,
         object_id: instrument(),
         venue: VENUE.to_string(),
         at: when,
