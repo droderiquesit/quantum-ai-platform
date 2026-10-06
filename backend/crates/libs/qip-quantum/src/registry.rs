@@ -63,6 +63,7 @@ pub trait SolverRegistry: Send + Sync {
 }
 
 /// A local registry with classical, quantum-inspired, and optional quantum solvers.
+#[allow(missing_debug_implementations)]
 pub struct LocalRegistry {
     classical: Arc<dyn QuboSolver>,
     quantum_inspired: Option<Arc<dyn QuboSolver>>,
@@ -116,8 +117,8 @@ impl SolverRegistry for LocalRegistry {
 
     fn solve_with_solver(
         &self,
-        solver: Arc<dyn QuboSolver>,
-        request: &DecisionRequest,
+        _solver: Arc<dyn QuboSolver>,
+        _request: &DecisionRequest,
     ) -> Result<SolverResult> {
         // Convert the DecisionRequest to the format the solver expects.
         // For now, this is a placeholder that returns an error.
@@ -131,6 +132,7 @@ impl SolverRegistry for LocalRegistry {
 ///
 /// This builder ensures all required solvers are available and properly
 /// configured before the registry is created.
+#[allow(missing_debug_implementations)]
 pub struct SolverRegistryBuilder {
     classical: Option<Arc<dyn QuboSolver>>,
     quantum_inspired: Option<Arc<dyn QuboSolver>>,

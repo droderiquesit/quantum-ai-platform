@@ -1068,7 +1068,7 @@ impl RiskGate {
 /// requires two independent signatures — not a consensus between machines, but
 /// explicit human consent from two different roles (e.g., CRO and Portfolio
 /// Manager), so neither can unilaterally move the regime.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegimeChange {
     /// The regime being entered.
@@ -1094,6 +1094,7 @@ impl RegimeChange {
         decided_at: Timestamp,
         signer_one: impl Into<String>,
     ) -> Result<Self> {
+        #[allow(clippy::manual_range_contains)]
         if confidence < 0.0 || confidence > 1.0 {
             return Err(Error::invalid(format!(
                 "regime change confidence {} is not a probability",
@@ -1116,7 +1117,7 @@ impl RegimeChange {
         Ok(format!(
             "regime1|{}|{}|{}|{}",
             length_prefixed(&self.regime),
-            self.confidence.to_string(),
+            self.confidence,
             self.decided_at.as_secs(),
             length_prefixed(&self.signer_one)
         ))
@@ -1128,7 +1129,7 @@ impl RegimeChange {
         Ok(format!(
             "regime2|{}|{}|{}|{}|{}|{}",
             length_prefixed(&self.regime),
-            self.confidence.to_string(),
+            self.confidence,
             self.decided_at.as_secs(),
             length_prefixed(&self.signer_one),
             length_prefixed(&self.signature_one),

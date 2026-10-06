@@ -61,6 +61,7 @@ impl RoutingConfig {
 ///
 /// This type encapsulates the logic for choosing between quantum and classical
 /// solvers based on a DecisionRequest, availability, and performance metrics.
+#[derive(Debug)]
 pub struct QuantumRouter {
     config: RoutingConfig,
 }
@@ -116,14 +117,14 @@ impl QuantumRouter {
         }
 
         // Check performance: quantum must offer enough improvement.
-        let diff = classical.objective_value - quantum.objective_value;
+        let diff = classical.objective_value() - quantum.objective_value();
         if diff <= 0.0 {
             // Quantum is not better.
             return false;
         }
 
         // Calculate improvement in basis points.
-        let denominator = classical.objective_value.abs();
+        let denominator = classical.objective_value().abs();
         if denominator < 1e-10 {
             // Classical objective is essentially zero; can't compute basis point improvement.
             // Be conservative: prefer classical.
@@ -143,7 +144,10 @@ mod tests {
     fn routing_config_classical_first() {
         let config = RoutingConfig::classical_first();
         assert_eq!(config.min_advantage_bps, i64::MAX);
-        assert_eq!(config.max_cost_multiplier, 0.0);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(config.max_cost_multiplier, 0.0);
+        }
     }
 
     #[test]
