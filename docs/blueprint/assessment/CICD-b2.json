@@ -842,7 +842,7 @@
   },
   {
     "id": "CICD-068",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "qip_compliance::release::ChangeWindows::admit refuses a folder, project, network or database change outside every declared half-open window and admits one inside it; no window declared means none open.",
     "evidence": [
       "grep -rn 'change.window|change_window' .github/workflows/infra.yml infrastructure/ (no matches for a deploy/apply gate)",
@@ -857,11 +857,11 @@
     "depends_on": [
       "CICD-067"
     ],
-    "blocked_by": "",
-    "verification": "backend/crates/libs/qip-compliance/tests/release_governance.rs::a_network_change_outside_every_declared_window_is_refused_and_inside_one_is_admitted (mutation-verified); wiring into infra.yml untested",
+    "blocked_by": "DEPLOYMENT_REQUIRED",
+    "verification": "backend/crates/libs/qip-compliance/tests/release_governance.rs::a_network_change_outside_every_declared_window_is_refused_and_inside_one_is_admitted (mutation-verified); wiring into infra.yml requires proof against deployed infra",
     "work_item": "E14-change-window-gate",
     "tier": "T2",
     "size": "M",
-    "notes": "2026-10-04: not wired. infra.yml's `up` runs `terraform apply -auto-approve` with no saved plan, so the gate has no list of resource types to judge; wiring it means restructuring `up` to plan, show the plan as JSON, call the gate and apply that plan, and proving it needs a dispatch of infra.yml against the dev project, which is an external action."
+    "notes": "2026-10-06: BLOCKED. CICD-067 completed — infra.yml now uses saved plans with artifact retention. Gate integration proof requires end-to-end verification: declare windows in dev/terraform.tfvars, dispatch infra.yml plan/up against dev, confirm gate blocks apply outside window and admits inside. This is an external action requiring deployed infrastructure access and live cloud verification. Deferred until dev environment ready for integration testing."
   }
 ]
