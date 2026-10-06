@@ -17,6 +17,82 @@ use qip_core::{Duration, ModelId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The functional category of a model or reasoner.
+///
+/// Determines which lanes may use it and at what stage of the decision ladder.
+/// The cost-router's Determinism::Required arm refuses to route any specialist
+/// model or reasoner, so this enum's variants organize the intelligence that
+/// routes to ModelTier rungs and nowhere else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelClass {
+    #[default]
+    /// A generic learned model or policy — the default case, routable to any tier.
+    Generic,
+    /// Specialist financial model for regime identification.
+    SpecialistRegime,
+    /// Specialist financial model for event probability.
+    SpecialistEventProb,
+    /// Specialist financial model for valuation.
+    SpecialistValuation,
+    /// Specialist financial model for liquidity.
+    SpecialistLiquidity,
+    /// Specialist financial model for slippage.
+    SpecialistSlippage,
+    /// Specialist financial model for default probability.
+    SpecialistDefault,
+    /// Specialist financial model for volatility.
+    SpecialistVolatility,
+    /// Specialist financial model for demand.
+    SpecialistDemand,
+    /// Specialist financial model for supply.
+    SpecialistSupply,
+    /// Symbolic reasoner — graph traversal and queries over explicit structure.
+    ReasonerGraph,
+    /// Symbolic reasoner — causal shock propagation.
+    ReasonerCausal,
+}
+
+impl ModelClass {
+    pub const ALL: [Self; 12] = [
+        Self::Generic,
+        Self::SpecialistRegime,
+        Self::SpecialistEventProb,
+        Self::SpecialistValuation,
+        Self::SpecialistLiquidity,
+        Self::SpecialistSlippage,
+        Self::SpecialistDefault,
+        Self::SpecialistVolatility,
+        Self::SpecialistDemand,
+        Self::SpecialistSupply,
+        Self::ReasonerGraph,
+        Self::ReasonerCausal,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::SpecialistRegime => "specialist_regime",
+            Self::SpecialistEventProb => "specialist_event_prob",
+            Self::SpecialistValuation => "specialist_valuation",
+            Self::SpecialistLiquidity => "specialist_liquidity",
+            Self::SpecialistSlippage => "specialist_slippage",
+            Self::SpecialistDefault => "specialist_default",
+            Self::SpecialistVolatility => "specialist_volatility",
+            Self::SpecialistDemand => "specialist_demand",
+            Self::SpecialistSupply => "specialist_supply",
+            Self::ReasonerGraph => "reasoner_graph",
+            Self::ReasonerCausal => "reasoner_causal",
+        }
+    }
+
+    /// Whether this model may be used at hot/reflex latency (lane 0).
+    /// Specialist and reasoner models are too expensive for reflex paths.
+    pub const fn allowed_in_hot_lane(self) -> bool {
+        matches!(self, Self::Generic)
+    }
+}
+
 /// Where a model is in its lifecycle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +165,9 @@ pub struct ModelCard {
     pub version: String,
     /// What the model does and the decision it supports.
     pub purpose: String,
+    /// Functional category determining which lanes and tiers may use it.
+    #[serde(default)]
+    pub class: ModelClass,
     pub stage: ModelStage,
     /// Datasets the model was fitted on, with their time ranges.
     pub training_datasets: Vec<String>,
@@ -184,6 +263,7 @@ impl ModelCard {
             name: name.into(),
             version: version.into(),
             purpose: String::new(),
+            class: ModelClass::Generic,
             stage: ModelStage::Development,
             training_datasets: Vec::new(),
             features: Vec::new(),
@@ -217,6 +297,11 @@ impl ModelCard {
 
     pub fn with_purpose(mut self, purpose: impl Into<String>) -> Self {
         self.purpose = purpose.into();
+        self
+    }
+
+    pub fn with_class(mut self, class: ModelClass) -> Self {
+        self.class = class;
         self
     }
 
@@ -748,5 +833,23 @@ impl ModelRegistry {
             .filter(|c| c.stage == ModelStage::Production)
             .filter_map(|c| c.decision_eligibility(now).err().map(|reason| (c, reason)))
             .collect()
+    }
+
+    /// Check whether a model is allowed in a hot-lane package.
+    /// Specialist and reasoner models are refused for hot-lane use.
+    pub fn allowed_in_hot_lane(&self, reference: &str) -> Result<()> {
+        let card = self
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        if card.class.allowed_in_hot_lane() {
+            Ok(())
+        } else {
+            Err(Error::denied(format!(
+                "{} is {}, which is not allowed in hot-lane (lane 0) packages; \
+                 specialist and reasoner models are too latency-sensitive for reflex paths",
+                reference,
+                card.class.as_str()
+            )))
+        }
     }
 }
