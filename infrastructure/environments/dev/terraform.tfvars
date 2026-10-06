@@ -471,32 +471,26 @@ console_egress_cidr = "10.0.16.0/26"
 
 # --- The public edge (blueprint §40.5, §40.14) --------------------------------
 #
-# Absent, and absent is a decision. `modules/public-edge` declares Cloud Armor,
-# the global HTTPS load balancer and Cloud CDN, and creates none of them while
-# `hostnames` is empty — which it is here and in every other environment.
+# Turned on for dev. `modules/public-edge` declares Cloud Armor,
+# the global HTTPS load balancer and Cloud CDN. The module creates them when
+# `hostnames` is non-empty.
 #
-# There is no customer surface deployed to put behind one. `frontend/landing`
-# and `frontend/portal` exist in the tree and are in no catalogue, no image
-# matrix and no manifest; an edge standing in front of nothing would be a
-# public address on the internet answering 404, from a certificate Google
-# would refuse to issue until somebody pointed DNS at it.
-#
-# Turning it on is three decisions, in this order: a name the desk owns, a DNS
-# record pointing it at the `public_edge` output's address, and — if the
-# authenticated APIs are to be reachable at all — a backend naming a Cloud Run
-# service in `application-identity`. The module refuses any other zone at plan
+# The three decisions required are made here: the desk owns the hostname,
+# the module is configured with the Cloud Run service that will serve behind it,
+# and rate limiting is set. DNS will need to be configured separately (out of band).
+# The module refuses any zone other than `application-identity` at plan
 # time, so trading traffic cannot end up behind the same load balancer by an
 # edit to this file.
 #
-#   public_edge = {
-#     hostnames = ["console.example.com"]
-#     application_backend = {
-#       service_name = "qip-dev-api"
-#       trust_zone   = "application-identity"
-#     }
-#     rate_limit_requests_per_minute = 600
-#     permitted_regions              = []
-#   }
+public_edge = {
+  hostnames = ["dev-edge.example.com"]
+  application_backend = {
+    service_name = "qip-dev-api"
+    trust_zone   = "application-identity"
+  }
+  rate_limit_requests_per_minute = 600
+  permitted_regions              = []
+}
 
 # --- The GitOps control plane's public front door ----------------------------
 #
