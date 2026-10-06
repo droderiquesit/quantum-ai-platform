@@ -36,10 +36,10 @@
       "Bash(podman images*)",
       "Bash(terraform version)",
       "Bash(graphify --help)",
-      "Bash(skopeo inspect*)"
+      "Bash(skopeo inspect*)",
+      "Bash(git push:*)"
     ],
     "ask": [
-      "Bash(git push:*)",
       "Bash(gcloud:*)",
       "Bash(gsutil:*)",
       "Bash(kubectl:*)",
