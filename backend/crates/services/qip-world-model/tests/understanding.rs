@@ -1320,6 +1320,7 @@ fn an_absorbed_news_item_becomes_an_occurrence_carrying_its_source_and_both_inst
         topics: vec!["recall".into()],
         provenance: Provenance::synthetic("synthetic-news", published),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
 
     let resolved = model.absorb_news(&item, &context).unwrap();
@@ -1434,6 +1435,7 @@ fn absorbing_news_resolves_entities_and_indexes_the_document() {
         topics: vec!["guidance".into()],
         provenance: Provenance::synthetic("synthetic-news", now()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
 
     let resolved = model.absorb_news(&item, &context).unwrap();
@@ -1476,6 +1478,7 @@ fn absorbing_a_fundamental_records_the_publication_lag() {
         is_restatement: false,
         provenance,
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
     model.absorb_fundamental(&update);
 
@@ -1553,6 +1556,7 @@ fn the_world_state_can_be_reconstructed_at_a_past_instant() {
         is_revision: false,
         provenance: Provenance::synthetic("macro", days_ago(2)),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
     model.absorb_macro(&macro_update);
     let _ = &context;
@@ -1607,6 +1611,7 @@ fn the_diff_reports_what_changed_between_two_instants() {
         topics: vec!["supply_chain".into()],
         provenance: Provenance::synthetic("news", before.saturating_add(Duration::from_hours(1))),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
     model.absorb_news(&item, &context).unwrap();
 
@@ -1643,6 +1648,7 @@ fn retrieval_from_the_world_model_respects_the_point_in_time_cutoff() {
             topics: Vec::new(),
             provenance: Provenance::synthetic("news", when),
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         };
         model.absorb_news(&item, &context).unwrap();
     }
@@ -1932,6 +1938,7 @@ fn a_fundamental_the_vendor_filled_in_is_recorded_as_imputed_not_observed() {
         is_restatement: false,
         provenance: provenance.clone(),
         quality,
+        evidence_unretrievable: false,
     };
     let reported = fundamental("revenue", DataQuality::clean());
     let filled = fundamental("ebitda", DataQuality::clean().imputed());
@@ -1979,6 +1986,7 @@ fn a_macro_print_the_vendor_filled_in_is_recorded_as_imputed_not_observed() {
         is_revision: false,
         provenance: Provenance::synthetic("macro", days_ago(2)),
         quality,
+        evidence_unretrievable: false,
     };
     let printed = observation("US.CPI.YOY", DataQuality::clean());
     let filled = observation("US.PMI", DataQuality::clean().imputed());
@@ -2033,6 +2041,7 @@ fn sentiment_from_a_news_item_the_vendor_filled_in_is_recorded_as_imputed() {
         topics: vec!["guidance".into()],
         provenance: Provenance::synthetic("synthetic-news", published_at),
         quality,
+        evidence_unretrievable: false,
     };
     let observed_item = item("news-observed", days_ago(1), DataQuality::clean());
     let filled_item = item("news-filled", now(), DataQuality::clean().imputed());
@@ -2079,6 +2088,7 @@ fn a_recognised_macro_release_lands_under_the_analysts_name_keyed_by_its_economy
         is_revision: false,
         provenance: Provenance::synthetic("macro", days_ago(2)),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
     model.absorb_macro(&release(&MacroSeries::PolicyRate.series_id("EA"), "EA"));
     model.absorb_macro(&release("US.CPI.YOY", "US"));
@@ -2126,6 +2136,7 @@ fn a_macro_release_whose_series_id_cannot_be_a_key_is_never_journalled() {
         is_revision: false,
         provenance: Provenance::synthetic("macro", days_ago(2)),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
 
     let mut model = WorldModel::new();
@@ -2542,6 +2553,7 @@ fn a_fundamental_is_journalled_as_material_on_the_one_predicate_that_owns_the_co
             is_restatement: false,
             provenance,
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         };
         let before = model.changes().len();
         model.absorb_fundamental(&update);

@@ -325,6 +325,10 @@ pub enum LedgerOutcome {
     /// The extent was already referenced and hashes differently: the source
     /// revised it after this platform used it.
     Revised(RevisionRecord),
+    /// The extent was previously referenced but is now unretrievable: the
+    /// source no longer serves it, access was denied, or the source became
+    /// unavailable. Knowledge derived from this extent must be marked unretrievable.
+    Unretrievable,
 }
 
 impl LedgerOutcome {
@@ -333,11 +337,16 @@ impl LedgerOutcome {
             Self::First => "first",
             Self::Unchanged => "unchanged",
             Self::Revised(_) => "revised",
+            Self::Unretrievable => "unretrievable",
         }
     }
 
     pub const fn is_revised(&self) -> bool {
         matches!(self, Self::Revised(_))
+    }
+
+    pub const fn is_unretrievable(&self) -> bool {
+        matches!(self, Self::Unretrievable)
     }
 }
 
@@ -456,6 +465,7 @@ impl ReferenceLedger {
                 used_at: previous.retrieved_at(),
                 detected_at: now,
             }),
+            RevisionCheck::Unretrievable => LedgerOutcome::Unretrievable,
         }
     }
 

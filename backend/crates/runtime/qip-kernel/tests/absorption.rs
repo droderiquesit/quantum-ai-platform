@@ -130,6 +130,7 @@ fn a_fundamental_that_previously_vanished_now_lands_with_its_own_two_instants() 
         is_restatement: false,
         provenance: Provenance::new("test-filings", period_end, filed_at),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
 
     let absorbed = platform.observe(vec![SensedRecord::Fundamental(Box::new(update))]);
