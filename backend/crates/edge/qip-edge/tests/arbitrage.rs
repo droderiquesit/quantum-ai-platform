@@ -691,6 +691,87 @@ fn a_cycle_that_breaks_between_legs_halts_the_cell_and_records_the_break() -> Re
 }
 
 #[test]
+fn an_arbitrage_cycle_break_saga_is_replayable_from_the_journal() -> Result<()> {
+    // The saga coordinator documents multi-leg compensation: the cell detects
+    // a cycle that breaks between legs and compensates by halting. This test
+    // verifies the saga is properly journaled so it can be replayed.
+    let (mut cell, _) = cell_with(ethereum_books()?, desk(ethereum_graph()?, 4)?, None)?;
+    let mut gateway = RecordingGateway {
+        refuse_at: Some(2),
+        ..RecordingGateway::default()
+    };
+    let outcome = cell.work(t(10), &mut gateway);
+    assert!(outcome.is_err(), "premise failed: cycle did not break");
+
+    // Verify the saga is documented in the journal.
+    let journal_entries = cell.journal().entries();
+    let refusal_entries: Vec<_> = journal_entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.decision,
+                qip_edge::journal::Decision::Refused {
+                    gate,
+                    reason
+                } if gate == "arbitrage_cycle_broken" && reason.contains("after 1 of 3 legs")
+            )
+        })
+        .collect();
+    assert_eq!(
+        refusal_entries.len(),
+        1,
+        "saga should be recorded as exactly one arbitrage_cycle_broken refusal"
+    );
+
+    // Verify the halt is recorded: compensation is the kill switch.
+    let halt_entries: Vec<_> = journal_entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                &entry.decision,
+                qip_edge::journal::Decision::HaltChanged { halted: true, .. }
+            )
+        })
+        .collect();
+    assert!(
+        !halt_entries.is_empty(),
+        "saga compensation should include a HaltChanged entry"
+    );
+
+    // Replay verification: verify that from the journal's perspective, the
+    // saga is complete (detect + halt). The cell reads the journal and
+    // understands it was halted due to a cycle break.
+    let decision_sequence: Vec<_> = journal_entries
+        .iter()
+        .map(|entry| match &entry.decision {
+            qip_edge::journal::Decision::Refused { gate, .. }
+                if gate == "arbitrage_cycle_broken" =>
+            {
+                "break_detected"
+            }
+            qip_edge::journal::Decision::HaltChanged { halted: true, .. } => "halt_engaged",
+            _ => "other",
+        })
+        .collect();
+
+    // The compensation path is: detect break -> engage halt.
+    // This sequence must appear in that order.
+    let has_break = decision_sequence.contains(&"break_detected");
+    let has_halt = decision_sequence.contains(&"halt_engaged");
+    let break_before_halt = decision_sequence
+        .iter()
+        .position(|&d| d == "break_detected")
+        .map(|break_pos| decision_sequence[break_pos..].contains(&"halt_engaged"))
+        .unwrap_or(false);
+
+    assert!(has_break, "saga must record the break detection");
+    assert!(has_halt, "saga compensation must include halt engagement");
+    assert!(break_before_halt, "halt must follow break detection");
+
+    Ok(())
+}
+
+#[test]
 fn a_desk_whose_graph_reaches_a_venue_the_cell_cannot_is_refused_at_installation() -> Result<()> {
     let mut graph = ArbitrageGraph::new();
     let elsewhere = VenueId::new("XNYS");

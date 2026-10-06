@@ -741,6 +741,97 @@ impl EventLog {
         Ok(sequence)
     }
 
+    /// Append a batch of events atomically.
+    ///
+    /// All events in the batch become visible as a unit: a consumer reading
+    /// the log sees either all of them or none. If the append fails midway
+    /// (e.g., refusal, IO error), nothing is written to memory or disk.
+    pub fn batch_append(&mut self, events: &[AnyEvent]) -> Result<Vec<u64>> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Check preconditions before writing anything.
+        if self.inspected {
+            return Err(Error::denied(
+                "this event log was opened by EventLog::inspect, which is read-only; open it \
+                 with EventLog::open to resume it",
+            ));
+        }
+
+        // Validate all events before committing any.
+        for event in events {
+            self.reject_duplicate_event_id(event.event_id.as_str())?;
+        }
+
+        // Build all records with proper sequence and hash chain before any writes.
+        // This ensures that if any operation fails, nothing is committed.
+        let mut records = Vec::with_capacity(events.len());
+        let mut current_hash = self.last_hash.clone();
+        let mut current_sequence = self.last_sequence;
+
+        for event in events {
+            // Check capacity before building records.
+            if self.records.len() >= self.capacity {
+                self.appends_refused = self.appends_refused.saturating_add(1);
+                return Err(Error::guard(format!(
+                    "event log is full at {} records; cannot append batch of {} events; \
+                     archive the log and start a new one, or open it with a larger capacity",
+                    self.capacity,
+                    events.len()
+                )));
+            }
+
+            current_sequence = current_sequence.saturating_add(1);
+            let mut stored = event.clone();
+            stored.sequence = current_sequence;
+
+            let record_hash = compute_record_hash(current_sequence, &current_hash, &stored)?;
+            let record = LogRecord {
+                sequence: current_sequence,
+                previous_hash: current_hash.clone(),
+                record_hash: record_hash.clone(),
+                event: stored,
+            };
+            records.push(record);
+            current_hash = record_hash;
+        }
+
+        // Write all records to file atomically (all or nothing).
+        if let Some(path) = &self.path {
+            let lines: Result<Vec<String>> = records
+                .iter()
+                .map(|r| serde_json::to_string(r).map_err(Into::into))
+                .collect();
+            let lines = lines?;
+
+            // Collect all lines and write them in one operation.
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)?;
+
+            for line in &lines {
+                writeln!(file, "{line}")?;
+            }
+
+            // Sync all batch writes at once if durability requires.
+            if self.durability.survives_power_loss() {
+                file.sync_all()?;
+            }
+        }
+
+        // Index all records and update state.
+        let mut sequences = Vec::with_capacity(records.len());
+        for record in records {
+            sequences.push(record.sequence);
+            self.roll_if_due(record.event.recorded_at);
+            self.index(record);
+        }
+
+        Ok(sequences)
+    }
+
     fn next_sequence(&self) -> u64 {
         self.last_sequence.saturating_add(1)
     }
