@@ -121,7 +121,7 @@ resource "google_compute_interconnect_attachment" "partner" {
 #
 # An internal address in this VPC that answers for Google APIs, so a request
 # reaches them without a route to the internet. The VPC already has private
-# Google access through the restricted range `199.36.153.8/30`; this endpoint
+# Google access through the restricted range `199.36.153.4/30`; this endpoint
 # is what makes the same thing reachable *from the far end of the
 # interconnect*, where that range is not routable without one.
 #
@@ -156,7 +156,7 @@ resource "google_compute_global_forwarding_rule" "google_apis" {
   ip_address = google_compute_global_address.google_apis[0].id
 
   # `vpc-sc` by default rather than `all-apis`: the restricted bundle, the same
-  # set the VPC's existing `199.36.153.8/30` route reaches, and the set a VPC
+  # set the VPC's existing `199.36.153.4/30` route reaches, and the set a VPC
   # Service Controls perimeter can actually protect. `all-apis` includes APIs
   # that no perimeter covers, which would widen the egress surface at exactly
   # the point the platform documents as its narrowest.

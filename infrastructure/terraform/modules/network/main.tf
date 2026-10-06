@@ -70,7 +70,7 @@ resource "google_compute_firewall" "deny_ingress" {
 # --- Google APIs without an external address ---------------------------------
 #
 # Every subnet on this platform has private Google access and no external
-# address, and every egress firewall names `199.36.153.8/30` as the one range
+# address, and every egress firewall names `199.36.153.4/30` as the one range
 # a workload may reach Google APIs on. That range answers only if the
 # workload resolves `storage.googleapis.com` *to* it — otherwise the name
 # resolves to a public address, the egress deny drops the packet, and the
@@ -80,11 +80,11 @@ resource "google_compute_firewall" "deny_ingress" {
 # addresses. Cloud Run's direct VPC egress and Compute Engine instances both
 # resolve through the VPC, so one zone serves every tier.
 #
-# `restricted` rather than `private`: the restricted VIP carries only the
-# APIs a VPC Service Controls perimeter can protect, which is the set this
-# platform uses, and it refuses the ones a perimeter cannot — so a workload
-# that reaches for an API outside that set fails to resolve it rather than
-# quietly reaching it.
+# `restricted` (199.36.153.4/30) rather than `private` (199.36.153.8/30): the
+# restricted VIP carries only the APIs a VPC Service Controls perimeter can
+# protect, which is the set this platform uses, and it refuses the ones a
+# perimeter cannot — so a workload that reaches for an API outside that set
+# fails to resolve it rather than quietly reaching it.
 resource "google_dns_managed_zone" "googleapis" {
   project     = var.project_id
   name        = "qip-${var.environment}-googleapis"
@@ -107,7 +107,7 @@ resource "google_dns_record_set" "restricted_vip" {
   name         = "restricted.googleapis.com."
   type         = "A"
   ttl          = 300
-  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+  rrdatas      = ["199.36.153.4", "199.36.153.5", "199.36.153.6", "199.36.153.7"]
 }
 
 resource "google_dns_record_set" "googleapis_wildcard" {
@@ -170,7 +170,7 @@ locals {
   # `*.googleapis.com` to, and the default `modules/trust-zones` and
   # `modules/execution-node` take for `google_apis_range`. One literal, kept
   # beside the record set that makes it mean something.
-  restricted_vip_range = "199.36.153.8/30"
+  restricted_vip_range = "199.36.153.4/30"
 }
 
 # Priority 65000, `0.0.0.0/0`, all protocols — the zone module's deny. The

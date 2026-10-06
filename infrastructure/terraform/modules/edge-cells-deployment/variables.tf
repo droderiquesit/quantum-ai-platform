@@ -139,8 +139,8 @@ variable "cross_region_mirrors" {
 }
 
 variable "google_apis_range" {
-  description = "The CIDR range for Google APIs (default: the restricted VIP)."
+  description = "The CIDR range for Google APIs (default: the restricted VIP 199.36.153.4/30)."
   type        = string
-  default     = "199.36.153.8/30"
+  default     = "199.36.153.4/30"
 }
 

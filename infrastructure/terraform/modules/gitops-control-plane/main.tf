@@ -56,7 +56,7 @@ locals {
   # `modules/network`'s `googleapis.com` zone answers with. Repeated here
   # rather than exported from that module because two private zones with
   # different names carry them, and a zone's records belong beside the zone.
-  restricted_vip = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+  restricted_vip = ["199.36.153.4", "199.36.153.5", "199.36.153.6", "199.36.153.7"]
 
   # The two private registry zones, as a DNS suffix keyed by the name its zone
   # takes. A local rather than a literal inline on the zone resource, because
