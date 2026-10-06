@@ -225,7 +225,8 @@ impl Ledger {
             }
             TraceKind::Transfer { .. }
             | TraceKind::BridgeDeposit { .. }
-            | TraceKind::BridgeCredit { .. } => {}
+            | TraceKind::BridgeCredit { .. }
+            | TraceKind::GovernanceProposal { .. } => {}
         }
         Ok(())
     }

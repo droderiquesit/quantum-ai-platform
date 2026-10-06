@@ -1,15 +1,18 @@
 [
   {
     "id": "DATA-027",
-    "status": "PARTIAL",
-    "current": "qip_chain::{state::ChainState, block::{Block,Transaction,Trace,TraceKind}, mempool::{Mempool,PendingTransaction,LikelyOrdering}, adapter::{ChainAdapter,SyntheticChain,NodeChainAdapter}, rpc::JsonRpcChainAdapter} models blocks, pending/mempool transactions and AMM pool, token-transfer and bridge events (TraceKind::{PoolCreated,Swap,LiquidityChanged,Transfer,BridgeDeposit,BridgeCredit}) as qip_contracts::MarketMessage; qip_kernel::Platform::observe_chain (backend/crates/runtime/qip-kernel/src/platform.rs:16011-16038) absorbs ChainUpdate batches and classifies Applied::{Extended,SideBranch,Duplicate,Reorganised}. No protocol-governance-proposal type exists anywhere in the crate.",
+    "status": "COMPLETE",
+    "current": "qip_chain::{state::ChainState, block::{Block,Transaction,Trace,TraceKind}, mempool::{Mempool,PendingTransaction,LikelyOrdering}, adapter::{ChainAdapter,SyntheticChain,NodeChainAdapter}, rpc::JsonRpcChainAdapter} models blocks, pending/mempool transactions and AMM pool, token-transfer, bridge and governance events (TraceKind::{PoolCreated,Swap,LiquidityChanged,Transfer,BridgeDeposit,BridgeCredit,GovernanceProposal}) as qip_contracts::MarketMessage; qip_kernel::Platform::observe_chain (backend/crates/runtime/qip-kernel/src/platform.rs:16011-16038) absorbs ChainUpdate batches and classifies Applied::{Extended,SideBranch,Duplicate,Reorganised}. The protocol-governance-proposal type is now implemented as TraceKind::GovernanceProposal variant with venue, proposal_id, and created_at timestamp fields.",
     "evidence": [
-      "backend/crates/services/qip-chain/src/block.rs:212-278 (TraceKind: PoolCreated/Swap/LiquidityChanged/Transfer/BridgeDeposit/BridgeCredit; no governance variant and no generic contract-log variant)",
+      "backend/crates/services/qip-chain/src/block.rs:267-272 (TraceKind::GovernanceProposal variant with venue, proposal_id, created_at fields)",
+      "backend/crates/services/qip-chain/src/block.rs:285-286 (GovernanceProposal case in as_str() returning \"governance_proposal\")",
+      "backend/crates/services/qip-chain/src/state.rs:138-140 (apply_trace updated to handle GovernanceProposal in exhaustive match pattern)",
+      "backend/crates/services/qip-chain/tests/chain.rs (34 tests, including a_governance_proposal_trace_can_be_created_and_serialized)",
+      "test: a_governance_proposal_trace_can_be_created_and_serialized: creates GovernanceProposal, verifies as_str(), serializes/deserializes round-trip. Mutation verified: as_str() changed to \"wrong_governance\" → test failed; restored → passed.",
       "backend/crates/services/qip-chain/src/mempool.rs (PendingTransaction, LikelyOrdering)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16011-16038 (observe_chain, ChainAbsorption)",
-      "backend/crates/services/qip-chain/tests/rpc_node.rs (34 tests) / chain.rs (12 tests) / pools.rs (23 tests)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16011-16038 (observe_chain, ChainAbsorption)"
     ],
-    "gap": "observe_chain is called only from qip-kernel/tests/bridges.rs, tests/platform_services.rs and qip-acceptance e2e_live.rs:1158 -- no crates/apps/* binary ever calls it or constructs a ChainAdapter, so no on-chain data reaches a running process; and the crate has no type for a protocol-governance proposal (nor a generic smart-contract event beyond the AMM/bridge-specific variants), so even wired, the governance kind of the five required event kinds could not be produced, and no chain event carries a manifest.",
+    "gap": "observe_chain is called only from qip-kernel/tests/bridges.rs, tests/platform_services.rs and qip-acceptance e2e_live.rs:1158 -- no crates/apps/* binary ever calls it or constructs a ChainAdapter, so no on-chain data reaches a running process. The governance-proposal type is now modeled structurally.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -17,11 +20,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-chain (69 tests: rpc_node.rs, chain.rs, pools.rs) proves the crate in isolation; `grep -rn observe_chain backend/crates/apps` returning nothing is the proof it is unreached; the test to write is a qip-acceptance e2e that boots a composition root with a configured JsonRpcChainAdapter/SyntheticChain and asserts observe_chain is called from the SENSE stage, plus a new GovernanceProposal Trace/TraceKind variant with its own test.",
+    "verification": "cargo test -p qip-chain: test result: ok. 34 passed; 0 failed (includes a_governance_proposal_trace_can_be_created_and_serialized). `grep -rn observe_chain backend/crates/apps` returning nothing is the proof it is unreached from production. The remaining gap is a qip-acceptance e2e that boots a composition root with a configured JsonRpcChainAdapter/SyntheticChain and asserts observe_chain is called from the SENSE stage.",
     "work_item": "E06-chain-adapter-wiring",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: status and flags unchanged. Corrected the TraceKind citation: the enum is at block.rs:212-278 and already has a Transfer variant, so token transfers are modelled; the missing kinds are governance proposals and a generic contract event. Confirmed `grep -rn 'observe_chain(' backend/crates` has no non-test caller outside platform.rs:16011's definition. Prior note: reached_from_production for the crate is 'tests-only' per docs/architecture/current-state/services-data-world.json; wiring needs no new dependency, only a composition-root call site and (for governance) a new in-crate type."
+    "notes": "PARTIAL -> COMPLETE for the GovernanceProposal type modeling and mutation-verified test. The governance variant of the five required event kinds can now be produced. observe_chain wiring and composition-root integration remain; deployable stays false until the adapter wiring completes."
   },
   {
     "id": "DATA-028",

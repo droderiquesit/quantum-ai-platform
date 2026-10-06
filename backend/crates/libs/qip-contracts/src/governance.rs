@@ -54,7 +54,8 @@ impl Control {
 ///
 /// Not a boolean. A feed licensed for research and not for trading is the
 /// common case, and collapsing the two is how a licence gets breached by a
-/// backtest that was promoted.
+/// backtest that was promoted. RealTime is distinct from Derive: real-time data
+/// can be consumed by the reflex path without permission to use it for training.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Usage {
     /// Look at it internally.
@@ -65,6 +66,8 @@ pub enum Usage {
     Trade,
     /// Show it to a client or publish a number derived from it.
     Redistribute,
+    /// Consume in real-time for execution without deriving or archiving.
+    RealTime,
 }
 
 impl Usage {
@@ -74,6 +77,7 @@ impl Usage {
             Self::Derive => "derive",
             Self::Trade => "trade",
             Self::Redistribute => "redistribute",
+            Self::RealTime => "real_time",
         }
     }
 }
