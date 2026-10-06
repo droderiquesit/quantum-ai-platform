@@ -1,6 +1,11 @@
 //! Test that regulatory data connectors (central bank rates, filings, etc.)
 //! are integrated and reachable from production.
 
+// The workspace denies `panic_in_result_fn` for production code. In a test the
+// assertion is the deliverable, and `?` keeps the fixtures readable.
+#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use qip_core::error::Result;
 use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::connector::SourceConnector;

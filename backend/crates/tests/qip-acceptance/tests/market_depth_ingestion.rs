@@ -1,6 +1,11 @@
 //! Test that market depth connectors (order books, venues) are integrated
 //! and reachable from production.
 
+// The workspace denies `panic_in_result_fn` for production code. In a test the
+// assertion is the deliverable, and `?` keeps the fixtures readable.
+#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use qip_core::Duration;
 use qip_core::ObjectId;
 use qip_core::error::Result;
