@@ -271,6 +271,7 @@ fn macro_record(series_id: &str, value: f64) -> SensedRecord {
         is_revision: false,
         provenance: Provenance::synthetic("test-macro", horizon()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }))
 }
 
