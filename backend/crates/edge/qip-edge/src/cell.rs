@@ -5377,11 +5377,16 @@ impl Cell {
         if self.is_halted() {
             return self.mass_cancel(gateway, now);
         }
-        // What rests at a venue whose feed has gone silent or that is
-        // quarantined is withdrawn too, on a cell that is otherwise running.
-        // Until this arm existed only a halt pulled an order early, so one
-        // venue's failure left its orders to be filled by a market the cell
-        // could no longer see while every other venue traded on.
+        // Withdraw resting orders from strategies whose capital envelopes have expired.
+        // A strategy's envelope is the backstop that bounds it when the cell loses
+        // contact; when the envelope expires, the cell withdraws its pending orders
+        // rather than letting them rest indefinitely.
+        let expired_strategies = self.orders_for_expired_strategies();
+        // What rests at a venue whose feed has gone silent or that is quarantined
+        // is withdrawn too, on a cell that is otherwise running.
+        // Until this arm existed only a halt pulled an order early, so one venue's
+        // failure left its orders to be filled by a market the cell could no longer
+        // see while every other venue traded on.
         let stranded = self.stranded_at_failed_venues(gateway.can_cancel(), now);
         let due: Vec<String> = self
             .working
@@ -5392,11 +5397,37 @@ impl Cell {
                         .order
                         .expires_at
                         .is_some_and(|expires_at| expires_at <= now)
-                        || stranded.contains(&working.order.venue))
+                        || stranded.contains(&working.order.venue)
+                        || expired_strategies.contains(&working.order.order_id))
             })
             .map(|working| working.order.order_id.clone())
             .collect();
         self.withdraw_all(due, gateway, now)
+    }
+
+    /// Resting orders from strategies whose capital envelopes have expired.
+    ///
+    /// When a deployed strategy's envelope expires, the cell withdraws its
+    /// pending orders. The envelope is the backstop for a cell that has lost
+    /// contact with the centre, so expiry is the only mechanism that can revoke
+    /// a grant and stop a strategy that nobody can reach to redeploy.
+    fn orders_for_expired_strategies(&self) -> Vec<String> {
+        let now = self.sequencer.now();
+        let mut expired_orders = Vec::new();
+        // Build a set of strategies whose envelopes have expired.
+        let expired: BTreeSet<String> = self
+            .deployed
+            .iter()
+            .filter(|(_, deployed)| !deployed.envelope.is_live(now))
+            .map(|(key, _)| key.clone())
+            .collect();
+        // Collect all resting orders from expired strategies.
+        for working in self.working.values() {
+            if working.order.closed.is_none() && expired.contains(working.net.strategy.as_str()) {
+                expired_orders.push(working.order.order_id.clone());
+            }
+        }
+        expired_orders
     }
 
     /// The failed venues whose resting orders this pass should withdraw.

@@ -152,7 +152,10 @@ impl SchemaRegistry {
 
         let stream = stream_name.into();
         let subj = subject.into();
-        self.stream_schemas.entry(stream).or_default().insert(subj, schema_id);
+        self.stream_schemas
+            .entry(stream)
+            .or_default()
+            .insert(subj, schema_id);
         Ok(())
     }
 
@@ -259,13 +262,16 @@ mod tests {
         assert!(result.is_err());
 
         // First register the schema
-        let schema =
-            SchemaDefinition::register(1, 1, "content", "user", CompatibilityPolicy::Full)
-                .expect("failed to create schema");
+        let schema = SchemaDefinition::register(1, 1, "content", "user", CompatibilityPolicy::Full)
+            .expect("failed to create schema");
         let _ = registry.register(schema);
 
         // Now registering for a stream succeeds
-        assert!(registry.register_for_stream("my_stream", "value", 1).is_ok());
+        assert!(
+            registry
+                .register_for_stream("my_stream", "value", 1)
+                .is_ok()
+        );
     }
 
     #[test]
