@@ -1,34 +1,45 @@
-//! Step 1 of a tick-replay campaign: detect when microstructure residuals grow
-//! past a threshold or a new venue appears, and create a TickCampaign to study
-//! the anomaly (EXPAND-017).
+//! Step 1 of a tick-replay campaign: notice that a microstructure residual has
+//! grown past its threshold, or that a venue nobody has seen before has
+//! appeared, and open a [`TickCampaign`] scoped to what was affected
+//! (EXPAND-017).
+//!
+//! A residual that grows without anyone investigating it becomes the loss
+//! nobody could explain. This module only decides that a campaign is owed; it
+//! replays nothing and schedules nothing.
+//!
+//! Status: library only. Nothing in the tree feeds the detector yet — the
+//! central plane's `qip_venue_fill_error_bps` histogram is diagnostic and read
+//! by nothing that decides — so the register row this serves stays PARTIAL
+//! with `integrated = false`.
 
 use qip_core::Decimal;
+use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 /// A campaign to replay and study tick-level microstructure after a residual
-/// anomaly or new venue discovery.
-///
-/// Residuals that trigger campaigns: unexplained slippage, fill/queue
-/// prediction errors, new venue mechanics, abnormal lead/lag, world-event
-/// reaction residuals, and divergence between live (paper) and replay.
+/// anomaly or a new venue.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TickCampaign {
-    /// A unique identifier for this campaign.
+    /// Identifier, issued in sequence by the detector that opened it, so the
+    /// same observations replayed through a fresh detector name the same
+    /// campaigns. A wall-clock identifier would make a replay disagree with
+    /// the record it is replaying.
     pub campaign_id: String,
-    /// The reason this campaign was created.
+    /// Why this campaign was opened.
     pub trigger: TickCampaignTrigger,
-    /// Instruments affected by the residual or new venue.
+    /// Instruments affected by the residual or the new venue.
     pub affected_instruments: BTreeSet<String>,
     /// The venue affected, if venue-specific.
     pub venue: Option<String>,
-    /// The observed residual value that triggered the campaign.
+    /// The observed residual that opened the campaign; `None` for a new venue.
     pub residual_value: Option<Decimal>,
-    /// The threshold that was exceeded.
-    pub threshold: Decimal,
+    /// The threshold the residual's magnitude exceeded; `None` for a new
+    /// venue, which has no threshold rather than a threshold of zero.
+    pub threshold: Option<Decimal>,
 }
 
-/// The reason a TickCampaign was created.
+/// The reason a [`TickCampaign`] was opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TickCampaignTrigger {
     /// Unexplained slippage exceeds the threshold.
@@ -39,279 +50,220 @@ pub enum TickCampaignTrigger {
     QueuePredictionError,
     /// Lead/lag relationship anomaly detected.
     AbnormalLeadLag,
-    /// World event reaction residuals grow.
+    /// World-event reaction residuals grow.
     WorldEventReaction,
-    /// Divergence between paper and replay fills.
+    /// Divergence between paper fills and replayed fills.
     PaperReplayDivergence,
-    /// A new venue was discovered.
+    /// A venue not previously seen.
     NewVenue,
 }
 
-impl TickCampaign {
-    /// Create a new tick campaign for a residual anomaly.
-    pub fn for_residual(
-        campaign_id: String,
-        trigger: TickCampaignTrigger,
-        instruments: BTreeSet<String>,
-        residual_value: Decimal,
-        threshold: Decimal,
-        venue: Option<String>,
-    ) -> Self {
-        Self {
-            campaign_id,
-            trigger,
-            affected_instruments: instruments,
-            venue,
-            residual_value: Some(residual_value),
-            threshold,
-        }
-    }
-
-    /// Create a new tick campaign for a new venue discovery.
-    pub fn for_new_venue(
-        campaign_id: String,
-        venue: String,
-        instruments: BTreeSet<String>,
-    ) -> Self {
-        Self {
-            campaign_id,
-            trigger: TickCampaignTrigger::NewVenue,
-            affected_instruments: instruments,
-            venue: Some(venue),
-            residual_value: None,
-            threshold: Decimal::ZERO,
-        }
-    }
-
-    /// Check if a residual value exceeds the threshold and should trigger
-    /// a campaign. Returns true only when residual > threshold.
-    pub fn should_trigger(&self) -> bool {
-        match self.residual_value {
-            Some(residual) => {
-                // Compare absolute values; a negative residual at the same
-                // magnitude as a positive one matters equally.
-                residual.abs() > self.threshold
-            }
-            None => false, // New venue campaigns trigger unconditionally
-        }
-    }
-}
-
-/// Detects when to create tick-replay campaigns from residual anomalies.
+/// Opens tick-replay campaigns from residual observations and venue sightings.
 #[derive(Debug, Clone)]
 pub struct TickCampaignDetector {
-    /// Threshold for slippage residuals as a fraction (e.g., 0.01 = 1%).
-    pub slippage_threshold: Decimal,
-    /// Known venues to track for new ones appearing.
-    pub known_venues: BTreeSet<String>,
+    slippage_threshold: Decimal,
+    known_venues: BTreeSet<String>,
+    issued: u64,
 }
 
 impl TickCampaignDetector {
-    /// Create a detector with default thresholds.
-    pub fn new() -> qip_core::error::Result<Self> {
+    /// The default slippage threshold, 0.01 (one per cent). The blueprint
+    /// does not define the threshold for "grow"; this is the house default
+    /// until a calibrated one exists.
+    pub const DEFAULT_SLIPPAGE_THRESHOLD: Decimal = Decimal::from_raw(10_000_000);
+
+    /// A detector with the default slippage threshold and no known venues.
+    pub fn new() -> Result<Self> {
+        Self::with_slippage_threshold(Self::DEFAULT_SLIPPAGE_THRESHOLD)
+    }
+
+    /// A detector with the given slippage threshold.
+    ///
+    /// Refuses a negative threshold: residuals are compared by magnitude, so a
+    /// negative threshold would open a campaign on every observation,
+    /// including a residual of zero, and drown the real ones.
+    pub fn with_slippage_threshold(threshold: Decimal) -> Result<Self> {
+        if threshold < Decimal::ZERO {
+            return Err(Error::invalid(format!(
+                "slippage threshold {threshold} is negative; residuals are compared by magnitude, so pass a threshold of zero or more"
+            )));
+        }
         Ok(Self {
-            // Default: 1% slippage triggers a campaign
-            slippage_threshold: Decimal::from_scaled(1, 2).ok_or_else(|| {
-                qip_core::error::Error::numeric("failed to construct default slippage threshold")
-            })?,
+            slippage_threshold: threshold,
             known_venues: BTreeSet::new(),
+            issued: 0,
         })
     }
 
-    /// Detect if a new venue should trigger a campaign. Returns the venue
-    /// name if it's new, or None if it's already known.
-    pub fn detect_new_venue(&mut self, venue: &str) -> Option<String> {
-        if !self.known_venues.contains(venue) {
-            self.known_venues.insert(venue.to_string());
-            Some(venue.to_string())
-        } else {
-            None
-        }
+    /// The threshold a slippage residual's magnitude must exceed.
+    pub fn slippage_threshold(&self) -> Decimal {
+        self.slippage_threshold
     }
 
-    /// Detect if slippage residual exceeds threshold. Returns the campaign
-    /// if triggered, or None if below threshold.
-    pub fn detect_slippage(
-        &self,
+    /// Record a venue sighting. Opens a [`TickCampaignTrigger::NewVenue`]
+    /// campaign the first time a venue is seen, scoped to the instruments it
+    /// was seen trading, and nothing on every later sighting.
+    pub fn observe_venue(
+        &mut self,
+        venue: &str,
+        instruments: BTreeSet<String>,
+    ) -> Option<TickCampaign> {
+        if !self.known_venues.insert(venue.to_string()) {
+            return None;
+        }
+        Some(TickCampaign {
+            campaign_id: self.next_id(),
+            trigger: TickCampaignTrigger::NewVenue,
+            affected_instruments: instruments,
+            venue: Some(venue.to_string()),
+            residual_value: None,
+            threshold: None,
+        })
+    }
+
+    /// Record an unexplained-slippage residual. Opens a campaign when its
+    /// magnitude strictly exceeds the threshold — a negative residual matters
+    /// as much as a positive one of the same size — and nothing otherwise.
+    pub fn observe_slippage(
+        &mut self,
         residual: Decimal,
         venue: Option<&str>,
         instruments: BTreeSet<String>,
     ) -> Option<TickCampaign> {
-        if residual.abs() > self.slippage_threshold {
-            let campaign = TickCampaign::for_residual(
-                format!("tick_{}", uuid_stub()),
-                TickCampaignTrigger::UnexplainedSlippage,
-                instruments,
-                residual,
-                self.slippage_threshold,
-                venue.map(|s| s.to_string()),
-            );
-            Some(campaign)
-        } else {
-            None
+        if residual.abs() <= self.slippage_threshold {
+            return None;
         }
+        Some(TickCampaign {
+            campaign_id: self.next_id(),
+            trigger: TickCampaignTrigger::UnexplainedSlippage,
+            affected_instruments: instruments,
+            venue: venue.map(str::to_string),
+            residual_value: Some(residual),
+            threshold: Some(self.slippage_threshold),
+        })
     }
-}
 
-/// Generate a stub UUID for testing (not for production use).
-fn uuid_stub() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    format!("{:08x}", nanos)
+    fn next_id(&mut self) -> String {
+        self.issued += 1;
+        format!("tick-campaign-{:06}", self.issued)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_slippage_campaign_names_its_residual_and_threshold() {
-        let instruments = vec!["AAPL".to_string(), "GOOG".to_string()]
-            .into_iter()
-            .collect();
-        let residual = Decimal::from_scaled(50, 4).unwrap(); // 0.005 = 0.5 bps
-        let threshold = Decimal::from_scaled(100, 4).unwrap(); // 0.01 = 1 bps
-        let campaign = TickCampaign::for_residual(
-            "tick_001".to_string(),
-            TickCampaignTrigger::UnexplainedSlippage,
-            instruments,
-            residual,
-            threshold,
-            Some("NYSE".to_string()),
-        );
-
-        assert_eq!(campaign.campaign_id, "tick_001");
-        assert_eq!(campaign.trigger, TickCampaignTrigger::UnexplainedSlippage);
-        assert_eq!(campaign.residual_value, Some(residual));
-        assert_eq!(campaign.threshold, threshold);
-        assert_eq!(campaign.venue, Some("NYSE".to_string()));
-        assert_eq!(campaign.affected_instruments.len(), 2);
+    fn set(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
     }
 
-    #[test]
-    fn a_new_venue_campaign_names_the_venue_and_instruments() {
-        let instruments = vec!["BTC-USD".to_string()].into_iter().collect();
-        let campaign =
-            TickCampaign::for_new_venue("tick_002".to_string(), "KRAKEN".to_string(), instruments);
-
-        assert_eq!(campaign.campaign_id, "tick_002");
-        assert_eq!(campaign.trigger, TickCampaignTrigger::NewVenue);
-        assert_eq!(campaign.venue, Some("KRAKEN".to_string()));
-        assert!(campaign.residual_value.is_none());
-        assert_eq!(campaign.affected_instruments.len(), 1);
-        assert!(campaign.affected_instruments.contains("BTC-USD"));
+    /// `n` hundredths of a per cent, built from the raw scaled integer so no
+    /// fallible constructor is needed in a test.
+    fn pct(hundredths_of_a_percent: i128) -> Decimal {
+        Decimal::from_raw(hundredths_of_a_percent * 100_000)
     }
 
-    #[test]
-    fn tick_campaign_trigger_variants_are_distinct() {
-        let variants = vec![
-            TickCampaignTrigger::UnexplainedSlippage,
-            TickCampaignTrigger::FillPredictionError,
-            TickCampaignTrigger::QueuePredictionError,
-            TickCampaignTrigger::AbnormalLeadLag,
-            TickCampaignTrigger::WorldEventReaction,
-            TickCampaignTrigger::PaperReplayDivergence,
-            TickCampaignTrigger::NewVenue,
-        ];
-
-        // Ensure all variants are distinct by comparing to themselves and others
-        for (i, v1) in variants.iter().enumerate() {
-            for (j, v2) in variants.iter().enumerate() {
-                if i == j {
-                    assert_eq!(v1, v2, "trigger variant should equal itself");
-                } else {
-                    assert_ne!(v1, v2, "different trigger variants should not be equal");
-                }
-            }
+    fn detector() -> TickCampaignDetector {
+        match TickCampaignDetector::new() {
+            Ok(d) => d,
+            Err(e) => panic!("the default detector must construct: {e}"),
         }
     }
 
+    /// One recorded window: slippage that grows from 0.5% to 2% at NYSE, then
+    /// a venue the detector has never seen. The row's verification asks for
+    /// exactly this window.
+    fn replay(detector: &mut TickCampaignDetector) -> Vec<TickCampaign> {
+        let mut opened = Vec::new();
+        for residual in [pct(50), pct(90), pct(200)] {
+            opened.extend(detector.observe_venue("NYSE", set(&["AAPL"])));
+            opened.extend(detector.observe_slippage(residual, Some("NYSE"), set(&["AAPL"])));
+        }
+        opened.extend(detector.observe_venue("IEX", set(&["MSFT", "GOOG"])));
+        opened
+    }
+
     #[test]
-    fn a_residual_below_threshold_does_not_trigger_a_campaign() {
-        let instruments = vec!["BTC-USD".to_string()].into_iter().collect();
-        let residual = Decimal::from_scaled(50, 4).unwrap(); // 0.005 = 0.5%
-        let threshold = Decimal::from_scaled(1, 2).unwrap(); // 0.01 = 1%
-        let campaign = TickCampaign::for_residual(
-            "tick_below".to_string(),
-            TickCampaignTrigger::UnexplainedSlippage,
-            instruments,
-            residual,
-            threshold,
-            Some("KRAKEN".to_string()),
+    fn a_window_where_slippage_grows_and_a_venue_appears_opens_one_scoped_campaign_for_each() {
+        let mut detector = detector();
+        // NYSE is known before the window starts, so the only new venue in
+        // the window is IEX.
+        assert!(detector.observe_venue("NYSE", set(&["AAPL"])).is_some());
+
+        let opened = replay(&mut detector);
+
+        assert_eq!(
+            opened.len(),
+            2,
+            "expected one slippage and one venue campaign: {opened:?}"
         );
+        let slippage = &opened[0];
+        assert_eq!(slippage.trigger, TickCampaignTrigger::UnexplainedSlippage);
+        assert_eq!(slippage.residual_value, Some(pct(200)));
+        assert_eq!(slippage.threshold, Some(pct(100)));
+        assert_eq!(slippage.venue.as_deref(), Some("NYSE"));
+        assert_eq!(slippage.affected_instruments, set(&["AAPL"]));
 
-        assert!(!campaign.should_trigger());
+        let venue = &opened[1];
+        assert_eq!(venue.trigger, TickCampaignTrigger::NewVenue);
+        assert_eq!(venue.venue.as_deref(), Some("IEX"));
+        assert_eq!(venue.affected_instruments, set(&["GOOG", "MSFT"]));
+        assert_eq!(venue.residual_value, None);
+        assert_eq!(venue.threshold, None);
     }
 
     #[test]
-    fn a_residual_above_threshold_triggers_a_campaign() {
-        let instruments = vec!["ETH-USD".to_string()].into_iter().collect();
-        let residual = Decimal::from_scaled(15, 3).unwrap(); // 0.015 = 1.5%
-        let threshold = Decimal::from_scaled(1, 2).unwrap(); // 0.01 = 1%
-        let campaign = TickCampaign::for_residual(
-            "tick_above".to_string(),
-            TickCampaignTrigger::UnexplainedSlippage,
-            instruments,
-            residual,
-            threshold,
-            Some("BINANCE".to_string()),
+    fn replaying_the_same_window_through_a_fresh_detector_opens_identical_campaigns() {
+        let first = replay(&mut detector());
+        let second = replay(&mut detector());
+        // Premise: the window opened something (NYSE, the 2% slippage, IEX),
+        // so equality is not two empty lists agreeing.
+        assert_eq!(first.len(), 3, "{first:?}");
+        assert_eq!(first, second);
+        let ids: BTreeSet<&str> = first.iter().map(|c| c.campaign_id.as_str()).collect();
+        assert_eq!(
+            ids.len(),
+            first.len(),
+            "campaign ids must be distinct: {first:?}"
         );
-
-        assert!(campaign.should_trigger());
     }
 
     #[test]
-    fn detector_discovers_new_venues_and_records_them() {
-        let mut detector = TickCampaignDetector::new().expect("detector must construct");
-
-        // First venue: should be detected as new
-        let venue1_new = detector.detect_new_venue("NYSE");
-        assert_eq!(venue1_new, Some("NYSE".to_string()));
-
-        // Same venue again: not new anymore
-        let venue1_again = detector.detect_new_venue("NYSE");
-        assert_eq!(venue1_again, None);
-
-        // Different venue: should be new
-        let venue2_new = detector.detect_new_venue("NASDAQ");
-        assert_eq!(venue2_new, Some("NASDAQ".to_string()));
-    }
-
-    #[test]
-    fn detector_triggers_campaigns_when_slippage_exceeds_threshold() {
-        let detector = TickCampaignDetector::new().expect("detector must construct");
-        let instruments: BTreeSet<String> = vec!["AAPL".to_string()].into_iter().collect();
-
-        // Below threshold: no campaign
-        let below = Decimal::from_scaled(50, 4).unwrap(); // 0.5%
-        let campaign_below = detector.detect_slippage(below, Some("NYSE"), instruments.clone());
-        assert!(campaign_below.is_none());
-
-        // Above threshold: campaign triggered
-        let above = Decimal::from_scaled(2, 2).unwrap(); // 2%
-        let campaign_above = detector.detect_slippage(above, Some("NYSE"), instruments);
-        assert!(campaign_above.is_some());
-        let c = campaign_above.unwrap();
-        assert_eq!(c.trigger, TickCampaignTrigger::UnexplainedSlippage);
-        assert_eq!(c.venue, Some("NYSE".to_string()));
-    }
-
-    #[test]
-    fn negative_residuals_trigger_campaigns_at_the_same_threshold() {
-        let detector = TickCampaignDetector::new().expect("detector must construct");
-        let instruments = vec!["GOOG".to_string()].into_iter().collect();
-
-        // Negative residual above threshold magnitude
-        let negative = Decimal::from_scaled(-2, 2).unwrap(); // -2%
-        let campaign = detector.detect_slippage(negative, Some("NYSE"), instruments);
+    fn a_residual_exactly_at_the_threshold_opens_nothing_and_one_just_above_does() {
+        let mut detector = detector();
+        let at = detector.slippage_threshold();
+        assert_eq!(at, pct(100));
+        assert_eq!(detector.observe_slippage(at, None, set(&["AAPL"])), None);
+        let above = at + Decimal::from_raw(1);
         assert!(
-            campaign.is_some(),
-            "negative residuals should trigger at the same threshold"
+            detector
+                .observe_slippage(above, None, set(&["AAPL"]))
+                .is_some()
         );
-        let c = campaign.unwrap();
-        assert_eq!(c.residual_value, Some(negative));
+    }
+
+    #[test]
+    fn a_negative_residual_opens_a_campaign_at_the_same_magnitude_as_a_positive_one() {
+        let mut detector = detector();
+        let negative = Decimal::ZERO - pct(200);
+        let opened = detector.observe_slippage(negative, Some("NYSE"), set(&["GOOG"]));
+        assert_eq!(opened.map(|c| c.residual_value), Some(Some(negative)));
+    }
+
+    #[test]
+    fn a_venue_seen_twice_opens_a_campaign_only_the_first_time() {
+        let mut detector = detector();
+        assert!(detector.observe_venue("NYSE", set(&["AAPL"])).is_some());
+        assert_eq!(detector.observe_venue("NYSE", set(&["AAPL"])), None);
+        assert!(detector.observe_venue("NASDAQ", set(&["AAPL"])).is_some());
+    }
+
+    #[test]
+    fn a_negative_threshold_is_refused_rather_than_opening_a_campaign_on_everything() {
+        match TickCampaignDetector::with_slippage_threshold(Decimal::ZERO - pct(1)) {
+            Err(e) => assert!(e.to_string().contains("is negative"), "{e}"),
+            Ok(d) => panic!("a negative threshold was admitted: {d:?}"),
+        }
+        assert!(TickCampaignDetector::with_slippage_threshold(Decimal::ZERO).is_ok());
     }
 }
