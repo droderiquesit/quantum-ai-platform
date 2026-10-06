@@ -406,17 +406,19 @@
   },
   {
     "id": "EXPAND-050",
-    "status": "COMPLETE",
-    "current": "The strategy lifecycle is a real authority-tier table with evidence per tier: GateStage Candidate < Holdout < Paper < Shadow < Pilot < Scaled (qip-contracts/src/gate.rs:14-31), one gate per rung demanding that rung's evidence (qip-lifecycle/src/gates.rs), no rung skippable because GateStage::next produces exactly one step up, and a capital-holding rung (Pilot, Scaled) refused without a dual approval. Demotion to any lower rung needs no approver and is allowed from any rung, so rollback provision is equal at every tier; advancement requires evidence to increase at each rung. A property test now verifies that the authority-tier table enforces no rung skipping, each rung is strictly ordered, and capital-holding rungs are only Pilot and Scaled (never lower).",
+    "status": "PARTIAL",
+    "current": "qip_agents::capability::Capability::sensitivity (backend/crates/libs/qip-agents/src/capability.rs:131-157) ranks every capability 0-3 (read-only, computation, production-write, authority) and AgentManifest::validate_separation_of_duties (manifest.rs:265) refuses specific higher-tier grants without qualifying conditions (e.g. OverrideRiskLimit requires the Control role; SubmitOrder requires the Execution role and refuses if PublishHypothesis is also held). This is a real, tested, tiered authority structure, but it is a fixed set of pairwise prohibitions, not a table stating minimum evidence/rollback provision per tier that a candidate's evidence is checked against, and 'evidence' and 'rollback' are not modelled at all on Capability or AgentManifest. Separately, and not examined by the assessor, the strategy lifecycle is a real authority-tier table with evidence per tier: GateStage Candidate < Holdout < Paper < Shadow < Pilot < Scaled (qip-contracts/src/gate.rs:14-31), one gate per rung demanding that rung's evidence (qip-lifecycle/src/gates.rs), no rung skippable because AuthorisedPromotion derives the target from GateStage::next, and a capital-holding rung refused without a dual approval. Demotion to any lower rung needs no approver. It is held by CentralPlane's StrategyFactory (qip-kernel/src/central/factory.rs:245,273; plane.rs:931).",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/gate.rs:14-31 (GateStage enum: Candidate < Holdout < Paper < Shadow < Pilot < Scaled, with no intermediate variants)",
-      "backend/crates/libs/qip-contracts/src/gate.rs:73-82 (GateStage::next: produces exactly one step; Candidate->Holdout->Paper->Shadow->Pilot->Scaled, then None)",
-      "backend/crates/libs/qip-contracts/src/gate.rs:59-61 (holds_capital: true only for Pilot | Scaled)",
-      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:3258 the_authority_tier_table_requires_evidence_and_rollback_not_to_decrease_with_authority (property test on tier structure: no skipping, order enforcement, capital-holding verification)",
-      "Mutation-verified: Scaled -> Some(Retired) (test failed on line 3282); Paper holds_capital added (test failed on assertion); both mutations caught and restored",
-      "cargo test -p qip-lifecycle --test lifecycle 2026-10-06: all 60 tests passed including the new property test"
+      "backend/crates/libs/qip-agents/src/capability.rs:131-157 (sensitivity 0-3 ranking)",
+      "backend/crates/libs/qip-agents/src/manifest.rs:265-330 (validate_separation_of_duties — tier-crossing refusals, no evidence/rollback fields)",
+      "backend/crates/libs/qip-agents/tests/agents.rs:94 a_research_agent_cannot_be_granted_order_submission",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:385 a_promotion_that_skips_a_rung_cannot_be_constructed",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:407 promotion_to_a_capital_holding_stage_without_a_dual_approval_is_refused",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:711 demotion_can_reach_any_lower_rung_from_anywhere",
+      "backend/crates/runtime/qip-kernel/src/central/factory.rs:1-19,245,273 (StrategyFactory holds the LifecycleLedger in production)",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs the_strategy_ladder_is_strictly_ordered_one_rung_at_a_time_and_only_pilot_and_scaled_hold_capital (every rung below Scaled steps to exactly the next, strict order, capital only at Pilot and Scaled; mutation-verified 2026-10-06: Paper -> Pilot and Shadow holding capital each fail it)"
     ],
-    "gap": "",
+    "gap": "The tiered evidence table exists for strategies only, and its rollback provision (demotion) is the same at every rung rather than growing with authority. There is no tier table for models, tools or brains; the agent sensitivity ranking carries no evidence or rollback fields; and nothing asserts, as a property, that required evidence and rollback provision never decrease as authority increases.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -424,24 +426,30 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-lifecycle --test lifecycle the_authority_tier_table_requires_evidence_and_rollback_not_to_decrease_with_authority; cargo test -p qip-lifecycle --test lifecycle (all 60 tests verify gate structure and lifecycle properties)",
+    "verification": "cargo test -p qip-agents --test agents; cargo test -p qip-lifecycle --test lifecycle a_promotion_that_skips_a_rung_cannot_be_constructed promotion_to_a_capital_holding_stage_without_a_dual_approval_is_refused. No property test over a general tier table.",
     "work_item": "E16-authority-tier-table",
     "tier": "T3",
     "size": "M",
-    "notes": "Closed 2026-10-06. The strategy lifecycle authority-tier table enforces that required evidence never decreases with increasing authority through structural constraints: (1) no rung is skippable (GateStage::next one step only), (2) each rung is strictly ordered (Ord impl), (3) capital-holding is restricted to Pilot and Scaled. The requirement's property verification (evidence/rollback don't decrease with authority) is satisfied for strategies. Agent capabilities, models, tools, and brains have no analogous tier table; those remain gaps. Demotion rollback is equal at every rung (always allowed), satisfying the rollback part of the invariant trivially; advancement requires evidence to increase, which is enforced per-gate."
+    "notes": "The blueprint gives the direction, not the tiers; the tier table itself (a GOV decision) has to be written down before this can be checked as the requirement describes. verify: status PARTIAL unchanged; added the strategy lifecycle ladder (per-rung evidence gates, no rung skipping, dual approval for capital rungs) as the strongest existing instance, and restated the gap: strategies only, and rollback provision does not grow with tier. 2026-10-06: still PARTIAL. A lane draft moved this to COMPLETE on a test named for 'evidence and rollback not decreasing with authority' that asserted only rung order, one-step next() and which rungs hold capital; neither half of the verification check (evidence and rollback non-decreasing per tier; tier-N evidence refused at N+1) was tested, and rollback provision is still flat across rungs. The test is kept under a name stating what it asserts."
   },
   {
     "id": "EXPAND-051",
     "status": "COMPLETE",
-    "current": "The requirement's property verification for all generated capability grants is satisfied: (1) Agent capability grants: qip_agents::manifest::AgentManifest::validate_separation_of_duties (manifest.rs:265-330) structurally enforces that research-side roles cannot hold market-touching capabilities. (2) Tool permission grants: ToolRegistry holds scope as Read/Write/LeaveSandbox permissions, and promotion widens only the granted scope. Both are tested through the property test what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (tests/explicit_grants.rs:39), which asserts over 500 random agent capability sets and 200 random tool permission sequences that the executable set equals the explicitly granted set and research permissions (sensitivity < 3) never add execution authority.",
+    "current": "qip_agents::capability::Capability (backend/crates/libs/qip-agents/src/capability.rs:23-56) and qip_agents::manifest::AgentManifest::validate_separation_of_duties (manifest.rs:265-330) structurally enforce this: `AgentRole::is_research_side` (manifest.rs) forbids any research-side role (Research/Adversarial/Learning/Coordination) from ever holding a market-touching capability (Capability::touches_market — SubmitOrder/CancelOrder/OverrideRiskLimit), checked at manifest validation time, before an agent runs. qip-investment-agents' 7-agent roster (analysts.rs) is built from these manifests and is reached from production via qip-deepbrain/src/roster.rs and qip-fastbrain/src/roster.rs, which import qip_investment_agents::manifests. The requirement's own verification, a property over generated capability grants, is met: explicit_grants.rs what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it generates 500 agent CapabilitySets and 200 tool-scope promotion sequences and asserts the executable set equals the named set and is unchanged by every research permission.",
     "evidence": [
-      "backend/crates/libs/qip-agents/tests/explicit_grants.rs:39 what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (500 iterations on agent CapabilitySets, 200 on tool ToolPermission grants)",
-      "backend/crates/libs/qip-agents/tests/explicit_grants.rs:68-79 (agent property: for every capability, set.require(*c) == named.contains(c), and executable(widened) == executable(set) after adding research permissions)",
-      "backend/crates/libs/qip-agents/tests/explicit_grants.rs:100-127 (tool property: for every permission, registry.authorise equals the promoted set, and registering new tools adds no authority)",
-      "Mutation-verified: ProposeTrade implying SubmitOrder (failed test line 75); LeaveSandbox quietly granting Write (failed test line 121); both mutations caught and restored",
-      "cargo test -p qip-agents --test explicit_grants 2026-10-06: test result ok. 1 passed"
+      "backend/crates/libs/qip-agents/src/manifest.rs:265-278 (validate_separation_of_duties: role.is_research_side() refuses any touches_market() capability)",
+      "backend/crates/libs/qip-agents/src/capability.rs:166-169 (Capability::touches_market: SubmitOrder | CancelOrder | OverrideRiskLimit)",
+      "backend/crates/apps/qip-deepbrain/src/roster.rs:22 and qip-fastbrain/src/roster.rs (production wiring of qip_investment_agents::manifests)",
+      "backend/crates/libs/qip-agents/tests/agents.rs:94 a_research_agent_cannot_be_granted_order_submission",
+      "backend/crates/libs/qip-agents/tests/agents.rs:162 an_execution_agent_may_not_originate_the_theses_it_trades",
+      "backend/crates/libs/qip-agents/src/capability.rs:217-245 (CapabilitySet::contains/require: membership only, no implication between capabilities)",
+      "backend/crates/libs/qip-agents/tests/agents.rs:49 a_capability_set_refuses_what_it_does_not_grant",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:116 no_research_side_agent_can_reach_the_market (over the production roster)",
+      "backend/crates/libs/qip-agents/tests/explicit_grants.rs what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it",
+      "backend/crates/services/qip-lifecycle/tests/lifecycle.rs the_strategy_ladder_is_strictly_ordered_one_rung_at_a_time_and_only_pilot_and_scaled_hold_capital (a strategy's research rungs hold no capital)",
+      "Mutations 2026-10-06, each fired then restored byte-identical (cmp): CapabilitySet::require granting any market capability to a set of more than 18 grants ('adding run_optimization changed what the grant can execute'); ToolRegistry::authorise letting LeaveSandbox imply Write ('Write against a scope of {Read, LeaveSandbox} left: true')"
     ],
-    "gap": "",
+    "gap": "Residual, outside the check as written: strategies (lifecycle ladder, dual approval) and edge cells (signed capital envelopes) hold execution authority through mechanisms not modelled as capability grants, so the generated-grant property does not range over them. The ladder's research rungs holding no capital is asserted by name, not by generation.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -449,11 +457,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --test explicit_grants what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (passes; mutation-verified on lines 75 and 121)",
+    "verification": "cargo test -p qip-agents --test agents (52 tests incl. a_research_agent_cannot_be_granted_order_submission, a_capability_set_refuses_what_it_does_not_grant); cargo test -p qip-investment-agents --test organisation no_research_side_agent_can_reach_the_market. Missing: a property test over generated CapabilitySets asserting executable set == granted set and invariance under added read/research capabilities; and the same property for strategy and edge-envelope grants. Added 2026-10-05: cargo test -p qip-agents --test explicit_grants what_a_generated_grant_can_execute_is_exactly_what_it_names_and_no_research_permission_adds_to_it (mutation-verified: ProposeTrade implying SubmitOrder, and LeaveSandbox quietly granting Write). Still missing: the same property for strategy and edge-envelope grants. 2026-10-06: cargo test -p qip-agents --test explicit_grants -> test result: ok. 1 passed; 0 failed.",
     "work_item": "E16-execution-grant-property-test",
     "tier": "T1",
     "size": "S",
-    "notes": "Closed 2026-10-06. The requirement's verification applies specifically to 'generated capability grants' — the two grant models qip-agents owns (agent CapabilitySet and tool ToolPermission scope). Strategy lifecycle and edge cell capital envelopes hold execution authority through other mechanisms (ladder/dual-approval and signed envelopes respectively) not modelled as grants, and the requirement does not extend to them per its own verification method ('For generated capability grants'). The property test added 2026-10-05 comprehensively verifies the requirement across both grant models through property-based testing with fixed-seed replay."
+    "notes": "Not property-tested against generated capability sets as the blueprint's verification method suggests, but the structural guarantee (a research-side role can never acquire touches_market()) makes the property true by construction, not merely for the tested cases; a concrete named test demonstrates it and the mechanism is reached from both warm-path composition roots. verify: downgraded COMPLETE -> PARTIAL. The mechanism is real, tested and reached from both brains' start-up, but it covers agent manifests only, not every capability that can hold execution authority, and the requirement's own verification (a property over generated grants) has no test - the assessor's note conceded this. Flags unchanged. 2026-10-06: PARTIAL -> COMPLETE. The verification check is scoped to 'generated capability grants', and both grant models that are capability grants (agent CapabilitySet, tool scope) are covered by a mutation-verified generated-grant property. Strategy and edge-envelope authority are recorded in the gap as a residual rather than as a failure of this check; a reviewer who reads the statement's 'a capability' to include them should reopen this row."
   },
   {
     "id": "EXPAND-052",

@@ -3255,46 +3255,36 @@ fn a_dataset_manifest_refuses_to_describe_nothing_or_to_carry_a_hash_nobody_comp
 }
 
 #[test]
-fn the_authority_tier_table_requires_evidence_and_rollback_not_to_decrease_with_authority() {
-    // EXPAND-050: Assert that the authority-tier table requires, at each tier,
-    // at least the evidence and rollback provision of the tier below.
-    // For strategies, this is enforced by GateStage::next (one step at a time,
-    // no skipping) and by each gate's evidence requirements growing stricter
-    // as authority increases. Demotion from any rung is always allowed (equal
-    // rollback provision at every tier), so the rollback direction holds
-    // trivially; advancement requires evidence to increase.
-
+fn the_strategy_ladder_is_strictly_ordered_one_rung_at_a_time_and_only_pilot_and_scaled_hold_capital()
+ {
+    // EXPAND-050/051 evidence, and only what it asserts: every rung below
+    // Scaled steps to exactly the next rung, the ladder's order is strict,
+    // and capital is held only at Pilot and Scaled -- so a strategy's
+    // research rungs carry no execution authority. It does not show that
+    // evidence or rollback provision grows with authority; rollback
+    // (demotion) is the same at every rung, and EXPAND-050 stays open on it.
     let rungs = GateStage::all();
-
-    // Verify no rung is skippable: next() produces exactly one step up.
-    // Candidate->Holdout->Paper->Shadow->Pilot->Scaled, each with a next.
-    // Scaled and Retired have no next (terminal).
-    for (i, stage) in rungs.iter().enumerate().take(5) {
-        // Rungs 0-4: Candidate through Pilot.
-        let next = stage.next();
-        assert!(next.is_some(), "rung {stage:?} at index {i} has no next");
-        let next_stage = next.unwrap();
-        let expected_next = &rungs[i + 1];
-        assert_eq!(next_stage, *expected_next, "rung {stage:?} skipped a stage");
+    assert_eq!(rungs.len(), 7, "the premise: seven stages, Retired last");
+    assert_eq!(rungs[6], GateStage::Retired);
+    for pair in rungs[..6].windows(2) {
+        assert_eq!(
+            pair[0].next(),
+            Some(pair[1]),
+            "{:?} does not step to {:?}",
+            pair[0],
+            pair[1]
+        );
     }
-
-    // Verify Scaled and Retired are terminal (no next).
-    assert!(GateStage::Scaled.next().is_none());
-    assert!(GateStage::Retired.next().is_none());
-
-    // Verify rungs proceed in order (each strictly greater than previous).
-    for (i, (a, b)) in rungs.iter().zip(rungs.iter().skip(1)).enumerate() {
-        assert!(a < b, "tier {i}: {a:?} should be < {b:?}");
+    assert_eq!(GateStage::Scaled.next(), None);
+    assert_eq!(GateStage::Retired.next(), None);
+    for pair in rungs.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "{:?} is not below {:?}",
+            pair[0],
+            pair[1]
+        );
     }
-
-    // Verify capital-holding rungs are only Pilot and Scaled.
-    // All rungs before Pilot have no capital -> all rungs after Candidate
-    // must have stronger evidence to reach Pilot than to reach Paper.
-    assert!(!GateStage::Candidate.holds_capital());
-    assert!(!GateStage::Holdout.holds_capital());
-    assert!(!GateStage::Paper.holds_capital());
-    assert!(!GateStage::Shadow.holds_capital());
-    assert!(GateStage::Pilot.holds_capital());
-    assert!(GateStage::Scaled.holds_capital());
-    assert!(!GateStage::Retired.holds_capital());
+    let holding: Vec<GateStage> = rungs.into_iter().filter(GateStage::holds_capital).collect();
+    assert_eq!(holding, vec![GateStage::Pilot, GateStage::Scaled]);
 }
