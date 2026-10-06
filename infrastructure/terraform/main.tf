@@ -419,7 +419,12 @@ module "trust_zones" {
   project_id  = var.project_id
   environment = var.environment
   region      = var.region
-  network_id  = module.network.network_id
+
+  # Three separate networks per environment (GCP-009): Reflex for execution
+  # nodes, Fabric for control-plane and event-fabric, Service for all others.
+  reflex_network_id  = module.network.reflex_network_id
+  fabric_network_id  = module.network.fabric_network_id
+  service_network_id = module.network.service_network_id
 
   zones           = var.trust_zones
   permitted_paths = var.permitted_paths
@@ -677,7 +682,8 @@ module "execution_node" {
   region  = each.value.region
   zone    = each.value.zone
 
-  network_id  = module.network.network_id
+  # Execution nodes attach to the Reflex network (GCP-009).
+  network_id  = module.network.reflex_network_id
   subnet_cidr = each.value.subnet_cidr
 
   machine_type = each.value.machine_type

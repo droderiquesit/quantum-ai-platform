@@ -30,6 +30,28 @@
 # hold, and it has not shrunk by being wired.
 
 locals {
+  # --- network assignment (GCP-009) ----------------------------------------
+  #
+  # Zones are assigned to one of three networks per environment: Reflex for
+  # execution nodes, Fabric for control-plane and event-fabric workloads,
+  # Service for all other zones. This module uses this mapping to place each
+  # zone's subnet and firewall rules on the correct network.
+  zone_network = {
+    "public-edge"          = var.service_network_id
+    "application-identity" = var.service_network_id
+    "ingestion-discovery"  = var.service_network_id
+    "cognition"            = var.service_network_id
+    "valuation"            = var.service_network_id
+    "intelligence"         = var.service_network_id
+    "optimisation"         = var.service_network_id
+    "control-fabric"       = var.fabric_network_id
+    "execution"            = var.reflex_network_id
+    "ledger"               = var.service_network_id
+    "wallet-read"          = var.service_network_id
+    "treasury-write"       = var.service_network_id
+    "management"           = var.service_network_id
+  }
+
   # --- the zone model ------------------------------------------------------
   #
   # The thirteen names, in blueprint order. This list is the module's whole
@@ -199,7 +221,7 @@ resource "google_compute_subnetwork" "zone" {
   project = var.project_id
   name    = "qip-${var.environment}-tz-${each.key}"
   region  = each.value.region
-  network = var.network_id
+  network = lookup(local.zone_network, each.key, var.service_network_id)
 
   ip_cidr_range = each.value.subnet_cidr
 
@@ -267,7 +289,7 @@ resource "google_compute_firewall" "deny_egress" {
 
   project = var.project_id
   name    = "qip-${var.environment}-tz-${each.key}-deny-egress"
-  network = var.network_id
+  network = lookup(local.zone_network, each.key, var.service_network_id)
 
   direction = "EGRESS"
   priority  = 65000
@@ -289,7 +311,7 @@ resource "google_compute_firewall" "deny_ingress" {
 
   project = var.project_id
   name    = "qip-${var.environment}-tz-${each.key}-deny-ingress"
-  network = var.network_id
+  network = lookup(local.zone_network, each.key, var.service_network_id)
 
   direction = "INGRESS"
   priority  = 65000
@@ -320,7 +342,7 @@ resource "google_compute_firewall" "google_apis" {
 
   project = var.project_id
   name    = "qip-${var.environment}-tz-${each.key}-google-apis"
-  network = var.network_id
+  network = lookup(local.zone_network, each.key, var.service_network_id)
 
   direction = "EGRESS"
   priority  = 1000
@@ -349,7 +371,7 @@ resource "google_compute_firewall" "path_egress" {
 
   project = var.project_id
   name    = "qip-${var.environment}-tzp-${each.key}-out"
-  network = var.network_id
+  network = lookup(local.zone_network, each.value.from, var.service_network_id)
 
   direction = "EGRESS"
   priority  = 1000
@@ -385,7 +407,7 @@ resource "google_compute_firewall" "path_ingress" {
 
   project = var.project_id
   name    = "qip-${var.environment}-tzp-${each.key}-in"
-  network = var.network_id
+  network = lookup(local.zone_network, each.value.to, var.service_network_id)
 
   direction = "INGRESS"
   priority  = 1000
@@ -414,7 +436,7 @@ resource "google_compute_firewall" "external_egress" {
 
   project = var.project_id
   name    = "qip-${var.environment}-tzx-${each.key}"
-  network = var.network_id
+  network = lookup(local.zone_network, each.value.zone, var.service_network_id)
 
   direction = "EGRESS"
   priority  = 1000
@@ -454,7 +476,7 @@ resource "google_compute_firewall" "public_ingress" {
 
   project = var.project_id
   name    = "qip-${var.environment}-tzi-${each.key}"
-  network = var.network_id
+  network = lookup(local.zone_network, each.value.zone, var.service_network_id)
 
   direction = "INGRESS"
   priority  = 1000
