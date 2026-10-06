@@ -12,8 +12,8 @@
 //! solver returns a result, and the risk engine audits the assignment before
 //! submitting orders.
 
+use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
-use qip_core::{ObjectId, Timestamp};
 use qip_numerics::anneal::Qubo;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

@@ -2759,6 +2759,54 @@ impl SolverRoutingJournal {
     }
 }
 
+/// A quantum vs classical solver benchmark recorded as a publishable event.
+/// QUANT-031: Records the routing decision with classical baseline, chosen
+/// solver, measured advantage, and quantum availability notes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SolverBenchmarkedEvent {
+    /// The solver whose answer was chosen.
+    pub chosen_solver: String,
+    /// Every solver that the router attempted, in order.
+    pub attempted_solvers: Vec<String>,
+    /// The objective value of the chosen answer.
+    pub chosen_objective: f64,
+    /// The classical baseline's objective value (always present).
+    pub classical_objective: f64,
+    /// Improvement of chosen over classical, as a fraction.
+    pub improvement_over_classical: f64,
+    /// The measured quantum advantage, present only when quantum won.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub measured_quantum_advantage: Option<f64>,
+    /// Whether and why a quantum path was attempted.
+    pub quantum_note: String,
+}
+
+impl EventBody for SolverBenchmarkedEvent {
+    const TOPIC: Topic = Topic::SolverBenchmarked;
+    const SCHEMA_VERSION: u32 = 1;
+
+    /// One record per cycle, keyed by cycle correlation (stepping towards
+    /// per-family/size keying as QUANT-031 requirement matures).
+    fn idempotency_key(&self) -> Option<String> {
+        None
+    }
+}
+
+impl SolverBenchmarkedEvent {
+    /// Create a benchmark event from a routing journal.
+    fn from_journal(journal: &SolverRoutingJournal) -> Self {
+        Self {
+            chosen_solver: journal.chosen.clone(),
+            attempted_solvers: journal.ran.clone(),
+            chosen_objective: journal.objective,
+            classical_objective: journal.classical_objective,
+            improvement_over_classical: journal.improvement_over_classical,
+            measured_quantum_advantage: journal.measured_quantum_advantage,
+            quantum_note: journal.quantum_note.clone(),
+        }
+    }
+}
+
 /// What the LEARN stage's strategy review left in the journal: how many
 /// strategies the demotion monitor judged on the sessions their cells
 /// realised, and what became of them.
@@ -12688,7 +12736,15 @@ impl Platform {
         // whether or not the hold did, and a record that vanished on the
         // refusal path would make ADR 0006's control look like it had not run
         // on exactly the cycles an operator most wants to read.
-        self.cycle_solver_routing = Some(SolverRoutingJournal::of(&outcome.routing));
+        let journal = SolverRoutingJournal::of(&outcome.routing);
+        self.cycle_solver_routing = Some(journal.clone());
+
+        // QUANT-031: Publish benchmark event with quantum vs classical results.
+        let benchmark_event = SolverBenchmarkedEvent::from_journal(&journal);
+        let _ = self.journal_record(benchmark_event, "qip-kernel", now);
+        // Event publication failure is not a fatal error for the cycle; the
+        // journal is best-effort for offline analysis and does not constrain
+        // the platform's trading decisions.
 
         // Effective breadth (§19.1), recorded from the same covariance and
         // target weights the proposal was just sized against — see

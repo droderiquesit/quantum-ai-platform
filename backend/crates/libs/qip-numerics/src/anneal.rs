@@ -9,7 +9,7 @@ use qip_core::rng::Rng;
 use serde::{Deserialize, Serialize};
 
 /// Upper-triangular QUBO: `minimise x'Qx` for `x` in `{0,1}^n`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Qubo {
     pub n: usize,
     /// `entries[(i, j)]` with `i <= j`; the diagonal holds the linear terms.
@@ -25,6 +25,11 @@ impl Qubo {
             entries: Vec::new(),
             offset: 0.0,
         }
+    }
+
+    /// The number of variables in this problem.
+    pub fn num_variables(&self) -> usize {
+        self.n
     }
 
     /// Add `weight` to the coefficient of `x_i x_j` (or `x_i` when `i == j`).
