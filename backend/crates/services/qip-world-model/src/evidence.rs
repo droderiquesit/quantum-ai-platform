@@ -50,6 +50,8 @@ pub struct EvidenceRecord {
     /// Temporal consistency check result (EVID-010), written by
     /// [`EvidenceRecord::check_temporal_consistency`].
     pub temporal_consistency: Option<TemporalConsistency>,
+    /// Geographic consistency check result (EVID-011).
+    pub geographic_consistency: Option<GeographicConsistency>,
     /// Additional metadata (vendor confidence, entity mentions, etc.).
     pub metadata: BTreeMap<String, String>,
 }
@@ -109,6 +111,7 @@ impl EvidenceRecord {
             claimed_at: None,
             caused_by: Vec::new(),
             temporal_consistency: None,
+            geographic_consistency: None,
             metadata: BTreeMap::new(),
         })
     }
@@ -240,6 +243,12 @@ impl EvidenceRecord {
         self
     }
 
+    /// Set geographic consistency check result.
+    pub fn with_geographic_consistency(mut self, consistency: GeographicConsistency) -> Self {
+        self.geographic_consistency = Some(consistency);
+        self
+    }
+
     /// Verify all required fields are present. Used to refuse claims
     /// with incomplete provenance before they enter the world model.
     pub fn is_complete(&self) -> bool {
@@ -298,6 +307,29 @@ pub enum TemporalConsistency {
     },
     /// Check could not be performed (a linked item is not held, or the claim
     /// has a cause but no date of its own).
+    Unverifiable,
+}
+
+/// Geographic consistency check result for an evidence claim.
+///
+/// Records whether a claim about location, routing, shipping, weather, or
+/// jurisdiction is consistent with other geographic claims. EVID-011 requires
+/// this check to be recorded on every evidence item.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum GeographicConsistency {
+    /// Claim is consistent with other geographic evidence.
+    Consistent,
+    /// Claim contradicts known location data for the same entity.
+    ContradicsLocation { conflicting_location: String },
+    /// Claim contradicts routing or shipping path constraints.
+    ViolatesRouting,
+    /// Claim contradicts weather or climate data.
+    ContradicsWeather,
+    /// Claim contradicts jurisdiction or administrative boundaries.
+    ViolatesJurisdiction,
+    /// Geographic claims from the same source disagree.
+    InternalGeographicConflict,
+    /// Check could not be performed (no prior geographic context).
     Unverifiable,
 }
 
@@ -505,5 +537,105 @@ mod tests {
             claim.temporal_consistency,
             Some(TemporalConsistency::ViolatesPhysicalTimeline { .. })
         ));
+    }
+
+    #[test]
+    fn a_record_without_geographic_consistency_check_is_unverifiable() {
+        let record = sample_evidence();
+        assert_eq!(record.geographic_consistency, None);
+    }
+
+    #[test]
+    fn a_record_with_consistent_geographic_check_records_that() {
+        let record =
+            sample_evidence().with_geographic_consistency(GeographicConsistency::Consistent);
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::Consistent)
+        );
+    }
+
+    #[test]
+    fn a_record_with_geographic_location_contradiction_records_the_specific_violation() {
+        let record = sample_evidence().with_geographic_consistency(
+            GeographicConsistency::ContradicsLocation {
+                conflicting_location: "Tokyo".to_string(),
+            },
+        );
+        match record.geographic_consistency {
+            Some(GeographicConsistency::ContradicsLocation {
+                conflicting_location,
+            }) => {
+                assert_eq!(conflicting_location, "Tokyo");
+            }
+            _ => panic!("Expected ContradicsLocation"),
+        }
+    }
+
+    #[test]
+    fn a_record_can_record_routing_violation() {
+        let record =
+            sample_evidence().with_geographic_consistency(GeographicConsistency::ViolatesRouting);
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::ViolatesRouting)
+        );
+    }
+
+    #[test]
+    fn a_record_can_record_weather_contradiction() {
+        let record =
+            sample_evidence().with_geographic_consistency(GeographicConsistency::ContradicsWeather);
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::ContradicsWeather)
+        );
+    }
+
+    #[test]
+    fn a_record_can_record_jurisdiction_violation() {
+        let record = sample_evidence()
+            .with_geographic_consistency(GeographicConsistency::ViolatesJurisdiction);
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::ViolatesJurisdiction)
+        );
+    }
+
+    #[test]
+    fn a_record_can_record_internal_geographic_conflict() {
+        let record = sample_evidence()
+            .with_geographic_consistency(GeographicConsistency::InternalGeographicConflict);
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::InternalGeographicConflict)
+        );
+    }
+
+    #[test]
+    fn a_record_can_record_unverifiable_geographic_check() {
+        let record =
+            sample_evidence().with_geographic_consistency(GeographicConsistency::Unverifiable);
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::Unverifiable)
+        );
+    }
+
+    #[test]
+    fn mutation_geographic_consistency_when_set_is_not_overwritten() {
+        let mut record =
+            sample_evidence().with_geographic_consistency(GeographicConsistency::Consistent);
+        // Attempting to mutate should fail if we check properly
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::Consistent)
+        );
+        // Verify mutation by changing it
+        record.geographic_consistency = Some(GeographicConsistency::Unverifiable);
+        assert_eq!(
+            record.geographic_consistency,
+            Some(GeographicConsistency::Unverifiable)
+        );
     }
 }

@@ -457,6 +457,7 @@ impl SourceConnector for FrankfurterRatesConnector {
             is_revision: false,
             provenance,
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         })))
     }
 }

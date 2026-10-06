@@ -2757,3 +2757,176 @@ fn registration_refuses_a_removed_field_without_a_bump_and_a_rollback_and_admits
     let err = registry.admit(original).unwrap_err();
     assert!(err.to_string().contains("roll it back"), "{err}");
 }
+
+#[test]
+fn a_batch_of_events_becomes_visible_atomically_or_all_are_refused() {
+    let dir = std::env::temp_dir().join(format!("qip-batch-atomic-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("events.jsonl");
+
+    let (ctx, now) = context();
+    let mut log = EventLog::open(&path).unwrap();
+
+    // Build a batch of events with distinct topics to make them easy to track.
+    let batch = vec![
+        Envelope::new(
+            ctx.ids().generate(now),
+            now,
+            now,
+            root_lineage("test"),
+            Tick {
+                symbol: "AAPL".into(),
+                price: 100.0,
+            },
+        )
+        .erase()
+        .unwrap(),
+        Envelope::new(
+            ctx.ids().generate(now),
+            now.saturating_add(Duration::from_secs(1)),
+            now,
+            root_lineage("test"),
+            Anomaly {
+                symbol: "AAPL".into(),
+                z_score: 2.5,
+            },
+        )
+        .erase()
+        .unwrap(),
+        Envelope::new(
+            ctx.ids().generate(now),
+            now.saturating_add(Duration::from_secs(2)),
+            now,
+            root_lineage("test"),
+            Opportunity {
+                symbol: "AAPL".into(),
+            },
+        )
+        .erase()
+        .unwrap(),
+    ];
+
+    // Append the batch and capture the sequence numbers.
+    let sequences = log.batch_append(&batch).unwrap();
+    assert_eq!(
+        sequences.len(),
+        3,
+        "batch_append returns all sequence numbers"
+    );
+
+    // Verify that all events are visible in the log.
+    assert_eq!(log.len(), 3, "all batch events are now visible");
+
+    // Verify that all events appear in the log.
+    let topics: Vec<Topic> = log.events().map(|e| e.topic).collect();
+    assert_eq!(topics.len(), 3, "all three events are recorded");
+    assert_eq!(
+        topics,
+        vec![
+            Topic::MarketTick,
+            Topic::AnomalyDetected,
+            Topic::OpportunityDetected
+        ],
+        "batch events are in append order"
+    );
+
+    // Verify the chain is intact after the batch append.
+    assert!(
+        log.verify_chain().is_ok(),
+        "chain remains valid after batch append"
+    );
+
+    // Reopen the log and verify persistence.
+    drop(log);
+    let reopened = EventLog::open(&path).unwrap();
+    assert_eq!(reopened.len(), 3, "all batch events persist across reopens");
+    assert!(
+        reopened.verify_chain().is_ok(),
+        "chain verifies on reopened log"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn batch_append_with_distinct_ids_in_a_batch_succeeds() {
+    let (ctx, now) = context();
+    let mut log = EventLog::in_memory();
+
+    let batch = vec![
+        Envelope::new(
+            ctx.ids().generate(now),
+            now,
+            now,
+            root_lineage("test"),
+            Tick {
+                symbol: "AAPL".into(),
+                price: 100.0,
+            },
+        )
+        .erase()
+        .unwrap(),
+        Envelope::new(
+            ctx.ids().generate(now),
+            now.saturating_add(Duration::from_secs(1)),
+            now,
+            root_lineage("test"),
+            Anomaly {
+                symbol: "AAPL".into(),
+                z_score: 2.5,
+            },
+        )
+        .erase()
+        .unwrap(),
+    ];
+
+    let sequences = log.batch_append(&batch).unwrap();
+    assert_eq!(sequences.len(), 2, "batch with distinct ids succeeds");
+    assert_eq!(log.len(), 2, "both events recorded");
+}
+
+#[test]
+fn batch_append_rejects_if_any_event_violates_id_constraint() {
+    let (ctx, now) = context();
+    let mut log = EventLog::in_memory();
+
+    // First, add an event to the log.
+    let first = Envelope::new(
+        ctx.ids().generate(now),
+        now,
+        now,
+        root_lineage("test"),
+        Tick {
+            symbol: "AAPL".into(),
+            price: 100.0,
+        },
+    )
+    .erase()
+    .unwrap();
+    log.append(&first).unwrap();
+
+    // Now try to batch-append with a duplicate of the already-recorded event.
+    let batch = vec![
+        Envelope::new(
+            ctx.ids().generate(now),
+            now.saturating_add(Duration::from_secs(1)),
+            now,
+            root_lineage("test"),
+            Anomaly {
+                symbol: "AAPL".into(),
+                z_score: 2.5,
+            },
+        )
+        .erase()
+        .unwrap(),
+        first, // Duplicate of already-recorded event
+    ];
+
+    let err = log.batch_append(&batch).unwrap_err();
+    assert!(
+        err.to_string().contains("already recorded"),
+        "batch rejects if any event was already recorded: {err}"
+    );
+    // The log should still have only the first event since the batch was rejected.
+    assert_eq!(log.len(), 1, "log unchanged after rejected batch");
+}

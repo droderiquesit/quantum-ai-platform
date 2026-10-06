@@ -213,6 +213,11 @@ pub struct NewsItem {
     /// A vendor that says nothing about quality must not produce the same
     /// record as one that measured everything.
     pub quality: DataQuality,
+    /// Whether the source has become unretrievable (withdrawn, access denied,
+    /// or unavailable). Any findings derived from this item should be marked
+    /// as based on unretrievable evidence.
+    #[serde(default)]
+    pub evidence_unretrievable: bool,
 }
 
 impl NewsItem {
@@ -279,6 +284,11 @@ pub struct FundamentalUpdate {
     /// A vendor that says nothing about quality must not produce the same
     /// record as one that measured everything.
     pub quality: DataQuality,
+    /// Whether the source has become unretrievable (withdrawn, access denied,
+    /// or unavailable). Any models trained on this update should be marked
+    /// as based on unretrievable evidence.
+    #[serde(default)]
+    pub evidence_unretrievable: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -362,6 +372,11 @@ pub struct MacroObservation {
     /// A vendor that says nothing about quality must not produce the same
     /// record as one that measured everything.
     pub quality: DataQuality,
+    /// Whether the source has become unretrievable (withdrawn, access denied,
+    /// or unavailable). Any forecasts trained on this observation should be
+    /// marked as based on unretrievable evidence.
+    #[serde(default)]
+    pub evidence_unretrievable: bool,
 }
 
 impl MacroObservation {
@@ -421,6 +436,11 @@ pub struct AlternativeDataPoint {
     /// A vendor that says nothing about quality must not produce the same
     /// record as one that measured everything.
     pub quality: DataQuality,
+    /// Whether the source has become unretrievable (withdrawn, access denied,
+    /// or unavailable). Any strategies trained on this reading should be
+    /// marked as based on unretrievable evidence.
+    #[serde(default)]
+    pub evidence_unretrievable: bool,
 }
 
 impl AlternativeDataPoint {
@@ -461,6 +481,11 @@ pub struct ReferenceDataUpdate {
     pub new_value: String,
     pub effective_from: Timestamp,
     pub provenance: Provenance,
+    /// Whether the source has become unretrievable (withdrawn, access denied,
+    /// or unavailable). Any strategies using this reference data should be
+    /// marked as based on unretrievable evidence.
+    #[serde(default)]
+    pub evidence_unretrievable: bool,
 }
 
 impl EventBody for ReferenceDataUpdate {

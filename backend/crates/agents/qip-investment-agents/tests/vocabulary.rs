@@ -117,6 +117,7 @@ fn absorb_releases(world: &mut WorldModel, series: MacroSeries, region: &str, la
             is_revision: false,
             provenance: Provenance::new("statistics-office", reference, published),
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         });
     }
 }
@@ -140,6 +141,7 @@ fn absorb_readings(world: &mut WorldModel, metric: AltMetric, dataset: &str) -> 
             proxies_for: None,
             provenance: Provenance::new("alt-vendor", observed, observed),
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         })?;
     }
     Ok(())

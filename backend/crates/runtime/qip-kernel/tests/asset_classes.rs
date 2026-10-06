@@ -186,6 +186,74 @@ fn an_instrument_quoted_finer_than_its_class_expresses_is_refused_at_assembly() 
 }
 
 #[test]
+fn physical_products_are_a_registered_coverage_class_whose_support_model_spans_commerce_and_inventory()
+-> Result<()> {
+    // COMMERCE-021: Physical products must be a supported coverage class whose
+    // support model spans SKU-level commerce, auctions, collectibles,
+    // wholesale/retail arbitrage and inventory — all spanning COMMERCE-008 to
+    // -020 components, not just the IlliquidValuation engine.
+
+    let platform = assemble(universe_of(vec![])?)?;
+    let registry = platform.asset_class_registry();
+
+    // PhysicalProduct is registered.
+    assert!(
+        registry.is_registered(AssetClass::PhysicalProduct),
+        "PhysicalProduct class must be registered to be supported"
+    );
+
+    // The class is registered with IlliquidValuation, periodic settlement and
+    // negotiated terms — appropriate for goods moving through purchase, customs,
+    // logistics, resale and settlement.
+    let record = registry
+        .get(AssetClass::PhysicalProduct)
+        .expect("PhysicalProduct is registered");
+    assert_eq!(
+        record.valuation_engine(),
+        qip_kernel::asset_class_registry::ValuationEngine::IlliquidValuation,
+        "Physical products are illiquid and use IlliquidValuation"
+    );
+    assert!(
+        matches!(
+            record.settlement(),
+            qip_kernel::asset_class_registry::ClassSettlement::PeriodicStatement
+        ),
+        "Physical products settle periodically as purchase → logistics → resale → settlement"
+    );
+    assert!(
+        matches!(
+            record.grid(),
+            qip_kernel::asset_class_registry::GridRule::Negotiated
+        ),
+        "Physical products are negotiated, not listed"
+    );
+    assert!(
+        matches!(
+            record.calendar(),
+            qip_kernel::asset_class_registry::TradingCalendar::Negotiated
+        ),
+        "Physical products trade by appointment, not on a schedule"
+    );
+
+    // Carry family is eligible — physical products generate carry costs
+    // (storage, insurance) and financing.
+    assert!(
+        record.admits_family(qip_optimization_engine::universe::AlphaFamily::Carry),
+        "Carry family must be eligible for physical product inventory"
+    );
+
+    // The class names itself: Commodity hedges physical products (raw materials,
+    // agricultural goods). This relationship is asymmetric because Commodity
+    // positions are liquid and PhysicalProduct positions are not.
+    assert!(
+        record.hedge_classes().contains(&AssetClass::Commodity),
+        "PhysicalProduct can be hedged with Commodity exposure"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn a_derivative_order_is_refused_before_it_exists_until_the_desk_is_granted_that_type() -> Result<()>
 {
     use qip_execution_engine::order::Side;

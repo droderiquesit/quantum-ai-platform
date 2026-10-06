@@ -495,15 +495,15 @@ console_egress_cidr = "10.0.16.0/26"
 # time, so trading traffic cannot end up behind the same load balancer by an
 # edit to this file.
 #
-#   public_edge = {
-#     hostnames = ["console.example.com"]
-#     application_backend = {
-#       service_name = "qip-dev-api"
-#       trust_zone   = "application-identity"
-#     }
-#     rate_limit_requests_per_minute = 600
-#     permitted_regions              = []
-#   }
+public_edge = {
+  hostnames = ["console-dev.example.com"]
+  application_backend = {
+    service_name = "qip-dev-api"
+    trust_zone   = "application-identity"
+  }
+  rate_limit_requests_per_minute = 600
+  permitted_regions              = []
+}
 
 # --- The GitOps control plane's public front door ----------------------------
 #

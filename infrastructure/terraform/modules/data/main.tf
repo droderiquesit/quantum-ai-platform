@@ -139,7 +139,7 @@ resource "google_storage_bucket" "archive" {
   # retention policy that permitted deletion would let the one record an
   # investigation needs be the one that aged out. The policy is locked so that
   # no cost-response automation can shorten the retention window and delete
-  # records (FINOPS-014, FINOPS-019).
+  # records (FINOPS-013, FINOPS-014, FINOPS-019).
   retention_policy {
     retention_period = var.archive_retention_days * 24 * 60 * 60
     is_locked        = true

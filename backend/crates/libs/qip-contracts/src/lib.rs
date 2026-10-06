@@ -62,6 +62,10 @@ pub mod wire;
 pub use capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
 pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
+pub use expansion::{
+    BrainSpec, CurriculumItem, GapClass, GapSignal, MemoryEntry, MemoryKind, RetentionPolicy,
+    ValuePolicy,
+};
 pub use fabric_envelope::{AuthContext, FabricEnvelope, QoSClass};
 pub use feature::{
     Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,
@@ -74,8 +78,8 @@ pub use intent::{
 };
 pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
 pub use policy::{
-    BeliefState, ModelPack, PolicyFrame, PolicyItem, PolicyPayload, RegimeChange, RiskGate, Slot,
-    UncertaintyType,
+    BeliefState, DistilledModelContract, ModelPack, PolicyFrame, PolicyItem, PolicyPayload,
+    RegimeChange, RiskGate, Slot, UncertaintyType,
 };
 pub use quantum::{ChosenPath, DecisionRequest, RoutingDecision, SolverKind, SolverResult};
 pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};

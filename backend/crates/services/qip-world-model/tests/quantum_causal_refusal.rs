@@ -38,6 +38,7 @@ fn world_model_claim_causal_refuses_edges_with_quantum_sourced_evidence() {
         fails_in: BTreeSet::new(),
         failure_run: None,
         retired: None,
+        evidence_unretrievable: false,
     };
 
     let result = model.claim_causal(quantum_edge);
@@ -78,6 +79,7 @@ fn world_model_claim_causal_accepts_edges_with_classical_evidence() {
         fails_in: BTreeSet::new(),
         failure_run: None,
         retired: None,
+        evidence_unretrievable: false,
     };
 
     let result = model.claim_causal(granger_edge);
@@ -113,6 +115,7 @@ fn world_model_claim_causal_accepts_mixed_evidence_without_quantum_sources() {
         fails_in: BTreeSet::new(),
         failure_run: None,
         retired: None,
+        evidence_unretrievable: false,
     };
 
     let result = model.claim_causal(multi_evidence_edge);
@@ -148,6 +151,7 @@ fn world_model_claim_causal_rejects_any_quantum_sourced_evidence_in_mixed_list()
         fails_in: BTreeSet::new(),
         failure_run: None,
         retired: None,
+        evidence_unretrievable: false,
     };
 
     let result = model.claim_causal(mixed_quantum_edge);

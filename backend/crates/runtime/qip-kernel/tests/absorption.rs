@@ -130,6 +130,7 @@ fn a_fundamental_that_previously_vanished_now_lands_with_its_own_two_instants() 
         is_restatement: false,
         provenance: Provenance::new("test-filings", period_end, filed_at),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
 
     let absorbed = platform.observe(vec![SensedRecord::Fundamental(Box::new(update))]);
@@ -222,6 +223,7 @@ fn a_news_item_lands_in_the_evidence_index_rather_than_vanishing() -> Result<()>
         topics: vec!["guidance".to_string()],
         provenance: Provenance::new("test-newswire", published_at, start()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
 
     let absorbed = platform.observe(vec![SensedRecord::News(Box::new(item))]);
@@ -278,6 +280,7 @@ fn acme_news(item_id: &str, headline: String) -> Result<NewsItem> {
         topics: vec!["guidance".to_string()],
         provenance: Provenance::new("test-newswire", published_at, start()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     })
 }
 
@@ -544,6 +547,7 @@ fn a_reference_change_is_readable_only_from_its_effective_instant() -> Result<()
         new_value: "1".to_string(),
         effective_from,
         provenance: Provenance::new("test-reference", start(), start()),
+        evidence_unretrievable: false,
     };
     let absorbed = platform.observe(vec![SensedRecord::ReferenceData(Box::new(update))]);
     assert_eq!(absorbed, 1);
@@ -635,6 +639,7 @@ fn the_understand_stage_reports_absorbed_state_rather_than_the_price_series_leng
             start().saturating_sub(Duration::from_days(3)),
         ),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
     platform.observe(vec![
         SensedRecord::Bar(Box::new(bar)),
@@ -708,6 +713,7 @@ fn both_world_stream_and_tick_stream_are_required_and_fused() -> Result<()> {
         topics: vec!["earnings".to_string()],
         provenance: Provenance::new("test-newswire", published_at, start()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     };
     let absorbed_world = platform.observe(vec![SensedRecord::News(Box::new(news_item))]);
     assert_eq!(absorbed_world, 1, "world stream (news) should be absorbed");

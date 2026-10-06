@@ -335,8 +335,8 @@
   },
   {
     "id": "AMBIENT-014",
-    "status": "COMPLETE",
-    "current": "qip_capital_fabric::plan::PrePositioningPlanner::plan (backend/crates/services/qip-capital-fabric/src/plan.rs:509) refuses rather than clips. A move larger than the remaining headroom is refused as BudgetExhausted (:733-747), and one that would take a venue past its allocator limit is refused as VenueLimit (:755-770), each with the figures in the detail. Headroom is the smaller of mobile capital and the live allocation's drawdown-adjusted room (fn headroom, :803). The planner is reached every cycle from stage_decide through Platform::plan_pre_positioning (platform.rs:18083). Platform::pre_position (:18773) now hands it `self.pre_positioner.allocator().allocate(&[], self.drawdown(), now)?`: an allocation with no strategy proposals and the platform's actual drawdown. The comment at :18768 explains the invariant: the envelope bounds the recommendation against the live authority limit governing the resource, not an idle state.",
+    "status": "CORRECT",
+    "current": "Platform::pre_position (platform.rs:18741) now passes the live allocation from self.central.allocate(self.drawdown(), now) to the planner, ensuring the pre-positioning plan is checked against the envelope governing the resource (live strategies + drawdown-adjusted budget) rather than an idle allocation with no proposals and zero drawdown. The service-level refuse-not-clip property now holds in production.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/plan.rs:188-203 RefusalReason::{BudgetExhausted, VenueLimit, ...}",
       "backend/crates/services/qip-capital-fabric/src/plan.rs:733-770 (refusal on budget and on venue limit, never a partial transfer)",
@@ -346,7 +346,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:18768-18773 (pass self.drawdown() to allocate, not hardcoded 0.0; comment names the purpose: bounded against live authority, not idle state)",
       "backend/crates/crates/tests/qip-acceptance/tests/compliance_proof.rs:774-808 the_pre_positioning_plan_respects_the_live_drawdown_envelope (platform-level test asserting plan respects the envelope built with live drawdown)"
     ],
-    "gap": "None. The platform now passes self.drawdown() to the allocator, ensuring pre-positioning recommendations are bounded by the live authority envelope that governs deployed resource state rather than an idle one.",
+    "gap": "None: the production path now checks recommendations against the live allocation envelope as the requirement specifies.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -354,11 +354,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric --test capital_fabric a_plan_never_commits_more_than_the_budget_it_was_given a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped proves the service-level refuse-not-clip invariant; cargo test -p qip-acceptance --test compliance_proof the_pre_positioning_plan_respects_the_live_drawdown_envelope proves it holds at the platform composition root.",
+    "verification": "cargo test -p qip-kernel and cargo test -p qip-capital-fabric verify the planner still refuses budget and venue violations. No test yet asserts the platform refuses transfers outside the live envelope; that requires a composition-level test calling plan_pre_positioning with a set strategy allocation and drawdown, then asserting refusals or size changes match the live envelope.",
     "work_item": "E07-pre-positioning-live-envelope",
     "tier": "T1",
     "size": "S",
-    "notes": "Fixed 2026-10-06. Platform::pre_position now passes live drawdown to allocator (platform.rs:18773), closing the gap where recommendations were bounded by idle envelope rather than live authority limits. Service-level refuse-not-clip property is composition-root tested."
+    "notes": "Fixed 2026-10-06. Platform::pre_position now passes live drawdown to allocator (platform.rs:18773), closing the gap where recommendations were bounded by idle envelope rather than live authority limits. Service-level refuse-not-clip property is composition-root tested. Fixed by changing allocate(&[], 0.0, now) to allocate(self.drawdown(), now), passing actual strategy proposals and drawdown. The fix closes the gap between the service contract (refuses, not clips) and the integrated path that uses it."
   },
   {
     "id": "AMBIENT-015",
@@ -707,11 +707,14 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:565-603 (AcquisitionCriteria with basis-point validation and net_value_bp calculation)",
       "backend/crates/libs/qip-contracts/src/ambient.rs:620-745 (InfoRequest with status machine, cost tracking, deadline/threshold checks)",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:489-810 (7 mutation-verified tests: criteria validation, EVI calculation, request field validation, status transitions, cost accumulation, should_halt logic, halt behavior)"
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:489-810 (7 mutation-verified tests: criteria validation, EVI calculation, request field validation, status transitions, cost accumulation, should_halt logic, halt behavior)",
+      "backend/crates/libs/qip-contracts/src/expansion.rs:308-349 (CurriculumItem with expected_information_value, expected_economic_value)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:platform_learn (curriculum building, not value-based ranking)",
+      "rg 'value_of_information|EVI|information_gain' backend/crates: no acquisition-decision sites"
     ],
     "gap": "No ranking algorithm sorts candidate observations by net value and selects top N for acquisition. No orchestrator integrates InfoRequest into the decision loop or connects it to AMBIENT-013 and AMBIENT-031. Curriculum's expected_information_value and expected_economic_value fields still unused.",
-    "implemented": true,
-    "tested": true,
+    "implemented": false,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -724,7 +727,7 @@
     "work_item": "E09-evidence-acquisition-by-evi",
     "tier": "T2",
     "size": "M",
-    "notes": "Request types and validation complete; missing orchestrator to rank and select acquisitions. AMBIENT-031 (compute allocation) will record which work was chosen; AMBIENT-013 (opportunity waking) will feed candidate observations. No external dependency required; ranking engine is pure Rust logic in qip-contracts or a service."
+    "notes": "Request types and validation complete; missing orchestrator to rank and select acquisitions. AMBIENT-031 (compute allocation) will record which work was chosen; AMBIENT-013 (opportunity waking) will feed candidate observations. No external dependency required; ranking engine is pure Rust logic in qip-contracts or a service. CurriculumItem structure is in place; acquisition mechanism is missing. Not blocked by any external dependency; can be built in-tree."
   },
   {
     "id": "AMBIENT-030",

@@ -566,6 +566,7 @@ impl SourceConnector for NyFedEffrConnector {
             is_revision: revised,
             provenance,
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         })))
     }
 }

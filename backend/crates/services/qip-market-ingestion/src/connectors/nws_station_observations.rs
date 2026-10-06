@@ -847,6 +847,7 @@ impl SourceConnector for NwsStationObservationsConnector {
                 proxies_for: None,
                 provenance,
                 quality: self.quality_of(event),
+                evidence_unretrievable: false,
             },
         )))
     }

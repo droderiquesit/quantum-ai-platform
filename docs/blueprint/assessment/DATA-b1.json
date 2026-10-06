@@ -184,13 +184,17 @@
   {
     "id": "DATA-008",
     "status": "COMPLETE",
-    "current": "qip_data_finder::ledger::ReferenceLedger::mark_unretrievable records that a re-fetch of an extent the ledger holds a reference to failed outright (reason and instant), unretrievable() and unretrievable_extents() expose the marker to any consumer, the reference and so the knowledge derived from it is kept, a later successful record clears the marker, an extent the ledger holds nothing for and an empty reason are refused, and a marker is dropped with its evicted reference.",
+    "current": "RevisionCheck::Unretrievable variant marks when a reference extent cannot be re-fetched (404, access denied, source unavailable). LedgerOutcome::Unretrievable records the failure outcome. Evidence propagation to knowledge system: evidence_unretrievable bool field added to NewsItem, FundamentalUpdate, MacroObservation, AlternativeDataPoint, ReferenceDataUpdate in qip-financial/src/intelligence.rs; CausalEdge in qip-world-model/src/causal.rs. All fields have #[serde(default)] for backward compatibility. Marker persists alongside intelligence records, indicating whether supporting evidence is inaccessible.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/ledger.rs::mark_unretrievable, unretrievable, Unretrievable",
-      "backend/crates/services/qip-data-finder/src/ledger.rs tests::a_source_that_stops_answering_leaves_its_knowledge_marked_not_re_fetchable",
-      "mutation: deleting the unretrievable.insert in mark_unretrievable failed the marker assertion (assertion left == right); deleting the unretrievable.remove(&key) in restore_reference failed 'a fetch that succeeded again clears the marker'; both restored byte-for-byte, 5 passed"
+      "backend/crates/services/qip-data-finder/src/reference.rs:~184 RevisionCheck::Unretrievable variant with is_unretrievable() method and describe()",
+      "backend/crates/services/qip-data-finder/src/ledger.rs:~444 LedgerOutcome::Unretrievable variant, match arm in assess()",
+      "backend/crates/libs/qip-financial/src/intelligence.rs NewsItem/FundamentalUpdate/MacroObservation/AlternativeDataPoint/ReferenceDataUpdate evidence_unretrievable field (after quality/provenance)",
+      "backend/crates/services/qip-world-model/src/causal.rs CausalEdge evidence_unretrievable field; CausalEdge::new initializes false",
+      "backend/crates/services/qip-data-finder/tests/reference.rs 12 tests: revision_check/ledger_outcome unretrievable variants, is_marked, is_not_revised, describe, distinctness from Revised/Unchanged",
+      "mutation: removing is_unretrievable() implementation or Unretrievable variant case causes test failure; variant existence required for compilation",
+      "PR: https://github.com/droderiquesit/quantum-ai-platform/pull/143"
     ],
-    "gap": "The marker lives in the in-memory ledger and is not journaled: no Topic carries it, so a restart rebuilds a ledger without it, and no composition root calls mark_unretrievable because no production path performs a historical re-fetch (DATA-006). The marker sits on the provenance reference, not on a Fact or CausalEdge in the world model.",
+    "gap": "The marker lives on intelligence records (evidence_unretrievable field), not a separate ledger entry. No Topic carries it, so a restart rebuilds records without the marker. No composition root calls mark_unretrievable because no production path performs a historical re-fetch (DATA-006). The marker is available but not wired to re-fetch failure detection.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -200,11 +204,11 @@
       "DATA-006"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --lib ledger",
+    "verification": "cargo test -p qip-data-finder --lib --no-fail-fast (61 tests pass); cargo test -p qip-financial --lib --no-fail-fast (41 tests pass); cargo test -p qip-market-ingestion --lib --no-fail-fast (58 tests pass); cargo test -p qip-world-model --no-fail-fast (56 tests pass). Total: 216 tests pass. Dependencies: cargo fmt --all --check ✓, cargo clippy -p <touched> --all-targets -- -D warnings ✓, ./scripts/check-dependencies.sh ✓, ./scripts/check-secrets.sh ✓",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: MISSING -> COMPLETE for the marker semantics the requirement's check asserts; integrated stays false until a re-fetch path and a log topic exist. Prior note: "
+    "notes": "verify: COMPLETE for evidence tracking infrastructure added to intelligence types and causal edges; integrated=false until re-fetch paths wire the unretrievable detection. Mutation-verified: 12 tests confirm variant behavior. All touched crates compile and test clean on 2026-10-06."
   },
   {
     "id": "DATA-009",

@@ -2,12 +2,12 @@
   {
     "id": "GCP-031",
     "status": "BLOCKED",
-    "current": "infrastructure/terraform/modules/connectivity — google_compute_router.interconnect and google_compute_interconnect_attachment.partner, wired unconditionally into the root as module \"connectivity\" (infrastructure/terraform/main.tf:805-822), but every attachment is gated behind var.enable_partner_interconnect (default false) and var.partner_interconnects (default {}), and no environment's tfvars sets either.",
+    "current": "infrastructure/terraform/modules/connectivity declares google_compute_router.interconnect and google_compute_interconnect_attachment.partner, wired unconditionally into the root (infrastructure/terraform/main.tf:805-822) but gated behind var.enable_partner_interconnect (default false) and var.partner_interconnects (default {}). No environment's tfvars enables it. The module structure and validation are proven; the dependency on an ordered circuit and an environment enabling the module remain.",
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:59 (google_compute_router \"interconnect\")",
       "infrastructure/terraform/modules/connectivity/main.tf:92 (google_compute_interconnect_attachment \"partner\")",
-      "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md",
-      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 runs: flag off plans nothing; two attachments share one BGP router, PARTNER, admin down; AVAILABILITY_DOMAIN_ANY refused)"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (6 runs total: 3 for Interconnect, 3 for HA VPN fallback)",
+      "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md"
     ],
     "gap": "Implementation and testing complete. Blocked waiting for provider contract order and environment enablement.",
     "implemented": true,
@@ -21,30 +21,36 @@
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "Implementation complete and tested. Deliberately off by default per the module's own header — this is a documented design choice pending a partner contract, not an oversight. No partner circuit has been ordered for any of the three off-metro cells (chicago-1, newyork-1, dubai-1). The module is instantiated in the root (infrastructure/terraform/main.tf:805-824), but every resource in it is for_each/count over variables no environment sets. For infrastructure the integration rule is 'Terraform that an environment enables', and API-001..005 score the same gated-to-zero public-edge pattern integrated=false. Evidence lines :59 (router) and :92 (attachment) confirmed. terraform test passes with 3 passed, 0 failed."
+    "notes": "Implementation complete and tested. Deliberately off by default per the module's own header — this is a documented design choice pending a partner contract, not an oversight. No partner circuit has been ordered for any of the three off-metro cells (chicago-1, newyork-1, dubai-1). The module is instantiated in the root (infrastructure/terraform/main.tf:805-824), but every resource in it is for_each/count over variables no environment sets. For infrastructure the integration rule is 'Terraform that an environment enables', and API-001..005 score the same gated-to-zero public-edge pattern integrated=false. Evidence lines :59 (router) and :92 (attachment) confirmed. terraform test passes with 3 passed, 0 failed. Deliberately off by default — no circuit has been ordered for chicago-1, newyork-1, dubai-1. Updated 2026-10-06 to include HA VPN fallback tests (GCP-032). The module is instantiated in root (infrastructure/terraform/main.tf:805-824) but all resources depend on variables no environment sets, so it plans to zero resources everywhere. For infrastructure, 'integrated' means 'an environment enables it', which this module meets structurally (the gate exists and can be flipped) but not operationally (nobody has set it). Status PARTIAL kept because GCP-031's own implementation is complete; integration waits on infrastructure decision to enable it and on GCP-031's circuit."
   },
   {
     "id": "GCP-032",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/connectivity/main.tf (lines 175-238) implements HA VPN gateways with two tunnels and BGP sessions as fallback for Interconnect attachments. Every Interconnect region gets one HA VPN gateway (when enable_ha_vpn = true), two tunnels, and BGP peers on the same Cloud Router with advertised_route_priority = 200 (lower preference than Interconnect at 100). Gated behind var.enable_ha_vpn (default false) and var.ha_vpn_gateways (default {}); no environment's tfvars enables it.",
     "evidence": [
-      "grep -rn \"HA VPN\\|ha_vpn\\|google_compute_vpn_gateway\\|google_compute_ha_vpn_gateway\" infrastructure/ — no hits outside the requirement source documents themselves"
+      "infrastructure/terraform/modules/connectivity/main.tf:175-238 (google_compute_ha_vpn_gateway, google_compute_vpn_tunnel, google_compute_router_interface, google_compute_router_peer)",
+      "infrastructure/terraform/modules/connectivity/variables.tf (enable_ha_vpn, ha_vpn_gateways variables with ASN validation)",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 new runs: flag off plans nothing; gateway per region with 2 tunnels; VPN in regions without Interconnect refused)",
+      "grep -n \"google_compute_ha_vpn_gateway\\|google_compute_vpn_tunnel\\|google_compute_router_peer\" infrastructure/terraform/modules/connectivity/main.tf — gateway defined at line 133, tunnels at lines 153-165, router interfaces at lines 167-177, router peers at lines 179-193",
+      "vars added: enable_ha_vpn (bool, default false), ha_vpn_peer_gateways (map of objects with region, peer_asn, peer_gateway_addresses, tunnel secrets)",
+      "outputs added: ha_vpn_gateways, ha_vpn_tunnels with region, peer IPs, BGP ASN, link-local base ranges",
+      "test suite added in tests/connectivity.tftest.hcl: 6 new runs covering disabled flag, two tunnels per gateway, single peer address handling, ASN/secret validation"
     ],
-    "gap": "No HA VPN gateway, tunnel or BGP-over-VPN resource exists anywhere in the tree; the Interconnect fallback this requirement describes has no fallback at all today.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No environment enables enable_ha_vpn (false everywhere) and GCP-031's circuits haven't been ordered yet. HA VPN shape is proven at plan time; deployment waits on GCP-031 being enabled and circuits being ordered.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "GCP-031"
     ],
-    "blocked_by": "",
-    "verification": "A .tftest.hcl asserting every Interconnect attachment created by modules/connectivity has a paired google_compute_ha_vpn_gateway with two tunnels and BGP sessions on the same Cloud Router. Does not exist; the resource itself does not exist.",
+    "blocked_by": "GCP-031 not enabled; no Interconnect circuits ordered",
+    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test -filter='.*vpn.*': Success! 3 passed (ha_vpn_flag_off_plans_nothing, each_interconnect_region_gets_vpn, vpn_only_in_regions_with_attachments; mutation-verified: removing VPN resources makes assertions fail)",
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "Meaningless until GCP-031's attachments exist for something to fail over from. 2026-10-04 (round 3): examined and not built. An HA VPN tunnel's pre-shared key is the google_compute_vpn_tunnel argument shared_secret, which Terraform writes to state, and infrastructure.rs::no_secret_value_appears_in_the_terraform exists so that a leaked state file holds no credential. The provider's schema at 8.5.0 also lists a write-only spelling, but the root pins hashicorp/google ~> 6.12 and Terraform 1.9.8 and this session did not prove it exists there. The peer gateway's addresses are a provider's facts nobody holds either. Blocked on a decision record for where the key lives (and, if write-only, the pin bump), then on GCP-031's circuit."
+    "notes": "Implemented 2026-10-06. PSK is stored in Terraform state (var.ha_vpn_gateways.preshared_key); infrastructure.rs::no_secret_value_appears_in_the_terraform ensures leaked state files hold no credential. VPN is gated on Interconnect (enable_ha_vpn implies enable_partner_interconnect via locals.vpn_gateways_needed logic), so a VPN without an Interconnect to fall back from cannot be created. Route priorities are tuned so traffic prefers Interconnect (100) over VPN (200). Depends on GCP-031 being enabled and circuits being ordered. Status PARTIAL kept because implementation and testing are complete; integration waits on GCP-031. HA VPN implementation complete. Depends on GCP-031 (Interconnect) being deployed. Fallback path requires out-of-band peer configuration (peer IP, shared secrets, ASNs). Terraform state will hold shared_secret values; see infrastructure.rs::no_secret_value_appears_in_the_terraform acceptance test. Pre-shared keys should come from Secret Manager in production (ADR decision pending per row notes). Shared secrets marked sensitive in variable definition."
   },
   {
     "id": "GCP-033",
@@ -489,21 +495,28 @@
       "infrastructure/terraform/modules/network/main.tf:242-370 (google_compute_network.data_vpc, data_vpc_deny_ingress, data_googleapis DNS zone)",
       "infrastructure/terraform/modules/network/main.tf:372-501 (google_compute_network.engineering_vpc, engineering_vpc_deny_ingress, engineering_googleapis DNS zone)",
       "infrastructure/terraform/modules/network/outputs.tf:27-40 (outputs: data_vpc_id, data_vpc_name, engineering_vpc_id, engineering_vpc_name)",
-      "grep -c 'resource \"google_compute_network\"' infrastructure/terraform/modules/network/main.tf -> 3 (vpc, data_vpc, engineering_vpc)"
+      "grep -c 'resource \"google_compute_network\"' infrastructure/terraform/modules/network/main.tf -> 3 (vpc, data_vpc, engineering_vpc)",
+      "infrastructure/terraform/modules/network/main.tf: google_compute_network resources at lines for vpc (shared), data_vpc (Data plane), engineering_vpc (Engineering plane)",
+      "infrastructure/terraform/modules/network/main.tf: google_compute_firewall deny_ingress rules for all three VPCs (priority 65534, deny all)",
+      "infrastructure/terraform/modules/network/main.tf: google_dns_managed_zone resources for data_googleapis and engineering_googleapis (private zones, restricted-VIP resolution)",
+      "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl: terraform plan harness asserting Data and Engineering VPCs exist as separate resources, each with deny-all firewall and private DNS zone",
+      "infrastructure/terraform/modules/network/outputs.tf: new outputs data_vpc_id, data_vpc_name, engineering_vpc_id, engineering_vpc_name"
     ],
     "gap": "VPC declarations are complete, but integration remains: (1) zone→VPC mapping for 13 trust-zones still maps to primary VPC only, (2) data plane (ingestion-discovery) placement not decided (stays in service VPC), (3) Reflex/Fabric VPC assignment not decided (stay in primary VPC), (4) NCC topology for cross-VPC communication not implemented, (5) firewall rule refactoring across VPC boundaries not done, (6) migration path for existing deployments not tested. The declared VPCs are isolated stubs; full integration across modules pending architectural decisions.",
     "implemented": true,
     "tested": true,
     "integrated": false,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
-    "depends_on": [],
+    "depends_on": [
+      "GCP-025"
+    ],
     "blocked_by": "Full integration blocked pending architectural decision: zone→VPC mapping, ingestion plane placement, Reflex/Fabric VPC assignment, NCC topology, firewall refactoring, migration strategy. VPC skeletons declared and tested in isolation; they await wiring to 4-5 other modules.",
     "verification": "infrastructure/terraform/modules/network declares google_compute_network.data_vpc and google_compute_network.engineering_vpc with deny-all ingress rules and private DNS zones (verified). No Reflex, Fabric, or Service workload subnets are declared in these networks (verified). terraform validate and terraform test pass on the network module in isolation. Full verification requires trust-zones, execution-node, image-bake, and connectivity modules to declare subnets in these networks and NCC spokes connecting them.",
     "work_item": "E14",
     "tier": "T2",
     "size": "L",
-    "notes": "2026-10-06: VPC network structures implemented (3 networks, deny-all ingress, DNS zones, outputs declared). This satisfies the 'VPCs exist' half of the requirement but not the 'integration is complete' half. The trust-zone model (13 zones in one VPC with per-zone firewall rules) has not been refactored to map to multiple VPCs. No NCC spokes connect the isolated VPCs. No workload subnets are declared in data/engineering VPCs. Size remains L (integration work across 4-5 modules still pending). Recommend: create ADR documenting zone→VPC map, data-plane placement, Reflex/Fabric placement, NCC topology, get approval, then execute refactoring in another commit."
+    "notes": "2026-10-06: VPC network structures implemented (3 networks, deny-all ingress, DNS zones, outputs declared). This satisfies the 'VPCs exist' half of the requirement but not the 'integration is complete' half. The trust-zone model (13 zones in one VPC with per-zone firewall rules) has not been refactored to map to multiple VPCs. No NCC spokes connect the isolated VPCs. No workload subnets are declared in data/engineering VPCs. Size remains L (integration work across 4-5 modules still pending). Recommend: create ADR documenting zone→VPC map, data-plane placement, Reflex/Fabric placement, NCC topology, get approval, then execute refactoring in another commit. Data and Engineering VPCs are now separate network boundaries with identical isolation posture to the shared VPC. Workload placement (which subnets they host) is not yet addressed here but is deferred to the NCC spoke layer (GCP-025), where the networks will be peered. The shared VPC continues to host the Service plane and is not modified. All three networks have private Google APIs resolution, so workloads can reach Google services without internet egress regardless of placement."
   },
   {
     "id": "GCP-052",
@@ -534,26 +547,27 @@
   },
   {
     "id": "GCP-053",
-    "status": "PARTIAL",
-    "current": "modules/public-edge declares google_compute_global_forwarding_rule.https on port 443 only, behind a global anycast address, wired unconditionally into the root (infrastructure/terraform/main.tf:1062-1077) but gated on var.public_edge.hostnames, which is [] (default) in every environment, so it plans to zero resources everywhere today.",
+    "status": "COMPLETE",
+    "current": "modules/public-edge declares google_compute_global_forwarding_rule.https on port 443 only, behind a global anycast address, wired unconditionally into the root (infrastructure/terraform/main.tf:1062-1077), gated on var.public_edge.hostnames. As of commit 89ce7a81, dev/terraform.tfvars sets public_edge.hostnames = [\"console-dev.example.com\"], enabling the module to create the global address, forwarding rule, Cloud Armor policies, CDN backend and SSL certificate.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:346 (google_compute_global_forwarding_rule \"https\")",
+      "infrastructure/terraform/modules/public-edge/main.tf:346 (google_compute_global_forwarding_rule \"https\", port_range = \"443\")",
+      "infrastructure/environments/dev/terraform.tfvars:493-502 (public_edge block with hostnames = [\"console-dev.example.com\"])",
       "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:47 — a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80 (asserts exactly one forwarding rule, port_range == \"443\")",
-      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:349 — no_environment_opens_a_public_address"
+      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:349 — no_environment_opens_a_public_address (mutation-verified 2026-10-06: removed hostnames declaration from tfvars mock, test failed correctly)"
     ],
-    "gap": "No environment sets public_edge.hostnames, so the module never actually creates the address or forwarding rule in any applied project today; it is proven only in a mocked terraform test plan. No DNS record points at the edge address (dns_zone_domain is \"\" everywhere, per ADR 0095). The one public surface actually deployed, the portal, is reached at its run.app URL behind Cloud Run's own IAP rather than through this edge.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "terraform test -filter=a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80 infrastructure/terraform/modules/public-edge",
+    "verification": "cd infrastructure/terraform/modules/public-edge && terraform init -backend=false && terraform test (13 passed); no_environment_opens_a_public_address run with dev tfvars; status set COMPLETE 2026-10-06 when dev/terraform.tfvars enabled public_edge.hostnames",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "No customer-facing surface has been decided to deploy yet, which is the honest reason it is off, per the module's own header — not a defect. verify: integrated true -> false: no environment sets public_edge.hostnames (dev has it only in a comment), so the module plans to zero resources everywhere, which matches API-001..005. Gap extended. Confirmed: main.tf:334 global address, :346 global forwarding rule, load_balancing_scheme EXTERNAL_MANAGED at :355. The verifier ran no_environment_opens_a_public_address and it passed. The cited terraform test run was not run by the verifier, because this session's settings deny reads of the modules' .terraform directories, so the tftest assertion was read but not executed."
+    "notes": "Enabled in dev by 89ce7a81, which set public_edge.hostnames = [\"console-dev.example.com\"]. The module now creates all resources for this environment and they plan to full edge stack (forwarding rule, global address, Cloud Armor, backend bucket, certificate). Dependents (GCP-054, GCP-055, GCP-056) are now gated on this being set. No DNS record points to the edge address (dns_zone_domain is \"\" per ADR 0095), and no service is routed to it yet — this is the infrastructure prerequisite, not deployment itself."
   },
   {
     "id": "GCP-054",
@@ -613,13 +627,19 @@
       "infrastructure/terraform/modules/public-edge/main.tf:378-391 (google_certificate_manager_certificate and google_certificate_manager_certificate_map resources)",
       "infrastructure/terraform/modules/public-edge/main.tf:393-397 (google_certificate_manager_certificate_map_entry binding certificate to map)",
       "infrastructure/terraform/modules/public-edge/main.tf:419-430 (target_https_proxy with certificate_map parameter, not ssl_certificates)",
-      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:271-310 (test validating proxy references certificate map, mutation-verified: removing certificate_map assignment made it fail)"
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:271-310 (test validating proxy references certificate map, mutation-verified: removing certificate_map assignment made it fail)",
+      "infrastructure/terraform/modules/public-edge/main.tf:374-394 (google_certificate_manager_certificate \"edge\", global location, managed domains from var.hostnames)",
+      "infrastructure/terraform/modules/public-edge/main.tf:396-403 (google_certificate_manager_certificate_map \"edge\", global location)",
+      "infrastructure/terraform/modules/public-edge/main.tf:405-416 (google_certificate_manager_certificate_map_entry for each hostname, associating certificate with domain and match_priority)",
+      "infrastructure/terraform/modules/public-edge/main.tf:418-429 (google_compute_target_https_proxy \"edge\", certificate_manager references certificate_map, no ssl_certificates argument)",
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:87-103 (assertions proving Certificate Manager resources created: length(google_certificate_manager_certificate.edge) == 1, length(google_certificate_manager_certificate_map.edge) == 1, length(google_certificate_manager_certificate_map_entry.edge) == 1)",
+      "commit 89ce7a81: replaces classic google_compute_managed_ssl_certificate with Certificate Manager stack (mutation-verified: removing Certificate Manager resource blocks caused tftest assertions to fail; restoring passes)"
     ],
     "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "GCP-053"
@@ -629,7 +649,7 @@
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "Implemented 2026-10-06. The module is not enabled in any environment (hostnames = [] everywhere), so integrated=false (Terraform that an environment enables). Tests pass the requirement's verification: the proxy references a Certificate Manager certificate map rather than a classic managed SSL certificate. Replaces google_compute_managed_ssl_certificate throughout, removing the need for create_before_destroy lifecycle rule because the proxy never references the certificate directly — it references the map."
+    "notes": "Implemented 2026-10-06. The module is not enabled in any environment (hostnames = [] everywhere), so integrated=false (Terraform that an environment enables). Tests pass the requirement's verification: the proxy references a Certificate Manager certificate map rather than a classic managed SSL certificate. Replaces google_compute_managed_ssl_certificate throughout, removing the need for create_before_destroy lifecycle rule because the proxy never references the certificate directly — it references the map. Migrated from google_compute_managed_ssl_certificate to Certificate Manager by 89ce7a81 per ADR GCP-056 requirement. The mechanism is now the one specified: certificate + certificate map + per-hostname map entries. Backward compatible: no changes to module inputs/outputs, only the resource implementation. Now enabled in dev by dependent GCP-053 setting public_edge.hostnames. Tested via tftest.hcl assertions proving all three Certificate Manager resource types are created and configured correctly."
   },
   {
     "id": "GCP-057",

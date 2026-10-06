@@ -306,6 +306,14 @@ pub struct Unretrievable {
 }
 
 impl Unretrievable {
+    /// The marker for an extent whose re-fetch failed for `reason` at `since`.
+    pub fn new(reason: impl Into<String>, since: Timestamp) -> Self {
+        Self {
+            reason: reason.into(),
+            since,
+        }
+    }
+
     pub fn reason(&self) -> &str {
         &self.reason
     }
@@ -466,6 +474,14 @@ impl ReferenceLedger {
                 used_at: previous.retrieved_at(),
                 detected_at: now,
             }),
+            // A comparison that could not reach the source at all is the same
+            // fact `record_fetch_failure` records: the evidence can no longer
+            // be re-checked, so it is reported as non-retrievable rather than
+            // folded into "unchanged".
+            RevisionCheck::Unretrievable => LedgerOutcome::NonRetrievable(Unretrievable::new(
+                "the source no longer serves this extent",
+                now,
+            )),
         }
     }
 

@@ -916,6 +916,7 @@ impl NarrativeAdapter {
             topics,
             provenance,
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         };
         let knowable = item
             .published_at
@@ -1006,6 +1007,7 @@ impl NarrativeAdapter {
                 is_restatement,
                 provenance: provenance.clone(),
                 quality: DataQuality::clean(),
+                evidence_unretrievable: false,
             };
             out.push((SensedRecord::Fundamental(Box::new(update)), knowable));
         }
@@ -1069,6 +1071,7 @@ impl NarrativeAdapter {
             is_revision,
             provenance,
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         };
         let knowable = wire
             .released_at

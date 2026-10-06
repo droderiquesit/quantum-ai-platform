@@ -321,3 +321,42 @@ fn every_blueprint_objective_names_a_window_and_a_service() {
         "every objective is hourly, so the window distinguishes nothing"
     );
 }
+
+#[test]
+fn reflex_component_slos_are_declared_with_correct_targets() {
+    // OBS-031: Five Reflex critical-path SLOs are formally declared:
+    // decision latency p99 and p99.9, venue round-trip time, stale-book age,
+    // and risk-gate latency. Additionally, dropped feed messages are tracked.
+    use qip_observability::slo::default_slos;
+
+    let declared = default_slos();
+    let reflex_slos = [
+        ("decision-latency-p99", 0.99, Some(10.0)),
+        ("decision-latency-p99.9", 0.999, Some(20.0)),
+        ("venue-round-trip-time-p99", 0.99, Some(50.0)),
+        ("stale-book-age-max", 1.0, Some(5000.0)),
+        ("risk-gate-latency-p99", 0.99, Some(1.0)),
+        ("dropped-feed-messages-zero", 1.0, None),
+    ];
+
+    for (name, target, threshold_ms) in &reflex_slos {
+        let slo = declared
+            .iter()
+            .find(|s| s.name == *name && s.service == "reflex")
+            .unwrap_or_else(|| panic!("OBS-031 requires {name} to be declared for reflex"));
+        assert!(
+            (slo.target - target).abs() < 1e-12,
+            "{name} must carry target {target}, not {}",
+            slo.target
+        );
+        if let Some(threshold) = threshold_ms {
+            let got = slo
+                .latency_threshold_ms
+                .unwrap_or_else(|| panic!("{name} must carry latency threshold {threshold}ms"));
+            assert!(
+                (got - threshold).abs() < 1e-12,
+                "{name} must bound at {threshold}ms, not {got}ms"
+            );
+        }
+    }
+}

@@ -494,6 +494,7 @@ mod tests {
             is_revision: false,
             provenance: Provenance::new(source, reference, learned_at),
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         }))
     }
 
@@ -511,6 +512,7 @@ mod tests {
             is_restatement: false,
             provenance: Provenance::new(source, period_end, learned_at),
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         }))
     }
 
