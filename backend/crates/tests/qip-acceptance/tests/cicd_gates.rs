@@ -6,14 +6,13 @@
 
 use qip_acceptance::repository_root;
 use std::fs;
-use std::path::PathBuf;
 
-fn read_agent(name: &str) -> String {
+fn read_agent(name: &str) -> Result<String, std::io::Error> {
     let path = repository_root()
         .join(".claude")
         .join("agents")
         .join(format!("{}.md", name));
-    fs::read_to_string(&path).expect(&format!("readable {}", path.display()))
+    fs::read_to_string(&path)
 }
 
 /// CICD-021: Multiple review passes by separate agents and models.
@@ -22,8 +21,8 @@ fn read_agent(name: &str) -> String {
 /// so that changes are reviewed by different model instances.
 #[test]
 fn code_reviewer_and_security_engineer_have_distinct_models() {
-    let code_reviewer = read_agent("code-reviewer");
-    let security_engineer = read_agent("security-engineer");
+    let code_reviewer = read_agent("code-reviewer").unwrap();
+    let security_engineer = read_agent("security-engineer").unwrap();
 
     // Extract model field from frontmatter
     let extract_model = |content: &str| -> Option<String> {
