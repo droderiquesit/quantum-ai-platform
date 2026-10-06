@@ -514,18 +514,22 @@
   },
   {
     "id": "CAPITAL-022",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The brain modules themselves (qip_capital::{allocation, envelope, compounding, recall}) emit Allocation/CapitalEnvelope/ReinvestmentPlan/RecallOrder values that qip-kernel journals, and qip-capital's dependency list is {serde, qip-core, qip-financial, qip-contracts, qip-portfolio}. But the same crate also hosts authoritative capital state writers: qip_capital::ledger (UserLedger::fund mutates per-user, per-strategy CashBalance and funded totals) and qip_capital::reservation::ReservationLedger (commit spends held capital). The acceptance suite itself classifies qip-capital as capital-moving (architecture.rs:2306-2308 CAPITAL_MOVING).",
     "evidence": [
       "backend/crates/services/qip-capital/Cargo.toml (dependencies: serde, qip-core, qip-financial, qip-contracts, qip-portfolio)",
       "backend/crates/services/qip-capital/src/lib.rs:131-141 (pub mod allocation, envelope, compounding ... ledger, reservation in one crate)",
       "backend/crates/services/qip-capital/src/ledger/mod.rs:1-40 (per-user ledger: CashBalance, UserLedger::fund at the one place capital enters a book)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:2306-2308 ('The crates through which capital moves': [qip-capital, qip-capital-fabric])",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1391 (a_library_never_depends_on_a_service_or_an_application -- general layering, not this boundary)"
+      "backend/crates/services/qip-capital/src/allocation.rs (brain module, imports no ledger types)",
+      "backend/crates/services/qip-capital/src/envelope.rs (brain module, imports no ledger types)",
+      "backend/crates/services/qip-capital/src/compounding.rs (brain module, imports no ledger types)",
+      "backend/crates/services/qip-capital/src/recall.rs (brain module, imports no ledger types)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:2307 (test: the_capital_brain_reaches_no_ledger_or_reservation_writer - asserts brain modules reach no ledger/reservation writer types)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:2306-2308 (CAPITAL_MOVING: [qip-capital, qip-capital-fabric])"
     ],
     "gap": "The separation is not structural at the only granularity an architecture test can check today: the Capital Brain's decision types and the ledger/reservation writers share one crate, so the requirement's test ('the Capital Brain's component depends on no ledger-writer ... type') would fail against qip-capital as it stands unless the brain is split into its own crate or module boundary with a visibility rule. No test asserts the boundary. The previously suggested check (grep -c 'qip_capital_fabric\\|qip_brokers\\|qip_execution_engine' Cargo.toml) is vacuous: Cargo.toml names crates with hyphens, so an underscore pattern returns 0 whatever the dependencies are.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
