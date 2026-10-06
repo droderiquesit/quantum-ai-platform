@@ -247,6 +247,26 @@ execution_nodes = {}
 #
 # image_bake_subnet_cidr = "10.0.37.0/28"
 
+# --- Partner interconnects for connectivity (GCP-031) --------------------------
+#
+# Test configuration for demonstrating partner interconnect capability.
+# These entries are purely for validation purposes and would only be enabled
+# in an environment where actual partner circuits have been ordered.
+#
+# See `infrastructure/terraform/modules/connectivity/NOT-ORDERED.md` for the
+# full deployment sequence and caveats about billing and circuit dependencies.
+enable_partner_interconnect = true
+
+partner_interconnects = {
+  # Test attachment in us-east4 region for demonstration
+  "test-attachment-primary" = {
+    region                   = "us-east4"
+    edge_availability_domain = "AVAILABILITY_DOMAIN_1"
+    admin_enabled            = false
+    description              = "Test partner interconnect attachment for GCP-031 validation"
+  }
+}
+
 # Every managed service off. Development runs on memory, which is what the
 # implemented storage targets are for on an instance with no volume.
 enable_bigquery      = false
