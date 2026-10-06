@@ -203,7 +203,7 @@ export default function AnalyticsPage() {
           />
           <PanelBody>
             <ResourceView resource={opportunities} loadingRows={3}>
-              {(data) => (
+              {() => (
                 <div className="flex flex-col gap-3">
                   <KpiRow>
                     <Kpi
@@ -232,7 +232,7 @@ export default function AnalyticsPage() {
           <PanelHead title="Opportunity score distribution" />
           <PanelBody>
             <ResourceView resource={opportunities} loadingRows={2}>
-              {(_data) => (
+              {() => (
                 <div style={{ height: "240px" }}>
                   <ChartJs
                     config={opportunityScoreChart}
@@ -255,7 +255,7 @@ export default function AnalyticsPage() {
           />
           <PanelBody>
             <ResourceView resource={proposals} loadingRows={3}>
-              {(data) => (
+              {() => (
                 <div className="flex flex-col gap-3">
                   <KpiRow>
                     <Kpi
@@ -296,7 +296,7 @@ export default function AnalyticsPage() {
           <PanelHead title="Decision status breakdown" />
           <PanelBody>
             <ResourceView resource={proposals} loadingRows={2}>
-              {(_data) =>
+              {() =>
                 proposalMetrics.total === 0 ? (
                   <StateBlock
                     tone="neutral"
@@ -326,7 +326,7 @@ export default function AnalyticsPage() {
         <PanelBody>
           <div className="space-y-3 max-w-[86ch]">
             <p className="text-[12px] leading-relaxed text-[color:var(--color-ink-dim)]">
-              The analytics above reflect the DECIDE stage's complete output. Every opportunity
+              The analytics above reflect the DECIDE stage&apos;s complete output. Every opportunity
               detected, every proposal sized, and every control decision is recorded in the event
               log and read here as the platform served it.
             </p>
