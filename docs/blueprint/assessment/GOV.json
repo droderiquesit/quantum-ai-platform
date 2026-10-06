@@ -158,16 +158,16 @@
   },
   {
     "id": "GOV-007",
-    "status": "COMPLETE",
-    "current": "qip_financial::constraints::RegulatoryConstraints carries jurisdictions/restrictions/approved_venues per instrument, read by qip_investment_agents::control::ComplianceControl via Desk.compliance.constraints_for(id); an instrument absent from the register is correctly named 'not covered ... must be escalated' (control.rs:194-198,233-238) rather than silently permitted, for research findings. The permits_venue accessor now fails closed on an empty approved_venues set (constraints.rs:166-168): if no venues are approved, all venues are denied. The comment clarifies that empty approved_venues means no venues are approved (fail-closed), not unrestricted. The test venue_approval_fails_closed_with_empty_set verifies this behavior: an unrestricted (empty approved_venues) instrument denies all venues, while one with approved venues permits only those. No execution-layer eligibility query exists for venue or strategy at all -- only user x product x jurisdiction (qip-capital's ledger) is covered, which is tracked as a separate gap.",
+    "status": "PARTIAL",
+    "current": "qip_financial::constraints::RegulatoryConstraints carries jurisdictions/restrictions/approved_venues per instrument, read by qip_investment_agents::control::ComplianceControl via Desk.compliance.constraints_for(id); an instrument absent from the register is correctly named 'not covered ... must be escalated' (control.rs:194-198,233-238) rather than silently permitted, for research findings. The crate's own permits_venue accessor now fails closed on an empty approved_venues set (6227eca), but it is reached from nowhere in production (only from qip-financial's own tests), and no execution-layer eligibility query exists for venue or strategy at all -- only user x product x jurisdiction (qip-capital's ledger) is covered.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/constraints.rs:106-108 (approved_venues comment updated to 'fail-closed')",
-      "backend/crates/libs/qip-financial/src/constraints.rs:166-168 (permits_venue: !is_empty && contains, fails closed)",
-      "backend/crates/libs/qip-financial/tests/object_model.rs:593-603 (test venue_approval_fails_closed_with_empty_set: asserts empty set denies all, populated set permits/denies correctly)",
+      "backend/crates/libs/qip-financial/src/constraints.rs (RegulatoryConstraints::permits_venue: an empty approved_venues set refuses every venue; RegulatoryConstraints::unrestricted documents that it now refuses every venue)",
+      "backend/crates/libs/qip-financial/tests/object_model.rs (venue_approval_fails_closed_with_empty_set)",
       "backend/crates/agents/qip-investment-agents/src/control.rs:187-199,281-283 (uncovered instrument escalated rather than waved through, for the research path)",
-      "backend/crates/services/qip-capital/src/ledger/product.rs:1-33 (fail-closed for user x product x jurisdiction)"
+      "backend/crates/services/qip-capital/src/ledger/product.rs:1-33 (fail-closed for user x product x jurisdiction)",
+      "grep -rn 'permits_venue' backend/crates -> defined and only ever called inside qip-financial's own crate/tests"
     ],
-    "gap": "Venue and strategy have no eligibility registry on the execution layer; the only production path gating on venue/jurisdiction is user x product x jurisdiction (qip-capital's ledger). This is tracked as GOV-010 (strategy-deployment-eligibility-gate).",
+    "gap": "permits_venue is fail-closed but unreached from production, so it refuses nothing on the execution path; venue and strategy have no eligibility registry at all; the only production path (ComplianceControl) produces an advisory finding, not a refusal, for missing metadata.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -175,11 +175,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial venue_approval_fails_closed_with_empty_set; cargo test -p qip-capital --test user_ledger -- an_investment_request_is_admitted_or_refused_by_the_named_limit_before_anything_is_funded. The fail-closed semantic is now enforced at the API level for approved venues.",
-    "work_item": "L052-b-GOV-007",
+    "verification": "cargo test -p qip-financial (constraint tests); cargo test -p qip-capital --test user_ledger -- an_investment_request_is_admitted_or_refused_by_the_named_limit_before_anything_is_funded. cargo test -p qip-financial --test object_model venue_approval_fails_closed_with_empty_set covers the accessor alone; no test reaches it from an order path because no order path calls it.",
+    "work_item": "E16-venue-strategy-eligibility-registry",
     "tier": "T2",
     "size": "M",
-    "notes": "permits_venue's fail-closed implementation completes the venue-approval structural requirement here. Venue and strategy eligibility gating on the execution path remains a separate gap (GOV-010)."
+    "notes": "2026-10-06: held at PARTIAL. 6227eca (lane L052-B) made permits_venue fail closed and tested it, and marked this row COMPLETE while deleting the evidence line recording that nothing in production calls the accessor. That line is still true (grep -rn permits_venue backend/crates finds RegulatoryConstraints::permits_venue called only from qip-financial's own tests), so the accessor is now fail-closed and tested, but nothing on the execution path calls it: a correct control that nothing consults refuses nothing. The COMPLETE marking is reverted; the code change is kept."
   },
   {
     "id": "GOV-008",
@@ -629,16 +629,14 @@
   },
   {
     "id": "GOV-026",
-    "status": "COMPLETE",
-    "current": "qip_risk_engine::autonomy::AutonomyController::request_change (autonomy.rs:567-620) requires a fresh, authenticated OperatorIdentity and a second approver to raise the ceiling toward a live level, with no code path from a model output, agent finding or config value (module doc: 'nothing escalates itself'). architecture.rs's no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy independently proves no edge crate can reach qip-capital or qip-lifecycle to mint capital or custody authority itself. infrastructure/terraform/main.tf now declares a distinct google_service_account 'agent_identity' with account_id 'qip-agent-identity'; an acceptance test verifies it exists and has no IAM bindings on capital or custody resources, structurally proving agents cannot escalate themselves to capital authority.",
+    "status": "PARTIAL",
+    "current": "qip_risk_engine::autonomy::AutonomyController::request_change (autonomy.rs:567-620) requires a fresh, authenticated OperatorIdentity and a second approver to raise the ceiling toward a live level, with no code path from a model output, agent finding or config value (module doc: 'nothing escalates itself'). architecture.rs's no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy independently proves no edge crate can reach qip-capital or qip-lifecycle to mint capital or custody authority itself. But there is no distinct 'autonomous agent' IAM principal anywhere in Terraform to check 'holds no IAM role on capital/custody resources' against -- agents run in-process under whichever service's own Cloud Run identity, so that half of the requirement's own verification is unverifiable here rather than failing.",
     "evidence": [
       "backend/crates/services/qip-risk-engine/src/autonomy.rs:1-18,563-620",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:792-837",
-      "infrastructure/terraform/main.tf:1291-1306 (google_service_account 'agent_identity' with account_id 'qip-agent-identity')",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10348-10383 (the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resources)",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5018-5026 (test_every_service_account_terraform_creates_runs_something_or_signs_something verifies agent_identity is tracked)"
+      "grep -rn 'agent' infrastructure/terraform/modules/cloudrun -> no distinct agent-identity IAM principal exists"
     ],
-    "gap": "None. The structural requirement is complete: agents have a distinct service account principal with no IAM roles on capital or custody resources, preventing escalation to capital authority.",
+    "gap": "No separate agent-identity IAM principal exists to assert holds-no-capital-role against; only the in-process/architectural half of the requirement is proven.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -646,11 +644,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-risk-engine (autonomy tests, e.g. one_operator_cannot_enable_live_trading_alone -- backend/crates/services/qip-risk-engine/tests, line ~75); cargo test -p qip-acceptance --test architecture -- no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy; cargo test -p qip-acceptance --test infrastructure -- the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resources",
-    "work_item": "L052-b-GOV-026",
+    "verification": "cargo test -p qip-risk-engine (autonomy tests, e.g. one_operator_cannot_enable_live_trading_alone -- backend/crates/services/qip-risk-engine/tests, line ~75); cargo test -p qip-acceptance --test architecture -- no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy",
+    "work_item": "E13-agent-identity-iam-test",
     "tier": "T1",
     "size": "S",
-    "notes": "Agent identity created in infrastructure/terraform/main.tf and acceptance tested. No agent uses it yet, but the principal exists and is structurally protected from capital authority."
+    "notes": ""
   },
   {
     "id": "GOV-027",
@@ -679,17 +677,16 @@
   },
   {
     "id": "GOV-028",
-    "status": "COMPLETE",
-    "current": "Every workflow that reaches GCP (deploy.yml, infra.yml, image.yml, vendor.yml) authenticates through google-github-actions/auth with workload_identity_provider and id-token: write, and no .tf file declares google_service_account_key or google_storage_hmac_key. The acceptance test for WIF-only authentication loops through all four workflows (deploy.yml, infra.yml, image.yml, vendor.yml) verifying workload_identity_provider and id-token: write are present in all, and credentials_json/service_account_key are absent from all. The no_service_account_key_exists test checks for both google_service_account_key and google_storage_hmac_key resources. Organization policies are now declared in infrastructure/terraform/main.tf: google_org_policy_policy resources for constraints/iam.disableServiceAccountKeyCreation and constraints/iam.disableServiceAccountKeyUpload, each with rules { enforce = true }, preventing key creation and upload at the project level. The acceptance test organization_policy_disables_service_account_key_creation verifies both policies are present and correctly configured.",
+    "status": "PARTIAL",
+    "current": "Every workflow that reaches GCP (deploy.yml, infra.yml, image.yml, vendor.yml) authenticates through google-github-actions/auth with workload_identity_provider and id-token: write, and no .tf file declares google_service_account_key or google_storage_hmac_key. Not present: no organization policy (constraints/iam.disableServiceAccountKeyCreation or ...KeyUpload) is declared anywhere under infrastructure/, so key creation is refused by convention and by a text test rather than by the platform; nothing asserts the absence of a storage HMAC key; the acceptance test for WIF-only authentication reads deploy.yml alone, so infra.yml, image.yml and vendor.yml could regress to credentials_json unobserved; and there is no distinct autonomous-agent identity to show holds only federated access (agent sessions are kept from ~/.config/gcloud by a .claude/settings.json Read deny, a per-tool rule rather than an identity boundary).",
     "evidence": [
       "docs/blueprint/assessment/CICD-b2.json, CICD-046",
       ".github/workflows/deploy.yml:376-378,664-666; infra.yml:309-311; image.yml:489; vendor.yml:141 (workload_identity_provider)",
-      "test the_pipeline_authenticates_without_a_long_lived_key -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4748-4778 (loops through all four GCP-reaching workflows)",
-      "test no_service_account_key_exists_anywhere_in_the_terraform -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073-2102 (checks for google_service_account_key and google_storage_hmac_key)",
-      "infrastructure/terraform/main.tf: google_org_policy_policy 'disable_service_account_key_creation' and 'disable_service_account_key_upload' with enforce = true",
-      "test organization_policy_disables_service_account_key_creation -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs (verifies both org policies exist and are correctly configured)"
+      "test the_pipeline_authenticates_without_a_long_lived_key -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4748-4766 (reads deploy.yml only)",
+      "test no_service_account_key_exists_anywhere_in_the_terraform -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073-2088",
+      "rg 'disableServiceAccountKeyCreation|google_org_policy|org_policy|google_storage_hmac_key' infrastructure .github -> no hits"
     ],
-    "gap": "None. WIF-only authentication is enforced in CI/CD workflows and Terraform, and organization policies structurally prevent key creation and upload at the GCP project level.",
+    "gap": "The requirement's plan check needs the organization policy that disables service-account key creation to be enforced; none is declared (and whether the dev project sits under an organization that could carry one was not verifiable here). No test covers storage HMAC keys or the three GCP-reaching workflows other than deploy.yml, and no agent identity exists to demonstrate federated-only access.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -697,10 +694,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_authenticates_without_a_long_lived_key no_service_account_key_exists_anywhere_in_the_terraform organization_policy_disables_service_account_key_creation (verifies WIF-only auth, absence of key resources, and enforcement of org policies).",
-    "work_item": "L052-b-GOV-028",
+    "verification": "cargo test -p qip-acceptance --test infrastructure -- the_pipeline_authenticates_without_a_long_lived_key no_service_account_key_exists_anywhere_in_the_terraform. Not yet written: an assertion that the plan declares an iam.disableServiceAccountKeyCreation policy, that no google_storage_hmac_key exists, and that every GCP-reaching workflow uses workload_identity_provider and never credentials_json.",
+    "work_item": "E14-disable-sa-key-org-policy",
     "tier": "T1",
     "size": "S",
-    "notes": "e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage for WIF are complete, and org policy enforcement is now in place structurally."
+    "notes": "e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage are complete. verify: downgraded COMPLETE -> PARTIAL. The verification check requires an enforced org policy disabling service-account key creation and no storage HMAC key; no org policy exists anywhere in infrastructure/, HMAC keys are untested, and the WIF test covers deploy.yml only."
   }
 ]
