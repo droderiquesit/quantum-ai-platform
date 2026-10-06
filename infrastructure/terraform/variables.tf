@@ -33,6 +33,25 @@ variable "region" {
   default     = "europe-west2"
 }
 
+variable "bucket_location" {
+  description = <<-EOT
+    Dual-region, multi-region or replicated location for research and archive
+    buckets in Cloud Storage. Per DATA-067, buckets must use replicated or
+    dual-region storage to protect against single-region outages.
+
+    Examples: 'US' (dual-region US), 'EU' (dual-region EU), 'NAM4' (dual-region).
+    Must match residency policy for the data class.
+  EOT
+  type        = string
+  default     = "EU"
+
+  validation {
+    condition = can(regex("^[A-Z0-9]+$", var.bucket_location)) &&
+               length(var.bucket_location) > 0
+    error_message = "bucket_location must be a valid GCS dual/multi-region location (e.g., 'US', 'EU', 'NAM4')."
+  }
+}
+
 variable "environment" {
   description = "Which environment this is: dev, test, stage or prod."
   type        = string

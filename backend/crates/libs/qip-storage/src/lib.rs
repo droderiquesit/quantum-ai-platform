@@ -56,6 +56,7 @@
 pub mod archive_names;
 pub mod blob;
 pub mod chain;
+pub mod compaction;
 pub mod engine;
 mod fsio;
 pub mod gcp;
@@ -71,6 +72,7 @@ pub mod settings;
 
 pub use blob::{BlobStore, FileBlobStore, MemoryBlobStore};
 pub use chain::{ArchivedRecord, ChainArchive};
+pub use compaction::{CompactionConfig, CompactionResult, Compactor};
 pub use engine::{
     Durability, DurableStore, EngineConfig, EngineStats, IntegrityReport, RecoveryReport,
     WriteBatch,

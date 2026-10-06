@@ -163,6 +163,23 @@ variable "deletion_protection" {
   default     = true
 }
 
+variable "bucket_location" {
+  description = <<-EOT
+    Dual-region, multi-region or replicated location for research and archive
+    buckets. Examples: 'US', 'EU', 'NAM4' (US dual-region). Must be compliant
+    with residency policy. Per DATA-067, buckets must use replicated or
+    dual-region storage, never single-region.
+  EOT
+  type        = string
+  default     = "US" # Dual-region US
+
+  validation {
+    condition = can(regex("^[A-Z0-9]+$", var.bucket_location)) &&
+               length(var.bucket_location) > 0
+    error_message = "bucket_location must be a valid GCS location (e.g., 'US', 'EU', 'NAM4')."
+  }
+}
+
 variable "archive_retention_days" {
   description = "How long the event-log archive is retained and locked against deletion."
   type        = number
