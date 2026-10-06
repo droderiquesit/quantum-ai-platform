@@ -96,9 +96,11 @@ resource "google_bigquery_dataset" "research" {
     "became the order book would be a warehouse nobody could query."
   ])
 
-  # No default expiry. A backtest result whose evidence expired is a promotion
-  # decision nobody can re-examine, and the lifecycle ledger keeps references
-  # to these rows for the life of the strategy.
+  # No default expiry. Research aggregates are source-of-truth (not derived
+  # copies), so they are deliberately kept indefinitely. A backtest result
+  # whose evidence expired is a promotion decision nobody can re-examine, and
+  # the lifecycle ledger keeps references to these rows for the life of the
+  # strategy (FINOPS-013, FINOPS-014).
   default_table_expiration_ms = null
 
   default_encryption_configuration {
@@ -135,10 +137,12 @@ resource "google_storage_bucket" "archive" {
 
   # The event log is hash-chained and its value is that it is complete. A
   # retention policy that permitted deletion would let the one record an
-  # investigation needs be the one that aged out.
+  # investigation needs be the one that aged out. The policy is locked so that
+  # no cost-response automation can shorten the retention window and delete
+  # records (FINOPS-014, FINOPS-019).
   retention_policy {
     retention_period = var.archive_retention_days * 24 * 60 * 60
-    is_locked        = false
+    is_locked        = true
   }
 
   lifecycle_rule {

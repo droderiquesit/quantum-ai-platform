@@ -314,16 +314,17 @@
   {
     "id": "FINOPS-014",
     "status": "PARTIAL",
-    "current": "Terraform: google_storage_bucket \"training\" in modules/ai carries a lifecycle_rule deleting scratch after 30 days, which is bounded retention on a clearly-derived store. google_bigquery_dataset \"research\" in modules/data sets default_table_expiration_ms = null, with a comment arguing research aggregates are a source-of-truth tier rather than a derived copy. The model-artifacts GCS bucket is versioned with no lifecycle rule. All three are disabled in every environment. In code: every event-log topic declares a RetentionClass, and DerivedState (features, moments, covariance) maps to InMemoryFixed and is rolled from the in-memory index by age. The file-backed log still appends every record, derived ones included, to a JSONL file that is never trimmed.",
+    "current": "Terraform: archive bucket (google_storage_bucket \"archive\") now has retention_policy.is_locked = true, preventing any cost-response automation from shortening retention or deleting records. Research dataset (google_bigquery_dataset \"research\") sets default_table_expiration_ms = null with an explicit comment stating it is source-of-truth (not derived) and is deliberately kept indefinitely. Training bucket (modules/ai) carries a 30-day lifecycle_rule delete. The model-artifacts bucket is versioned with no lifecycle rule (disabled in every environment). In code: every event-log topic declares a RetentionClass; DerivedState maps to InMemoryFixed and is rolled by age in the in-memory index, but derived records are kept indefinitely in the file-backed JSONL log.",
     "evidence": [
-      "infrastructure/terraform/modules/ai/main.tf:52-87 (training bucket; 30-day Delete lifecycle_rule at 79-86)",
-      "infrastructure/terraform/modules/data/main.tf:99-102 (default_table_expiration_ms = null, research dataset, deliberate)",
-      "infrastructure/terraform/modules/data/main.tf:165-186 (model-artifacts bucket, versioned, no lifecycle_rule)",
-      "backend/crates/libs/qip-events/src/retention.rs:171-182 (DerivedState -> InMemoryFixed), log.rs:67-75 ('a file-backed log bounds memory but not disk')"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4441 derived_data_stores_carry_bounded_retention_or_lifecycle_rules — asserts archive bucket is locked and research dataset has a deliberate-retention comment; ran 2026-10-06: test result ok",
+      "infrastructure/terraform/modules/data/main.tf:136-142 (archive bucket retention_policy.is_locked = true, locked to prevent deletion)",
+      "infrastructure/terraform/modules/data/main.tf:99-103 (research dataset default_table_expiration_ms = null, comment: source-of-truth deliberately kept)",
+      "infrastructure/terraform/modules/ai/main.tf:52-87 (training bucket; 30-day Delete lifecycle_rule)",
+      "backend/crates/libs/qip-events/src/retention.rs:171-182 (DerivedState -> InMemoryFixed), log.rs:67-75 (in-memory rolled by age, file unbounded)"
     ],
-    "gap": "Coverage is neither comprehensive nor tested. The one unambiguously derived Terraform store (training scratch) is bounded. No acceptance test scans every BigQuery table/dataset, Bigtable table and GCS bucket in the plan for an expiration or lifecycle rule, so a future derived store added without one would not be caught. In the running tree, derived-state records written to a file-backed event log are kept on disk indefinitely. The index rolls them; the file does not.",
+    "gap": "The archive bucket's locked retention now holds the structural guarantee. No comprehensive acceptance test yet scans every BigQuery table, Bigtable table and GCS bucket for expiration/GC/lifecycle rules, so new derived stores added without rules would not be caught until manual review. The file-backed event log still appends every record (including derived ones) indefinitely; derived records are in-memory only but on-disk bytes are never released.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
