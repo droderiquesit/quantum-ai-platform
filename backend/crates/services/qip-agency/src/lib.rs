@@ -19,6 +19,7 @@ pub mod affordance;
 pub mod attribution;
 pub mod autonomy;
 pub mod comparison;
+pub mod conduct_brain;
 pub mod engine;
 pub mod goal;
 pub mod knowledge;
