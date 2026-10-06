@@ -36,6 +36,8 @@ use qip_storage::ChainArchive;
 use qip_storage::settings::StorageSettings;
 use std::sync::{Arc, Mutex};
 
+mod initialize_schemas;
+
 /// Variables this binary used to read, with the refusal each now produces.
 ///
 /// A retired variable has three possible fates and only one of them is safe.
@@ -252,6 +254,13 @@ fn run() -> Result<()> {
         limits,
         Box::new(qip_training::serve::InTreeProvider),
     )?;
+
+    // Initialize the event schema registry with all 3 P0 control frames
+    // (CapitalGrantFrame, PolicyFrame, HaltFrame) at startup. Only these
+    // implement EventBody; the six reflex types are bound through
+    // event_fabric::bindings. Failures are caught early rather than at the
+    // first event.
+    initialize_schemas::initialize_event_schemas()?;
 
     // The trust root, before anything is served: install the operator's
     // envelope key when the deployment provides one, and refuse to run
