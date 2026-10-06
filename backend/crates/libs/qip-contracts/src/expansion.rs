@@ -347,3 +347,53 @@ impl CurriculumItem {
         Ok(v)
     }
 }
+
+/// Brain Registry entry: records a specialist agent or model with all six attributes.
+/// Every brain has competency domains, tools, evaluations, calibration, authority and version lineage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrainSpec {
+    pub id: String,
+    pub name: String,
+    pub competency_domains: Vec<String>,
+    pub tools: Vec<String>,
+    pub source_permissions: Vec<String>,
+    pub memory_scope: String,
+    pub model_stack: Vec<String>,
+    pub evaluations: Vec<String>,
+    pub abstention_rules: Vec<String>,
+    pub authority_envelope: String,
+    pub calibration: f64,
+    pub version: u32,
+    pub parent_version_id: Option<String>,
+}
+
+impl BrainSpec {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "BrainSpec";
+        text(R, "id", &self.id)?;
+        text(R, "name", &self.name)?;
+        list(R, "competency_domains", &self.competency_domains)?;
+        list(R, "tools", &self.tools)?;
+        list(R, "source_permissions", &self.source_permissions)?;
+        text(R, "memory_scope", &self.memory_scope)?;
+        list(R, "model_stack", &self.model_stack)?;
+        list(R, "evaluations", &self.evaluations)?;
+        list(R, "abstention_rules", &self.abstention_rules)?;
+        text(R, "authority_envelope", &self.authority_envelope)?;
+        finite(R, "calibration", self.calibration, 0.0, 1.0)?;
+        if self.version == 0 {
+            return Err(Error::invalid(
+                "BrainSpec.version must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a BrainSpec: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
+    }
+}
