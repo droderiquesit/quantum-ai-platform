@@ -96,6 +96,14 @@ fn run() -> Result<()> {
     // deployment, which is worse than a pod that will not start and says why.
     let ceiling = AutonomyLevel::deployable(std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref())?;
 
+    // The shapes this process streams, compared with the committed table
+    // before storage is opened or a port bound (CICD-069). A body that changed
+    // shape at a version consumers already trust stops the process here,
+    // naming the topic and the bump to make. This was once built and
+    // discarded, so start-up compared nothing and said it had.
+    let schema_registry = qip_api::schema::verified_schema_registry()?;
+    let schema_banner = qip_api::schema::banner(&schema_registry);
+
     // Resolved and proven writable before anything else is built. Failing here
     // costs a restart; failing at the first archived cycle costs the record of
     // everything that happened up to it. The environment is passed in rather
@@ -517,6 +525,7 @@ fn run() -> Result<()> {
         }
     );
     println!("  api version:      v1");
+    println!("  event schemas:    {schema_banner}");
     println!(
         "  api surface:      {} route(s), described at {}",
         qip_api::ROUTES.len(),
