@@ -36,6 +36,9 @@ pub mod broker;
 /// permissions, and a refusal before any venue call without them (EXEC-007).
 pub mod creation;
 pub mod feasibility;
+/// Market creation as a governed workflow: create, list, seed operations that
+/// must go through approval gates (EXEC-027).
+pub mod market_creation;
 pub mod modes;
 pub mod multileg;
 pub mod observation;
