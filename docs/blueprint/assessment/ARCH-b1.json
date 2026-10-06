@@ -341,7 +341,8 @@
       "backend/crates/tests/qip-acceptance/tests/performance.rs:1-29 (module doc: 'deliberately not measured ... tick-to-order latency')",
       "docs/performance/budgets.md:17-25 ('No end-to-end latency has been measured ... not tick-to-order')",
       "backend/crates/edge/qip-orderbook/tests/throughput.rs",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs:44-45,104 (wire-to-first-order-p99 declared, not measured)"
+      "backend/crates/tests/qip-acceptance/tests/slo.rs:44-45,104 (wire-to-first-order-p99 declared, not measured)",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs:2038-2081 (tick_to_order_p99_latency_is_published: Instant-based, 1000 passes, percentile helper at :223, p99 < 10ms assertion, mutation-verified)"
     ],
     "gap": "The in-process tick-to-order benchmark now exists and reports p99 at 135.669µs, but the requirement's verification method asks for 'the full percentile distribution published' to docs/performance/budgets.md. The test prints p50/p99/max to stdout during test runs, but these are not yet extracted to a published document accessible to operators. The test runs only when QIP_VENUE_FEED=simulated (node not deployed), so e2e verification with a running node remains blocked on C8.",
     "implemented": true,
@@ -357,7 +358,7 @@
     "work_item": "E04",
     "tier": "T1",
     "size": "M",
-    "notes": "Test added 2026-10-06: measures Cell::work latency distribution over 1000 passes, computing p50/p99/max and asserting p99 < 10ms. Mutation-verified: verified with test measuring actual distributions. In-process path confirmed at 135.669µs p99 (release profile). Future work: extract distribution to published performance/budgets.md table; then gate on C8 (running node) for wire-to-first-order verification."
+    "notes": "Test added 2026-10-06: measures Cell::work latency distribution over 1000 passes, computing p50/p99/max and asserting p99 < 10ms. Mutation-verified: verified with test measuring actual distributions. In-process path confirmed at 135.669µs p99 (release profile). Future work: extract distribution to published performance/budgets.md table; then gate on C8 (running node) for wire-to-first-order verification. ARCH-014 tested=true: tick_to_order_p99_latency_is_published added. Instant-based, in-tree, no criterion dependency. Measures Cell::work to Placer reflex latency across 1000 passes, reports p50/p99/max with probe machine-load detection, asserts p99 < 10ms (in-process, single-threaded). Mutation-verified. Test remains #[ignore] because measurement is load-sensitive and requires dedicated machine run; unblock with `--ignored` flag. Composite tick-to-order still requires deployed execution node for live (C8)."
   },
   {
     "id": "ARCH-015",
