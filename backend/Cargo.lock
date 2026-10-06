@@ -747,6 +747,7 @@ dependencies = [
 name = "qip-quantum"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-numerics",
  "qip-transport",
