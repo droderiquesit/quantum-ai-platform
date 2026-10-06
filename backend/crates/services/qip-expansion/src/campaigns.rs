@@ -108,12 +108,14 @@ pub struct TickCampaignDetector {
 
 impl TickCampaignDetector {
     /// Create a detector with default thresholds.
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> qip_core::error::Result<Self> {
+        Ok(Self {
             // Default: 1% slippage triggers a campaign
-            slippage_threshold: Decimal::from_scaled(1, 2).unwrap(),
+            slippage_threshold: Decimal::from_scaled(1, 2).ok_or_else(|| {
+                qip_core::error::Error::numeric("failed to construct default slippage threshold")
+            })?,
             known_venues: BTreeSet::new(),
-        }
+        })
     }
 
     /// Detect if a new venue should trigger a campaign. Returns the venue
@@ -148,12 +150,6 @@ impl TickCampaignDetector {
         } else {
             None
         }
-    }
-}
-
-impl Default for TickCampaignDetector {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -269,7 +265,7 @@ mod tests {
 
     #[test]
     fn detector_discovers_new_venues_and_records_them() {
-        let mut detector = TickCampaignDetector::new();
+        let mut detector = TickCampaignDetector::new().expect("detector must construct");
 
         // First venue: should be detected as new
         let venue1_new = detector.detect_new_venue("NYSE");
@@ -286,7 +282,7 @@ mod tests {
 
     #[test]
     fn detector_triggers_campaigns_when_slippage_exceeds_threshold() {
-        let detector = TickCampaignDetector::new();
+        let detector = TickCampaignDetector::new().expect("detector must construct");
         let instruments: BTreeSet<String> = vec!["AAPL".to_string()].into_iter().collect();
 
         // Below threshold: no campaign
@@ -305,7 +301,7 @@ mod tests {
 
     #[test]
     fn negative_residuals_trigger_campaigns_at_the_same_threshold() {
-        let detector = TickCampaignDetector::new();
+        let detector = TickCampaignDetector::new().expect("detector must construct");
         let instruments = vec!["GOOG".to_string()].into_iter().collect();
 
         // Negative residual above threshold magnitude
