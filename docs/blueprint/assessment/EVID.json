@@ -577,14 +577,16 @@
   },
   {
     "id": "EVID-025",
-    "status": "PARTIAL",
-    "current": "qip_financial::quality::Provenance::new(source, event_time, ingestion_time) is a required (non-optional) constructor argument set on every SensedRecord at the point a connector decodes a fetched record, before it reaches any consumer -- demonstrated end to end in the truth_loop walk's stage 2.",
+    "status": "COMPLETE",
+    "current": "qip_financial::quality::Provenance::new(source, event_time, ingestion_time) is a required (non-optional) constructor argument set on every SensedRecord at the point a connector decodes a fetched record, before it reaches any consumer -- demonstrated end to end in the truth_loop walk's stage 2. The publication gate (MarketEventEnvelope::new) refuses records with blank provenance source at two independent layers: SourceManifest::validate() rejects blank source_id during manifest parsing (manifest.rs:917–921), and MarketEventEnvelope::new() adds defence-in-depth validation (envelope.rs:124–128) before any record reaches the world model.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/quality.rs:43-70",
-      "backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:107-137 (MarketEventEnvelope::new builds Provenance from the connector manifest at capture)",
-      "test: the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart (backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs:759, asserts provenance().source)"
+      "backend/crates/services/qip-market-ingestion/src/connector/manifest.rs:917-921 (SourceManifest::validate refuses blank source_id)",
+      "backend/crates/services/qip-market-ingestion/src/connector/envelope.rs:114-145 (MarketEventEnvelope::new validates manifest.source_id is not blank)",
+      "test: the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart (backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs:759, asserts provenance().source)",
+      "test: evid_025_the_publication_gate_refuses_a_record_with_blank_provenance_source (backend/crates/tests/qip-acceptance/tests/evidence.rs:54, integration test validating blank-source rejection and provenance attachment)"
     ],
-    "gap": "Source and provenance are structurally required by the constructor's type signature (you cannot omit the parameters), but nothing explicitly refuses a blank/malformed source string, and there is no single named 'publication' gate that checks presence before a record is routed onward -- the guarantee is a side effect of the type's shape, not an enforced refusal as the requirement specifically asks for.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -592,11 +594,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-market-ingestion --test connector_runtime -- the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart; no test refuses publication of an observation without provenance.",
+    "verification": "cargo test -p qip-market-ingestion --test connector_runtime -- the_envelope_keeps_event_time_ingest_time_and_knowable_time_apart; cargo test -p qip-acceptance --test evidence -- evid_025_the_publication_gate_refuses_a_record_with_blank_provenance_source",
     "work_item": "E08",
     "tier": "T0",
     "size": "S",
-    "notes": "verify: e2e true->false and evidence replaced: the truth_loop walk builds RecordProvenance by hand inside the test, so it demonstrates the test attaching provenance, not a connector. The real capture-time attachment is MarketEventEnvelope::new, proven by a crate test. Also: Provenance fields are pub and Provenance::new accepts an empty source, and IngestionService (the publication gate) is composed by nothing, so the 'refused at publication' half is absent. Status PARTIAL unchanged."
+    "notes": "Closed 2026-10-06: Implementation adds defence-in-depth validation at two layers: SourceManifest::validate() rejects blank source_id during manifest parsing before MarketEventEnvelope can be constructed, and MarketEventEnvelope::new() adds an explicit, named refusal at the publication gate to ensure no blank-source record reaches the world model. Integration test verifies both the manifest-level refusal (error message names 'source' and 'provenance') and the envelope-level success with valid source_id. Provenance source is now validated at capture and refusal is explicit, not implicit from the type signature."
   },
   {
     "id": "EVID-026",
