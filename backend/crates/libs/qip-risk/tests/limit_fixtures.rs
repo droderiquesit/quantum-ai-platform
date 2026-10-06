@@ -28,6 +28,8 @@
 //! | `MaxDaysToLiquidate` | `a_position_inside_the_days_to_liquidate_limit_passes` | `a_position_beyond_the_days_to_liquidate_limit_is_vetoed` |
 //! | `MaxCounterpartyExposure` | `a_counterparty_inside_its_exposure_limit_passes` | `a_counterparty_beyond_its_exposure_limit_is_vetoed` |
 //! | `MinCashBuffer` | `a_book_above_the_cash_floor_passes` | `a_book_below_the_cash_floor_is_vetoed` |
+//! | `MaxVenueExposure` | `a_venue_inside_its_exposure_limit_passes` | `a_venue_beyond_its_exposure_limit_is_vetoed` |
+//! | `MaxVenueNotionalRate` | `a_venue_inside_its_notional_rate_passes` | `a_venue_beyond_its_notional_rate_is_vetoed` |
 //!
 //! `every_limit_kind_has_both_fixtures` closes the table: it matches on every
 //! arm of `LimitKind`, so adding an arm without a row here fails to compile.
@@ -83,6 +85,11 @@ fn state() -> RiskState {
         // as unevaluated. That is what makes each fixture below a statement
         // about a limit rather than about a missing number.
         unevaluated: BTreeMap::new(),
+        // One venue carrying 15% of equity. Both venue rules read this map
+        // and treat a venue missing from it as zero, so a fixture that left
+        // it empty would pass every pass-test and prove nothing — and in
+        // production nothing writes it yet, which is reported separately.
+        venue_exposures: BTreeMap::from([("simulated".to_string(), Decimal::from_int(150_000))]),
     }
 }
 
@@ -532,6 +539,56 @@ fn a_book_below_the_cash_floor_is_vetoed() {
     assert!(breach.observed < breach.bound);
 }
 
+// --- MaxVenueExposure -------------------------------------------------------
+
+#[test]
+fn a_venue_inside_its_exposure_limit_passes() {
+    let at = |limit: f64| LimitKind::MaxVenueExposure {
+        venue: "simulated".into(),
+        limit,
+    };
+    passes(at(0.30), at(0.10), &state());
+}
+
+#[test]
+fn a_venue_beyond_its_exposure_limit_is_vetoed() {
+    let at = |limit: f64| LimitKind::MaxVenueExposure {
+        venue: "simulated".into(),
+        limit,
+    };
+    let breach = vetoes(at(0.10), at(0.30), &state());
+    assert_eq!(breach.subject.as_deref(), Some("simulated"));
+    assert!((breach.observed - 0.15).abs() < 1e-9);
+}
+
+// --- MaxVenueNotionalRate ---------------------------------------------------
+//
+// The variant's doc says its bound is "a multiple of daily ADV"; the
+// evaluation compares the venue's raw notional against it, with no ADV in
+// the arithmetic. These fixtures state bounds in the unit the code actually
+// uses and deliberately assert no observed figure, so they prove the rule
+// reads the state and can fire without enshrining the unit. The mismatch is
+// reported as a defect rather than resolved in a test.
+
+#[test]
+fn a_venue_inside_its_notional_rate_passes() {
+    let at = |limit: f64| LimitKind::MaxVenueNotionalRate {
+        venue: "simulated".into(),
+        limit,
+    };
+    passes(at(200_000.0), at(100_000.0), &state());
+}
+
+#[test]
+fn a_venue_beyond_its_notional_rate_is_vetoed() {
+    let at = |limit: f64| LimitKind::MaxVenueNotionalRate {
+        venue: "simulated".into(),
+        limit,
+    };
+    let breach = vetoes(at(100_000.0), at(200_000.0), &state());
+    assert_eq!(breach.subject.as_deref(), Some("simulated"));
+}
+
 // --- the table is closed ----------------------------------------------------
 
 #[test]
@@ -576,8 +633,16 @@ fn every_limit_kind_has_both_fixtures() {
         LimitKind::MaxDaysToLiquidate { limit: 1.0 },
         LimitKind::MaxCounterpartyExposure { limit: 1.0 },
         LimitKind::MinCashBuffer { limit: 0.0 },
+        LimitKind::MaxVenueExposure {
+            venue: "simulated".into(),
+            limit: 1.0,
+        },
+        LimitKind::MaxVenueNotionalRate {
+            venue: "simulated".into(),
+            limit: 1.0,
+        },
     ];
-    let fixtures: [(&str, &str); 17] = [
+    let fixtures: [(&str, &str); 19] = [
         (
             "an_order_inside_the_notional_limit_passes",
             "an_order_beyond_the_notional_limit_is_vetoed",
@@ -646,6 +711,14 @@ fn every_limit_kind_has_both_fixtures() {
             "a_book_above_the_cash_floor_passes",
             "a_book_below_the_cash_floor_is_vetoed",
         ),
+        (
+            "a_venue_inside_its_exposure_limit_passes",
+            "a_venue_beyond_its_exposure_limit_is_vetoed",
+        ),
+        (
+            "a_venue_inside_its_notional_rate_passes",
+            "a_venue_beyond_its_notional_rate_is_vetoed",
+        ),
     ];
     let source = include_str!("limit_fixtures.rs");
     for (kind, (pass, veto)) in kinds.iter().zip(fixtures) {
@@ -667,6 +740,8 @@ fn every_limit_kind_has_both_fixtures() {
             LimitKind::MaxDaysToLiquidate { .. } => "MaxDaysToLiquidate",
             LimitKind::MaxCounterpartyExposure { .. } => "MaxCounterpartyExposure",
             LimitKind::MinCashBuffer { .. } => "MinCashBuffer",
+            LimitKind::MaxVenueExposure { .. } => "MaxVenueExposure",
+            LimitKind::MaxVenueNotionalRate { .. } => "MaxVenueNotionalRate",
         };
         // Each named fixture exists as a test in this file, and the table
         // row names both. Matched on the whole declaration so a fixture

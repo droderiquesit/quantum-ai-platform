@@ -47,10 +47,14 @@ the two front-end files. A test enumerating this directory and refusing any
 upstream `FROM` without a 64-character lowercase digest is outstanding work, and
 until it exists this section describes a convention rather than a control.
 
-The one exception to the pinning is stated in `Dockerfile` where it happens:
-`apk add musl-dev` takes whatever revision alpine serves. The digest freezes the
-alpine minor and the repository list, not the package revision, and that package
-is in the builder rather than in anything that ships.
+There was one exception to the pinning, and it is gone: the build stage ran
+`apk add musl-dev`, which took whatever revision alpine served that day. The
+base image already carries musl-dev and gcc in its own digest-pinned layers, so
+the line was removed rather than pinned (CICD-048); `Dockerfile` says why a
+version pin was the wrong fix. The acceptance suite's
+`the_build_stage_installs_nothing_the_digest_does_not_pin` refuses it returning.
+This does not make the image byte-reproducible on its own — see
+`docs/blueprint/assessment/CICD-b2.json`, CICD-048.
 
 ## What is not here
 
