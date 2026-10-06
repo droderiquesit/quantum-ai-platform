@@ -2596,6 +2596,44 @@ fn every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_p
     }
 }
 
+#[test]
+fn the_control_plane_binary_authorization_policy_requires_attestation_and_enforces_block() {
+    // SEC-037. The Binary Authorization module sets the policy's default rule to
+    // require attestation from the build attestor with enforcement mode
+    // ENFORCED_BLOCK_AND_AUDIT_LOG, so an unattested image is refused on
+    // admission. The GKE control-plane cluster evaluates the policy at
+    // PROJECT_SINGLETON_POLICY_ENFORCE, which applies the project's default
+    // policy — this one — to every Pod on every cluster in the environment.
+    // An ALWAYS_ALLOW or DISABLED setting permits unapproved images.
+    let binary_auth = without_comments(&read(BINARY_AUTH_MODULE));
+    assert!(
+        binary_auth.contains("evaluation_mode") && binary_auth.contains("REQUIRE_ATTESTATION"),
+        "{BINARY_AUTH_MODULE} default_admission_rule does not contain \
+         evaluation_mode = REQUIRE_ATTESTATION; the policy permits unapproved images"
+    );
+    assert!(
+        binary_auth.contains("enforcement_mode")
+            && binary_auth.contains("ENFORCED_BLOCK_AND_AUDIT_LOG"),
+        "{BINARY_AUTH_MODULE} default_admission_rule does not contain \
+         enforcement_mode = ENFORCED_BLOCK_AND_AUDIT_LOG; unapproved images are not refused"
+    );
+    let require_attestations = binary_auth.lines().find(|l| {
+        collapsed(l).contains("require_attestations_by")
+            && collapsed(l).contains("google_binary_authorization_attestor.build")
+    });
+    assert!(
+        require_attestations.is_some(),
+        "{BINARY_AUTH_MODULE} default_admission_rule does not require attestations by the build attestor"
+    );
+
+    let control_plane = without_comments(&read(CONTROL_PLANE_MODULE));
+    assert!(
+        control_plane.contains("PROJECT_SINGLETON_POLICY_ENFORCE"),
+        "{CONTROL_PLANE_MODULE} binary_authorization does not set \
+         evaluation_mode = PROJECT_SINGLETON_POLICY_ENFORCE; the cluster does not evaluate the policy"
+    );
+}
+
 /// A firewall rule as this file reads it, with the fields the deny-coverage
 /// check compares.
 struct FirewallRule {
@@ -7833,6 +7871,7 @@ fn every_deployment_exclusion_is_recorded_as_a_decision() {
 
 // --- the control plane: Config Connector's installation and the fleet ------
 
+const BINARY_AUTH_MODULE: &str = "infrastructure/terraform/modules/binaryauthorization/main.tf";
 const CONTROL_PLANE_MODULE: &str = "infrastructure/terraform/modules/gitops-control-plane/main.tf";
 const CONFIG_CONNECTOR_OPERATOR: &str = "infrastructure/gitops/bootstrap/config-connector-operator";
 const CONFIG_CONNECTOR_OBJECT: &str = "infrastructure/gitops/bootstrap/config-connector";
