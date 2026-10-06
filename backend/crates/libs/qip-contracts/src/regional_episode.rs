@@ -5,9 +5,12 @@
 //! fill/slippage events, anomalies, failures, microstructure observations,
 //! and venue-behaviour changes.
 //!
-//! The journal holds episode records with proper attribution, allowing
-//! operators and auditors to reconstruct the cell's decision context from
-//! the event stream alone.
+//! Episodes are held in the cell's memory, bounded, and are **not** journaled:
+//! the facts they classify (fills, breaks) are in the cell's hash-chained
+//! journal, but the classification itself is lost when the process stops.
+//! The row's `ReflexDelta` — what the cell changed in response to an episode
+//! — has no type here, because nothing in the cell yet decides anything from
+//! an episode, and a type nobody constructs would read as a control.
 
 use qip_core::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -116,62 +119,6 @@ impl RegionalEpisode {
     }
 }
 
-/// A change in a regional episode set, recorded to track episode lifecycle.
-///
-/// Reflects the decision the cell made in response to observing an episode
-/// and what changed as a result (e.g., sizing adjusted, venue removed from
-/// routing, strategy halted).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ReflexDelta {
-    /// The cell that recorded this delta (must match the episode's cell).
-    pub cell: String,
-
-    /// The episode this delta relates to (by episode kind and time).
-    pub episode_kind: EpisodeKind,
-
-    /// When the episode was originally recorded.
-    pub episode_at: Timestamp,
-
-    /// When the reflex response to the episode occurred.
-    pub delta_at: Timestamp,
-
-    /// What the cell decided to do in response:
-    /// - "sizing_multiplier_reduced" → sizing was scaled down with new multiplier
-    /// - "venue_routed_away" → venue was removed from routing
-    /// - "strategy_paused" → strategy was halted pending review
-    /// - "risk_limit_applied" → additional risk limit was applied
-    /// - "circuit_breaker_engaged" → cell halted temporarily
-    pub decision: String,
-
-    /// The effect of the decision:
-    /// - sizing multiplier applied
-    /// - venue names removed from routing
-    /// - strategy names paused
-    /// - specific limit value applied
-    pub effect: String,
-}
-
-impl ReflexDelta {
-    /// Create a new reflex delta.
-    pub fn new(
-        cell: String,
-        episode_kind: EpisodeKind,
-        episode_at: Timestamp,
-        delta_at: Timestamp,
-        decision: String,
-        effect: String,
-    ) -> Self {
-        Self {
-            cell,
-            episode_kind,
-            episode_at,
-            delta_at,
-            decision,
-            effect,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,29 +156,23 @@ mod tests {
     }
 
     #[test]
-    fn episode_kind_as_str_returns_correct_strings() {
-        assert_eq!(EpisodeKind::LatencySpike.as_str(), "latency_spike");
-        assert_eq!(EpisodeKind::FillSlippage.as_str(), "fill_slippage");
-        assert_eq!(EpisodeKind::Anomaly.as_str(), "anomaly");
-        assert_eq!(EpisodeKind::Failure.as_str(), "failure");
-        assert_eq!(EpisodeKind::Microstructure.as_str(), "microstructure");
-        assert_eq!(EpisodeKind::VenueBehaviour.as_str(), "venue_behaviour");
-    }
-
-    #[test]
-    fn a_reflex_delta_records_the_cell_response_to_an_episode() {
-        let delta = ReflexDelta::new(
-            "london-1".to_string(),
+    fn each_episode_kind_s_label_is_the_name_it_serialises_under() {
+        // `as_str` and the serde rename are two spellings of one fact; a
+        // label that drifts from the wire name would chart one kind under
+        // a name the journal never carries.
+        for kind in [
             EpisodeKind::LatencySpike,
-            Timestamp::from_secs(1_700_000_000),
-            Timestamp::from_secs(1_700_000_010),
-            "sizing_multiplier_reduced".to_string(),
-            "0.75".to_string(),
-        );
-
-        assert_eq!(delta.cell, "london-1");
-        assert_eq!(delta.episode_kind, EpisodeKind::LatencySpike);
-        assert_eq!(delta.decision, "sizing_multiplier_reduced");
-        assert_eq!(delta.effect, "0.75");
+            EpisodeKind::FillSlippage,
+            EpisodeKind::Anomaly,
+            EpisodeKind::Failure,
+            EpisodeKind::Microstructure,
+            EpisodeKind::VenueBehaviour,
+        ] {
+            let wire = match serde_json::to_string(&kind) {
+                Ok(wire) => wire,
+                Err(e) => panic!("{kind:?} did not serialise: {e}"),
+            };
+            assert_eq!(wire, format!("\"{}\"", kind.as_str()), "{kind:?}");
+        }
     }
 }

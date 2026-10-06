@@ -1294,14 +1294,15 @@ pub struct Cell {
     /// truncation nobody can see would understate an incident.
     breaks: Vec<String>,
     breaks_omitted: u32,
-    /// Regional episodes (EXPAND-009): typed events recorded locally by this
-    /// cell, including latency spikes, fill/slippage, anomalies, failures,
-    /// microstructure observations, and venue-behaviour changes. Each episode
-    /// names this cell and region.
+    /// Regional episodes (EXPAND-009): what this cell observed at its own
+    /// venues, typed, each naming the cell and region. See
+    /// [`Self::episodes`] for which kinds are recorded and where.
     ///
-    /// Bounded by a maximum to prevent unbounded growth under load; older
-    /// episodes are dropped after being written to the journal. Used to
-    /// explain the cell's decisions and routing choices.
+    /// In memory only, and bounded at [`MAX_RETAINED_EPISODES`], oldest
+    /// dropped first. **Not journaled**: an episode dropped from here, or
+    /// held here when the process stops, is gone. The facts it summarises —
+    /// the fill, the break — are in the hash-chained journal; the episode's
+    /// classification of them is not.
     episodes: Vec<RegionalEpisode>,
     order_sequence: u64,
     /// Passes of [`Self::work`] so far, counting the halted ones. What a
@@ -1437,6 +1438,17 @@ pub struct SnapshotRequest {
 
 /// How many reconciliation breaks a cell keeps for reporting.
 const MAX_RETAINED_BREAKS: usize = 32;
+
+/// How many regional episodes a cell keeps (EXPAND-009). A cell under load
+/// observes without end, and an unbounded working set is what the data
+/// rules forbid; the oldest is dropped first.
+pub const MAX_RETAINED_EPISODES: usize = 128;
+
+/// How long after its release an order may take to complete before the cell
+/// records a `LatencySpike` episode. A house default, not a calibrated
+/// figure: the blueprint names latency episodes without saying what a spike
+/// is, and no per-venue expectation is used yet.
+pub const LATENCY_SPIKE_THRESHOLD: Duration = Duration::from_millis(100);
 
 impl Cell {
     /// Assemble a cell.
@@ -3957,46 +3969,56 @@ impl Cell {
         Ok(())
     }
 
-    /// Record a regional episode (EXPAND-009).
+    /// Record one regional episode (EXPAND-009), naming this cell and region.
     ///
-    /// Episodes are typed observations of latency spikes, fill/slippage,
-    /// anomalies, failures, microstructure changes, and venue-behaviour changes.
-    /// Each episode names the cell and region where it occurred.
-    ///
-    /// Episodes are kept in a bounded vec; older episodes are discarded after
-    /// being written to the journal to prevent unbounded growth under load.
-    pub fn record_episode(
+    /// Private on purpose: an episode is the cell's own classification of
+    /// something it observed, and a public recorder would let any caller
+    /// file an observation under this cell's name that the cell never made.
+    fn record_episode(
         &mut self,
         kind: EpisodeKind,
         detail: String,
+        occurred_at: Option<Timestamp>,
         now: Timestamp,
-    ) -> &mut Self {
-        let episode = RegionalEpisode::new(
+    ) {
+        let mut episode = RegionalEpisode::new(
             self.config.cell_id.clone(),
             self.config.region.clone(),
             kind,
             now,
             detail,
         );
-        // Bounded to prevent unbounded growth. When the limit is reached,
-        // older episodes are dropped in FIFO order. This is acceptable because
-        // the journal holds the record.
-        const MAX_RETAINED_EPISODES: usize = 128;
+        if let Some(at) = occurred_at {
+            episode = episode.with_occurred_at(at);
+        }
         self.episodes.push(episode);
         if self.episodes.len() > MAX_RETAINED_EPISODES {
             self.episodes.remove(0);
         }
-        self
     }
 
-    /// Get all currently recorded regional episodes.
+    /// The regional episodes this cell has recorded, oldest first, at most
+    /// [`MAX_RETAINED_EPISODES`] of them.
+    ///
+    /// Four of [`EpisodeKind`]'s six kinds are recorded, each at the seam
+    /// where the fact becomes known, in [`Self::confirm_execution_reports`]
+    /// and the break path:
+    ///
+    /// - `Anomaly` — an execution report the cell cannot book: a
+    ///   non-positive quantity or price, an order id it never sent, or a
+    ///   venue other than the one it sent to. The cell then halts, which is
+    ///   recorded separately as the `Failure` below: the anomaly is what
+    ///   arrived, the failure is the cell stopping.
+    /// - `Failure` — every reconciliation break, once each.
+    /// - `LatencySpike` — an order completed more than
+    ///   [`LATENCY_SPIKE_THRESHOLD`] after its release.
+    /// - `FillSlippage` — a fill at a price other than the order's limit,
+    ///   signed by side so price improvement is not filed as a cost.
+    ///
+    /// `Microstructure` and `VenueBehaviour` are named but nothing records
+    /// them yet.
     pub fn episodes(&self) -> &[RegionalEpisode] {
         &self.episodes
-    }
-
-    /// Clear all recorded episodes.
-    pub fn clear_episodes(&mut self) {
-        self.episodes.clear();
     }
 
     /// One pass of decide-and-act.
@@ -5861,7 +5883,12 @@ impl Cell {
                  positive, and one that is not is a record the cell cannot book",
                 execution.quantity, execution.price, execution.order_id
             );
-            self.record_episode(EpisodeKind::Anomaly, detail.clone(), now);
+            self.record_episode(
+                EpisodeKind::Anomaly,
+                detail.clone(),
+                Some(execution.at),
+                now,
+            );
             self.break_on(detail, now);
             return None;
         }
@@ -5873,7 +5900,12 @@ impl Cell {
                 execution.order_id,
                 execution.venue.as_str()
             );
-            self.record_episode(EpisodeKind::Anomaly, detail.clone(), now);
+            self.record_episode(
+                EpisodeKind::Anomaly,
+                detail.clone(),
+                Some(execution.at),
+                now,
+            );
             self.break_on(detail, now);
             return None;
         };
@@ -5884,7 +5916,12 @@ impl Cell {
                 execution.venue.as_str(),
                 working.order.venue.as_str()
             );
-            self.record_episode(EpisodeKind::Anomaly, detail.clone(), now);
+            self.record_episode(
+                EpisodeKind::Anomaly,
+                detail.clone(),
+                Some(execution.at),
+                now,
+            );
             self.break_on(detail, now);
             return None;
         }
@@ -6036,43 +6073,57 @@ impl Cell {
             let taken = fill.at.since(release_at);
             self.fill_times.observe(&fill.venue, taken);
             self.metrics.fill_time(&fill.venue, taken);
-            // Record a LatencySpike episode if fill took significant time.
-            let latency_ms = taken.as_millis() as f64;
-            if latency_ms > 100.0 {
+            if taken > LATENCY_SPIKE_THRESHOLD {
                 self.record_episode(
                     EpisodeKind::LatencySpike,
                     format!(
-                        "order {} filled at {} after {:.0} ms",
+                        "order {} completed at {} {} ms after its release, past the {} ms \
+                         latency-spike threshold",
                         fill.order_id,
                         fill.venue.as_str(),
-                        latency_ms
+                        taken.as_millis(),
+                        LATENCY_SPIKE_THRESHOLD.as_millis()
                     ),
+                    Some(fill.at),
                     now,
                 );
             }
         }
-        // Record a FillSlippage episode if fill price differs significantly from order price.
-        if order_price != fill.price {
-            let slippage_bps = if order_price > Decimal::ZERO {
-                ((order_price - fill.price) / order_price * Decimal::from(10000i32)).to_f64()
-            } else {
-                0.0
+        // Against the limit the order rested at, and signed by side: `Ask` is
+        // a buy, so paying above the limit is adverse and below it is price
+        // improvement; a sell is the mirror. Unsigned, an improvement would
+        // be filed as a cost. Decimal throughout — this is a price — and the
+        // ratio is refused rather than guessed when the limit is zero.
+        if fill.price != order_price {
+            let adverse = match fill.side {
+                BookSide::Ask => fill.price - order_price,
+                BookSide::Bid => order_price - fill.price,
             };
-            if slippage_bps.abs() > 1.0 {
-                self.record_episode(
-                    EpisodeKind::FillSlippage,
-                    format!(
-                        "order {} filled at {} vs expected {}, slippage {:.0} bps",
-                        fill.order_id, fill.price, order_price, slippage_bps
-                    ),
-                    now,
-                );
-            }
+            let bps = adverse
+                .checked_div(order_price)
+                .map(|ratio| ratio * Decimal::from_int(10_000));
+            let reading = match bps {
+                Some(bps) if adverse.is_positive() => format!("{bps} bps adverse"),
+                Some(bps) => format!("{} bps price improvement", bps.abs()),
+                None => "unmeasured: the order's limit is zero".to_string(),
+            };
+            self.record_episode(
+                EpisodeKind::FillSlippage,
+                format!(
+                    "order {} filled at {} at {} against a limit of {}: {reading}",
+                    fill.order_id,
+                    fill.venue.as_str(),
+                    fill.price,
+                    order_price
+                ),
+                Some(fill.at),
+                now,
+            );
         }
         self.confirmed.push(fill.clone());
         if let Some(detail) = overfill_detail {
-            // Record a Failure episode for overfill anomaly
-            self.record_episode(EpisodeKind::Failure, detail.clone(), now);
+            // `break_on` records the Failure episode; recording one here as
+            // well filed every over-fill twice.
             self.break_on(detail, now);
         }
         Some(fill)
@@ -6097,8 +6148,9 @@ impl Cell {
             },
             now,
         );
-        // Record a Failure episode for this reconciliation break.
-        self.record_episode(EpisodeKind::Failure, detail, now);
+        // The one place a Failure episode is recorded, so a break is one
+        // episode whichever seam found it.
+        self.record_episode(EpisodeKind::Failure, detail, None, now);
         if !self.halted_other_than_by_journal() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,

@@ -75,7 +75,7 @@ pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
 pub use policy::{PolicyFrame, PolicyItem, PolicyPayload, RegimeChange, RiskGate, Slot};
 pub use quantum::{ChosenPath, DecisionRequest, RoutingDecision, SolverKind, SolverResult};
 pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};
-pub use regional_episode::{EpisodeKind, ReflexDelta, RegionalEpisode};
+pub use regional_episode::{EpisodeKind, RegionalEpisode};
 pub use routing::{QuantumRouter, RoutingConfig};
 pub use schema::{CompatibilityPolicy, SchemaDefinition, SchemaRegistry};
 pub use signal::{Conviction, Signal, SignalKind, StrategyId};

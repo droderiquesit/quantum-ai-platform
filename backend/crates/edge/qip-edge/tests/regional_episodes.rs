@@ -1,522 +1,380 @@
-//! Test that reflex cells record regional episodes (EXPAND-009).
+//! A reflex cell records its own regional episodes (EXPAND-009).
 //!
-//! Each episode is typed (latency spike, fill/slippage, anomaly, failure,
-//! microstructure, venue-behaviour) and names the cell and region where it
-//! occurred. Episodes are recorded at the moment the event becomes known,
-//! allowing them to explain decisions made in the same pass.
+//! Every test here drives the cell through the order-entry channel — a pass
+//! that sends an order, then the venue's report on it — and asserts which
+//! episodes the cell recorded, of which kind, naming which cell and region.
+//! None calls a recorder directly. The first version of this suite did
+//! exactly that: it inserted an episode by hand and asserted that it was
+//! there, so every recording site in the cell could be deleted and the suite
+//! still passed.
 
+// In a test the assertion is the deliverable; the workspace denies
+// `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
-#![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use qip_contracts::regional_episode::EpisodeKind;
-use qip_contracts::venue::VenueId;
-use qip_core::Timestamp;
-use qip_core::error::Result;
-use qip_edge::Cell;
+use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
+use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
+use qip_contracts::signal::{SignalKind, StrategyId};
+use qip_contracts::venue::{Origin, VenueId, VenueStatus};
+use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
+use qip_edge::cell::{
+    Cell, CellConfig, ExecutionReport, MAX_RETAINED_EPISODES, PlacedOrder, Placer, PricingPolicy,
+};
+use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
+use qip_feature_dag::engine::FeatureEngine;
+use qip_feature_dag::state::MarketState;
+use qip_orderbook::venue::VenueState;
+use qip_strategy::catalogue::FeatureCatalogue;
+use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
+use qip_strategy::ir::{Expr, Rule, StrategySpec};
+use qip_strategy::program::Program;
 
-const CELL_NAME: &str = "london-1";
-const REGION_NAME: &str = "emea";
+const CELL: &str = "london-1";
+const REGION: &str = "europe-west2";
+const VENUE: &str = "XLON";
+const SYMBOL: &str = "ACME";
+const ENVELOPE_KEY: &[u8] = b"a-cell-envelope-key-for-episode-tests";
 
 fn t(secs: i64) -> Timestamp {
     Timestamp::from_secs(1_760_000_000 + secs)
 }
 
-/// Create a test cell for episode recording.
-fn cell_for_episodes() -> Result<Cell> {
-    use qip_edge::CellConfig;
-    use qip_feature_dag::engine::FeatureEngine;
-
-    let mut config = CellConfig::new(CELL_NAME, REGION_NAME);
-    config.venues = vec![VenueId::new("XLON")];
-
-    let features = FeatureEngine::default();
-    Cell::new(config, features)
+fn object() -> ObjectId {
+    ObjectId::from_string(format!("obj-{SYMBOL}"))
 }
 
-#[test]
-fn a_cell_records_regional_episodes_with_cell_and_region_names() -> Result<()> {
-    // Each regional episode must name the cell and region where the event
-    // occurred, so an operator reviewing the journal can trace the source.
-    let mut cell = cell_for_episodes()?;
-
-    let now = t(0);
-    cell.record_episode(
-        EpisodeKind::LatencySpike,
-        "XLON: 145ms measured".to_string(),
-        now,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1, "one episode should be recorded");
-    let episode = &episodes[0];
-
-    assert_eq!(episode.cell, CELL_NAME, "episode must name the cell");
-    assert_eq!(episode.region, REGION_NAME, "episode must name the region");
-    assert_eq!(
-        episode.kind,
-        EpisodeKind::LatencySpike,
-        "episode kind should match"
-    );
-    assert_eq!(episode.recorded_at, now, "recorded_at should match");
-
-    Ok(())
+fn venue() -> VenueId {
+    VenueId::new(VENUE)
 }
 
-#[test]
-fn episodes_are_recorded_in_order() -> Result<()> {
-    // Episodes are recorded in the order they occur, so the journal reader
-    // can reconstruct the sequence of events without re-running the cell.
-    let mut cell = cell_for_episodes()?;
-
-    let t0 = t(0);
-    let t1 = t(1);
-    let t2 = t(2);
-
-    cell.record_episode(EpisodeKind::LatencySpike, "first".to_string(), t0);
-    cell.record_episode(EpisodeKind::FillSlippage, "second".to_string(), t1);
-    cell.record_episode(EpisodeKind::Anomaly, "third".to_string(), t2);
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 3, "all three episodes should be recorded");
-
-    assert_eq!(episodes[0].kind, EpisodeKind::LatencySpike);
-    assert_eq!(episodes[0].detail, "first");
-
-    assert_eq!(episodes[1].kind, EpisodeKind::FillSlippage);
-    assert_eq!(episodes[1].detail, "second");
-
-    assert_eq!(episodes[2].kind, EpisodeKind::Anomaly);
-    assert_eq!(episodes[2].detail, "third");
-
-    Ok(())
+fn level(sequence: u64, side: BookSide, price: Decimal, size: Decimal) -> MarketMessage {
+    let when = t(sequence as i64);
+    MarketMessage::new(
+        object(),
+        Origin::new(venue(), "feed-a", 0, sequence),
+        MessageBody::LevelSet {
+            side,
+            price,
+            quantity: size,
+            order_count: None,
+        },
+        when,
+        when,
+    )
 }
 
-#[test]
-fn each_episode_kind_can_be_recorded() -> Result<()> {
-    // The cell must be able to record all six episode kinds: latency spike,
-    // fill/slippage, anomaly, failure, microstructure, and venue-behaviour.
-    // If any kind is missing, an operator's review of a similar event would
-    // find no record of it.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    cell.record_episode(EpisodeKind::LatencySpike, "XLON: 145ms".to_string(), now);
-    cell.record_episode(
-        EpisodeKind::FillSlippage,
-        "XLON: expected 100.50, got 100.25".to_string(),
-        now,
-    );
-    cell.record_episode(
-        EpisodeKind::Anomaly,
-        "crossed book detected at XLON".to_string(),
-        now,
-    );
-    cell.record_episode(
-        EpisodeKind::Failure,
-        "XLON feed stalled for 30s".to_string(),
-        now,
-    );
-    cell.record_episode(
-        EpisodeKind::Microstructure,
-        "XLON layer imbalance: 2:1 bid:ask".to_string(),
-        now,
-    );
-    cell.record_episode(
-        EpisodeKind::VenueBehaviour,
-        "XLON: new settlement terms T+2".to_string(),
-        now,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(
-        episodes.len(),
-        6,
-        "all six episode kinds should be recorded"
-    );
-
-    assert_eq!(episodes[0].kind, EpisodeKind::LatencySpike);
-    assert_eq!(episodes[1].kind, EpisodeKind::FillSlippage);
-    assert_eq!(episodes[2].kind, EpisodeKind::Anomaly);
-    assert_eq!(episodes[3].kind, EpisodeKind::Failure);
-    assert_eq!(episodes[4].kind, EpisodeKind::Microstructure);
-    assert_eq!(episodes[5].kind, EpisodeKind::VenueBehaviour);
-
-    Ok(())
+/// A two-sided book with a mid of 100.
+fn book() -> Result<VenueState> {
+    let mut state = VenueState::aggregated(object(), venue(), VenueStatus::Open);
+    state.apply(&level(0, BookSide::Bid, dec!("99"), dec!("500")))?;
+    state.apply(&level(1, BookSide::Ask, dec!("101"), dec!("400")))?;
+    Ok(state)
 }
 
-#[test]
-fn episodes_are_bounded_to_prevent_unbounded_growth() -> Result<()> {
-    // A cell under load receives many events. If episodes were unbounded,
-    // the vec would grow without limit and eventually exhaust memory. Bounded
-    // episodes prevent this; older episodes are discarded after being written
-    // to the journal (by the caller, not shown here). The cell still records
-    // up to the bound.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
+fn firing_strategy(id: &str) -> Result<(CompiledStrategy, Program)> {
+    let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+    let spec = StrategySpec::new(StrategyId::new(id), object(), Duration::from_secs(30)).with_rule(
+        Rule::new(
+            "always",
+            SignalKind::Enter,
+            Expr::Flag(true),
+            Expr::Exact(dec!("100")),
+            Expr::Statistic(0.5),
+            10,
+        ),
+    );
+    let compiled = compiler.compile(&spec)?;
+    Ok((compiled, compiler.into_program()))
+}
 
-    const MAX_RETAINED_EPISODES: usize = 128;
-    const EPISODES_TO_RECORD: usize = MAX_RETAINED_EPISODES + 50;
+fn signed_envelope(strategy: &str) -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        CapitalEnvelope::new(
+            StrategyId::new(strategy),
+            CELL,
+            dec!("1000000"),
+            dec!("100000"),
+            dec!("50000"),
+            vec![venue()],
+            t(0),
+            t(3600),
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(build(&signature)?, ENVELOPE_KEY, CELL, t(1))
+}
 
-    for i in 0..EPISODES_TO_RECORD {
-        cell.record_episode(EpisodeKind::LatencySpike, format!("episode_{i}"), now);
+/// A gateway that accepts every order and reports only what the test tells
+/// it the venue did.
+#[derive(Debug, Default)]
+struct ReportingGateway {
+    reports: Vec<ExecutionReport>,
+}
+
+impl ReportingGateway {
+    fn report(&mut self, order_id: &str, quantity: Decimal, price: Decimal, at: Timestamp) {
+        self.reports.push(ExecutionReport {
+            order_id: order_id.to_string(),
+            venue: venue(),
+            quantity,
+            price,
+            at,
+        });
+    }
+}
+
+impl Placer for ReportingGateway {
+    fn is_simulated(&self) -> bool {
+        true
     }
 
-    let episodes = cell.episodes();
-    assert_eq!(
-        episodes.len(),
-        MAX_RETAINED_EPISODES,
-        "episode count should be bounded to {MAX_RETAINED_EPISODES}"
-    );
+    fn place(
+        &mut self,
+        _order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        _quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<()> {
+        Ok(())
+    }
 
-    // The oldest episodes should have been dropped; the remaining should be
-    // the last MAX_RETAINED_EPISODES recorded.
-    let first_detail = &episodes[0].detail;
-    let expected_first_index = EPISODES_TO_RECORD - MAX_RETAINED_EPISODES;
-    assert_eq!(
-        first_detail.as_str(),
-        format!("episode_{expected_first_index}").as_str(),
-        "oldest retained episode should be {expected_first_index}"
-    );
-
-    let last_detail = &episodes[MAX_RETAINED_EPISODES - 1].detail;
-    let expected_last_index = EPISODES_TO_RECORD - 1;
-    assert_eq!(
-        last_detail.as_str(),
-        format!("episode_{expected_last_index}").as_str(),
-        "newest episode should be {expected_last_index}"
-    );
-
-    Ok(())
+    fn execution_reports(&mut self) -> Vec<ExecutionReport> {
+        std::mem::take(&mut self.reports)
+    }
 }
 
-#[test]
-fn episodes_can_be_cleared() -> Result<()> {
-    // A cell needs to clear its episodes between passes or sessions, so the
-    // episode vec does not retain old events that are no longer relevant.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    cell.record_episode(EpisodeKind::LatencySpike, "first".to_string(), now);
-    cell.record_episode(EpisodeKind::FillSlippage, "second".to_string(), now);
-
-    assert_eq!(cell.episodes().len(), 2, "episodes should be recorded");
-
-    cell.clear_episodes();
-    assert_eq!(cell.episodes().len(), 0, "episodes should be cleared");
-
-    Ok(())
+fn trading_cell() -> Result<Cell> {
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?;
+    cell.track(book()?);
+    let (compiled, program) = firing_strategy("alpha")?;
+    cell.deploy_with_pricing(
+        compiled,
+        program,
+        signed_envelope("alpha")?,
+        PricingPolicy::Marketable,
+    )?;
+    Ok(cell)
 }
 
-#[test]
-fn a_latency_spike_episode_identifies_the_venue_and_latency() -> Result<()> {
-    // A latency spike episode must contain enough detail for an operator to
-    // understand which venue was slow and by how much. The detail field
-    // carries this information.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    let latency_detail = "XLON: 145ms (threshold: 100ms)".to_string();
-    cell.record_episode(EpisodeKind::LatencySpike, latency_detail.clone(), now);
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::LatencySpike);
-    assert_eq!(episodes[0].detail, latency_detail);
-
-    Ok(())
-}
-
-#[test]
-fn a_fill_slippage_episode_records_prices_and_quantity() -> Result<()> {
-    // A fill/slippage episode must record the venue, expected price, actual
-    // price, and quantity so an operator can calculate the cost of slippage.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    let slippage_detail = "XLON: expected 100.50, actual 100.25, qty 1000".to_string();
-    cell.record_episode(EpisodeKind::FillSlippage, slippage_detail.clone(), now);
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::FillSlippage);
-    assert_eq!(episodes[0].detail, slippage_detail);
+/// One pass at `at` that sends exactly one order, a buy.
+fn send_one(cell: &mut Cell, gateway: &mut ReportingGateway, at: Timestamp) -> Result<PlacedOrder> {
+    let report = cell.work(at, gateway)?;
     assert!(
-        episodes[0].detail.contains("100.50"),
-        "detail should contain expected price"
+        report.refusals.is_empty(),
+        "the premise is a pass that refuses nothing: {:?}",
+        report.refusals
     );
+    assert_eq!(report.orders.len(), 1, "the premise is one order");
+    let order = report
+        .orders
+        .first()
+        .cloned()
+        .ok_or_else(|| Error::not_found("an order from a cell that signalled"))?;
+    assert_eq!(order.side, BookSide::Ask, "the premise is a buy");
     assert!(
-        episodes[0].detail.contains("100.25"),
-        "detail should contain actual price"
+        cell.episodes().is_empty(),
+        "sending an order recorded an episode: {:?}",
+        cell.episodes()
     );
+    Ok(order)
+}
 
+fn kinds(episodes: &[RegionalEpisode]) -> Vec<EpisodeKind> {
+    episodes.iter().map(|e| e.kind.clone()).collect()
+}
+
+fn assert_names_this_cell(episodes: &[RegionalEpisode]) {
+    for episode in episodes {
+        assert_eq!(episode.cell, CELL, "{episode:?}");
+        assert_eq!(episode.region, REGION, "{episode:?}");
+    }
+}
+
+fn bps(adverse: Decimal, limit: Decimal) -> Result<Decimal> {
+    adverse
+        .checked_div(limit)
+        .map(|ratio| ratio * Decimal::from_int(10_000))
+        .ok_or_else(|| Error::numeric("a zero limit in a test"))
+}
+
+#[test]
+fn a_fill_at_its_limit_inside_the_threshold_records_no_episode() -> Result<()> {
+    // The quiet case first, so the cases below are not passing on a cell
+    // that records an episode for every fill.
+    let mut cell = trading_cell()?;
+    let mut gateway = ReportingGateway::default();
+    let order = send_one(&mut cell, &mut gateway, t(50))?;
+    gateway.report(&order.order_id, order.quantity, order.price, t(50));
+    let confirmed = cell.confirm_execution_reports(&mut gateway, t(50));
+    assert_eq!(confirmed.len(), 1, "the premise is a booked fill");
+    assert!(!cell.is_halted(), "the premise is a clean fill");
+    assert_eq!(cell.episodes(), &[] as &[RegionalEpisode]);
     Ok(())
 }
 
 #[test]
-fn an_anomaly_episode_describes_the_anomaly_and_impact() -> Result<()> {
-    // An anomaly episode must describe the market condition detected and how
-    // it affected the cell's sizing or routing decisions.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    let anomaly_detail =
-        "crossed book at XLON: bid 100.30 > ask 100.20; sizing multiplier reduced to 0.5"
-            .to_string();
-    cell.record_episode(EpisodeKind::Anomaly, anomaly_detail.clone(), now);
+fn an_order_completing_past_the_threshold_records_one_latency_spike_naming_the_cell_and_region()
+-> Result<()> {
+    let mut cell = trading_cell()?;
+    let mut gateway = ReportingGateway::default();
+    let order = send_one(&mut cell, &mut gateway, t(50))?;
+    // Five seconds after release, at the limit, so latency is the only fact.
+    gateway.report(&order.order_id, order.quantity, order.price, t(55));
+    let confirmed = cell.confirm_execution_reports(&mut gateway, t(56));
+    assert_eq!(confirmed.len(), 1, "the premise is a booked fill");
 
     let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
+    assert_eq!(kinds(episodes), vec![EpisodeKind::LatencySpike]);
+    assert_names_this_cell(episodes);
+    assert_eq!(
+        episodes[0].occurred_at,
+        Some(t(55)),
+        "when the venue filled"
+    );
+    assert_eq!(
+        episodes[0].recorded_at,
+        t(56),
+        "when the cell learned of it"
+    );
+    assert!(
+        episodes[0].detail.contains(" 5000 ms after its release"),
+        "{}",
+        episodes[0].detail
+    );
+    Ok(())
+}
+
+#[test]
+fn a_buy_filled_above_its_limit_is_recorded_as_adverse_slippage() -> Result<()> {
+    let mut cell = trading_cell()?;
+    let mut gateway = ReportingGateway::default();
+    let order = send_one(&mut cell, &mut gateway, t(50))?;
+    let paid = order.price + dec!("1");
+    gateway.report(&order.order_id, order.quantity, paid, t(50));
+    assert_eq!(cell.confirm_execution_reports(&mut gateway, t(50)).len(), 1);
+
+    let episodes = cell.episodes();
+    assert_eq!(kinds(episodes), vec![EpisodeKind::FillSlippage]);
+    assert_names_this_cell(episodes);
+    let expected = format!(": {} bps adverse", bps(dec!("1"), order.price)?);
+    assert!(
+        episodes[0].detail.ends_with(&expected),
+        "expected the detail to end {expected:?}: {}",
+        episodes[0].detail
+    );
+    Ok(())
+}
+
+#[test]
+fn a_buy_filled_below_its_limit_is_recorded_as_price_improvement_not_as_a_cost() -> Result<()> {
+    // Unsigned, the first version filed this as slippage: a venue that
+    // improved on the limit read as a venue that cost money.
+    let mut cell = trading_cell()?;
+    let mut gateway = ReportingGateway::default();
+    let order = send_one(&mut cell, &mut gateway, t(50))?;
+    let paid = order.price - dec!("1");
+    gateway.report(&order.order_id, order.quantity, paid, t(50));
+    assert_eq!(cell.confirm_execution_reports(&mut gateway, t(50)).len(), 1);
+
+    let episodes = cell.episodes();
+    assert_eq!(kinds(episodes), vec![EpisodeKind::FillSlippage]);
+    let expected = format!(": {} bps price improvement", bps(dec!("1"), order.price)?);
+    assert!(
+        episodes[0].detail.ends_with(&expected),
+        "expected the detail to end {expected:?}: {}",
+        episodes[0].detail
+    );
+    Ok(())
+}
+
+#[test]
+fn a_report_on_an_order_never_sent_records_an_anomaly_then_one_failure() -> Result<()> {
+    // The anomaly is what arrived; the failure is the cell halting on it.
+    let mut cell = trading_cell()?;
+    let mut gateway = ReportingGateway::default();
+    gateway.report("ghost-1", dec!("10"), dec!("100"), t(5));
+    assert!(
+        cell.confirm_execution_reports(&mut gateway, t(6))
+            .is_empty()
+    );
+    assert!(cell.is_halted(), "the premise is a break");
+
+    let episodes = cell.episodes();
+    assert_eq!(
+        kinds(episodes),
+        vec![EpisodeKind::Anomaly, EpisodeKind::Failure]
+    );
+    assert_names_this_cell(episodes);
+    assert_eq!(episodes[0].occurred_at, Some(t(5)));
+    assert!(
+        episodes[0].detail.contains("on order ghost-1 at XLON"),
+        "{}",
+        episodes[0].detail
+    );
+    Ok(())
+}
+
+#[test]
+fn an_over_fill_records_exactly_one_failure() -> Result<()> {
+    // The first version recorded a Failure for the over-fill and another
+    // inside the break it raised, so one event was filed twice.
+    let mut cell = trading_cell()?;
+    let mut gateway = ReportingGateway::default();
+    let order = send_one(&mut cell, &mut gateway, t(50))?;
+    gateway.report(
+        &order.order_id,
+        order.quantity * dec!("2"),
+        order.price,
+        t(50),
+    );
+    assert_eq!(cell.confirm_execution_reports(&mut gateway, t(50)).len(), 1);
+    assert!(cell.is_halted(), "the premise is a break");
+
+    assert_eq!(kinds(cell.episodes()), vec![EpisodeKind::Failure]);
+    assert_names_this_cell(cell.episodes());
+    Ok(())
+}
+
+#[test]
+fn episodes_past_the_bound_drop_the_oldest_first() -> Result<()> {
+    // Each unknown-order report is two episodes, so one more report than
+    // half the bound overflows it by exactly two: the first report's pair.
+    let mut cell = trading_cell()?;
+    let mut gateway = ReportingGateway::default();
+    let reports = MAX_RETAINED_EPISODES / 2 + 1;
+    for n in 0..reports {
+        gateway.report(&format!("ghost-{n}"), dec!("10"), dec!("100"), t(5));
+    }
+    assert!(
+        cell.confirm_execution_reports(&mut gateway, t(6))
+            .is_empty()
+    );
+
+    let episodes = cell.episodes();
+    assert_eq!(episodes.len(), MAX_RETAINED_EPISODES);
     assert_eq!(episodes[0].kind, EpisodeKind::Anomaly);
-    assert_eq!(episodes[0].detail, anomaly_detail);
     assert!(
-        episodes[0].detail.contains("sizing multiplier"),
-        "detail should describe the impact"
+        episodes[0].detail.contains("on order ghost-1 at "),
+        "the oldest retained should be the second report's: {}",
+        episodes[0].detail
     );
-
-    Ok(())
-}
-
-#[test]
-fn a_failure_episode_names_the_venue_and_recovery_action() -> Result<()> {
-    // A failure episode must name which venue failed and what recovery action
-    // the cell took (e.g., removed from routing, restarted feed sync).
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    let failure_detail = "XLON feed stalled 30s; recovered, resync required".to_string();
-    cell.record_episode(EpisodeKind::Failure, failure_detail.clone(), now);
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::Failure);
-    assert_eq!(episodes[0].detail, failure_detail);
+    let last = &episodes[MAX_RETAINED_EPISODES - 1];
+    assert_eq!(last.kind, EpisodeKind::Failure);
     assert!(
-        episodes[0].detail.contains("XLON"),
-        "detail should name the venue"
+        last.detail
+            .contains(&format!("on order ghost-{} at ", reports - 1)),
+        "{}",
+        last.detail
     );
-    assert!(
-        episodes[0].detail.contains("recovered"),
-        "detail should describe recovery action"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn a_microstructure_episode_describes_the_observation() -> Result<()> {
-    // A microstructure episode records an observation of order-book imbalance,
-    // layer imbalance, or spread widening that affects the cell's pricing or
-    // routing.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    let microstructure_detail =
-        "XLON layer imbalance: bid levels 10x deeper than ask; spread widened to 5bp".to_string();
-    cell.record_episode(
-        EpisodeKind::Microstructure,
-        microstructure_detail.clone(),
-        now,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::Microstructure);
-    assert_eq!(episodes[0].detail, microstructure_detail);
-
-    Ok(())
-}
-
-#[test]
-fn a_venue_behaviour_episode_describes_the_change_and_venue() -> Result<()> {
-    // A venue-behaviour episode records a detected change in a venue's
-    // characteristics (latency profile, fees, order validation) that affects
-    // the cell's strategy.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    let behaviour_detail = "XLON: new settlement terms T+2; latency profile changed".to_string();
-    cell.record_episode(EpisodeKind::VenueBehaviour, behaviour_detail.clone(), now);
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::VenueBehaviour);
-    assert_eq!(episodes[0].detail, behaviour_detail);
-    assert!(
-        episodes[0].detail.contains("XLON"),
-        "detail should name the venue"
-    );
-    assert!(
-        episodes[0].detail.contains("T+2"),
-        "detail should describe the change"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn builder_pattern_works_for_recording_episodes() -> Result<()> {
-    // record_episode returns &mut Self to allow chaining multiple recordings.
-    // This is a convenience and readability feature.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    cell.record_episode(EpisodeKind::LatencySpike, "spike".to_string(), now)
-        .record_episode(EpisodeKind::FillSlippage, "slippage".to_string(), now)
-        .record_episode(EpisodeKind::Anomaly, "anomaly".to_string(), now);
-
-    assert_eq!(
-        cell.episodes().len(),
-        3,
-        "all three episodes should be recorded"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn a_cell_records_fill_slippage_when_fill_price_differs_from_order_price() -> Result<()> {
-    // When a fill arrives at a price different from the order price,
-    // a FillSlippage episode should be recorded. This allows the cell to
-    // learn which venues are delivering worse than expected prices.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    // Manually record a scenario where fill price differs from order price
-    // (in a real scenario, this would happen during Cell::work() with an
-    // execution report from the gateway)
-    cell.record_episode(
-        EpisodeKind::FillSlippage,
-        "order order-1 filled at XLON 100.25 vs expected 100.50, slippage 25 bps".to_string(),
-        now,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::FillSlippage);
-    assert!(episodes[0].detail.contains("slippage"));
-    assert!(episodes[0].detail.contains("100.25"));
-    assert!(episodes[0].detail.contains("100.50"));
-
-    Ok(())
-}
-
-#[test]
-fn a_cell_records_latency_spike_when_fill_takes_significant_time() -> Result<()> {
-    // When a fill takes longer than a threshold (e.g., 100ms), a LatencySpike
-    // episode should be recorded. This helps identify slow venues and order
-    // the cell's routing accordingly.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    cell.record_episode(
-        EpisodeKind::LatencySpike,
-        "order order-1 filled at XLON after 145 ms".to_string(),
-        now,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::LatencySpike);
-    assert!(episodes[0].detail.contains("145"));
-    assert!(episodes[0].detail.contains("ms"));
-
-    Ok(())
-}
-
-#[test]
-fn a_cell_records_anomaly_when_fill_reports_invalid_data() -> Result<()> {
-    // When the order-entry channel reports a fill with invalid data (e.g.,
-    // non-positive quantity or price), an Anomaly episode should be recorded
-    // before breaking on the inconsistency.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    cell.record_episode(
-        EpisodeKind::Anomaly,
-        "the order-entry channel reports -100 at 99.50 on order order-1; a fill needs both positive"
-            .to_string(),
-        now,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::Anomaly);
-    assert!(episodes[0].detail.contains("order-1"));
-    assert!(episodes[0].detail.contains("positive"));
-
-    Ok(())
-}
-
-#[test]
-fn a_cell_records_failure_when_reconciliation_breaks() -> Result<()> {
-    // When the cell detects a disagreement between its record and a venue's
-    // account (a reconciliation break), a Failure episode should be recorded.
-    // This is the most critical episode because it halts the cell.
-    let mut cell = cell_for_episodes()?;
-    let now = t(0);
-
-    cell.record_episode(
-        EpisodeKind::Failure,
-        "the order-entry channel reports a fill of 1000 on order order-1 at XLON and the cell has no open order under that id"
-            .to_string(),
-        now,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 1);
-    assert_eq!(episodes[0].kind, EpisodeKind::Failure);
-    assert!(episodes[0].detail.contains("order-1"));
-    assert!(episodes[0].detail.contains("no open order"));
-
-    Ok(())
-}
-
-#[test]
-fn a_cell_with_multiple_episode_kinds_can_be_replayed() -> Result<()> {
-    // A realistic scenario: a cell in operation records a sequence of
-    // fill slippage, latency spike, anomaly, and failure episodes in response
-    // to venue behavior. The journal captures all of them in order, allowing
-    // operators to understand exactly what happened.
-    let mut cell = cell_for_episodes()?;
-    let t0 = t(0);
-    let t1 = t(1);
-    let t2 = t(2);
-    let t3 = t(3);
-
-    // Simulate a sequence of events as they would occur during passes
-    cell.record_episode(
-        EpisodeKind::FillSlippage,
-        "order order-1 filled at XLON 100.25 vs expected 100.50, slippage 25 bps".to_string(),
-        t0,
-    );
-    cell.record_episode(
-        EpisodeKind::LatencySpike,
-        "order order-1 filled at XLON after 145 ms".to_string(),
-        t1,
-    );
-    cell.record_episode(
-        EpisodeKind::Anomaly,
-        "order order-2 filled at XLON but cell sent it to XCSE".to_string(),
-        t2,
-    );
-    cell.record_episode(
-        EpisodeKind::Failure,
-        "order order-2 filled at XLON but cell sent it to XCSE".to_string(),
-        t3,
-    );
-
-    let episodes = cell.episodes();
-    assert_eq!(episodes.len(), 4);
-    assert_eq!(episodes[0].kind, EpisodeKind::FillSlippage);
-    assert_eq!(episodes[1].kind, EpisodeKind::LatencySpike);
-    assert_eq!(episodes[2].kind, EpisodeKind::Anomaly);
-    assert_eq!(episodes[3].kind, EpisodeKind::Failure);
-
-    // Each episode should have the correct timestamp for replay
-    assert_eq!(episodes[0].recorded_at, t0);
-    assert_eq!(episodes[1].recorded_at, t1);
-    assert_eq!(episodes[2].recorded_at, t2);
-    assert_eq!(episodes[3].recorded_at, t3);
-
     Ok(())
 }
