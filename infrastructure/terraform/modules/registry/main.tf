@@ -97,3 +97,95 @@ resource "google_artifact_registry_repository_iam_member" "pull" {
   role       = "roles/artifactregistry.reader"
   member     = "serviceAccount:${each.value}"
 }
+
+# Rust package repository for Cargo-published crates.
+#
+# The platform's Rust libraries are published as a private registry for
+# reproducible builds and auditability. Immutable tags ensure a published
+# version cannot be replaced. CI can push but not delete, following the same
+# discipline as the container registry.
+resource "google_artifact_registry_repository" "rust_packages" {
+  project       = var.project_id
+  location      = var.region
+  repository_id = "qip-rust-${var.environment}"
+  description   = "Rust packages for the qip ${var.environment} platform."
+  format        = "GENERIC"
+
+  cleanup_policy_dry_run = true
+
+  labels = var.labels
+}
+
+# CI can push Rust packages.
+resource "google_artifact_registry_repository_iam_member" "rust_packages_ci_push" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.rust_packages.location
+  repository = google_artifact_registry_repository.rust_packages.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${var.ci_service_account}"
+}
+
+# Services can pull Rust packages.
+resource "google_artifact_registry_repository_iam_member" "rust_packages_cloud_run_agent" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.rust_packages.location
+  repository = google_artifact_registry_repository.rust_packages.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:service-${var.project_number}@serverless-robot-prod.iam.gserviceaccount.com"
+}
+
+resource "google_artifact_registry_repository_iam_member" "rust_packages_pull" {
+  for_each = var.pull_service_accounts
+
+  project    = var.project_id
+  location   = google_artifact_registry_repository.rust_packages.location
+  repository = google_artifact_registry_repository.rust_packages.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${each.value}"
+}
+
+# OCI deployment-bundle repository for versioned deployment artifacts.
+#
+# A deployment bundle encodes the complete state needed to reproduce a past
+# deployment: the exact versions of the binaries, the configuration they ran
+# under, the policy they were bound by, and attestations covering all of it.
+# Bundles are stored as generic artifacts and versioned like any other release.
+resource "google_artifact_registry_repository" "deployment_bundles" {
+  project       = var.project_id
+  location      = var.region
+  repository_id = "qip-deployments-${var.environment}"
+  description   = "Deployment bundles for the qip ${var.environment} platform."
+  format        = "GENERIC"
+
+  cleanup_policy_dry_run = true
+
+  labels = var.labels
+}
+
+# CI can push deployment bundles.
+resource "google_artifact_registry_repository_iam_member" "deployment_bundles_ci_push" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.deployment_bundles.location
+  repository = google_artifact_registry_repository.deployment_bundles.name
+  role       = "roles/artifactregistry.writer"
+  member     = "serviceAccount:${var.ci_service_account}"
+}
+
+# Services can pull deployment bundles.
+resource "google_artifact_registry_repository_iam_member" "deployment_bundles_cloud_run_agent" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.deployment_bundles.location
+  repository = google_artifact_registry_repository.deployment_bundles.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:service-${var.project_number}@serverless-robot-prod.iam.gserviceaccount.com"
+}
+
+resource "google_artifact_registry_repository_iam_member" "deployment_bundles_pull" {
+  for_each = var.pull_service_accounts
+
+  project    = var.project_id
+  location   = google_artifact_registry_repository.deployment_bundles.location
+  repository = google_artifact_registry_repository.deployment_bundles.name
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${each.value}"
+}
