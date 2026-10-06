@@ -55,6 +55,7 @@ use qip_core::{Decimal, Timestamp};
 use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::adapter::SourceDescriptor;
 use qip_market_ingestion::connector::FetchDigest;
+use qip_market_ingestion::connector::manifest::Region;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -240,6 +241,24 @@ pub struct DataReference {
     /// `[0, 1]` — carried so a research scheduler can weigh a reference from
     /// an unreliable source without re-deriving `SourceHealth` from scratch.
     availability: f64,
+    /// Version or ETag identifier for change detection without re-hashing.
+    #[serde(default)]
+    etag: Option<String>,
+    /// Pagination cursor for incremental fetches from the source.
+    #[serde(default)]
+    cursor: Option<String>,
+    /// Licensing class or entitlement level for this fetch.
+    #[serde(default)]
+    entitlement: Option<LicensingClass>,
+    /// Geographic region where the data originated.
+    #[serde(default)]
+    geography: Option<Region>,
+    /// When the data expires, if applicable.
+    #[serde(default)]
+    expiry: Option<Timestamp>,
+    /// Instructions for re-fetching this extent.
+    #[serde(default)]
+    re_fetch_instructions: Option<String>,
 }
 
 /// Whether `hash` has the shape `qip_core::sha256_hex` writes: sixty-four
@@ -267,6 +286,18 @@ struct DataReferenceWire {
     retrieved_at: Timestamp,
     cost_estimate: Decimal,
     availability: f64,
+    #[serde(default)]
+    etag: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    entitlement: Option<LicensingClass>,
+    #[serde(default)]
+    geography: Option<Region>,
+    #[serde(default)]
+    expiry: Option<Timestamp>,
+    #[serde(default)]
+    re_fetch_instructions: Option<String>,
 }
 
 impl TryFrom<DataReferenceWire> for DataReference {
@@ -302,6 +333,12 @@ impl TryFrom<DataReferenceWire> for DataReference {
             wire.retrieved_at,
             wire.cost_estimate,
             wire.availability,
+            wire.etag,
+            wire.cursor,
+            wire.entitlement,
+            wire.geography,
+            wire.expiry,
+            wire.re_fetch_instructions,
         )
     }
 }
@@ -352,6 +389,12 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -385,6 +428,12 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -428,6 +477,12 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -475,6 +530,12 @@ impl DataReference {
             digest.retrieved_at(),
             cost_estimate,
             availability,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -521,6 +582,12 @@ impl DataReference {
             retrieved_at,
             Decimal::ZERO,
             1.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -539,6 +606,12 @@ impl DataReference {
         retrieved_at: Timestamp,
         cost_estimate: Decimal,
         availability: f64,
+        etag: Option<String>,
+        cursor: Option<String>,
+        entitlement: Option<LicensingClass>,
+        geography: Option<Region>,
+        expiry: Option<Timestamp>,
+        re_fetch_instructions: Option<String>,
     ) -> Result<Self> {
         if bytes.is_empty() {
             return Err(Error::invalid(format!(
@@ -560,6 +633,12 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            etag,
+            cursor,
+            entitlement,
+            geography,
+            expiry,
+            re_fetch_instructions,
         )
     }
 
@@ -578,6 +657,12 @@ impl DataReference {
         retrieved_at: Timestamp,
         cost_estimate: Decimal,
         availability: f64,
+        etag: Option<String>,
+        cursor: Option<String>,
+        entitlement: Option<LicensingClass>,
+        geography: Option<Region>,
+        expiry: Option<Timestamp>,
+        re_fetch_instructions: Option<String>,
     ) -> Result<Self> {
         if locator.trim().is_empty() {
             return Err(Error::invalid(format!(
@@ -650,6 +735,12 @@ impl DataReference {
             retrieved_at,
             cost_estimate,
             availability,
+            etag,
+            cursor,
+            entitlement,
+            geography,
+            expiry,
+            re_fetch_instructions,
         })
     }
 
@@ -706,6 +797,30 @@ impl DataReference {
 
     pub fn availability(&self) -> f64 {
         self.availability
+    }
+
+    pub fn etag(&self) -> Option<&str> {
+        self.etag.as_deref()
+    }
+
+    pub fn cursor(&self) -> Option<&str> {
+        self.cursor.as_deref()
+    }
+
+    pub fn entitlement(&self) -> Option<LicensingClass> {
+        self.entitlement
+    }
+
+    pub fn geography(&self) -> Option<Region> {
+        self.geography
+    }
+
+    pub fn expiry(&self) -> Option<Timestamp> {
+        self.expiry
+    }
+
+    pub fn re_fetch_instructions(&self) -> Option<&str> {
+        self.re_fetch_instructions.as_deref()
     }
 
     /// Whether a re-fetch producing `bytes` still matches what this reference
