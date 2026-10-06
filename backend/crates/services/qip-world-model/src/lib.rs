@@ -30,6 +30,7 @@ pub mod liquidity;
 pub mod reaction;
 pub mod relationship;
 pub mod resolution_source;
+pub mod spawning;
 pub mod state;
 pub mod vocabulary;
 pub mod world;
@@ -66,6 +67,7 @@ pub use liquidity::{
 pub use reaction::ReactionEpisode;
 pub use relationship::{Relationship, RelationshipKind};
 pub use resolution_source::{RESOLUTION_SOURCE_PREFIX, ResolutionSourceClaim};
+pub use spawning::{WorldModelBranch, WorldModelSpawner};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};
 pub use vocabulary::{AltMetric, FeatureRead, MacroSeries, SubjectKind, UNWRITTEN, Unwritten};
 pub use world::{MATERIAL_FUNDAMENTAL_SURPRISE, WorldModel};
