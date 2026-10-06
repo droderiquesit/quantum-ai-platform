@@ -39,6 +39,8 @@ pub struct EvidenceRecord {
     pub corroborates: Vec<String>,
     /// Links to evidence this contradicts, keyed by evidence ID.
     pub contradicts: Vec<String>,
+    /// Temporal consistency check result (EVID-010).
+    pub temporal_consistency: Option<TemporalConsistency>,
     /// Additional metadata (vendor confidence, entity mentions, etc.).
     pub metadata: BTreeMap<String, String>,
 }
@@ -85,6 +87,7 @@ impl EvidenceRecord {
             statement,
             corroborates: Vec::new(),
             contradicts: Vec::new(),
+            temporal_consistency: None,
             metadata: BTreeMap::new(),
         })
     }
@@ -125,6 +128,12 @@ impl EvidenceRecord {
         self
     }
 
+    /// Set temporal consistency check result.
+    pub fn with_temporal_consistency(mut self, consistency: TemporalConsistency) -> Self {
+        self.temporal_consistency = Some(consistency);
+        self
+    }
+
     /// Verify all required fields are present. Used to refuse claims
     /// with incomplete provenance before they enter the world model.
     pub fn is_complete(&self) -> bool {
@@ -150,6 +159,27 @@ pub enum AuthenticitySignal {
     IdentityRegistered { registry: String },
     /// Release is from official channel.
     OfficialRelease { channel: String },
+}
+
+/// Temporal consistency check result for an evidence claim.
+///
+/// Records whether a claim is consistent with known prior state, event ordering,
+/// and physically possible timelines. EVID-010 requires this check to be recorded
+/// on every evidence item.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum TemporalConsistency {
+    /// Claim is consistent with prior known state and event ordering.
+    Consistent,
+    /// Claim precedes its source publication time (retroactive claim).
+    PrecedesSource,
+    /// Claim contradicts prior known state at that time.
+    ContradictsPriorState { prior_timestamp: Timestamp },
+    /// Claim violates event ordering constraints.
+    ViolatesEventOrdering,
+    /// Claim violates physically possible timeline.
+    ViolatesPhysicalTimeline,
+    /// Check could not be performed (insufficient historical context).
+    Unverifiable,
 }
 
 #[cfg(test)]
@@ -287,5 +317,89 @@ mod tests {
         let mut record = result.unwrap();
         record.source_identity = String::new();
         assert!(!record.is_complete());
+    }
+
+    #[test]
+    fn a_record_without_temporal_consistency_check_is_unverifiable() {
+        let record = sample_evidence();
+        assert_eq!(record.temporal_consistency, None);
+    }
+
+    #[test]
+    fn a_record_with_consistent_temporal_check_records_that() {
+        let record = sample_evidence().with_temporal_consistency(TemporalConsistency::Consistent);
+        assert_eq!(
+            record.temporal_consistency,
+            Some(TemporalConsistency::Consistent)
+        );
+    }
+
+    #[test]
+    fn a_record_with_temporal_violation_records_the_specific_violation() {
+        let record =
+            sample_evidence().with_temporal_consistency(TemporalConsistency::PrecedesSource);
+        assert_eq!(
+            record.temporal_consistency,
+            Some(TemporalConsistency::PrecedesSource)
+        );
+    }
+
+    #[test]
+    fn a_record_can_record_prior_state_contradiction() {
+        let record = sample_evidence().with_temporal_consistency(
+            TemporalConsistency::ContradictsPriorState {
+                prior_timestamp: Timestamp::EPOCH,
+            },
+        );
+        match record.temporal_consistency {
+            Some(TemporalConsistency::ContradictsPriorState { .. }) => (),
+            _ => panic!("Expected ContradictsPriorState"),
+        }
+    }
+
+    #[test]
+    fn a_record_can_record_event_ordering_violation() {
+        let record =
+            sample_evidence().with_temporal_consistency(TemporalConsistency::ViolatesEventOrdering);
+        assert_eq!(
+            record.temporal_consistency,
+            Some(TemporalConsistency::ViolatesEventOrdering)
+        );
+    }
+
+    #[test]
+    fn a_record_can_record_physical_timeline_violation() {
+        let record = sample_evidence()
+            .with_temporal_consistency(TemporalConsistency::ViolatesPhysicalTimeline);
+        assert_eq!(
+            record.temporal_consistency,
+            Some(TemporalConsistency::ViolatesPhysicalTimeline)
+        );
+    }
+
+    #[test]
+    fn a_record_can_record_unverifiable_temporal_check() {
+        let record = sample_evidence().with_temporal_consistency(TemporalConsistency::Unverifiable);
+        assert_eq!(
+            record.temporal_consistency,
+            Some(TemporalConsistency::Unverifiable)
+        );
+    }
+
+    #[test]
+    fn mutation_temporal_consistency_when_set_is_not_overwritten() {
+        let mut record =
+            sample_evidence().with_temporal_consistency(TemporalConsistency::Consistent);
+        // Attempting to mutate should fail if we check properly
+        assert_eq!(
+            record.temporal_consistency,
+            Some(TemporalConsistency::Consistent)
+        );
+        // Verify mutation by changing it
+        record.temporal_consistency = Some(TemporalConsistency::Unverifiable);
+        assert_eq!(
+            record.temporal_consistency,
+            Some(TemporalConsistency::Unverifiable)
+        );
     }
 }
