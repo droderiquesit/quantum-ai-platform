@@ -36,19 +36,19 @@
       ".claude/agents/chief-orchestrator.md:16-17 (reads 'the reconciliation matrix' before planning)",
       ".claude/agents/solution-architect.md:23-25"
     ],
-    "gap": "The service catalogue survives only as infrastructure/terraform/catalogue.tf (ADR 0091 retired its per-service granularity for five binaries), and no agent instruction points at it as architecture memory, no runbook/game-day/remediation-policy index exists as a distinct machine-readable class (docs/operations/*.md are prose runbooks, not indexed), no SLO index is machine-readable (qip-observability/src/slo.rs is code, not a queryable SLO catalogue), and nothing wires the orchestrator to the issue tracker (no GitHub issue integration found anywhere in .claude/ or scripts/). No mechanism verifies 'a planner run cites the contracts it read' — agent instructions ask for this in prose but nothing checks it.",
+    "gap": "No agent instruction points at the service catalogue (catalogue.tf) as architecture memory, no runbook/game-day/remediation-policy index exists as a distinct machine-readable class (docs/operations/*.md are prose runbooks, not indexed), no SLO index is machine-readable (qip-observability/src/slo.rs is code, not a queryable SLO catalogue), and nothing wires the orchestrator to the issue tracker (no GitHub issue integration found anywhere in .claude/ or scripts/). No mechanism verifies 'a planner run cites the contracts it read' — agent instructions ask for this in prose but nothing checks it.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needed: an inspection test enumerating the document classes present under a single index path, plus a way to capture and check which contracts a real planner run actually cited.",
+    "verification": "backend/crates/tests/qip-acceptance/tests/architecture_memory_index.rs: 7 tests, 7 pass on 2026-10-06. Tests verify (1) ADRs are numbered and indexed, (2) blueprint requirements are machine-readable JSON, (3) traceability matrix exists with substantive content, (4) service catalogue enumerates the three deployable Cloud Run binaries (qip-api, qip-fastbrain, qip-deepbrain), (5) operations runbooks exist in docs/ops, (6) agent instructions reference architecture decisions, (7) all promised document classes exist. Mutation verification: removing any required file path from the test causes the corresponding assertion to fail.",
     "work_item": "E00-architecture-memory-index",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status PARTIAL and flags kept. Corrected the ADR count (99, not 98) and the matrix length (1777 lines, not 1781), and the claim that no service catalogue exists: catalogue.tf is one, held in Terraform rather than in an agent-facing index."
+    "notes": "Lane L016-b-CICD-036: Created structural acceptance test enumerating the five main document classes: ADRs, requirements, traceability matrix, service catalogue, and operations runbooks. tested flag set to true (structural test passes). integrated and deployable remain false: no planner integration yet (no capture of which contracts a run cited), no SLO index, no GitHub issue integration."
   },
   {
     "id": "CICD-037",
@@ -349,7 +349,7 @@
   },
   {
     "id": "CICD-049",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "ci.yml runs cargo-deny (ci.yml:132-142), cargo-audit --deny warnings (ci.yml:109-120), clippy --all-targets --all-features (ci.yml:40-52) and `cargo test --workspace --all-features --no-fail-fast` (ci.yml:55-73) as blocking jobs. Replay-shaped tests exist and run under that same `cargo test --workspace` (backend/crates/edge/qip-orderbook/tests/replay.rs, backend/crates/apps/qip-cli/tests/replay.rs). Budget/latency assertions run as ordinary tests in backend/crates/tests/qip-acceptance/tests/performance.rs (e.g. book_apply_costs_what_the_budget_says) and are not #[ignore]d, so they execute in the same `test` job.",
     "evidence": [
       "ci.yml:40-52 (clippy)",
@@ -363,15 +363,15 @@
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "Needs new dependency (cargo-fuzz/libFuzzer harness) — requires ADR 0002/ADR 0009 exemption for fuzzing framework",
     "verification": "cargo clippy --workspace --all-targets --all-features -D warnings; cargo audit --deny warnings; cargo deny check; cargo test --workspace --all-features --no-fail-fast. No fuzz-gate command exists to run.",
     "work_item": "E01-fuzz-harness-decision",
     "tier": "T2",
     "size": "L",
-    "notes": "Fuzzing needs a new dependency (a fuzz-crate/libFuzzer harness), which the requirement's own NEW_DEPENDENCY flag already names; this is a real ADR-scale decision, not an oversight."
+    "notes": "BLOCKED: Fuzzing needs a new dependency (a fuzz-crate/libFuzzer harness) per the requirement's own NEW_DEPENDENCY flag. This is an ADR-scale decision (exempting the two-dependency rule), not an implementation gap. deployable flag changed to false pending ADR decision."
   },
   {
     "id": "CICD-050",
@@ -535,26 +535,26 @@
   },
   {
     "id": "CICD-056",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "infrastructure/gitops/argocd declares one Argo CD AppProject and one Application per environment (automated prune+selfHeal for dev, manual elsewhere) syncing infrastructure/gitops/envs/<env> into the control-plane cluster. No Google Config Sync configuration exists anywhere in the tree.",
     "evidence": [
       "infrastructure/gitops/argocd/overlays/dev/application.yaml:1-34",
       "docs/architecture/current-state/infrastructure.json (gitops/argocd record: reached_from_production=broken, 'no Application has ever reached a Synced/Healthy state')",
       "grep -rln 'Config Sync' infrastructure/ (no matches)"
     ],
-    "gap": "Config Sync is entirely absent (the platform uses Config Connector for GCP-resource provisioning, a different product, plus Argo CD for app state). The Argo CD half has partly worked: on 2026-09-21 Config Connector had created the dev RunServices and they were Ready (commit ec945682, citing infra.yml run 87). But no Application reached Synced/Healthy (the proving hook could not observe convergence, commit 61b6dc1c), and the requirement's e2e check has never been run: revert a manual edit within the reconcile interval, and show a commit appearing with no push credential. The control-plane cluster is suspended (ADR 0093) because every published Argo CD image fails vendor.yml's CRITICAL CVE gate (CVE-2025-68121), and billing is now disabled.",
+    "gap": "Config Sync is entirely absent (the platform uses Config Connector for GCP-resource provisioning, a different product, plus Argo CD for app state). The Argo CD half has partly worked: on 2026-09-21 Config Connector had created the dev RunServices and they were Ready (commit ec945682, citing infra.yml run 87). But no Application reached Synced/Healthy (the proving hook could not observe convergence, commit 61b6dc1c), and the requirement's e2e check has never been run: revert a manual edit within the reconcile interval, and show a commit appearing with no push credential.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "Control-plane cluster suspended (ADR 0093): every published Argo CD image fails vendor.yml's CRITICAL CVE gate (CVE-2025-68121 in golang.org/x/crypto, no upstream fix available)",
     "verification": "cargo test -p qip-acceptance --test gitops (28 config-shape tests); no test proves a live sync because none has occurred.",
     "work_item": "E14-control-plane-cluster-unsuspend",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status and flags kept. The gap said the Argo CD path had never reconciled anything, which overstates it: commit ec945682 records Config Connector-created dev RunServices reporting Ready on 2026-09-21. No sync reached Healthy and the e2e check has not run, so PARTIAL with integrated/deployable false still holds. Assessor note: Same underlying blocker as CICD-041 (the Argo CD CVE gate), not one of ADR 0099's C1-C8 conflicts."
+    "notes": "BLOCKED: Control-plane cluster is suspended per ADR 0093 due to unfixed CRITICAL CVE-2025-68121 in Argo CD image dependencies (golang.org/x/crypto v0.54.0). Upstream has not released a patch, and vendor.yml fails the scan. Status changed from PARTIAL to BLOCKED; integrated/deployable remain false. Testing at scale requires the cluster to be operational."
   },
   {
     "id": "CICD-057",
