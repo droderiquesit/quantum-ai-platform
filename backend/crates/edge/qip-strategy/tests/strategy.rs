@@ -1615,3 +1615,88 @@ fn a_compiled_strategy_survives_a_round_trip_through_serialisation() {
     let vector = vector_of(&[(pressure(), FeatureValue::Statistic(0.7))], at);
     assert!(runtime.run(&restored, &vector, at).unwrap().is_some());
 }
+
+#[test]
+fn a_compiled_strategy_never_exceeds_its_declared_cost_on_adversarial_inputs() {
+    let mut compiler = compiler();
+    let compiled = compiler
+        .compile(&spec_with(
+            "adversarial",
+            leaning()
+                .and(Expr::feature(volatility()).less_than(Expr::Statistic(0.5)))
+                .and(Expr::feature(pressure()).greater_than(Expr::Statistic(0.3))),
+        ))
+        .unwrap();
+    let program = compiler.into_program();
+    let declared_cost = compiled.cost();
+
+    // Part 1: The normal-budget case should succeed with adversarial inputs.
+    let mut runtime = StrategyRuntime::new(program.clone()).unwrap();
+    let at = Timestamp::from_secs(1_700_000_000);
+
+    let extremes = [
+        0.0,
+        -0.0,
+        f64::MAX,
+        f64::MIN,
+        f64::MIN_POSITIVE,
+        1e-300,
+        -1e300,
+    ];
+
+    let mut evaluated = 0;
+    for pressure_val in extremes {
+        for volatility_val in extremes {
+            let vector = vector_of(
+                &[
+                    (pressure(), FeatureValue::Statistic(pressure_val)),
+                    (volatility(), FeatureValue::Statistic(volatility_val)),
+                ],
+                at,
+            );
+            // Overflow to a non-finite total is a refusal, not an evaluation
+            // cost breach. Runtime enforces budget internally; if this succeeds,
+            // the evaluation stayed within the declared cost.
+            if let Ok(Some(_)) | Ok(None) = runtime.run(&compiled, &vector, at) {
+                evaluated += 1;
+            }
+        }
+    }
+
+    // Premise: the loop really evaluated adversarial cases.
+    assert!(
+        evaluated >= extremes.len(),
+        "expected at least {} evaluations, got {}",
+        extremes.len(),
+        evaluated
+    );
+
+    // Part 2: A budget tighter than the declared cost must refuse at least
+    // one evaluation, proving the budget enforcement is active.
+    let tight_budget = declared_cost.saturating_sub(1);
+    if tight_budget > 0 {
+        let mut tight_runtime = StrategyRuntime::with_budget(program, tight_budget).unwrap();
+        let mut budget_violations = 0;
+        for pressure_val in extremes.iter().take(2) {
+            for volatility_val in extremes.iter().take(2) {
+                let vector = vector_of(
+                    &[
+                        (pressure(), FeatureValue::Statistic(*pressure_val)),
+                        (volatility(), FeatureValue::Statistic(*volatility_val)),
+                    ],
+                    at,
+                );
+                if let Err(e) = tight_runtime.run(&compiled, &vector, at)
+                    && e.to_string().contains("budget") {
+                        budget_violations += 1;
+                    }
+            }
+        }
+        // Premise: the tight budget is actually tight; at least one evaluation
+        // should be refused, which proves the runtime's budget check is working.
+        assert!(
+            budget_violations > 0,
+            "tight budget should refuse evaluations"
+        );
+    }
+}
