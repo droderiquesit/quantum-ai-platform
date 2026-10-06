@@ -95,6 +95,15 @@ jobs:
             --base "$RUNNER_TEMP/base.lock.json" \
             --head crates/libs/qip-events/schemas.lock.json
 
+  # CICD-102: Validate that environment configuration only pins digests
+  # with valid Binary Authorization attestations.
+  attestation-check:
+    name: attestation check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/validate-attestations.sh
+
   # The build that would actually be deployed. Run separately from the tests
   # because a release build catches optimisation-dependent problems the debug
   # build does not, and because a green test suite that cannot be released is
