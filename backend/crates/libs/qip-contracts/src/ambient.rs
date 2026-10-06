@@ -62,7 +62,7 @@ pub enum Trigger {
 }
 
 /// One ambient detection.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AmbientSignal {
     id: String,
     class: SignalClass,
@@ -70,12 +70,25 @@ pub struct AmbientSignal {
     severity_bp: u32,
     trigger: Trigger,
     detected_at: Timestamp,
+    observed_deviation: f64,
+    expected_baseline: f64,
+    horizon: Duration,
+    novelty_bp: u32,
+    affected_entities: Vec<String>,
+    urgency_bp: u32,
+    suggested_actions: Vec<String>,
+    evidence_ids: Vec<String>,
+    expiry: Timestamp,
 }
 
 impl AmbientSignal {
-    /// Refuses an empty id, subject or trigger name, and a severity above
-    /// [`MAX_SEVERITY_BP`] — it is not clamped, because a clamped severity is
-    /// a detector bug that then survives.
+    /// Refuses an empty id, subject or trigger name, a severity above
+    /// [`MAX_SEVERITY_BP`], novelty or urgency above [`MAX_SEVERITY_BP`], or an
+    /// expiry before detected_at. The horizon must be non-negative. At least one
+    /// affected entity and one evidence id are required.
+    ///
+    /// All 15 parameters are required by CONTRACT-025 specification; none are optional.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: impl Into<String>,
         class: SignalClass,
@@ -83,6 +96,15 @@ impl AmbientSignal {
         severity_bp: u32,
         trigger: Trigger,
         detected_at: Timestamp,
+        observed_deviation: f64,
+        expected_baseline: f64,
+        horizon: Duration,
+        novelty_bp: u32,
+        affected_entities: Vec<String>,
+        urgency_bp: u32,
+        suggested_actions: Vec<String>,
+        evidence_ids: Vec<String>,
+        expiry: Timestamp,
     ) -> Result<Self> {
         let (id, subject) = (id.into(), subject.into());
         let trigger_name = match &trigger {
@@ -98,6 +120,40 @@ impl AmbientSignal {
                 "severity {severity_bp} bp exceeds {MAX_SEVERITY_BP}; scale the detector, it is not clamped"
             )));
         }
+        if novelty_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(format!(
+                "novelty {novelty_bp} bp exceeds {MAX_SEVERITY_BP}; scale it"
+            )));
+        }
+        if urgency_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(format!(
+                "urgency {urgency_bp} bp exceeds {MAX_SEVERITY_BP}; scale it"
+            )));
+        }
+        if expiry < detected_at {
+            return Err(Error::invalid(
+                "signal expiry cannot be before detection time",
+            ));
+        }
+        if horizon < Duration::ZERO {
+            return Err(Error::invalid("horizon must be non-negative"));
+        }
+        if affected_entities.is_empty() {
+            return Err(Error::invalid("signal must affect at least one entity"));
+        }
+        if affected_entities.iter().any(|e| e.is_empty()) {
+            return Err(Error::invalid(
+                "affected entities must not be empty strings",
+            ));
+        }
+        if evidence_ids.is_empty() {
+            return Err(Error::invalid(
+                "signal must reference at least one evidence item",
+            ));
+        }
+        if evidence_ids.iter().any(|e| e.is_empty()) {
+            return Err(Error::invalid("evidence ids must not be empty strings"));
+        }
         Ok(Self {
             id,
             class,
@@ -105,6 +161,15 @@ impl AmbientSignal {
             severity_bp,
             trigger,
             detected_at,
+            observed_deviation,
+            expected_baseline,
+            horizon,
+            novelty_bp,
+            affected_entities,
+            urgency_bp,
+            suggested_actions,
+            evidence_ids,
+            expiry,
         })
     }
     pub fn id(&self) -> &str {
@@ -124,6 +189,33 @@ impl AmbientSignal {
     }
     pub fn detected_at(&self) -> Timestamp {
         self.detected_at
+    }
+    pub fn observed_deviation(&self) -> f64 {
+        self.observed_deviation
+    }
+    pub fn expected_baseline(&self) -> f64 {
+        self.expected_baseline
+    }
+    pub fn horizon(&self) -> Duration {
+        self.horizon
+    }
+    pub fn novelty_bp(&self) -> u32 {
+        self.novelty_bp
+    }
+    pub fn affected_entities(&self) -> &[String] {
+        &self.affected_entities
+    }
+    pub fn urgency_bp(&self) -> u32 {
+        self.urgency_bp
+    }
+    pub fn suggested_actions(&self) -> &[String] {
+        &self.suggested_actions
+    }
+    pub fn evidence_ids(&self) -> &[String] {
+        &self.evidence_ids
+    }
+    pub fn expiry(&self) -> Timestamp {
+        self.expiry
     }
 }
 

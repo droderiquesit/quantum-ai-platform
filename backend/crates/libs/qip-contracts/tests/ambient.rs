@@ -24,6 +24,15 @@ fn signal(id: usize, class: SignalClass, severity: u32, secs: i64) -> AmbientSig
         severity,
         Trigger::Schedule("every-minute".into()),
         at(secs),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        500,
+        vec!["EURUSD".to_string()],
+        2_000,
+        vec!["alert".to_string()],
+        vec!["ev-1".to_string()],
+        at(secs + 7200),
     )
     .expect("a well-formed signal")
 }
@@ -56,6 +65,15 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
         10_000,
         Trigger::Event("world-model-updated".into()),
         at(0),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        500,
+        vec!["book".to_string()],
+        2_000,
+        vec!["alert".to_string()],
+        vec!["ev-1".to_string()],
+        at(7200),
     );
     assert!(ok.is_ok(), "premise: a valid signal is admitted");
     let unnamed = AmbientSignal::new(
@@ -65,6 +83,15 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
         1,
         Trigger::Schedule(String::new()),
         at(0),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        500,
+        vec!["book".to_string()],
+        2_000,
+        vec!["alert".to_string()],
+        vec!["ev-1".to_string()],
+        at(7200),
     );
     assert!(unnamed.is_err());
     let loud = AmbientSignal::new(
@@ -74,6 +101,15 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
         10_001,
         Trigger::Schedule("t".into()),
         at(0),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        500,
+        vec!["book".to_string()],
+        2_000,
+        vec!["alert".to_string()],
+        vec!["ev-1".to_string()],
+        at(7200),
     );
     assert!(loud.is_err());
 }
@@ -222,4 +258,267 @@ fn an_ambient_output_without_evidence_a_pass_an_approver_and_held_controls_is_re
         let refused = promote(advisory(), &case).expect_err("must refuse");
         assert!(refused.message().contains("advisory until promoted"));
     }
+}
+
+#[test]
+fn an_ambient_signal_must_have_novelty_and_urgency_within_range_and_expiry_after_detection() {
+    let base_ok = AmbientSignal::new(
+        "s1",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        5_000,
+        vec!["EURUSD".to_string()],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(200),
+    );
+    assert!(
+        base_ok.is_ok(),
+        "premise: valid signal with max values succeeds"
+    );
+
+    let novelty_too_high = AmbientSignal::new(
+        "s2",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        10_001,
+        vec!["EURUSD".to_string()],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(200),
+    );
+    assert!(
+        novelty_too_high.is_err(),
+        "novelty exceeding 10000 is refused"
+    );
+
+    let urgency_too_high = AmbientSignal::new(
+        "s3",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        5_000,
+        vec!["EURUSD".to_string()],
+        10_001,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(200),
+    );
+    assert!(
+        urgency_too_high.is_err(),
+        "urgency exceeding 10000 is refused"
+    );
+
+    let expiry_before_detection = AmbientSignal::new(
+        "s4",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        5_000,
+        vec!["EURUSD".to_string()],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(50),
+    );
+    assert!(
+        expiry_before_detection.is_err(),
+        "expiry before detection is refused"
+    );
+}
+
+#[test]
+fn an_ambient_signal_must_have_entities_and_evidence_and_non_empty_horizons() {
+    let no_entities = AmbientSignal::new(
+        "s1",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        5_000,
+        vec![],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(200),
+    );
+    assert!(
+        no_entities.is_err(),
+        "signal must affect at least one entity"
+    );
+
+    let empty_entity = AmbientSignal::new(
+        "s2",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        5_000,
+        vec!["EURUSD".to_string(), String::new()],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(200),
+    );
+    assert!(empty_entity.is_err(), "empty entity names are refused");
+
+    let no_evidence = AmbientSignal::new(
+        "s3",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        5_000,
+        vec!["EURUSD".to_string()],
+        5_000,
+        vec!["action".to_string()],
+        vec![],
+        at(200),
+    );
+    assert!(
+        no_evidence.is_err(),
+        "signal must reference at least one evidence item"
+    );
+
+    let empty_evidence = AmbientSignal::new(
+        "s4",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(3600),
+        5_000,
+        vec!["EURUSD".to_string()],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string(), String::new()],
+        at(200),
+    );
+    assert!(empty_evidence.is_err(), "empty evidence ids are refused");
+
+    let negative_horizon = AmbientSignal::new(
+        "s5",
+        SignalClass::Risk,
+        "EUR",
+        5_000,
+        Trigger::Event("test".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::from_secs(-1),
+        5_000,
+        vec!["EURUSD".to_string()],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(200),
+    );
+    assert!(negative_horizon.is_err(), "negative horizon is refused");
+}
+
+#[test]
+fn an_ambient_signal_carries_all_contract_fields_and_they_are_accessible() {
+    let sig = AmbientSignal::new(
+        "s1",
+        SignalClass::Opportunity,
+        "opportunity",
+        3_000,
+        Trigger::Schedule("daily".into()),
+        at(100),
+        0.15,
+        1.05,
+        Duration::from_secs(7200),
+        2_500,
+        vec!["EURUSD".to_string(), "GBPUSD".to_string()],
+        8_000,
+        vec!["research".to_string(), "specialist".to_string()],
+        vec!["ev-1".to_string(), "ev-2".to_string()],
+        at(300),
+    )
+    .expect("valid signal");
+
+    assert_eq!(sig.id(), "s1");
+    assert_eq!(sig.class(), SignalClass::Opportunity);
+    assert_eq!(sig.subject(), "opportunity");
+    assert_eq!(sig.severity_bp(), 3_000);
+    assert_eq!(sig.detected_at(), at(100));
+    assert_eq!(sig.observed_deviation(), 0.15);
+    assert_eq!(sig.expected_baseline(), 1.05);
+    assert_eq!(sig.horizon(), Duration::from_secs(7200));
+    assert_eq!(sig.novelty_bp(), 2_500);
+    assert_eq!(
+        sig.affected_entities(),
+        &["EURUSD".to_string(), "GBPUSD".to_string()][..]
+    );
+    assert_eq!(sig.urgency_bp(), 8_000);
+    assert_eq!(
+        sig.suggested_actions(),
+        &["research".to_string(), "specialist".to_string()][..]
+    );
+    assert_eq!(
+        sig.evidence_ids(),
+        &["ev-1".to_string(), "ev-2".to_string()][..]
+    );
+    assert_eq!(sig.expiry(), at(300));
+}
+
+#[test]
+fn an_ambient_signal_with_zero_horizon_is_admitted() {
+    let sig = AmbientSignal::new(
+        "s1",
+        SignalClass::Risk,
+        "test",
+        5_000,
+        Trigger::Event("alert".into()),
+        at(100),
+        0.05,
+        1.02,
+        Duration::ZERO,
+        5_000,
+        vec!["TEST".to_string()],
+        5_000,
+        vec!["action".to_string()],
+        vec!["ev-1".to_string()],
+        at(200),
+    );
+    assert!(sig.is_ok(), "zero horizon is permitted");
 }

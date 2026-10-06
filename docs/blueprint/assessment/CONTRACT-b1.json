@@ -601,12 +601,15 @@
   },
   {
     "id": "CONTRACT-025",
-    "status": "MISSING",
-    "current": "nothing. No ambient-model-mesh or signal type exists.",
-    "evidence": [],
-    "gap": "Nothing implements it.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "AmbientSignal type with full CONTRACT-025 fields: signal class, observed deviation, expected baseline, horizon, novelty/surprise, entities and assets affected, urgency, suggested wake targets, evidence lineage, and expiry.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -614,11 +617,11 @@
       "CONTRACT-003"
     ],
     "blocked_by": "",
-    "verification": "n/a",
+    "verification": "cargo test -p qip-contracts --test ambient: 10/10 passed; AmbientSignal::new refuses empty entities, empty evidence ids, negative horizon, novelty/urgency > 10000 bp, expiry before detection; all new fields accessible via accessor methods",
     "work_item": "E09-ambient-signal",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "All mutation-verified tests added and passing."
   },
   {
     "id": "CONTRACT-026",
