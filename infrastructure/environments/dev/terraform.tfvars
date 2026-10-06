@@ -47,6 +47,13 @@ environment      = "dev"
 region           = "us-east4"
 autonomy_ceiling = "paper_trading"
 
+venue_adapter_type = "simulated"
+
+# Development environment uses the simulated venue (in-process matching engine)
+# for fast iteration without requiring external venue connectivity (CICD-083, ADR 0003).
+# This makes the mock venue configuration explicit in tfvars rather than relying
+# on comments or hardcoded startup script values.
+
 # --- The trust zones (blueprint §46.1) ---------------------------------------
 #
 # The three zones the catalogue places a workload in, and no others: a zone

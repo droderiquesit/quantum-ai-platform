@@ -708,6 +708,7 @@ fn the_runbook_states_the_credential_freshness_the_code_requires() {
                 qip_risk_engine::autonomy::AutonomyLevel::SupervisedLive,
                 &operator,
                 "enabling live trading for the pilot",
+                Some(qip_risk_engine::autonomy::Identification::Identified),
                 much_later,
             )
             .is_err(),

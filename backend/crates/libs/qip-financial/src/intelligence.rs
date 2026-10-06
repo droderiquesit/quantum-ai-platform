@@ -13,6 +13,7 @@ use qip_core::{Decimal, Timestamp};
 use qip_events::{EventBody, Topic};
 use serde::{Deserialize, Serialize};
 
+use crate::identifiers::Identifiers;
 use crate::manifest::SourceManifest;
 use crate::quality::{DataQuality, Provenance};
 
@@ -47,11 +48,66 @@ impl Sentiment {
     }
 }
 
+/// What kind of thing an entity is.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EntityKind {
+    #[default]
+    Company,
+    Person,
+    Country,
+    Sector,
+    Industry,
+    Commodity,
+    Currency,
+    Index,
+    Venue,
+    CentralBank,
+    Regulator,
+    Fund,
+    SupplyChain,
+    Product,
+    Contract,
+    Weather,
+    Logistics,
+    Market,
+}
+
+impl EntityKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Company => "company",
+            Self::Person => "person",
+            Self::Country => "country",
+            Self::Sector => "sector",
+            Self::Industry => "industry",
+            Self::Commodity => "commodity",
+            Self::Currency => "currency",
+            Self::Index => "index",
+            Self::Venue => "venue",
+            Self::CentralBank => "central_bank",
+            Self::Regulator => "regulator",
+            Self::Fund => "fund",
+            Self::SupplyChain => "supply_chain",
+            Self::Product => "product",
+            Self::Contract => "contract",
+            Self::Weather => "weather",
+            Self::Logistics => "logistics",
+            Self::Market => "market",
+        }
+    }
+}
+
 /// An entity named in a document, with where and how strongly.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EntityMention {
     /// Surface form as it appeared in the text.
     pub text: String,
+    /// What kind of thing the entity is.
+    #[serde(default)]
+    pub kind: EntityKind,
     /// Resolved canonical entity, once identity resolution has run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_id: Option<String>,
@@ -59,6 +115,12 @@ pub struct EntityMention {
     pub confidence: f64,
     /// Whether the entity is the subject of the document or merely referenced.
     pub is_primary: bool,
+    /// Identifiers the entity is known by in various systems.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::identifiers::Identifiers::is_empty"
+    )]
+    pub identifiers: Identifiers,
     /// Sentiment directed at this entity specifically, which can differ from
     /// the document's overall tone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -435,4 +497,144 @@ pub struct DataQualityFailure {
 impl EventBody for DataQualityFailure {
     const TOPIC: Topic = Topic::DataQualityFailed;
     const SCHEMA_VERSION: u32 = 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identifiers::IdentifierKind;
+
+    #[test]
+    fn entity_kind_variants_have_string_representations() {
+        assert_eq!(EntityKind::Company.as_str(), "company");
+        assert_eq!(EntityKind::Person.as_str(), "person");
+        assert_eq!(EntityKind::Country.as_str(), "country");
+        assert_eq!(EntityKind::Sector.as_str(), "sector");
+        assert_eq!(EntityKind::Venue.as_str(), "venue");
+        assert_eq!(EntityKind::CentralBank.as_str(), "central_bank");
+        assert_eq!(EntityKind::SupplyChain.as_str(), "supply_chain");
+        assert_eq!(EntityKind::Weather.as_str(), "weather");
+    }
+
+    #[test]
+    fn entity_mention_includes_kind_and_identifiers() {
+        let mention = EntityMention {
+            text: "Apple Inc.".to_string(),
+            kind: EntityKind::Company,
+            entity_id: Some("entity_123".to_string()),
+            confidence: 0.95,
+            is_primary: true,
+            identifiers: Identifiers::new().with(IdentifierKind::Isin, "US0378331005"),
+            sentiment: None,
+        };
+
+        assert_eq!(mention.kind, EntityKind::Company);
+        assert!(mention.identifiers.contains(IdentifierKind::Isin));
+        assert_eq!(
+            mention.identifiers.get(IdentifierKind::Isin),
+            Some("US0378331005")
+        );
+    }
+
+    #[test]
+    fn same_name_different_kind_entities_are_distinct() {
+        let company_mention = EntityMention {
+            text: "Sterling".to_string(),
+            kind: EntityKind::Company,
+            entity_id: None,
+            confidence: 0.8,
+            is_primary: true,
+            identifiers: Identifiers::new(),
+            sentiment: None,
+        };
+
+        let currency_mention = EntityMention {
+            text: "Sterling".to_string(),
+            kind: EntityKind::Currency,
+            entity_id: None,
+            confidence: 0.9,
+            is_primary: false,
+            identifiers: Identifiers::new(),
+            sentiment: None,
+        };
+
+        // Same text, different kind → entities should not be equal
+        assert_ne!(company_mention, currency_mention);
+        assert_ne!(company_mention.kind, currency_mention.kind);
+    }
+
+    #[test]
+    fn entity_mention_kind_defaults_to_company() {
+        let json = r#"{"text":"Test Corp","confidence":0.5,"is_primary":true}"#;
+        let mention: EntityMention = serde_json::from_str(json).expect("deserialization");
+        // Default kind should be Company when not specified
+        assert_eq!(mention.kind, EntityKind::Company);
+    }
+
+    #[test]
+    fn entity_mention_identifiers_skip_serialization_when_empty() {
+        let mention = EntityMention {
+            text: "Apple Inc.".to_string(),
+            kind: EntityKind::Company,
+            entity_id: Some("entity_123".to_string()),
+            confidence: 0.95,
+            is_primary: true,
+            identifiers: Identifiers::new(),
+            sentiment: None,
+        };
+
+        let json = serde_json::to_string(&mention).expect("serialization");
+        // Empty identifiers should not appear in JSON
+        assert!(!json.contains("identifiers"));
+    }
+
+    #[test]
+    fn entity_mention_identifiers_included_in_serialization_when_present() {
+        let mention = EntityMention {
+            text: "Apple Inc.".to_string(),
+            kind: EntityKind::Company,
+            entity_id: Some("entity_123".to_string()),
+            confidence: 0.95,
+            is_primary: true,
+            identifiers: Identifiers::new().with(IdentifierKind::Isin, "US0378331005"),
+            sentiment: None,
+        };
+
+        let json = serde_json::to_string(&mention).expect("serialization");
+        assert!(json.contains("identifiers"));
+        assert!(json.contains("isin"));
+    }
+
+    #[test]
+    fn news_item_with_different_kind_entities() {
+        let mention_apple = EntityMention {
+            text: "Apple".to_string(),
+            kind: EntityKind::Company,
+            entity_id: Some("company_apple".to_string()),
+            confidence: 0.98,
+            is_primary: true,
+            identifiers: Identifiers::new().with(IdentifierKind::Isin, "US0378331005"),
+            sentiment: Some(Sentiment {
+                polarity: 0.3,
+                confidence: 0.7,
+                novelty: 0.5,
+            }),
+        };
+
+        let mention_usd = EntityMention {
+            text: "USD".to_string(),
+            kind: EntityKind::Currency,
+            entity_id: Some("currency_usd".to_string()),
+            confidence: 1.0,
+            is_primary: false,
+            identifiers: Identifiers::new(),
+            sentiment: None,
+        };
+
+        let entities = [mention_apple, mention_usd];
+
+        assert_eq!(entities.len(), 2);
+        assert_eq!(entities[0].kind, EntityKind::Company);
+        assert_eq!(entities[1].kind, EntityKind::Currency);
+    }
 }

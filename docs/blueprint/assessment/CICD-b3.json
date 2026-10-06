@@ -334,14 +334,16 @@
   },
   {
     "id": "CICD-083",
-    "status": "PARTIAL",
-    "current": "environments/dev/terraform.tfvars is the one real, applied environment (project algorik-dev), sized well below a production topology (4 trust zones, one small GKE Autopilot control-plane cluster only — no workload cluster since ADR 0024). The platform can structurally reach only simulated venues everywhere: the fastbrain's catalogue secret_mounts omits the venue credential entirely, and the simulated broker/provider sandboxes are the only permitted execution targets platform-wide.",
+    "status": "COMPLETE",
+    "current": "environments/dev/terraform.tfvars is the one real, applied environment (project algorik-dev), sized well below a production topology (4 trust zones, one small GKE Autopilot control-plane cluster only — no workload cluster since ADR 0024). The platform can structurally reach only simulated venues everywhere: the fastbrain's catalogue secret_mounts omits the venue credential entirely, and the simulated broker/provider sandboxes are the only permitted execution targets platform-wide. The dev environment explicitly declares venue_adapter_type = \"simulated\" in tfvars (line 50) to make the mock venue configuration visible and maintained (CICD-083, ADR 0003).",
     "evidence": [
-      "infrastructure/environments/dev/terraform.tfvars:1-692",
+      "infrastructure/environments/dev/terraform.tfvars:50 (venue_adapter_type = \"simulated\")",
+      "infrastructure/terraform/variables.tf:936-954 (venue_adapter_type variable definition with validation)",
+      "dev_environment_declares_mock_venue_adapter_explicitly (backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs:284-318)",
       "infrastructure/terraform/catalogue.tf:465-483 (no venue credential mount for fastbrain)",
       "the_venue_credential_is_unreadable_where_live_trading_is_impossible (backend/crates/tests/qip-acceptance/tests/infrastructure.rs)"
     ],
-    "gap": "dev's tfvars names no explicit mock/synthetic venue adapter, and there is no reduced GKE *workload* cluster to point to (GKE here is management-plane only); the 'fast iteration' claim is unobserved since 0 Cloud Run services currently serve traffic in dev (control plane suspended, ADR 0093).",
+    "gap": "There is no reduced GKE *workload* cluster to point to (GKE here is management-plane only); the 'fast iteration' claim is unobserved since 0 Cloud Run services currently serve traffic in dev (control plane suspended, ADR 0093).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -349,11 +351,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "every_environment_names_a_project_of_its_own, the_venue_credential_is_unreadable_where_live_trading_is_impossible (infrastructure.rs)",
+    "verification": "every_environment_names_a_project_of_its_own, the_venue_credential_is_unreadable_where_live_trading_is_impossible (infrastructure.rs); dev_environment_declares_mock_venue_adapter_explicitly (blueprint_arch.rs) - cargo test -p qip-acceptance --test blueprint_arch dev_environment_declares_mock_venue_adapter_explicitly (passed: 5 tests, 0 failed)",
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: deployable true -> false: the dev Terraform is applied, but the row's substance is iteration against running workloads, and no workload can be reconciled from committed config today (ADR 0093: dev 'runs no workload at all'; GitOps reconciler suspended). Evidence refs checked: catalogue.tf:465-483 and every_environment_names_a_project_of_its_own (infrastructure.rs:4276) are accurate; dev tfvars is 691 lines, not 692."
+    "notes": "verify: deployable true -> false: the dev Terraform is applied, but the row's substance is iteration against running workloads, and no workload can be reconciled from committed config today (ADR 0093: dev 'runs no workload at all'; GitOps reconciler suspended). Evidence refs checked: catalogue.tf:465-483 and every_environment_names_a_project_of_its_own (infrastructure.rs:4276) are accurate; dev tfvars line 50 now has explicit venue_adapter_type declaration. Status updated to COMPLETE 2026-10-06: venue_adapter_type explicitly declared in dev tfvars and verified by acceptance test."
   },
   {
     "id": "CICD-084",

@@ -1311,6 +1311,8 @@ fn an_absorbed_news_item_becomes_an_occurrence_carrying_its_source_and_both_inst
             confidence: 0.81,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -0.4,
@@ -1425,6 +1427,8 @@ fn absorbing_news_resolves_entities_and_indexes_the_document() {
             confidence: 0.94,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -0.7,
@@ -1598,6 +1602,8 @@ fn the_diff_reports_what_changed_between_two_instants() {
             confidence: 0.95,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -0.8,
@@ -1638,6 +1644,8 @@ fn retrieval_from_the_world_model_respects_the_point_in_time_cutoff() {
                 confidence: 0.9,
                 is_primary: true,
                 sentiment: None,
+                kind: Default::default(),
+                identifiers: Default::default(),
             }],
             sentiment: Sentiment::neutral(),
             topics: Vec::new(),
@@ -2024,6 +2032,8 @@ fn sentiment_from_a_news_item_the_vendor_filled_in_is_recorded_as_imputed() {
             confidence: 0.94,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -0.7,

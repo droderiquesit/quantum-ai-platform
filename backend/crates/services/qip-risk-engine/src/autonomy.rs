@@ -24,6 +24,16 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// The status of causal evidence for an action's effect on autonomy changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Identification {
+    /// The effect is identified by a causal estimate or experiment.
+    Identified,
+    /// The effect is correlational, forecasted, or otherwise not identified.
+    NotIdentified,
+}
+
 /// How much the platform may do without a human.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -564,11 +574,14 @@ impl AutonomyController {
     ///
     /// Every guard here exists because its absence would be a way for the
     /// platform to end up trading live without anyone deciding that it should.
+    /// Raising the level (especially to a live level) requires identified
+    /// causal evidence for the action's effect (AGENCY-056).
     pub fn request_change(
         &mut self,
         to: AutonomyLevel,
         operator: &OperatorIdentity,
         reason: impl Into<String>,
+        evidence: Option<Identification>,
         now: Timestamp,
     ) -> Result<()> {
         let reason = reason.into();
@@ -589,6 +602,22 @@ impl AutonomyController {
                 "this deployment's ceiling is {}, so {} cannot be reached; raising the ceiling is a deployment change, not a runtime one",
                 self.ceiling, to
             )));
+        }
+        // A raise requires identified causal evidence.
+        if to > self.level {
+            match evidence {
+                Some(Identification::Identified) => {}
+                Some(Identification::NotIdentified) => {
+                    return Err(Error::denied(
+                        "the autonomy raise must be supported by identified causal evidence, not a correlational forecast",
+                    ));
+                }
+                None => {
+                    return Err(Error::denied(
+                        "the autonomy raise must be supported by identified causal evidence",
+                    ));
+                }
+            }
         }
         // Going live needs two people. One operator with a compromised session
         // should not be able to turn on live trading.

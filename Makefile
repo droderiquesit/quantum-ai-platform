@@ -31,7 +31,7 @@ ENVIRONMENTS_DIR := infrastructure/environments
 # push. Nothing here reaches the network beyond the toolchain.
 # ---------------------------------------------------------------------------
 
-check: fmt-check lint test deps secrets
+check: fmt-check lint test deps secrets hooks
 	@echo "offline gates: all passed"
 
 # Everything, including the gates that need a network.
@@ -99,6 +99,12 @@ deps:
 secrets:
 	./scripts/check-secrets.sh
 	./scripts/check-secrets.sh --history
+
+# The repository's change-management hooks: the guard refuses destructive
+# commands before Bash executes them, the formatter runs after edits.
+# Both have been broken in ways that were invisible until exercised.
+hooks:
+	python3 .claude/hooks/test_hooks.py
 
 # Needs the advisory database, so it is not in the offline set.
 audit:
