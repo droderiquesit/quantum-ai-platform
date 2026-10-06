@@ -91,6 +91,8 @@ fn news(item_id: &str, company: &str, headline: String, article: &str) -> NewsIt
             confidence: 0.9,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -0.7,
