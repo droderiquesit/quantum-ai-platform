@@ -243,25 +243,32 @@ impl SensedRecord {
 
     /// Structural problems with the record. Empty means publishable.
     pub fn validate(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+
         match self {
-            Self::Quote(q) => q.validate(),
-            Self::Book(b) => b
-                .validate()
-                .err()
-                .map(|e| vec![e.to_string()])
-                .unwrap_or_default(),
+            Self::Quote(q) => {
+                issues.extend(q.validate());
+                issues
+            }
+            Self::Book(b) => {
+                issues.extend(
+                    b.validate()
+                        .err()
+                        .map(|e| vec![e.to_string()])
+                        .unwrap_or_default(),
+                );
+                issues
+            }
             Self::Bar(b) => {
-                if b.is_coherent() {
-                    Vec::new()
-                } else {
-                    vec![format!(
+                if !b.is_coherent() {
+                    issues.push(format!(
                         "incoherent bar: open {} high {} low {} close {}",
                         b.open, b.high, b.low, b.close
-                    )]
+                    ));
                 }
+                issues
             }
             Self::Trade(t) => {
-                let mut issues = Vec::new();
                 if !t.price.is_positive() {
                     issues.push(format!("non-positive trade price {}", t.price));
                 }
@@ -271,14 +278,12 @@ impl SensedRecord {
                 issues
             }
             Self::Tick(t) => {
-                if t.price.is_positive() {
-                    Vec::new()
-                } else {
-                    vec![format!("non-positive tick price {}", t.price)]
+                if !t.price.is_positive() {
+                    issues.push(format!("non-positive tick price {}", t.price));
                 }
+                issues
             }
             Self::News(n) => {
-                let mut issues = Vec::new();
                 if n.headline.trim().is_empty() {
                     issues.push("empty headline".into());
                 }
@@ -292,20 +297,24 @@ impl SensedRecord {
             }
             Self::Fundamental(f) => {
                 if f.metric.trim().is_empty() {
-                    vec!["empty metric name".into()]
-                } else {
-                    Vec::new()
+                    issues.push("empty metric name".into());
                 }
+                issues
             }
             Self::Macro(m) => {
-                let mut issues = subject_key_issues("macro series id", &m.series_id);
+                issues.extend(subject_key_issues("macro series id", &m.series_id));
                 issues.extend(statistic_issues("macro value", &m.series_id, m.value));
                 issues
             }
             Self::AlternativeData(a) => {
-                statistic_issues("alternative data value", &a.dataset, a.value)
+                issues.extend(statistic_issues(
+                    "alternative data value",
+                    &a.dataset,
+                    a.value,
+                ));
+                issues
             }
-            Self::CorporateAction(_) | Self::ReferenceData(_) => Vec::new(),
+            Self::CorporateAction(_) | Self::ReferenceData(_) => issues,
         }
     }
 
