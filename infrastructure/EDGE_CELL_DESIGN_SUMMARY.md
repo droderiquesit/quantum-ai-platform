@@ -132,7 +132,7 @@ Phase-by-phase guide for deploying and observing edge cells:
 - Cost breakdown per region
 - Metrics and alert policies
 
-### 4. `environments/MULTI_REGION_TEMPLATE.tfvars` — Reference Configuration
+### 4. `templates/MULTI_REGION_TEMPLATE.tfvars` — Reference Configuration
 
 Template showing all seven regional cells:
 
