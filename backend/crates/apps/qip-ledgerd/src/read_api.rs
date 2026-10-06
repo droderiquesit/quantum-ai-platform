@@ -88,8 +88,8 @@ impl ReadApi {
 
 /// Parse an account string into an Account enum.
 fn parse_account(account_str: &str) -> Result<Account> {
-    if account_str.starts_with("trading:") {
-        let trading_parts: Vec<&str> = account_str[8..].split('/').collect();
+    if let Some(rest) = account_str.strip_prefix("trading:") {
+        let trading_parts: Vec<&str> = rest.split('/').collect();
         if trading_parts.len() == 2 {
             Ok(Account::Trading {
                 cell: trading_parts[0].to_string(),
@@ -98,13 +98,13 @@ fn parse_account(account_str: &str) -> Result<Account> {
         } else {
             Err(Error::invalid("invalid trading account format"))
         }
-    } else if account_str.starts_with("venue:") {
+    } else if let Some(rest) = account_str.strip_prefix("venue:") {
         Ok(Account::Venue {
-            venue: account_str[6..].to_string(),
+            venue: rest.to_string(),
         })
-    } else if account_str.starts_with("fees:") {
+    } else if let Some(rest) = account_str.strip_prefix("fees:") {
         Ok(Account::Fees {
-            venue: account_str[5..].to_string(),
+            venue: rest.to_string(),
         })
     } else {
         Err(Error::invalid(
@@ -122,9 +122,15 @@ mod tests {
     use qip_storage::EngineConfig;
     use std::sync::Arc;
 
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     fn temp_store() -> Arc<LedgerStore> {
-        let temp_dir =
-            std::env::temp_dir().join(format!("qip-ledger-api-test-{}", std::process::id()));
+        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp_dir = std::env::temp_dir().join(format!(
+            "qip-ledger-api-test-{}-{}",
+            std::process::id(),
+            unique
+        ));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).expect("create test dir");
 

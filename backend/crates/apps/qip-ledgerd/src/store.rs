@@ -917,8 +917,8 @@ impl LedgerStore {
                 let account_str = parts[0];
                 let unit = parts[1];
 
-                let account = if account_str.starts_with("trading:") {
-                    let trading_parts: Vec<&str> = account_str[8..].split('/').collect();
+                let account = if let Some(rest) = account_str.strip_prefix("trading:") {
+                    let trading_parts: Vec<&str> = rest.split('/').collect();
                     if trading_parts.len() == 2 {
                         Account::Trading {
                             cell: trading_parts[0].to_string(),
@@ -927,13 +927,13 @@ impl LedgerStore {
                     } else {
                         continue;
                     }
-                } else if account_str.starts_with("venue:") {
+                } else if let Some(rest) = account_str.strip_prefix("venue:") {
                     Account::Venue {
-                        venue: account_str[6..].to_string(),
+                        venue: rest.to_string(),
                     }
-                } else if account_str.starts_with("fees:") {
+                } else if let Some(rest) = account_str.strip_prefix("fees:") {
                     Account::Fees {
-                        venue: account_str[5..].to_string(),
+                        venue: rest.to_string(),
                     }
                 } else {
                     continue;

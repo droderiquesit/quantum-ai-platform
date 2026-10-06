@@ -59,7 +59,9 @@ fn run() -> Result<()> {
     // Step 5: Start consuming from the event fabric
     // The fabric consumer will yield P1 outcomes that the store applies.
     // For now, this is a placeholder that cannot run without a fabric broker.
-    let broker_addr = "127.0.0.1:9090".parse().expect("valid socket address");
+    let broker_addr: std::net::SocketAddr = "127.0.0.1:9090"
+        .parse()
+        .map_err(|_| qip_core::error::Error::invalid("failed to parse broker address"))?;
     let _consumer = FabricConsumer::new(broker_addr, &config.fabric_consumer_group);
 
     // Step 6: Serve the read API

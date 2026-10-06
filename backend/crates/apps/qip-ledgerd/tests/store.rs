@@ -920,3 +920,129 @@ fn a_gap_parked_cell_rereads_from_its_parked_offset_once_the_missing_record_arri
         "the re-read ledger differs from a clean delivery"
     );
 }
+
+#[test]
+fn ledger_watermarks_are_signed_and_verifiable() {
+    // Ledger periodically signs (previous_digest, state_digest, timestamp) to
+    // form an unbreakable chain. The signature is HMAC-SHA256.
+    // Mutation: if signature is not verified, this test fails.
+    let signing_key = b"stable-ledger-key-12345";
+    let dir = temp_dir("watermark");
+    let (store, _) = open(&dir);
+
+    // Record first watermark
+    let timestamp_1 = 1_000_000_000u64;
+    let state_digest_1 = "digest-first".to_string();
+    store
+        .record_watermark(timestamp_1, state_digest_1.clone(), signing_key)
+        .expect("record first watermark");
+
+    // Verify it exists and is valid
+    let watermark_1 = store
+        .current_watermark()
+        .expect("get watermark")
+        .expect("watermark exists");
+    assert_eq!(watermark_1.timestamp, timestamp_1, "timestamp stored");
+    assert_eq!(watermark_1.state_digest, state_digest_1, "digest stored");
+    assert!(watermark_1.verify(signing_key), "watermark verifies");
+    assert!(
+        !watermark_1.verify(b"wrong-key"),
+        "wrong key fails verification"
+    );
+
+    // Record second watermark, which chains onto the first
+    let timestamp_2 = 1_000_001_000u64;
+    let state_digest_2 = "digest-second".to_string();
+    store
+        .record_watermark(timestamp_2, state_digest_2.clone(), signing_key)
+        .expect("record second watermark");
+
+    let watermark_2 = store
+        .current_watermark()
+        .expect("get watermark")
+        .expect("watermark exists");
+    assert_eq!(watermark_2.timestamp, timestamp_2, "second timestamp");
+    assert_eq!(watermark_2.state_digest, state_digest_2, "second digest");
+    assert_eq!(
+        watermark_2.previous_digest, watermark_1.signature,
+        "chains to previous"
+    );
+    assert!(watermark_2.verify(signing_key), "second watermark verifies");
+}
+
+#[test]
+fn corrupted_watermark_fails_verification() {
+    // Mutation: if verify() doesn't check the digest, this test fails.
+    let signing_key = b"immutable-ledger-key";
+    let dir = temp_dir("chain");
+    let (store, _) = open(&dir);
+
+    store
+        .record_watermark(1_000, "digest-1".to_string(), signing_key)
+        .expect("record 1");
+    store
+        .record_watermark(2_000, "digest-2".to_string(), signing_key)
+        .expect("record 2");
+    store
+        .record_watermark(3_000, "digest-3".to_string(), signing_key)
+        .expect("record 3");
+
+    let wm3 = store
+        .current_watermark()
+        .expect("get watermark")
+        .expect("watermark exists");
+
+    // Verify: signature is correct
+    assert!(wm3.verify(signing_key), "watermark 3 verifies");
+
+    // If digest were corrupted, verification fails
+    let mut corrupted = wm3.clone();
+    corrupted.state_digest = "tampered-digest".to_string();
+    assert!(
+        !corrupted.verify(signing_key),
+        "modified watermark fails verification"
+    );
+
+    // The previous_digest links to watermark 2's signature
+    assert!(
+        !wm3.previous_digest.is_empty(),
+        "watermark 3 chains to previous"
+    );
+}
+
+#[test]
+fn ledger_exports_current_state_including_watermarks() {
+    // Mutation: if export doesn't include balances, this test fails.
+    let mut a = Journal::new("cell-a", 1);
+    let a0 = a.outcome(fill("a-0", 100, "10.50", BookSide::Ask, true));
+    let a1 = a.outcome(fill("a-1", 50, "11.25", BookSide::Bid, true));
+
+    let dir = temp_dir("export");
+    let (store, _) = open(&dir);
+    let partition = schedule(&[a0, a1]);
+    for delivery in &partition {
+        store.apply(delivery).expect("apply");
+    }
+
+    // Sign and record a watermark before export
+    let signing_key = b"ledger-secret-key";
+    store
+        .record_watermark(2_000_000_000, "state-v1-hash".to_string(), signing_key)
+        .expect("record watermark");
+
+    // Export state
+    let exported = store.export_state().expect("export state");
+    assert!(!exported.balances.is_empty(), "exported contains balances");
+    assert!(
+        exported.chain_records_count > 0,
+        "exported contains chain records"
+    );
+    assert_eq!(
+        exported
+            .current_watermark
+            .as_ref()
+            .map(|w| w.state_digest.clone()),
+        Some("state-v1-hash".to_string()),
+        "exported watermark has correct digest"
+    );
+}
