@@ -362,7 +362,7 @@
   },
   {
     "id": "ARCH-015",
-    "status": "MISSING",
+    "status": "BLOCKED",
     "current": "nothing. There is no peer-region opportunity-token or reservation mechanism to benchmark (see ARCH-011 — the only mesh path is hub-and-spoke to the centre), so there is no cross-region coordination round trip to measure a 1ms-to-seconds budget against.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/mesh.rs:1-9 (hub-and-spoke only)",
@@ -382,7 +382,7 @@
     "work_item": "E11",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status MISSING confirmed (no token/peer-acknowledgement or cross-region reservation round trip exists; qip-edge reservation.rs is a local region ledger). blocked_by C7 -> C8: measuring a cross-region component needs regions deployed (C8); the mechanism itself is in-tree work gated on ARCH-011."
+    "notes": "Depends on ARCH-011 (peer-to-peer mesh for cross-region coordination) and requires execution-node deployment (C8). ARCH-011 is itself MISSING and blocked on C8. verify: status MISSING -> BLOCKED; depends_on: ARCH-011 confirmed; blocked_by: C8 confirmed. No cross-region opportunity-token or reservation mechanism exists to benchmark (only hub-and-spoke to centre via qip_edge/src/mesh.rs:1-9). Cannot proceed until ARCH-011 is implemented."
   },
   {
     "id": "ARCH-016",
