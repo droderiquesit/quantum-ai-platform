@@ -693,29 +693,26 @@
   },
   {
     "id": "AMBIENT-029",
-    "status": "MISSING",
-    "current": "no evidence acquisition mechanism exists. The platform has no way to decide when acquiring more information would reduce decision uncertainty, no way to rank candidate observations by expected value of information, no way to estimate acquisition cost, and no deadline-aware halting condition. qip-contracts has no types for InfoRequest, acquisition criteria, or acquisition status tracking.",
+    "status": "PARTIAL",
+    "current": "CurriculumItem (backend/crates/libs/qip-contracts/src/expansion.rs:308-349) holds expected_information_value and expected_economic_value fields as input metadata, but nothing ranks candidate observations by those fields or stops acquisition when marginal value falls below cost. The curriculum is built from detected signals (Platform::stage_reason -> stage_learn -> learn_from -> strategy_manager.learn) by thematic grouping, not by expected-value ranking. No acquisition cost model or deadline enforcement exists.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src: no InfoRequest, EvidenceAcquisition, or ValueOfInformation types",
-      "backend/crates/services: no active-sensing or curiosity engine",
-      "rg 'expected.?value.?information|active.?sensing|curiosity' backend/crates --glob '*.rs': no hits"
+      "backend/crates/libs/qip-contracts/src/expansion.rs:308-349 (CurriculumItem with expected_information_value, expected_economic_value)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:platform_learn (curriculum building, not value-based ranking)",
+      "rg 'value_of_information|EVI|information_gain' backend/crates: no acquisition-decision sites"
     ],
-    "gap": "No mechanism ranks observations by economic significance, uncertainty reduction, urgency and acquisition cost. No halt condition exists when marginal value falls below cost or at deadline. The requirement is strictly for paper-trade simulation only (no live acquisition).",
+    "gap": "No mechanism ranks candidate observations by expected value of information or stops acquisition at cost or deadline bounds. The observation and curriculum fields exist but nothing uses them to drive active sensing.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "AMBIENT-013",
-      "AMBIENT-031"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "Integration test: given two candidate observations and a fixed budget, verify ranking matches specification and acquisition halts at cost/deadline bound.",
+    "verification": "No test exists. Would need an integration test asserting that given two candidate observations, the ranking matches expected_information_value and economic_value, and that acquisition halts at a cost or deadline threshold.",
     "work_item": "E09-evidence-acquisition-by-evi",
     "tier": "T2",
     "size": "M",
-    "notes": "Depends on AMBIENT-013 (opportunity opportunities waking) and AMBIENT-031 (compute allocation machinery). Can be built entirely in-tree in Rust with qip-contracts types. No external service or new dependency is required."
+    "notes": "CurriculumItem structure is in place; acquisition mechanism is missing. Not blocked by any external dependency; can be built in-tree."
   },
   {
     "id": "AMBIENT-030",
@@ -742,26 +739,25 @@
   {
     "id": "AMBIENT-031",
     "status": "PARTIAL",
-    "current": "ModelReputation (domain, horizon, regime, accuracy_bp, signal_quality_bp, forecast_skill_bp) is implemented with weighted overall_bp calculation (40% accuracy, 30% quality, 30% skill) and full validation. ComputeAllocation records work_id, resource_type, units, allocated_at, model_reputation, and rationale with complete validation and metadata preservation. Both types are in qip_contracts::ambient with unit and integration tests. Missing: the allocation engine that routes compute based on reputation and expected value, and the work-killing mechanism for unproductive work.",
+    "current": "AttentionRouter (backend/crates/libs/qip-contracts/src/ambient.rs:224-299) manages attention budget per window, routing signals to pathways by severity and materiality threshold. It records Activated, Deferred, and Shed dispositions. ModelReputation (ambient.rs:460-491) tracks accuracy_bp, signal_quality_bp, forecast_skill_bp (0-10000 basis points) by domain, horizon, regime, with overall_bp as weighted average (40/30/30). ComputeAllocation (ambient.rs:494-542) records allocation decisions naming work_id, resource_type (CPU/GPU/TPU/QPU), units, reputation and rationale. However, no mechanism yet kills persistently unproductive work, and compute allocation remains a record type; there is no allocation engine that routes work requests based on reputation or kills work.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:440-542 (ModelReputation, ComputeAllocation types, validation, overall_bp calculation)",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs (a_model_reputation_requires_all_three_dimensions_and_all_metrics_within_bounds, a_model_reputation_overall_score_is_weighted_average, a_compute_allocation_requires_nonempty_fields_and_positive_units, a_compute_allocation_records_all_metadata_for_auditability, all mutation-verified)"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:460-491 (ModelReputation with domain/horizon/regime, weighted overall_bp)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:426-458 (ComputeResourceType enum: Cpu, Gpu, Tpu, Qpu)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:494-542 (ComputeAllocation struct and constructor validation)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:242-362 (four mutation-verified tests for reputation and allocation)"
     ],
-    "gap": "No allocation engine exists to route compute to high-value work. No work-killing mechanism exists to terminate unproductive tasks. No reputation accumulation pipeline exists to track model performance by domain/horizon/regime. Attention routing exists (AMBIENT-010) but compute allocation is separate.",
+    "gap": "ModelReputation and ComputeAllocation types are defined with full validation and auditability, but no allocation engine routes compute based on reputation, no work-killing mechanism monitors productivity, and the router remains signal-driven rather than value-driven.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "AMBIENT-005",
-      "AMBIENT-031"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "Integration test: under fixed budget, allocation favours higher-value request; zero-value job is killed.",
-    "work_item": "E09-meta-intelligence-allocation-engine",
-    "tier": "T2",
-    "size": "M",
-    "notes": "ModelReputation and ComputeAllocation types are foundational types for the allocation engine; both are now implemented. The allocation engine (stateful work tracking, value scoring, compute routing, job termination) is the remaining work. No new dependency or external service required."
+    "verification": "cargo test -p qip-contracts --test ambient runs four mutation-verified tests for ModelReputation and ComputeAllocation. Integration test and work-killing mechanism remain to be implemented.",
+    "work_item": "E09-meta-intelligence-compute-allocation",
+    "tier": "T3",
+    "size": "L",
+    "notes": "ModelReputation and ComputeAllocation infrastructure is in place and tested. Next phase: allocation engine to route work based on reputation and overall value, and work killer to monitor productivity. AttentionRouter's relationship to v11.6 Attention Router is unstated in the requirement."
   }
 ]
