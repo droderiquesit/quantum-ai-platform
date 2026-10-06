@@ -89,3 +89,21 @@ crates is placed in the slowest lane it hosts.
 | qip-cli | 3 | operator tooling over the other crates |
 | qip-acceptance | 3 | cross-cutting tests; never shipped |
 | qip-quantum | 4 | benchmarked experiments that never block execution; the classical baseline is a non-optional field |
+
+## Lane 2 functions (ARCH-017)
+
+The six named Lane 2 functions that operate on a seconds-to-minutes refresh budget:
+
+1. **Portfolio/capital placement** — `qip_kernel::central::regions` (region share allocation), `qip_kernel::central::horizon` (capital pool accounting), `qip_kernel::pre_positioning` (movement planning). Reached from production via `Platform::stage_reason`. Structurally excluded from Lane 0 because `qip-edge` cannot depend on `qip-capital`, which both `qip-kernel` and `qip-capital-fabric` depend on.
+
+2. **Regime shifts** — `qip_kernel::regime_allocation::RegimeAllocationEngine` and `qip_kernel::regime_transition::RegimeTransition`. Narrows sizing bounds within a Lane 2 budget; no dedicated market-making regime engine exists yet (ARCH-024).
+
+3. **Treasury moves** — `qip_capital_fabric::{forecast, transfer, corridor, gate, wallet}` (movement corridors, transfer gates) composed with `qip_api::treasury_feeds`. Appends to the ledger and wallet state within the Lane 2 budget. Execution refused under ADR 0021 (paper-trading boundary).
+
+4. **Repricing** — `qip_simulation_engine::resolution` and `qip_prediction` modules. Re-evaluates instrument prices against market data and forward models within the Lane 2 budget.
+
+5. **Cross-region inventory rebalancing** — `qip_edge::cross_region` (execution-side mirroring logic) composed with `qip_kernel::central::regions` (centre-side allocation). The inventory_targets policy slot is currently unproduced by qip-api, so cells mirror against operator-declared bands with no centre-issued targets.
+
+6. **Market-making position refresh** — `qip_kernel::quote_loop` within a Lane 2 budget (currently marked 'sent nowhere'; market-making execution is blocked by ADR 0021).
+
+All six functions are structurally excluded from the reflex hot path by crate dependency direction: no Lane 0 or Lane 1 crate can depend on `qip-capital`, `qip-capital-fabric`, or the cognitive binaries that compose them, enforced by `qip-acceptance`'s `lane_placement` test suite.

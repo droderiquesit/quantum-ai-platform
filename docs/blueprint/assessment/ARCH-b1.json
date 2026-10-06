@@ -179,7 +179,7 @@
     "work_item": "E05",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: status PARTIAL confirmed (no capability registry anywhere). Corrected 'custody itself does not exist': qip-capital-fabric/src/custody.rs holds the custody policy table; custody execution is C1. Named qip-portfolio-engine as the candidate asset-management owner the row missed."
+    "notes": "verify: status PARTIAL confirmed (no capability registry anywhere). Corrected 'custody itself does not exist': qip-capital-fabric/src/custody.rs holds the custody policy table; custody execution is C1. Named qip-portfolio-engine as the candidate asset-management owner the row missed. UPDATED: Capability registry created at docs/architecture/capability-registry.md, documenting the six capital-adjacent brains (Capital, Risk, Execution, Settlement, Ledger, Treasury/Custody), their owning crates, contracts, and isolation status (CRATE/SPLIT/SUBMODULE/SCATTERED)."
   },
   {
     "id": "ARCH-008",
@@ -429,7 +429,7 @@
     "work_item": "E00",
     "tier": "T1",
     "size": "M",
-    "notes": "Treasury moves and capital placement act on simulated balances only (ADR 0021). verify: status PARTIAL confirmed. Replaced architecture.rs:1391 (libs-vs-services; says nothing about qip-edge) with :792, which does exclude the capital crates from every edge crate; fixed pre_positioning path; added that inventory_targets is unproduced, so the rebalancing function is only half present."
+    "notes": "Treasury moves and capital placement act on simulated balances only (ADR 0021). verify: status PARTIAL confirmed. Replaced architecture.rs:1391 (libs-vs-services; says nothing about qip-edge) with :792, which does exclude the capital crates from every edge crate; fixed pre_positioning path; added that inventory_targets is unproduced, so the rebalancing function is only half present. UPDATED: Lane 2 functions now documented in docs/architecture/lane-placement.md with the six named functions: portfolio/capital placement, regime shifts, treasury moves, repricing, cross-region inventory rebalancing, and market-making position refresh."
   },
   {
     "id": "ARCH-018",
