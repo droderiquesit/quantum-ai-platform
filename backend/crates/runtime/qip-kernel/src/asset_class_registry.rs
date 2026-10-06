@@ -621,6 +621,30 @@ impl AssetClassRegistry {
             BTreeSet::new(),
         )?);
 
+        // Prediction — Event-driven opportunity detection. Markets resolve to
+        // bitemporal outcomes; pricing is mark with method and confidence.
+        // Instant settlement upon resolution, 24/7 trading, families that react
+        // to events.
+        add(AssetClassRecord::new(
+            AssetClass::Prediction,
+            ValuationEngine::IlliquidValuation,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            GridRule::Negotiated,
+            TradingCalendar::Continuous,
+            MarginRegime::Isolated,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [
+                F::EventDriven,
+                F::StatisticalArbitrage,
+                F::Arbitrage,
+                F::ExecutionAlpha,
+            ]
+            .into_iter()
+            .collect(),
+            BTreeSet::new(),
+        )?);
+
         let registry = Self { records };
         registry.check_hedge_map()?;
         Ok(registry)

@@ -736,7 +736,7 @@ fn classification_never_returns_the_resting_rung_because_no_instrument_property_
         },
     ];
     // Premise: this really does cover every class.
-    assert_eq!(AssetClass::ALL.len(), 13);
+    assert_eq!(AssetClass::ALL.len(), 14);
 
     for class in AssetClass::ALL {
         for profile in &profiles {
