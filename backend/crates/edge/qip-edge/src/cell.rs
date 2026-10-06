@@ -4086,6 +4086,23 @@ impl Cell {
             return Ok(report);
         }
 
+        // Check if any deployed strategy's envelope has expired. If so, this is
+        // treated as a halt: withdraw all resting orders and stop accepting new
+        // intents. The envelope is the contract between the centre and this
+        // cell; once it expires, the cell has no authorisation to continue.
+        if let Some(expired_strategy) = self.deployed.values().find(|d| !d.envelope.is_live(now)) {
+            report.halted = true;
+            let reason = format!(
+                "strategy {}'s capital envelope expired at {}; the cell stops trading and \
+                 withdraws all resting orders",
+                expired_strategy.envelope.strategy(),
+                expired_strategy.envelope.expires_at()
+            );
+            self.refuse(&mut report, "envelope_halt", &reason, now);
+            let _ = self.mass_cancel(gateway, now);
+            return Ok(report);
+        }
+
         // §36.3's node-crash row: a cell that restarted forms no order until
         // every venue's own account has agreed with its record. Placed after
         // the halt and gateway gates, which are the two an operator must act
@@ -5394,6 +5411,11 @@ impl Cell {
     /// `work` would never run at all in the state it exists for.
     pub fn withdraw_expired(&mut self, gateway: &mut dyn Placer, now: Timestamp) -> Vec<String> {
         if self.is_halted() {
+            return self.mass_cancel(gateway, now);
+        }
+        // If any deployed strategy's envelope has expired, treat as halt and
+        // withdraw all resting orders.
+        if self.deployed.values().any(|d| !d.envelope.is_live(now)) {
             return self.mass_cancel(gateway, now);
         }
         // What rests at a venue whose feed has gone silent or that is
