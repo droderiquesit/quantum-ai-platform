@@ -454,6 +454,10 @@ impl EpisodeOutcome {
 /// knowable, which for a resolved episode is the resolution instant. An
 /// episode is retrievable only after `known_at`, which is what keeps a
 /// backtest from recalling an outcome the platform had not yet seen.
+///
+/// `model_version` names the world model version that produced the causal
+/// edges (WORLD-063), and `model_derived` marks the record as a self-produced
+/// conclusion to prevent treating it as independent evidence.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Episode {
     pub episode_id: String,
@@ -482,6 +486,18 @@ pub struct Episode {
     pub outcome: Option<EpisodeOutcome>,
     pub at: Timestamp,
     pub known_at: Timestamp,
+    /// The version of the world model that produced the causal edges, or None
+    /// if the episode predates versioned world model output. Used to prevent
+    /// later readers from treating a self-produced conclusion as independent
+    /// evidence (WORLD-063).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_version: Option<String>,
+    /// True if this record is a self-produced conclusion from the world model
+    /// federation, false if it is external evidence or reasoned by other means.
+    /// Prevents self-reinforcement (WORLD-063): a model-derived causal edge is
+    /// not independent evidence that the edge holds.
+    #[serde(default)]
+    pub model_derived: bool,
 }
 
 impl Episode {
@@ -535,6 +551,20 @@ impl Episode {
         if self.horizon.as_nanos() < 0 {
             return Err(Error::invalid(format!(
                 "episode {} has a negative horizon",
+                self.episode_id
+            )));
+        }
+        if let Some(model_version) = &self.model_version {
+            if model_version.is_empty() {
+                return Err(Error::invalid(format!(
+                    "episode {} has an empty model_version",
+                    self.episode_id
+                )));
+            }
+        }
+        if self.model_derived && self.model_version.is_none() {
+            return Err(Error::invalid(format!(
+                "episode {} is marked model_derived but has no model_version",
                 self.episode_id
             )));
         }
@@ -732,4 +762,151 @@ fn encode(
     }
 
     Embedding::new(values, EPISODE_ENCODING)
+}
+
+/// An order rejection or failure, recorded for analysis and counterfactual
+/// evaluation (WORLD-046).
+///
+/// Each failure captures the gate that rejected the order, the control rules
+/// that fired, and the readings they checked, along with lineage to the world
+/// model version that informed the decision.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FailureMemory {
+    pub failure_id: String,
+    pub instrument: String,
+    /// The name of the gate that rejected the order (e.g., "max_exposure",
+    /// "capital_insufficient", "live_venue").
+    pub gate: String,
+    /// The rules that contributed to the rejection decision.
+    pub rules: Vec<String>,
+    /// The numerical readings from the control checks at the moment of
+    /// rejection, for counterfactual evaluation and machine learning.
+    pub readings: Vec<(String, f64)>,
+    /// When the rejection occurred.
+    pub at: Timestamp,
+    /// The version of the world model that informed the causal analysis of
+    /// the rejection, if applicable. Used to prevent treating a self-produced
+    /// conclusion as independent evidence (WORLD-063).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_version: Option<String>,
+    /// True if the rejection was informed by world model output, false if it
+    /// was independent evidence or routed by other means. Prevents
+    /// self-reinforcement (WORLD-063).
+    #[serde(default)]
+    pub model_derived: bool,
+}
+
+impl FailureMemory {
+    pub fn validate(&self) -> Result<()> {
+        if self.failure_id.is_empty() {
+            return Err(Error::invalid("a failure record needs an id"));
+        }
+        if self.instrument.is_empty() {
+            return Err(Error::invalid(format!(
+                "failure {} names no instrument",
+                self.failure_id
+            )));
+        }
+        if self.gate.is_empty() {
+            return Err(Error::invalid(format!(
+                "failure {} records no gate",
+                self.failure_id
+            )));
+        }
+        if let Some(model_version) = &self.model_version {
+            if model_version.is_empty() {
+                return Err(Error::invalid(format!(
+                    "failure {} has an empty model_version",
+                    self.failure_id
+                )));
+            }
+        }
+        if self.model_derived && self.model_version.is_none() {
+            return Err(Error::invalid(format!(
+                "failure {} is marked model_derived but has no model_version",
+                self.failure_id
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// A market reaction to an event, recorded for analysis of market dynamics
+/// and model calibration (WORLD-046).
+///
+/// Each market memory captures the market's response to an event or the
+/// platform's action, including price movement, volume change, and spread
+/// dynamics, along with lineage to the world model version that predicted
+/// or informed the event.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MarketMemory {
+    pub reaction_id: String,
+    pub instrument: String,
+    /// Description of the event that prompted this market reaction.
+    pub event: String,
+    /// Price change in basis points from the event to the measurement.
+    pub price_move_bps: f64,
+    /// Volume as a percentage of recent average daily volume.
+    pub volume_pct_adv: f64,
+    /// Spread change in basis points, or None if unmeasured.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub spread_move_bps: Option<f64>,
+    /// When the event occurred.
+    pub at: Timestamp,
+    /// When the market reaction was measured (typically after the event).
+    pub measured_at: Timestamp,
+    /// The version of the world model that predicted or informed this reaction,
+    /// if applicable. Used to prevent treating a self-produced conclusion as
+    /// independent evidence (WORLD-063).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub model_version: Option<String>,
+    /// True if the reaction was predicted or informed by world model output,
+    /// false if it was independent market data or observed passively. Prevents
+    /// self-reinforcement (WORLD-063).
+    #[serde(default)]
+    pub model_derived: bool,
+}
+
+impl MarketMemory {
+    pub fn validate(&self) -> Result<()> {
+        if self.reaction_id.is_empty() {
+            return Err(Error::invalid("a market reaction record needs an id"));
+        }
+        if self.instrument.is_empty() {
+            return Err(Error::invalid(format!(
+                "reaction {} names no instrument",
+                self.reaction_id
+            )));
+        }
+        if self.event.is_empty() {
+            return Err(Error::invalid(format!(
+                "reaction {} describes no event",
+                self.reaction_id
+            )));
+        }
+        if self.measured_at < self.at {
+            return Err(Error::invalid(format!(
+                "reaction {} is measured at {} but event was at {}; \
+                 a reaction cannot be measured before it occurred",
+                self.reaction_id,
+                self.measured_at.to_rfc3339(),
+                self.at.to_rfc3339()
+            )));
+        }
+        if let Some(model_version) = &self.model_version {
+            if model_version.is_empty() {
+                return Err(Error::invalid(format!(
+                    "reaction {} has an empty model_version",
+                    self.reaction_id
+                )));
+            }
+        }
+        if self.model_derived && self.model_version.is_none() {
+            return Err(Error::invalid(format!(
+                "reaction {} is marked model_derived but has no model_version",
+                self.reaction_id
+            )));
+        }
+        Ok(())
+    }
 }

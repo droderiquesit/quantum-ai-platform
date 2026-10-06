@@ -296,6 +296,8 @@ mod tests {
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,
+            model_version: None,
+            model_derived: false,
         }
     }
 

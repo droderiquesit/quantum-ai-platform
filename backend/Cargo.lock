@@ -668,8 +668,10 @@ dependencies = [
 name = "qip-opportunity-engine"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-events",
+ "qip-expansion",
  "qip-financial",
  "qip-numerics",
  "serde",

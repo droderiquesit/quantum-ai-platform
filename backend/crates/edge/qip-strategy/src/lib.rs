@@ -73,6 +73,7 @@ pub mod catalogue;
 pub mod compile;
 pub mod ir;
 pub mod model;
+pub mod opportunity;
 pub mod program;
 pub mod runtime;
 
@@ -83,5 +84,6 @@ pub use compile::{
 };
 pub use ir::{ArithmeticOp, CompareOp, Expr, ExtremumOp, LogicalOp, Rule, StrategySpec, Type};
 pub use model::{DistilledModel, ModelForm, TreeNode};
+pub use opportunity::{OpportunityCatalogue, OpportunityDefinition};
 pub use program::{Node, NodeRef, Op, Program};
 pub use runtime::StrategyRuntime;

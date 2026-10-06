@@ -593,6 +593,7 @@ fn the_schema_registry_can_be_instantiated_at_runtime() -> Result<()> {
         object_id: ObjectId::from_string("NYSE:A"),
         venue: "XNYS".into(),
         at: now,
+        capture_time: None,
         price: qip_core::Decimal::ONE,
         volume: qip_core::Decimal::ONE,
         quality: DataQuality::default(),

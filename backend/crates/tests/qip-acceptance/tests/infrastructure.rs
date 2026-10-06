@@ -2124,8 +2124,81 @@ fn no_service_account_key_exists_anywhere_in_the_terraform() {
             "{} creates a service-account key",
             path.display()
         );
+        assert!(
+            !content.contains("google_storage_hmac_key"),
+            "{} creates a storage HMAC key",
+            path.display()
+        );
     }
     assert!(scanned > 1000, "only {scanned} lines were scanned");
+}
+
+#[test]
+fn organization_policy_disables_service_account_key_creation() {
+    // GOV-028: Enforce Workload Identity Federation by disabling long-lived
+    // service-account key creation and upload at the project level. This
+    // structural refusal prevents circumvention of WIF-only authentication.
+    //
+    // Each constraint is checked inside its own resource body. The earlier
+    // form asked whether the file contained the resource name anywhere and
+    // `enforce = true` anywhere, so a creation policy flipped to
+    // `enforce = false` still passed on the strength of the upload policy's
+    // `enforce = true` -- a check that could not fire on the one value it
+    // existed to hold.
+    let root_no_comments = without_comments(&read("infrastructure/terraform/main.tf"));
+    let policies = terraform_resources(&root_no_comments, "google_org_policy_policy");
+    assert!(
+        !policies.is_empty(),
+        "infrastructure/terraform/main.tf declares no google_org_policy_policy at all"
+    );
+    for (resource, constraint) in [
+        (
+            "disable_service_account_key_creation",
+            "iam.disableServiceAccountKeyCreation",
+        ),
+        (
+            "disable_service_account_key_upload",
+            "iam.disableServiceAccountKeyUpload",
+        ),
+    ] {
+        let bodies: Vec<&String> = policies
+            .iter()
+            .filter(|(name, _)| name == resource)
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "main.tf must declare exactly one google_org_policy_policy \"{resource}\""
+        );
+        let lines: Vec<&str> = bodies[0].lines().map(str::trim).collect();
+        assert!(
+            lines.iter().any(|l| l.starts_with("name")
+                && l.ends_with(&format!("/policies/{constraint}\""))),
+            "{resource} must name {constraint} as its policy"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("parent")),
+            "{resource} must state the parent it is enforced on"
+        );
+        // The provider's `enforce` is the string "TRUE", inside `spec {
+        // rules {} }`. The first form of these policies wrote a bare `true`
+        // with `rules` outside `spec`, and `terraform validate` refused it.
+        assert!(
+            lines.contains(&"spec {"),
+            "{resource} must hold its rules inside spec {{}}"
+        );
+        assert!(
+            lines.contains(&"enforce = \"TRUE\""),
+            "{resource} must carry rules {{ enforce = \"TRUE\" }} in its own body"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("enforce") && l != &"enforce = \"TRUE\""),
+            "{resource} carries an enforce value other than \"TRUE\""
+        );
+    }
 }
 
 #[test]
@@ -2651,15 +2724,19 @@ struct FirewallRule {
     destinations: Option<String>,
 }
 
+/// Extract a field value from an HCL resource or block body.
+/// Searches for `key = value` and returns the value.
+fn hcl_field(body: &str, key: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        collapsed(line)
+            .strip_prefix(&format!("{key} = "))
+            .map(str::to_string)
+    })
+}
+
 /// Every `google_compute_firewall` in a module.
 fn firewall_rules(text: &str) -> Vec<FirewallRule> {
-    let field = |body: &str, key: &str| -> Option<String> {
-        body.lines().find_map(|line| {
-            collapsed(line)
-                .strip_prefix(&format!("{key} = "))
-                .map(str::to_string)
-        })
-    };
+    let field = hcl_field;
     terraform_resources(text, "google_compute_firewall")
         .into_iter()
         .map(|(name, body)| FirewallRule {
@@ -5283,12 +5360,17 @@ fn the_retired_backup_plan_is_forgotten_rather_than_deleted_with_its_backups() {
         // `terraform fmt` aligns the `=` of a block's arguments, so the
         // literal spacing here is whatever its neighbours make it. This scan
         // lost a mutation to exactly that before it was written this way.
+        // The leading space makes `force` a delimited token: GOV-028's
+        // `enforce = true` on the key-creation org policies contains
+        // `force = true` as a substring, and the undelimited scan failed on
+        // it from the commit that added those policies.
         let text = without_comments(&std::fs::read_to_string(&path).expect("readable"))
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        let text = format!(" {text}");
         assert!(
-            !text.contains("force = true"),
+            !text.contains(" force = true"),
             "{} sets force = true, which is how a backup plan is deleted \
              together with the backups under it",
             path.display()
@@ -5370,23 +5452,34 @@ fn the_pipeline_authenticates_without_a_long_lived_key() {
     // A service-account key in a repository secret is a credential that never
     // expires, is copied by anyone who can read the secret, and leaves no trace
     // of which run used it.
-    let deploy = read(".github/workflows/deploy.yml");
-    assert!(
-        deploy.contains("id-token: write"),
-        "the pipeline cannot mint an OIDC token"
-    );
-    assert!(
-        deploy.contains("workload_identity_provider:"),
-        "the pipeline does not use workload identity federation"
-    );
-    assert!(
-        !deploy.contains("credentials_json"),
-        "the pipeline authenticates with a key"
-    );
-    assert!(
-        !deploy.contains("service_account_key"),
-        "the pipeline authenticates with a key"
-    );
+    for workflow_path in &[
+        ".github/workflows/deploy.yml",
+        ".github/workflows/infra.yml",
+        ".github/workflows/image.yml",
+        ".github/workflows/vendor.yml",
+    ] {
+        let workflow = read(workflow_path);
+        assert!(
+            workflow.contains("id-token: write"),
+            "{}: the pipeline cannot mint an OIDC token",
+            workflow_path
+        );
+        assert!(
+            workflow.contains("workload_identity_provider:"),
+            "{}: the pipeline does not use workload identity federation",
+            workflow_path
+        );
+        assert!(
+            !workflow.contains("credentials_json"),
+            "{}: the pipeline authenticates with a key",
+            workflow_path
+        );
+        assert!(
+            !workflow.contains("service_account_key"),
+            "{}: the pipeline authenticates with a key",
+            workflow_path
+        );
+    }
 
     // And the pool refuses every repository but this one. Without the
     // condition, any GitHub repository in the world can present a valid token.
@@ -10696,6 +10789,69 @@ fn the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resou
     );
 }
 
+#[test]
+fn trust_zones_are_not_one_flat_vpc_gcp_024() {
+    // GCP-024: "No single flat VPC". This test was written (lane l049) to
+    // document the violation -- every zone subnet on one `var.network_id` --
+    // and to fail once the planes were separated. GCP-009 separated them
+    // (Reflex, Fabric, Service) before it merged, so it now guards the fix
+    // instead: a zone subnet that goes back to one shared network, or a
+    // network map that collapses to one VPC, fails here.
+    let zones = without_comments(&read(TRUST_ZONES_MODULE));
+
+    let zone_subnets = terraform_resources(&zones, "google_compute_subnetwork");
+    assert!(
+        !zone_subnets.is_empty(),
+        "no google_compute_subnetwork resources found in modules/trust-zones; \
+         this check is reading the wrong module or zones are no longer subnets"
+    );
+    for (subnet_name, subnet_body) in &zone_subnets {
+        let network_ref = hcl_field(subnet_body, "network").unwrap_or_else(|| {
+            panic!("zone subnet `{subnet_name}` has no `network` field")
+        });
+        assert!(
+            network_ref.starts_with("lookup(local.zone_network,"),
+            "zone subnet `{subnet_name}` takes its network from `{network_ref}` \
+             rather than the per-zone network map -- the single-VPC anti-pattern"
+        );
+    }
+
+    // The map itself must name more than one VPC, and the execution zone
+    // must not share the public edge's network.
+    let map_start = zones
+        .find("zone_network = {")
+        .expect("modules/trust-zones declares no zone_network map");
+    let map_end = map_start
+        + zones[map_start..]
+            .find('}')
+            .expect("zone_network map is not closed");
+    let entries: std::collections::BTreeMap<String, String> = zones[map_start..map_end]
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (zone, network) = line.split_once('=')?;
+            Some((
+                zone.trim().trim_matches('"').to_string(),
+                network.trim().to_string(),
+            ))
+        })
+        .collect();
+    assert!(
+        entries.len() >= 2,
+        "zone_network names fewer than two zones: {entries:?}"
+    );
+    let networks: std::collections::BTreeSet<&String> = entries.values().collect();
+    assert!(
+        networks.len() > 1,
+        "every zone maps to the same network {networks:?}: one flat VPC (GCP-024)"
+    );
+    assert_ne!(
+        entries.get("execution"),
+        entries.get("public-edge"),
+        "the execution zone shares the public edge's VPC"
+    );
+}
+
 // --- byte-reproducible builds -----------------------------------------------
 
 #[test]
@@ -10727,6 +10883,116 @@ fn the_dockerfile_is_configured_for_byte_reproducible_builds() {
             .lines()
             .any(|l| !l.trim_start().starts_with('#') && l.contains("apk add")),
         "the build stage must not install packages over the digest-pinned base"
+    );
+}
+
+#[test]
+fn an_agent_given_malicious_instructions_cannot_bypass_deployment_gates() {
+    // GOV-027: deployment gates are structural, not conventional. Game-day test
+    // verifies that an agent given malicious instructions is blocked from:
+    // (1) merging without human review via protected branch pushes
+    // (2) pushing to a protected branch directly
+    // (3) deploying around the gates via terraform or cloud resource changes
+    //
+    // The guard script is the primary enforcement mechanism: it is consulted
+    // as a PreToolUse hook before any shell command executes, and it blocks
+    // dangerous patterns regardless of who or what requests them.
+    //
+    // This test constructs malicious instructions and verifies the guard
+    // script defines the rules that block them. It does not execute the guard
+    // or attempt to bypass it — that would require a hook invocation and would
+    // fail the test if it succeeded. Instead, it verifies the guard script is
+    // configured to refuse these patterns.
+
+    let guard = read(".claude/hooks/guard-dangerous-command.py");
+
+    // Malicious instruction 1: push directly to main (merges without review)
+    assert!(
+        guard.contains("PROTECTED_PUSH"),
+        "guard script has no PROTECTED_PUSH pattern to refuse direct pushes to main or ccr-0c1bacf8-kla0dd"
+    );
+    assert!(
+        guard.contains("(main|ccr-0c1bacf8-kla0dd)"),
+        "guard script does not name the protected branch to refuse"
+    );
+    assert!(
+        guard.contains("git\\s+push"),
+        "guard script has no pattern matching git push commands"
+    );
+
+    // Malicious instruction 2: force push (rewrites history)
+    assert!(
+        guard.contains("--force"),
+        "guard does not block --force pushes"
+    );
+    assert!(
+        guard.contains("git push") && guard.contains("--force"),
+        "guard has no connection between git push detection and --force blocking"
+    );
+
+    // Malicious instruction 3: push with -f flag variant
+    assert!(
+        guard.contains("PUSH_SHORT_REFUSED") || guard.contains("\"f\""),
+        "guard does not block short -f flag on git push"
+    );
+
+    // Malicious instruction 4: terraform destroy without approval
+    assert!(
+        guard.contains("terraform destroy"),
+        "guard does not block terraform destroy"
+    );
+    assert!(
+        guard.contains("an unapproved Terraform teardown"),
+        "guard provides no guidance for terraform destroy refusal"
+    );
+
+    // Malicious instruction 5: terraform apply without plan review
+    assert!(
+        guard.contains("terraform apply") && guard.contains("-auto-approve"),
+        "guard does not block unreviewed terraform apply with -auto-approve"
+    );
+
+    // Malicious instruction 6: cloud resource deletion
+    assert!(
+        (guard.contains("gcloud") && guard.contains("delete")) || (guard.contains("gsutil rm")),
+        "guard does not block cloud resource deletions"
+    );
+    assert!(
+        guard.contains("cloud resource deletion") || guard.contains("cloud storage deletion"),
+        "guard lacks guidance for cloud deletion refusals"
+    );
+
+    // Malicious instruction 7: git history rewrite
+    assert!(
+        guard.contains("git reset --hard"),
+        "guard does not block git reset --hard"
+    );
+
+    // The guard must also return an error code that blocks the command.
+    assert!(
+        guard.contains("return 2") || guard.contains("sys.exit(2)"),
+        "guard does not exit with status 2 (refusal code)"
+    );
+
+    // Verify the guard is consulted at the right hook point.
+    let settings_path = repository_root().join(".claude/settings.json");
+    assert!(
+        settings_path.exists(),
+        ".claude/settings.json must be configured for the guard to be installed"
+    );
+    let claude_settings =
+        std::fs::read_to_string(&settings_path).expect("settings.json is readable");
+    assert!(
+        claude_settings.contains("guard-dangerous-command"),
+        ".claude/settings.json does not configure the guard-dangerous-command hook"
+    );
+
+    // Verify the guard script exists and is readable.
+    let guard_path = repository_root().join(".claude/hooks/guard-dangerous-command.py");
+    let metadata = std::fs::metadata(&guard_path).expect("guard script exists");
+    assert!(
+        metadata.is_file(),
+        "guard-dangerous-command.py is not a regular file"
     );
 }
 

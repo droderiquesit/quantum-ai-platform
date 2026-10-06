@@ -1749,6 +1749,87 @@ fn counterfactual_outcomes_are_journaled_for_reproducibility() -> Result<()> {
 
     Ok(())
 }
+
+/// Per-horizon calibration metrics (Brier score and evaluation count) are
+/// recorded with the horizon label for each resolved thesis.
+///
+/// This test prevents regression where per-horizon metrics are silently dropped
+/// or recorded without the horizon discriminator, making per-horizon calibration
+/// tracking invisible to operators.
+#[test]
+fn per_horizon_brier_scores_are_recorded_with_horizon_label() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let _first = platform.run_cycle(start());
+
+    // Premise: the first cycle produces claims; collect them for verification.
+    assert!(
+        !platform.predictions().is_empty(),
+        "no claims were generated"
+    );
+
+    // Get the claim that will be resolved, and track its horizon for verification.
+    let prediction = platform.predictions()[0].clone();
+    let claim = prediction
+        .claim
+        .clone()
+        .expect("a claim records its resolution time");
+    let horizon = prediction.proposition.resolves_at.since(claim.formed_at);
+
+    // Move time past the horizon with significant price movement so the verdict is
+    // informative (not inconclusive due to quiet tape).
+    let horizon_resolution = prediction
+        .proposition
+        .resolves_at
+        .saturating_add(Duration::from_mins(1));
+    let swings: Vec<SensedRecord> = (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            let at = horizon_resolution.saturating_sub(Duration::from_mins((20 - i) * 60));
+            bar("AAA", at, open, close)
+        })
+        .collect();
+    platform.observe(swings);
+
+    // Run the cycle after the horizon passes, which should trigger grading.
+    let _ = platform.run_cycle(horizon_resolution);
+
+    // Verify per-horizon metrics are recorded with the horizon label.
+    let snapshot = recorded(&platform);
+
+    // Format horizon as duration string (e.g., "3600s" for 1 hour).
+    let horizon_secs = horizon.as_secs_f64() as i64;
+    let horizon_label = format!("{}s", horizon_secs);
+
+    // Check that per-horizon Brier score is recorded.
+    let brier = snapshot.gauge(
+        names::BELIEF_BRIER_SCORE_BY_HORIZON,
+        &labels([("horizon", &horizon_label)]),
+    );
+    assert!(
+        brier.is_some(),
+        "per-horizon Brier score not recorded for horizon label '{}'",
+        horizon_label
+    );
+
+    // Check that per-horizon evaluation count is recorded.
+    let eval_count = snapshot.gauge(
+        names::BELIEF_EVALUATIONS_BY_HORIZON,
+        &labels([("horizon", &horizon_label)]),
+    );
+    assert!(
+        eval_count.is_some(),
+        "per-horizon evaluation count not recorded for horizon label '{}'",
+        horizon_label
+    );
+
+    Ok(())
+}
+
 // --- CAPITAL-036: shadow portfolios run counterfactual allocations -----------
 
 #[test]

@@ -149,6 +149,7 @@ fn print_hedge_price(platform: &mut Platform, price: Decimal) {
         object_id: ObjectId::from_string(HEDGE),
         venue: "XNYS".into(),
         at: start(),
+        capture_time: None,
         price,
         size: Decimal::from_int(100),
         aggressor: None,

@@ -197,7 +197,7 @@
   },
   {
     "id": "CICD-008",
-    "status": "INCORRECT",
+    "status": "BLOCKED",
     "current": "nothing. The architecture is deliberately project-scoped rather than folder-scoped: infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md states there is no org_id variable and none is added, because 'a variable that exists so a module can claim organisation-level reach, in a repository that has no organisation-level anything else, would be the beginning of a shell rather than a capability.' modules/cicd (build/signing identity) and modules/registry (Artifact Registry) are instantiated inside each environment's own project (e.g. algorik-dev), not in a separate, isolated supply-chain-boundary project or folder.",
     "evidence": [
       "infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md:1-13",
@@ -213,12 +213,12 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "ADR reconciliation: project-scoped (current) vs folder-scoped (blueprint) isolation model",
     "verification": "grep -rn google_folder infrastructure/terraform/ (currently empty); a real implementation would need a new Terraform plan showing a prod/engineering folder created and every build/registry/signing resource moved into it.",
     "work_item": "E14",
     "tier": "T3",
     "size": "L",
-    "notes": "Not in ADR 0099's C1-C8 register — this is a standing architectural choice (project-scoped isolation) that has not been reconciled against the blueprint's folder model at all. verify: MISSING -> INCORRECT. The verification explicitly forbids 'any build pool, registry, signing key or GitOps controller in any workload project', and the tree does exactly that: the registry, the Binary Authorization attestor's KMS signing key and the GitOps control-plane module are all instantiated in the workload project algorik-dev. Closing this means moving existing resources, not only adding a folder, which MISSING understated. Evidence range for modules/cicd/main.tf corrected (the file is 306 lines)."
+    "notes": "This is a standing architectural choice documented in infrastructure/terraform/modules/scc/ORGANISATION-SCOPED.md. The choice to use project-scoped isolation conflicts with the blueprint's folder hierarchy requirement. Blocked pending ADR decision to reconcile the two models. Not in ADR 0099's C1-C8 conflict register."
   },
   {
     "id": "CICD-009",

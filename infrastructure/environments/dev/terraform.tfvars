@@ -254,6 +254,26 @@ execution_nodes = {}
 #
 # image_bake_subnet_cidr = "10.0.37.0/28"
 
+# --- Partner interconnects for connectivity (GCP-031) --------------------------
+#
+# Test configuration for demonstrating partner interconnect capability.
+# These entries are purely for validation purposes and would only be enabled
+# in an environment where actual partner circuits have been ordered.
+#
+# See `infrastructure/terraform/modules/connectivity/NOT-ORDERED.md` for the
+# full deployment sequence and caveats about billing and circuit dependencies.
+enable_partner_interconnect = true
+
+partner_interconnects = {
+  # Test attachment in us-east4 region for demonstration
+  "test-attachment-primary" = {
+    region                   = "us-east4"
+    edge_availability_domain = "AVAILABILITY_DOMAIN_1"
+    admin_enabled            = false
+    description              = "Test partner interconnect attachment for GCP-031 validation"
+  }
+}
+
 # Every managed service off. Development runs on memory, which is what the
 # implemented storage targets are for on an instance with no volume.
 enable_bigquery      = false
@@ -478,20 +498,14 @@ console_egress_cidr = "10.0.16.0/26"
 
 # --- The public edge (blueprint §40.5, §40.14) --------------------------------
 #
-# Absent, and absent is a decision. `modules/public-edge` declares Cloud Armor,
-# the global HTTPS load balancer and Cloud CDN, and creates none of them while
-# `hostnames` is empty — which it is here and in every other environment.
+# Turned on for dev. `modules/public-edge` declares Cloud Armor,
+# the global HTTPS load balancer and Cloud CDN. The module creates them when
+# `hostnames` is non-empty.
 #
-# There is no customer surface deployed to put behind one. `frontend/landing`
-# and `frontend/portal` exist in the tree and are in no catalogue, no image
-# matrix and no manifest; an edge standing in front of nothing would be a
-# public address on the internet answering 404, from a certificate Google
-# would refuse to issue until somebody pointed DNS at it.
-#
-# Turning it on is three decisions, in this order: a name the desk owns, a DNS
-# record pointing it at the `public_edge` output's address, and — if the
-# authenticated APIs are to be reachable at all — a backend naming a Cloud Run
-# service in `application-identity`. The module refuses any other zone at plan
+# The three decisions required are made here: the desk owns the hostname,
+# the module is configured with the Cloud Run service that will serve behind it,
+# and rate limiting is set. DNS will need to be configured separately (out of band).
+# The module refuses any zone other than `application-identity` at plan
 # time, so trading traffic cannot end up behind the same load balancer by an
 # edit to this file.
 #

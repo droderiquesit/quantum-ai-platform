@@ -21,6 +21,7 @@ pub mod catalyst;
 pub mod detector;
 pub mod engine;
 pub mod opportunity;
+pub mod signal_mapper;
 
 pub use catalyst::{
     CatalystDetector, CatalystLink, ImpactAssessment, ImpactEstimate, ImpactHistory, ImpactScope,

@@ -2705,6 +2705,59 @@ fn no_risk_crate_can_name_a_strategy() {
     }
 }
 
+#[test]
+fn the_capital_brain_reaches_no_ledger_or_reservation_writer() {
+    // CAPITAL-022: The Capital Brain (allocation, envelope, compounding, recall
+    // modules) emit decision types that the kernel journals. These must remain
+    // independent of the ledger and reservation writers, which mutate
+    // authoritative capital state. They share one crate today, so the boundary
+    // is enforced at the module level by asserting that the brain source files
+    // never name ledger or reservation writer types directly.
+    //
+    // The check scans `qip_capital::{allocation, envelope, compounding, recall}`
+    // and asserts that none of them import or reference ledger or reservation
+    // writer identifiers. The ledger writers are UserLedger, CashBalance (in
+    // qip_capital::ledger), and ReservationLedger, Reservation (in
+    // qip_capital::reservation).
+
+    let brain_modules = [
+        "backend/crates/services/qip-capital/src/allocation.rs",
+        "backend/crates/services/qip-capital/src/envelope.rs",
+        "backend/crates/services/qip-capital/src/compounding.rs",
+        "backend/crates/services/qip-capital/src/recall.rs",
+    ];
+
+    let ledger_writer_types = [
+        "UserLedger",
+        "CashBalance",
+        "ReservationLedger",
+        "Reservation",
+    ];
+
+    let root = repository_root();
+    let mut offenders = Vec::new();
+
+    for module_path in brain_modules {
+        let full_path = root.join(module_path);
+        let premises = std::fs::read_to_string(&full_path)
+            .unwrap_or_else(|error| panic!("cannot read {module_path}: {error}"));
+
+        for ledger_type in ledger_writer_types {
+            if premises.contains(ledger_type) {
+                offenders.push(format!(
+                    "{module_path} names the ledger writer type {ledger_type}"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "a Capital Brain module names a ledger or reservation writer, \
+         violating CAPITAL-022's separation requirement: {offenders:?}"
+    );
+}
+
 /// The crates through which capital moves: the envelope issuer and signer,
 /// and the fabric that pre-positions cash against an issued corridor.
 const CAPITAL_MOVING: [&str; 2] = ["qip-capital", "qip-capital-fabric"];

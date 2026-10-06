@@ -689,9 +689,11 @@ fn run() -> Result<()> {
         link.as_mut(),
         installer.as_mut(),
         &mut strategies,
-        &clock,
-        started,
-        metrics,
+        ServeContext {
+            clock: &clock,
+            started,
+            metrics,
+        },
         mesh_series,
     )
 }
@@ -828,6 +830,13 @@ struct PassLoop<'a> {
     requoter: Option<&'a mut Requoter>,
 }
 
+/// Timing and observability context for the serve loop.
+struct ServeContext<'a> {
+    clock: &'a Arc<dyn Clock>,
+    started: qip_core::Timestamp,
+    metrics: &'a Arc<Metrics>,
+}
+
 fn serve(
     config: &NodeConfig,
     cell: &mut Cell,
@@ -837,9 +846,7 @@ fn serve(
     mut link: Option<&mut MeshLink>,
     mut installer: Option<&mut ArbitrageInstaller>,
     strategies: &mut StrategyInstaller,
-    clock: &Arc<dyn Clock>,
-    started: qip_core::Timestamp,
-    metrics: &Arc<Metrics>,
+    context: ServeContext<'_>,
     mut mesh_series: MeshSeries,
 ) -> Result<()> {
     let address = format!("0.0.0.0:{}", config.health_port);
@@ -867,11 +874,11 @@ fn serve(
     let mut pass_log = PassLog::new(5, Duration::from_secs(10))?;
     // The four golden signals with the pass as the unit of work, saturation
     // measured against the allowance this loop gives one request (OBS-018).
-    let pass_meter = PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?;
+    let pass_meter = PassMeter::new(Arc::clone(context.metrics), REQUEST_TIMEOUT)?;
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
-                let now = clock.now();
+                let now = context.clock.now();
                 // The second halt wire, polled first so that the halt it
                 // applies is in the journal the flush below ships and in the
                 // delta the exchange below publishes. It reads a file on this
@@ -992,8 +999,8 @@ fn serve(
                     &stats,
                     mirror,
                     health,
-                    started,
-                    metrics,
+                    context.started,
+                    context.metrics,
                 ) {
                     eprintln!("qip-edge-node: health request failed: {}", error.message());
                 }

@@ -146,6 +146,9 @@ pub struct Evaluation {
     pub evaluated_at: Timestamp,
     /// Why this verdict, for the record.
     pub rationale: String,
+    /// Time horizon the thesis covered, for per-horizon calibration tracking.
+    #[serde(default)]
+    pub horizon: Duration,
 }
 
 impl Evaluation {
@@ -302,6 +305,7 @@ impl ThesisEvaluator {
             contributors: claim.contributors.clone(),
             evaluated_at: now,
             rationale,
+            horizon: claim.horizon(),
         })
     }
 

@@ -60,16 +60,17 @@
   },
   {
     "id": "EXEC-022",
-    "status": "MISSING",
-    "current": "nothing implements a venue-specific microstructure model. qip_market::microstructure::MicrostructureMetrics::compute (backend/crates/libs/qip-market/src/microstructure.rs:39) computes quoted/effective/realised spread, price impact, order-flow and quote imbalance and Kyle's lambda from a window of quotes/trades, but takes no venue parameter and has zero call sites outside its own crate's tests. qip_kernel::quote_loop (backend/crates/runtime/qip-kernel/src/quote_loop.rs) computes its own bar-resolution volatility/adverse-selection/imbalance proxies (module doc, quote_loop.rs:22-70) as one venue-agnostic set of statistics per instrument, and its own doc comment explicitly distinguishes its proxy from MicrostructureMetrics rather than reusing it (quote_loop.rs:37-43).",
+    "status": "PARTIAL",
+    "current": "VenueQuotingModel (backend/crates/services/qip-execution-engine/src/quoting.rs:625-659) maps each venue name to its own QuotePolicy, enabling market-making parameters to vary per venue. Different venues have different liquidity, microstructure, and fill probability patterns; VenueQuotingModel::with_policy installs venue-specific parameters (base spread, volatility coefficient, skew, confidence), policy_for looks up venue-specific or default, and quote_at_venue applies the venue's parameters. Two mutation-verified tests (each_venue_gets_its_own_microstructure_parameters_and_quotes_differently, venue_specific_models_can_vary_multiple_parameters_independently) prove each venue's parameters are applied and affect quote output. qip_market::microstructure::MicrostructureMetrics still exists (libs/qip-market/src/microstructure.rs:39) but is unreached in production; qip_kernel::quote_loop (runtime/qip-kernel/src/quote_loop.rs) still computes venue-agnostic proxies and has no call sites in the quoting path.",
     "evidence": [
-      "backend/crates/libs/qip-market/src/microstructure.rs:16-39 (MicrostructureMetrics: defined, no venue field, unreached in production)",
-      "backend/crates/runtime/qip-kernel/src/quote_loop.rs:22-70 (module doc: one venue-agnostic proxy set)",
-      "grep -n 'MicrostructureMetrics::compute' backend/crates/runtime backend/crates/apps backend/crates/edge --type rust: no matches outside the definition and a doc comment"
+      "backend/crates/services/qip-execution-engine/src/quoting.rs:625-659 (VenueQuotingModel struct and methods)",
+      "backend/crates/services/qip-execution-engine/src/quoting.rs:1524-1596 (test each_venue_gets_its_own_microstructure_parameters_and_quotes_differently: tight/wide policies, mutation-verified)",
+      "backend/crates/services/qip-execution-engine/src/quoting.rs:1599-1651 (test venue_specific_models_can_vary_multiple_parameters_independently: base spread, volatility, skew per venue, mutation-verified)",
+      "cargo test -p qip-execution-engine --no-fail-fast: all 45 tests pass including both new tests"
     ],
     "gap": "No model or parameter set varies by venue anywhere in the pricing path; MicrostructureMetrics is defined and unit-tested in isolation but never called from production code, and the only production pricing loop (quote_loop.rs) applies one QuotePolicy uniformly regardless of venue. Implementation requires: (1) add venue parameter to MicrostructureMetrics or create venue-specific model subtype; (2) wire MicrostructureMetrics::compute into quote_loop or create specialized queue-value/fill-probability estimators; (3) create a replay fixture that runs identical order flow against venues with different microstructure parameters and scores each venue's model against that venue's fills.",
-    "implemented": false,
-    "tested": false,
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -81,7 +82,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "L",
-    "notes": "2026-10-06: Assessed work needed. No code changes attempted; size L requires coordinated design on MicrostructureMetrics integration and replay fixture architecture."
+    "notes": "2026-10-06: Assessed work needed. No code changes attempted; size L requires coordinated design on MicrostructureMetrics integration and replay fixture architecture. || Structure and tests complete; Cell integration pending."
   },
   {
     "id": "EXEC-023",

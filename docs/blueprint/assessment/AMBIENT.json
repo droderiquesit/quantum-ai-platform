@@ -126,7 +126,11 @@
     "evidence": [
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:864-895 (z = (latest - centre) / scale; an Anomaly{z_score, observed, expected, ...} is emitted only when |z| >= threshold 2.5)",
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:932 (ObservationDetector registered in DetectorRegistry::standard, which the kernel uses at platform.rs:4520-4523)",
-      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298-320 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind, z_score > 3.0, observed == 0.35, expected close to baseline, and z-score formula relationship)"
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298-320 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind, z_score > 3.0, observed == 0.35, expected close to baseline, and z-score formula relationship)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind and z_score > 3.0)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:313 observation_detector_emits_observed_and_expected_state (asserts anomaly.observed == latest and anomaly.expected == median, with mutation verification)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:337 observation_detector_z_score_is_zero_when_observation_equals_expectation (property: no anomaly when scale is minimal, with mutation verification of scale check)",
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:348 observation_detector_emits_no_record_when_below_threshold (asserts no anomaly when z.abs() < 2.5 threshold, with mutation verification)"
     ],
     "gap": "The 'expected state' compared against is a rolling median/MAD over recent observations, not a maintained forecast produced by AMBIENT-002's (missing) forecast models; the requirement explicitly measures surprise against 'the forecasts', which do not exist. The score is not maintained: an observation below the 2.5 threshold emits nothing, so no per-subject surprise state exists between findings. Both addressed below.",
     "implemented": true,
@@ -138,7 +142,7 @@
       "AMBIENT-002"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-opportunity-engine --test discovery the_observation_detector_finds_a_surprise proves the residual/expected-baseline/score triple is emitted and verified. Mutation tested: asserts observed == latest value, expected close to baseline, and z-score relationship holds (|z| ≈ |observed - expected| / scale).",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery observation_detector proves all three aspects: (1) observed and expected fields are emitted with the score, (2) z-score is minimal when observation equals expectation (property test with uniform series), (3) threshold respects 2.5-sigma gate. All three tests mutation-verified.",
     "work_item": "E09-surprise-against-forecast-state",
     "tier": "T2",
     "size": "M",
@@ -302,7 +306,7 @@
     "work_item": "E06-journal-counterfactual-outcomes",
     "tier": "T1",
     "size": "S",
-    "notes": "Closed 2026-10-06. The journal now carries individual DeclinedScore and FillScore records, making counterfactual evaluations reproducible from the event log. Records are bounded by the 256-entry history limit, and serialization maintains backward compatibility with #[serde(default)] on the new fields."
+    "notes": "Closed 2026-10-06. The journal now carries individual DeclinedScore and FillScore records, making counterfactual evaluations reproducible from the event log. Records are bounded by the 256-entry history limit, and serialization maintains backward compatibility with #[serde(default)] on the new fields. || Runs automatically every cycle from stage_learn with no per-evaluation caller request, satisfying the 'continuous' framing even though the enclosing cycle itself is tick-driven. verify: downgraded COMPLETE -> PARTIAL and e2e -> false. (a) The 'retained ... reproducible from the log' half fails: DeclinedScore lives in a 256-entry in-memory Vec and only counts reach the journal (platform.rs:2608, :9398, :16413-16429). (b) Not every declined alternative is priced (:15530-15546). (c) The cited e2e test calls CounterfactualEngine directly (e2e.rs:846-870), so it does not demonstrate the automatic path. Also corrected: score_declined is called directly from stage_learn (:13962), not via calibrate_resolved.\n[Session lane/backtest-engine-simulation: Work commenced 2026-10-06. Analyzing requirements and dependencies.]"
   },
   {
     "id": "AMBIENT-013",

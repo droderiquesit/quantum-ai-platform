@@ -46,6 +46,7 @@ fn evaluation(id: &str, verdict: Verdict, confidence: f64) -> Evaluation {
         contributors: vec!["run-macro-analyst-1".to_string()],
         evaluated_at: start(),
         rationale: "fixture".to_string(),
+        horizon: qip_core::time::Duration::from_secs(3600),
     }
 }
 

@@ -1312,3 +1312,36 @@ output "agent_identity_email" {
   description = "Agent service account email for workload federation"
   value       = google_service_account.agent_identity.email
 }
+
+# Workload Identity Federation only (GOV-028), made structural: the project
+# refuses to mint or accept a long-lived service-account key at all, so a key
+# cannot appear by a console click or a gcloud command that no review saw.
+# Restored after 2d3217e reverted an earlier form that put `rules` outside
+# `spec {}` and so failed `terraform validate`; this one validates.
+resource "google_org_policy_policy" "disable_service_account_key_creation" {
+  parent = "projects/${var.project_id}"
+  name   = "projects/${var.project_id}/policies/iam.disableServiceAccountKeyCreation"
+
+  spec {
+    rules {
+      enforce = "TRUE"
+    }
+  }
+
+  depends_on = [module.services]
+}
+
+# Uploading an externally generated key is the same long-lived credential by
+# another door.
+resource "google_org_policy_policy" "disable_service_account_key_upload" {
+  parent = "projects/${var.project_id}"
+  name   = "projects/${var.project_id}/policies/iam.disableServiceAccountKeyUpload"
+
+  spec {
+    rules {
+      enforce = "TRUE"
+    }
+  }
+
+  depends_on = [module.services]
+}

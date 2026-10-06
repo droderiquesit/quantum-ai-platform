@@ -200,6 +200,8 @@ mod tests {
                 outcome: None,
                 at: at(),
                 known_at: at(),
+                model_version: None,
+                model_derived: false,
             },
             similarity: 0.9,
         }

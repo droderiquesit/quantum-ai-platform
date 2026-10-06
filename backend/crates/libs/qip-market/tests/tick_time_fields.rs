@@ -18,6 +18,7 @@ fn tick_preserves_distinct_time_fields() {
     // This test would verify that a Tick has these fields as separate, distinguishable values
     // For now, we check the current structure to show what needs to be added
     let tick = Tick {
+        capture_time: None,
         object_id: ObjectId::from_string("test"),
         venue: "nyse".to_string(),
         at: event_time, // Currently just one timestamp
@@ -43,6 +44,7 @@ fn quote_preserves_distinct_time_fields() {
     let _receive_time = Timestamp::from_millis(10);
 
     let quote = Quote {
+        capture_time: None,
         object_id: ObjectId::from_string("test"),
         venue: "nyse".to_string(),
         at: event_time, // Currently just one timestamp
@@ -63,6 +65,7 @@ fn trade_preserves_distinct_time_fields() {
     let _receive_time = Timestamp::from_millis(10);
 
     let trade = Trade {
+        capture_time: None,
         object_id: ObjectId::from_string("test"),
         venue: "nyse".to_string(),
         at: event_time, // Currently just one timestamp

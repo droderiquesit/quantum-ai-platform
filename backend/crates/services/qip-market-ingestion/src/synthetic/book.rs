@@ -195,6 +195,7 @@ pub fn generate_trades<R: Rng>(
                 object_id: object_id.clone(),
                 venue: venue.to_string(),
                 at,
+                capture_time: None,
                 price: Decimal::from_f64(price.max(1e-6)).unwrap_or(Decimal::ONE),
                 size: Decimal::from_f64(size.round()).unwrap_or(Decimal::ONE),
                 aggressor: Some(side),

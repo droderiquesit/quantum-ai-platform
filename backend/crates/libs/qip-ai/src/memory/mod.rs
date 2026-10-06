@@ -69,8 +69,8 @@ pub mod store;
 
 pub use episode::{
     AnalystStance, CausalContextEdge, ClaimRecord, DecisionTaken, EPISODE_DIMENSIONS,
-    EPISODE_ENCODING, Episode, EpisodeOutcome, EpisodeQuery, FindingsSummary, MarketState,
-    RegimeLabel, StanceDirection,
+    EPISODE_ENCODING, Episode, EpisodeOutcome, EpisodeQuery, FailureMemory, FindingsSummary,
+    MarketMemory, MarketState, RegimeLabel, StanceDirection,
 };
 pub use experience::{ExperienceReport, RegimeExperience, regime_key};
 pub use sampler::{EpisodeGrade, EpisodeSampler, HIGH_SURPRISE_BPS, TAIL_RESERVE_DIVISOR};

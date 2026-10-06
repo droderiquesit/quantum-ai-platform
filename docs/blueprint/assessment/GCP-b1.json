@@ -593,11 +593,12 @@
     "current": "modules/network declares one `google_compute_network \"vpc\"` per environment (main.tf:35), and modules/trust-zones places all thirteen planes (public-edge through management, including execution and control-fabric) as subnets of that single VPC.",
     "evidence": [
       "infrastructure/terraform/modules/network/main.tf:35-46 (one VPC)",
-      "infrastructure/terraform/modules/trust-zones/main.tf:33-96 (thirteen zone subnets on that one VPC)"
+      "infrastructure/terraform/modules/trust-zones/main.tf:33-96 (thirteen zone subnets on that one VPC)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10348-10399 (all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern test)"
     ],
     "gap": "This is the exact anti-pattern the requirement prohibits ('Using a single giant flat VPC', G p23) — an active violation, not an absence.",
     "implemented": false,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -605,11 +606,11 @@
       "GCP-009"
     ],
     "blocked_by": "",
-    "verification": "No test exists. An infra-plan check would assert no VPC hosts subnets for more than one of Reflex/Fabric/Service/Data/Engineering and that Reflex/Fabric VPCs have distinct network administrators.",
+    "verification": "Test infrastructure.rs::all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern asserts all zone subnets reference the same var.network_id (the single VPC). The test proves the violation exists; it will fail (mutation-verified) when zones are separated into distinct VPCs per plane.",
     "work_item": "E14-vpc-separation",
     "tier": "T2",
     "size": "L",
-    "notes": "The largest network divergence in the current state, per the requirement's own consolidation notes; not blocked by a C1-C8 conflict, this is a from-scratch network redesign the repository can start on its own."
+    "notes": "The largest network divergence in the current state, per the requirement's own consolidation notes; not blocked by a C1-C8 conflict, this is a from-scratch network redesign the repository can start on its own. Test coverage: infrastructure.rs::all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern documents the violation (all zones on same VPC). Mutation-verified: test passes because all zones use var.network_id, fails if zones reference different VPCs."
   },
   {
     "id": "GCP-025",

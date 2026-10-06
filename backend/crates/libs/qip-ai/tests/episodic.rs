@@ -13,8 +13,8 @@
 use qip_ai::memory::{
     AnalystStance, CausalContextEdge, ClaimRecord, DecisionTaken, EPISODE_DIMENSIONS,
     EPISODE_ENCODING, Episode, EpisodeGrade, EpisodeOutcome, EpisodeQuery, EpisodeSampler,
-    EpisodicMemory, FindingsSummary, HIGH_SURPRISE_BPS, MarketState, PrecedentDigest, RegimeLabel,
-    StanceDirection, TAIL_RESERVE_DIVISOR,
+    EpisodicMemory, FailureMemory, FindingsSummary, HIGH_SURPRISE_BPS, MarketMemory, MarketState,
+    PrecedentDigest, RegimeLabel, StanceDirection, TAIL_RESERVE_DIVISOR,
 };
 use qip_core::time::{Duration, Timestamp};
 
@@ -75,6 +75,8 @@ fn episode(id: &str, instrument: &str, market: &str, at: Timestamp, move_bps: f6
         }),
         at,
         known_at: at.saturating_add(Duration::from_days(1)),
+        model_version: None,
+        model_derived: false,
     }
 }
 
@@ -1144,4 +1146,311 @@ fn a_memory_given_a_stated_sampler_uses_it_and_not_the_default() {
         "the stated sampler reserved no seat, so the oldest episode must have \
          been spent first - the default's reserve was used instead"
     );
+}
+
+#[test]
+fn an_episode_can_record_model_version_and_model_derived_lineage_to_prevent_self_reinforcement() {
+    // WORLD-063: an episode recording the world model's causal edges must be
+    // marked as model-derived and carry the model version, so a later reader
+    // cannot treat a self-produced conclusion as independent evidence.
+    let mut ep = episode("ep-001", "obj-AAA", "quiet", start(), 50.0);
+    ep.model_version = Some("v1.2.3".to_string());
+    ep.model_derived = true;
+
+    assert!(
+        ep.validate().is_ok(),
+        "an episode with a model_version and model_derived=true is valid"
+    );
+    assert_eq!(ep.model_version, Some("v1.2.3".to_string()));
+    assert!(ep.model_derived);
+}
+
+#[test]
+fn an_episode_without_model_version_can_have_model_derived_false() {
+    // An external evidence episode (not from the world model) has no model
+    // version and is marked model_derived=false.
+    let mut ep = episode("ep-002", "obj-AAA", "quiet", start(), 50.0);
+    ep.model_version = None;
+    ep.model_derived = false;
+
+    assert!(
+        ep.validate().is_ok(),
+        "an episode with no model_version and model_derived=false is valid"
+    );
+}
+
+#[test]
+fn an_episode_marked_model_derived_without_a_version_is_refused() {
+    // WORLD-063: a record marked as model-derived must carry the version that
+    // produced it, to enable attribution and prevent self-reinforcement.
+    let mut ep = episode("ep-003", "obj-AAA", "quiet", start(), 50.0);
+    ep.model_version = None;
+    ep.model_derived = true;
+
+    assert!(
+        ep.validate().is_err(),
+        "an episode marked model_derived but with no model_version must be refused"
+    );
+}
+
+#[test]
+fn an_episode_with_an_empty_model_version_is_refused() {
+    // WORLD-063: an empty model version string is not a valid version.
+    let mut ep = episode("ep-004", "obj-AAA", "quiet", start(), 50.0);
+    ep.model_version = Some(String::new());
+    ep.model_derived = true;
+
+    assert!(
+        ep.validate().is_err(),
+        "an episode with an empty model_version must be refused"
+    );
+}
+
+#[test]
+fn a_failure_memory_records_order_rejection_with_lineage() {
+    // WORLD-046: a failure memory captures an order rejection with gate,
+    // rules, readings, and lineage to the world model version (if any).
+    let failure = FailureMemory {
+        failure_id: "fail-001".to_string(),
+        instrument: "obj-AAA".to_string(),
+        gate: "max_exposure".to_string(),
+        rules: vec![
+            "region_share_bound".to_string(),
+            "concentration_limit".to_string(),
+        ],
+        readings: vec![
+            ("exposure_pct".to_string(), 95.5),
+            ("limit_pct".to_string(), 90.0),
+        ],
+        at: start(),
+        model_version: Some("v1.2.3".to_string()),
+        model_derived: true,
+    };
+
+    assert!(
+        failure.validate().is_ok(),
+        "a well-formed failure memory with lineage is valid"
+    );
+    assert_eq!(failure.gate, "max_exposure");
+    assert_eq!(failure.rules.len(), 2);
+    assert_eq!(failure.model_version, Some("v1.2.3".to_string()));
+}
+
+#[test]
+fn a_failure_memory_without_model_version_is_valid_for_external_rejections() {
+    // A rejection from an external system (not model-informed) has no model
+    // version and is marked model_derived=false.
+    let failure = FailureMemory {
+        failure_id: "fail-002".to_string(),
+        instrument: "obj-BBB".to_string(),
+        gate: "live_venue".to_string(),
+        rules: vec!["autonomy_level".to_string()],
+        readings: vec![("autonomy".to_string(), 2.0)],
+        at: start(),
+        model_version: None,
+        model_derived: false,
+    };
+
+    assert!(
+        failure.validate().is_ok(),
+        "a failure memory with no model_version and model_derived=false is valid"
+    );
+}
+
+#[test]
+fn a_failure_memory_marked_model_derived_without_version_is_refused() {
+    // WORLD-063: a failure marked as model-derived must carry the version.
+    let failure = FailureMemory {
+        failure_id: "fail-003".to_string(),
+        instrument: "obj-CCC".to_string(),
+        gate: "feasibility".to_string(),
+        rules: vec![],
+        readings: vec![],
+        at: start(),
+        model_version: None,
+        model_derived: true,
+    };
+
+    assert!(
+        failure.validate().is_err(),
+        "a failure marked model_derived but with no model_version must be refused"
+    );
+}
+
+#[test]
+fn a_failure_memory_with_empty_id_is_refused() {
+    let failure = FailureMemory {
+        failure_id: String::new(),
+        instrument: "obj-AAA".to_string(),
+        gate: "max_exposure".to_string(),
+        rules: vec![],
+        readings: vec![],
+        at: start(),
+        model_version: None,
+        model_derived: false,
+    };
+
+    assert!(
+        failure.validate().is_err(),
+        "a failure with no id must be refused"
+    );
+}
+
+#[test]
+fn a_market_memory_records_market_reaction_with_lineage() {
+    // WORLD-046: a market memory captures a market reaction to an event
+    // (price move, volume, spread change) with lineage to the world model
+    // version if the reaction was predicted or informed by the model.
+    let reaction = MarketMemory {
+        reaction_id: "mrkt-001".to_string(),
+        instrument: "obj-AAA".to_string(),
+        event: "earnings_announcement".to_string(),
+        price_move_bps: 150.0,
+        volume_pct_adv: 2.5,
+        spread_move_bps: Some(5.0),
+        at: start(),
+        measured_at: start().saturating_add(Duration::from_secs(5 * 60)),
+        model_version: Some("v1.2.3".to_string()),
+        model_derived: true,
+    };
+
+    assert!(
+        reaction.validate().is_ok(),
+        "a well-formed market reaction with lineage is valid"
+    );
+    assert_eq!(reaction.event, "earnings_announcement");
+    assert_eq!(reaction.price_move_bps, 150.0);
+    assert_eq!(reaction.model_version, Some("v1.2.3".to_string()));
+}
+
+#[test]
+fn a_market_memory_without_model_version_is_valid_for_external_observations() {
+    // A market reaction observed independently (not predicted by model) has
+    // no model version and is marked model_derived=false.
+    let reaction = MarketMemory {
+        reaction_id: "mrkt-002".to_string(),
+        instrument: "obj-BBB".to_string(),
+        event: "competitor_news".to_string(),
+        price_move_bps: -75.0,
+        volume_pct_adv: 1.5,
+        spread_move_bps: None,
+        at: start(),
+        measured_at: start().saturating_add(Duration::from_secs(10 * 60)),
+        model_version: None,
+        model_derived: false,
+    };
+
+    assert!(
+        reaction.validate().is_ok(),
+        "a market reaction with no model_version and model_derived=false is valid"
+    );
+}
+
+#[test]
+fn a_market_memory_marked_model_derived_without_version_is_refused() {
+    // WORLD-063: a reaction marked as model-derived must carry the version.
+    let reaction = MarketMemory {
+        reaction_id: "mrkt-003".to_string(),
+        instrument: "obj-CCC".to_string(),
+        event: "test_event".to_string(),
+        price_move_bps: 50.0,
+        volume_pct_adv: 1.0,
+        spread_move_bps: None,
+        at: start(),
+        measured_at: start().saturating_add(Duration::from_secs(1 * 60)),
+        model_version: None,
+        model_derived: true,
+    };
+
+    assert!(
+        reaction.validate().is_err(),
+        "a reaction marked model_derived but with no model_version must be refused"
+    );
+}
+
+#[test]
+fn a_market_memory_with_measurement_before_event_is_refused() {
+    // WORLD-046: bitemporal constraint: a reaction cannot be measured
+    // before the event that caused it.
+    let reaction = MarketMemory {
+        reaction_id: "mrkt-004".to_string(),
+        instrument: "obj-AAA".to_string(),
+        event: "test_event".to_string(),
+        price_move_bps: 50.0,
+        volume_pct_adv: 1.0,
+        spread_move_bps: None,
+        at: start(),
+        measured_at: start().saturating_add(Duration::from_secs(-5 * 60)), // Before the event
+        model_version: None,
+        model_derived: false,
+    };
+
+    assert!(
+        reaction.validate().is_err(),
+        "a reaction measured before its event must be refused"
+    );
+}
+
+#[test]
+fn a_market_memory_with_empty_id_is_refused() {
+    let reaction = MarketMemory {
+        reaction_id: String::new(),
+        instrument: "obj-AAA".to_string(),
+        event: "test_event".to_string(),
+        price_move_bps: 50.0,
+        volume_pct_adv: 1.0,
+        spread_move_bps: None,
+        at: start(),
+        measured_at: start().saturating_add(Duration::from_secs(1 * 60)),
+        model_version: None,
+        model_derived: false,
+    };
+
+    assert!(
+        reaction.validate().is_err(),
+        "a reaction with no id must be refused"
+    );
+}
+
+#[test]
+fn failure_and_market_memory_types_serialize_and_deserialize_with_lineage() {
+    // WORLD-046 and WORLD-063: ensure failure and market memory records
+    // carrying lineage fields can roundtrip through JSON serialization.
+    let failure = FailureMemory {
+        failure_id: "fail-ser".to_string(),
+        instrument: "obj-AAA".to_string(),
+        gate: "test_gate".to_string(),
+        rules: vec!["rule1".to_string()],
+        readings: vec![("metric".to_string(), 42.0)],
+        at: start(),
+        model_version: Some("v1.0.0".to_string()),
+        model_derived: true,
+    };
+
+    let json = serde_json::to_string(&failure).expect("serialization");
+    let deserialized: FailureMemory = serde_json::from_str(&json).expect("deserialization");
+
+    assert_eq!(deserialized.failure_id, "fail-ser");
+    assert_eq!(deserialized.model_version, Some("v1.0.0".to_string()));
+    assert!(deserialized.model_derived);
+
+    let reaction = MarketMemory {
+        reaction_id: "mrkt-ser".to_string(),
+        instrument: "obj-BBB".to_string(),
+        event: "test".to_string(),
+        price_move_bps: 100.0,
+        volume_pct_adv: 1.5,
+        spread_move_bps: Some(5.0),
+        at: start(),
+        measured_at: start().saturating_add(Duration::from_secs(1 * 60)),
+        model_version: Some("v2.0.0".to_string()),
+        model_derived: false,
+    };
+
+    let json = serde_json::to_string(&reaction).expect("serialization");
+    let deserialized: MarketMemory = serde_json::from_str(&json).expect("deserialization");
+
+    assert_eq!(deserialized.reaction_id, "mrkt-ser");
+    assert_eq!(deserialized.model_version, Some("v2.0.0".to_string()));
+    assert!(!deserialized.model_derived);
 }
