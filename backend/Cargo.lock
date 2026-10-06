@@ -129,6 +129,7 @@ dependencies = [
  "qip-market-ingestion",
  "qip-mesh",
  "qip-observability",
+ "qip-portfolio",
  "qip-risk",
  "qip-risk-engine",
  "qip-simulation-engine",
