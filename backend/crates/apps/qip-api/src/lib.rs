@@ -53,6 +53,7 @@ pub mod paper_ledger;
 pub mod registration_views;
 pub mod routes;
 pub mod rule_views;
+pub mod schema;
 pub mod self_model_views;
 pub mod statement;
 pub mod stream;

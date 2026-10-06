@@ -96,6 +96,12 @@ fn run() -> Result<()> {
     // deployment, which is worse than a pod that will not start and says why.
     let ceiling = AutonomyLevel::deployable(std::env::var("QIP_AUTONOMY_CEILING").ok().as_deref())?;
 
+    // The event schema registry, populated at start-up with sample instances
+    // of every EventBody type the platform uses. This serves two purposes:
+    // 1. Contract tests that fail when a payload changes without a version bump.
+    // 2. Documentation tests that fail when event schemas drift from the code.
+    let _schema_registry = qip_api::schema::initialize_schema_registry()?;
+
     // Resolved and proven writable before anything else is built. Failing here
     // costs a restart; failing at the first archived cycle costs the record of
     // everything that happened up to it. The environment is passed in rather
