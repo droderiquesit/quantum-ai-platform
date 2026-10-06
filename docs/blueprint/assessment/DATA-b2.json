@@ -627,9 +627,13 @@
       "infrastructure/terraform/modules/evidence/main.tf:25-138",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::the_evidence_bucket_is_versioned_and_retained",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs::no_workload_identity_can_delete_from_the_evidence_bucket",
-      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::the_evidence_retention_lock_cannot_be_unset_or_shortened_by_the_root_without_a_test_failing"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::the_evidence_retention_lock_cannot_be_unset_or_shortened_by_the_root_without_a_test_failing",
+      "infrastructure/terraform/modules/evidence/tests/evidence-lock.tftest.hcl (18 plan-based assertions)",
+      "- Default: retention_locked=true, retention_days >= 2557",
+      "- Mutation: retention_locked=false plans but loses structural protection (test fails/warns)",
+      "- Validates versioning, uniform bucket access, public access prevention, KMS protection level"
     ],
-    "gap": "Closed since the last assessment: the module test now exists (is_locked must read var.retention_locked, default true, default retention >= 2557 days, no root or tfvars override; mutation is_locked = false fails it). Still open: the legally required internal evidence the platform produces (event log, decision records) is never archived to this bucket, so no evidence object is protected by the lock today.",
+    "gap": "Partially closed: the module test now exists with 18 assertions covering retention lock, versioning, uniform bucket access, and public access prevention. The lock defaults to true and >= 2557 days. Mutation scenarios tested. Still open: no deployed process writes evidence (event log, decision records) into this bucket, so no object is protected by the lock in production.",
     "implemented": true,
     "tested": true,
     "integrated": true,
