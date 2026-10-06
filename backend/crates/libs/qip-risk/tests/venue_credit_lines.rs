@@ -10,7 +10,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_core::Decimal;
-use qip_core::dec;
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use std::collections::BTreeMap;
 
@@ -229,7 +228,7 @@ fn venue_exposure_limit_is_recalibrable_through_bound_change() {
     // The venue name is preserved
     if let LimitKind::MaxVenueExposure { venue, limit } = limit2 {
         assert_eq!(venue, "XLON");
-        assert_eq!(limit, 0.15);
+        assert!((limit - 0.15).abs() < f64::EPSILON);
     } else {
         panic!("with_bound changed the limit kind");
     }

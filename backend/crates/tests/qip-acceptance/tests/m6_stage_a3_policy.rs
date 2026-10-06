@@ -341,10 +341,10 @@ fn a_regime_change_refuses_invalid_confidence() -> Result<()> {
 
     // Valid values: 0.0 and 1.0
     let zero = RegimeChange::new("quiet", 0.0, t(0), "officer")?;
-    assert_eq!(zero.confidence, 0.0);
+    assert!((zero.confidence - 0.0).abs() < f64::EPSILON);
 
     let one = RegimeChange::new("trending", 1.0, t(0), "officer")?;
-    assert_eq!(one.confidence, 1.0);
+    assert!((one.confidence - 1.0).abs() < f64::EPSILON);
 
     Ok(())
 }

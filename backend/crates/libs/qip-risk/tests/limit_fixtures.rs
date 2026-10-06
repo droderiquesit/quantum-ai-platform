@@ -83,6 +83,7 @@ fn state() -> RiskState {
         // as unevaluated. That is what makes each fixture below a statement
         // about a limit rather than about a missing number.
         unevaluated: BTreeMap::new(),
+        venue_exposures: BTreeMap::from([("NYSE".to_string(), Decimal::from_int(500_000))]),
     }
 }
 
@@ -667,6 +668,8 @@ fn every_limit_kind_has_both_fixtures() {
             LimitKind::MaxDaysToLiquidate { .. } => "MaxDaysToLiquidate",
             LimitKind::MaxCounterpartyExposure { .. } => "MaxCounterpartyExposure",
             LimitKind::MinCashBuffer { .. } => "MinCashBuffer",
+            LimitKind::MaxVenueExposure { .. } => "MaxVenueExposure",
+            LimitKind::MaxVenueNotionalRate { .. } => "MaxVenueNotionalRate",
         };
         // Each named fixture exists as a test in this file, and the table
         // row names both. Matched on the whole declaration so a fixture

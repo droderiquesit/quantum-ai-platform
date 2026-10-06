@@ -630,10 +630,8 @@ fn an_unpriced_instrument_is_not_tradable() {
 fn a_decision_request_requires_nonempty_portfolio_and_strategy_ids() {
     // A request without a portfolio identifier is useless because a solve
     // cannot be attributed to the thing it applies to. Same for strategy.
-    let qubo = qip_numerics::anneal::Qubo::new(vec![
-        vec![1.0, 0.5],
-        vec![0.5, 2.0],
-    ]).expect("valid QUBO");
+    let qubo =
+        qip_numerics::anneal::Qubo::new(vec![vec![1.0, 0.5], vec![0.5, 2.0]]).expect("valid QUBO");
 
     let empty_portfolio = "";
     let strategy_id = "STRATEGY_001";
@@ -693,25 +691,20 @@ fn a_decision_request_refuses_a_problem_with_no_variables() {
 fn a_solver_result_validates_assignment_size_against_request() {
     // A solver result that claims to answer a request with 4 variables but
     // provides only 3 is incoherent. The assignment size must match exactly.
-    let qubo = qip_numerics::anneal::Qubo::new(vec![
-        vec![1.0, 0.5],
-        vec![0.5, 2.0],
-    ]).expect("valid QUBO");
+    let qubo =
+        qip_numerics::anneal::Qubo::new(vec![vec![1.0, 0.5], vec![0.5, 2.0]]).expect("valid QUBO");
     let request = qip_quant::DecisionRequest::new(
         qubo,
         "PORT_001".to_string(),
         "STRATEGY_001".to_string(),
         now(),
-    ).expect("valid request");
+    )
+    .expect("valid request");
 
     // Assignment has 1 variable, request expects 2
     let short_assignment = vec![1u8];
-    let result = qip_quant::SolverResult::new(
-        "TestSolver".to_string(),
-        short_assignment,
-        1.5,
-        &request,
-    );
+    let result =
+        qip_quant::SolverResult::new("TestSolver".to_string(), short_assignment, 1.5, &request);
     assert!(result.is_err(), "assignment size mismatch must be refused");
     let err = result.unwrap_err();
     assert!(
@@ -726,24 +719,19 @@ fn a_solver_result_refuses_non_binary_variable_assignments() {
     // A QUBO solver produces binary assignments: each variable is either 0 or 1.
     // A result claiming to have a variable set to 2 or higher is not an answer
     // to the binary problem.
-    let qubo = qip_numerics::anneal::Qubo::new(vec![
-        vec![1.0],
-    ]).expect("valid QUBO");
+    let qubo = qip_numerics::anneal::Qubo::new(vec![vec![1.0]]).expect("valid QUBO");
     let request = qip_quant::DecisionRequest::new(
         qubo,
         "PORT_001".to_string(),
         "STRATEGY_001".to_string(),
         now(),
-    ).expect("valid request");
+    )
+    .expect("valid request");
 
     // Assignment has a non-binary value
     let invalid_assignment = vec![2u8];
-    let result = qip_quant::SolverResult::new(
-        "TestSolver".to_string(),
-        invalid_assignment,
-        1.5,
-        &request,
-    );
+    let result =
+        qip_quant::SolverResult::new("TestSolver".to_string(), invalid_assignment, 1.5, &request);
     assert!(result.is_err(), "non-binary assignment must be refused");
     let err = result.unwrap_err();
     assert!(
