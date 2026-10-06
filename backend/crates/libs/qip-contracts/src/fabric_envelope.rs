@@ -107,6 +107,7 @@ impl AuthContext {
 
 impl FabricEnvelope {
     /// Build a fabric envelope with all mandatory fields
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stream_namespace: impl Into<String>,
         schema_id: u32,

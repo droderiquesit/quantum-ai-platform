@@ -189,7 +189,7 @@ impl ReflexJournalSummary {
             / self.decision_count as f64;
 
         if let Some(pnl) = decision.pnl {
-            self.total_pnl = self.total_pnl + pnl;
+            self.total_pnl += pnl;
         }
     }
 
