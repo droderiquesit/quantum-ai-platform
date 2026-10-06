@@ -31,23 +31,22 @@ execution_nodes = {
   # all other cells' decisions and the reconciliation point for cross-region
   # mirrors. Deployed first, leaves shadow mode first once observed.
   "cell-us-east4" = {
-    region              = "us-east4"
-    zone                = "us-east4-a"
-    subnet_cidr         = "10.240.0.0/24"
-    node_count          = 1  # Start with 1; 0 = provisioned but not running
-    machine_type        = "c3-highcpu-22"
-    shadow_mode         = false  # Exited shadow mode after observation
-    health_port         = 8080
-    watchdog_seconds    = 0  # Until qip-edge-node implements sd_notify
+    region           = "us-east4"
+    zone             = "us-east4-a"
+    subnet_cidr      = "10.240.0.0/24"
+    node_count       = 1 # Start with 1; 0 = provisioned but not running
+    machine_type     = "c3-highcpu-22"
+    shadow_mode      = false # Exited shadow mode after observation
+    health_port      = 8080
+    watchdog_seconds = 0 # Until qip-edge-node implements sd_notify
     venues = {
       "sim" = { cidr = "10.0.0.0/8", port = 443 }
-      # Real venues, once registered:
-      # "nyse" = { cidr = "206.108.0.0/16", port = 443 }
-      # "nasdaq" = { cidr = "194.62.0.0/16", port = 443 }
+      # Only simulated venues and provider sandboxes belong here; the
+      # platform does not trade live (ADR 0003).
     }
-    region_allocation   = "500000"  # $500k base allocation
-    isolated_cpus       = "2-21"
-    create_egress_nat   = false
+    region_allocation = "500000" # $500k base allocation
+    isolated_cpus     = "2-21"
+    create_egress_nat = false
   }
 
   # SECONDARY REGIONS: Deployed in shadow mode, observed, exit when stable
@@ -57,37 +56,37 @@ execution_nodes = {
   # primary region's GKE pod, then exits shadow mode independently.
 
   "cell-us-west1" = {
-    region              = "us-west1"
-    zone                = "us-west1-a"
-    subnet_cidr         = "10.241.0.0/24"
-    node_count          = 1
-    machine_type        = "c3-highcpu-22"
-    shadow_mode         = true  # Shadow mode until observed
-    health_port         = 8080
-    watchdog_seconds    = 0
+    region           = "us-west1"
+    zone             = "us-west1-a"
+    subnet_cidr      = "10.241.0.0/24"
+    node_count       = 1
+    machine_type     = "c3-highcpu-22"
+    shadow_mode      = true # Shadow mode until observed
+    health_port      = 8080
+    watchdog_seconds = 0
     venues = {
       "sim" = { cidr = "10.0.0.0/8", port = 443 }
     }
-    region_allocation   = "250000"  # Smaller allocation in secondary region
-    isolated_cpus       = "2-21"
-    create_egress_nat   = false
+    region_allocation = "250000" # Smaller allocation in secondary region
+    isolated_cpus     = "2-21"
+    create_egress_nat = false
   }
 
   "cell-europe-west1" = {
-    region              = "europe-west1"
-    zone                = "europe-west1-b"
-    subnet_cidr         = "10.242.0.0/24"
-    node_count          = 1
-    machine_type        = "c3-highcpu-22"
-    shadow_mode         = true
-    health_port         = 8080
-    watchdog_seconds    = 0
+    region           = "europe-west1"
+    zone             = "europe-west1-b"
+    subnet_cidr      = "10.242.0.0/24"
+    node_count       = 1
+    machine_type     = "c3-highcpu-22"
+    shadow_mode      = true
+    health_port      = 8080
+    watchdog_seconds = 0
     venues = {
       "sim" = { cidr = "10.0.0.0/8", port = 443 }
     }
-    region_allocation   = "250000"
-    isolated_cpus       = "2-21"
-    create_egress_nat   = false
+    region_allocation = "250000"
+    isolated_cpus     = "2-21"
+    create_egress_nat = false
   }
 
   # COLOCATED REGIONS: Not in GCP; connected via partner interconnect
@@ -98,54 +97,54 @@ execution_nodes = {
   # network topology.
 
   "cell-chicago" = {
-    region              = "us-central1"  # GCP region (nearest to Chicago)
-    zone                = "us-central1-a"
-    subnet_cidr         = "10.243.0.0/24"
-    node_count          = 0  # Provisioned, not running, until venues are ready
-    machine_type        = "c3-highcpu-22"
-    shadow_mode         = true
-    health_port         = 8080
-    watchdog_seconds    = 0
+    region           = "us-central1" # GCP region (nearest to Chicago)
+    zone             = "us-central1-a"
+    subnet_cidr      = "10.243.0.0/24"
+    node_count       = 0 # Provisioned, not running, until venues are ready
+    machine_type     = "c3-highcpu-22"
+    shadow_mode      = true
+    health_port      = 8080
+    watchdog_seconds = 0
     venues = {
       "sim" = { cidr = "10.0.0.0/8", port = 443 }
     }
-    region_allocation   = "200000"
-    isolated_cpus       = "2-21"
-    create_egress_nat   = true  # Colocated venues need external egress
+    region_allocation = "200000"
+    isolated_cpus     = "2-21"
+    create_egress_nat = true # Colocated venues need external egress
   }
 
   "cell-newyork" = {
-    region              = "us-east4"  # Shares region with primary, own subnet
-    zone                = "us-east4-b"
-    subnet_cidr         = "10.244.0.0/24"
-    node_count          = 0  # Provisioned only
-    machine_type        = "c3-highcpu-22"
-    shadow_mode         = true
-    health_port         = 8080
-    watchdog_seconds    = 0
+    region           = "us-east4" # Shares region with primary, own subnet
+    zone             = "us-east4-b"
+    subnet_cidr      = "10.244.0.0/24"
+    node_count       = 0 # Provisioned only
+    machine_type     = "c3-highcpu-22"
+    shadow_mode      = true
+    health_port      = 8080
+    watchdog_seconds = 0
     venues = {
       "sim" = { cidr = "10.0.0.0/8", port = 443 }
     }
-    region_allocation   = "200000"
-    isolated_cpus       = "2-21"
-    create_egress_nat   = true
+    region_allocation = "200000"
+    isolated_cpus     = "2-21"
+    create_egress_nat = true
   }
 
   "cell-dubai" = {
-    region              = "me-central1"
-    zone                = "me-central1-a"
-    subnet_cidr         = "10.245.0.0/24"
-    node_count          = 0  # Provisioned only
-    machine_type        = "c3-highcpu-22"
-    shadow_mode         = true
-    health_port         = 8080
-    watchdog_seconds    = 0
+    region           = "me-central1"
+    zone             = "me-central1-a"
+    subnet_cidr      = "10.245.0.0/24"
+    node_count       = 0 # Provisioned only
+    machine_type     = "c3-highcpu-22"
+    shadow_mode      = true
+    health_port      = 8080
+    watchdog_seconds = 0
     venues = {
       "sim" = { cidr = "10.0.0.0/8", port = 443 }
     }
-    region_allocation   = "150000"
-    isolated_cpus       = "2-21"
-    create_egress_nat   = true
+    region_allocation = "150000"
+    isolated_cpus     = "2-21"
+    create_egress_nat = true
   }
 
   # ADDITIONAL REGIONS: Asia-Pacific (future expansion)
@@ -154,20 +153,20 @@ execution_nodes = {
   # in those regions are registered.
 
   "cell-asia-southeast1" = {
-    region              = "asia-southeast1"
-    zone                = "asia-southeast1-a"
-    subnet_cidr         = "10.246.0.0/24"
-    node_count          = 0  # Not yet deployed
-    machine_type        = "c3-highcpu-22"
-    shadow_mode         = true
-    health_port         = 8080
-    watchdog_seconds    = 0
+    region           = "asia-southeast1"
+    zone             = "asia-southeast1-a"
+    subnet_cidr      = "10.246.0.0/24"
+    node_count       = 0 # Not yet deployed
+    machine_type     = "c3-highcpu-22"
+    shadow_mode      = true
+    health_port      = 8080
+    watchdog_seconds = 0
     venues = {
       "sim" = { cidr = "10.0.0.0/8", port = 443 }
     }
-    region_allocation   = "200000"
-    isolated_cpus       = "2-21"
-    create_egress_nat   = true
+    region_allocation = "200000"
+    isolated_cpus     = "2-21"
+    create_egress_nat = true
   }
 }
 
@@ -192,34 +191,34 @@ execution_nodes = {
 cross_region_mirrors = [
   # East Coast to West Coast
   {
-    from_region              = "us-east4"
-    to_region                = "us-west1"
-    rtt_ms                   = 42
-    inventory_band_pct       = 2
+    from_region               = "us-east4"
+    to_region                 = "us-west1"
+    rtt_ms                    = 42
+    inventory_band_pct        = 2
     dislocation_threshold_pct = 10
-  }
+  },
   # East Coast to Europe
   {
-    from_region              = "us-east4"
-    to_region                = "europe-west1"
-    rtt_ms                   = 90
-    inventory_band_pct       = 3
+    from_region               = "us-east4"
+    to_region                 = "europe-west1"
+    rtt_ms                    = 90
+    inventory_band_pct        = 3
     dislocation_threshold_pct = 15
-  }
+  },
   # Primary to secondary regions
   {
-    from_region              = "us-central1"  # Chicago
-    to_region                = "us-east4"
-    rtt_ms                   = 20
-    inventory_band_pct       = 1
+    from_region               = "us-central1" # Chicago
+    to_region                 = "us-east4"
+    rtt_ms                    = 20
+    inventory_band_pct        = 1
     dislocation_threshold_pct = 5
-  }
+  },
   # Europe to Asia
   {
-    from_region              = "europe-west1"
-    to_region                = "asia-southeast1"
-    rtt_ms                   = 180
-    inventory_band_pct       = 5
+    from_region               = "europe-west1"
+    to_region                 = "asia-southeast1"
+    rtt_ms                    = 180
+    inventory_band_pct        = 5
     dislocation_threshold_pct = 25
   }
 ]
@@ -274,4 +273,4 @@ boot_image = "projects/algorik-dev/global/images/qip-edge-20240101-120000"
 #
 # Write-once evidence bucket for operation logs and recovery data.
 # Create this bucket manually with versioning enabled.
-evidence_bucket = null  # "gs://algorik-dev-evidence"
+evidence_bucket = null # "gs://algorik-dev-evidence"

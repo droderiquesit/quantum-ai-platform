@@ -162,7 +162,7 @@
 - [ ] Execution node provisioning (7 regions)
 - [ ] PSC mesh activation
 - [ ] Shadow mode validation
-- [ ] Live mode cutover procedures
+- Live mode cutover: not planned; see ADR 0003 and proposed ADR 0107
 
 #### **Observability & Monitoring** [QUEUED]
 - [ ] Metrics ingestion (workload_metrics_exist = true)
