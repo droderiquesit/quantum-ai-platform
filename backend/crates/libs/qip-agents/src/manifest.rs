@@ -83,6 +83,32 @@ pub enum EscalationPolicy {
     RequireHuman,
 }
 
+/// What memory this agent is allowed to read and write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryScope {
+    /// Read and write research memory only; no operational or decision records.
+    ResearchOnly,
+    /// Read research memory and operational decision logs; no write beyond research.
+    ResearchAndOperational,
+}
+
+/// Rules for when an agent should abstain from answering.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbstractionRules {
+    /// When true, agent refuses questions outside its declared competencies.
+    /// When false, agent answers out-of-scope questions with low confidence.
+    pub strict_competency_boundary: bool,
+}
+
+impl AbstractionRules {
+    pub fn new(strict: bool) -> Self {
+        Self {
+            strict_competency_boundary: strict,
+        }
+    }
+}
+
 /// The declaration that authorises an agent to run.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AgentManifest {
@@ -102,6 +128,8 @@ pub struct AgentManifest {
     /// in the audit trail rather than living in someone's head.
     pub limitations: Vec<String>,
     pub capabilities: CapabilitySet,
+    /// What memory this agent is allowed to access.
+    pub memory_scope: MemoryScope,
     pub budget: Budget,
     pub escalation: EscalationPolicy,
     /// The agent this one escalates to, required by `Delegate`.
@@ -116,13 +144,19 @@ pub struct AgentManifest {
     /// Model references this agent depends on, checked against the model
     /// registry before a decision is accepted.
     pub models: Vec<String>,
+    /// Evaluation sets this agent contributes to or is evaluated by.
+    pub evaluations: Vec<String>,
+    /// Rules for when this agent should abstain from answering.
+    pub abstention_rules: AbstractionRules,
 }
 
 impl AgentManifest {
     /// A research agent with read-only capabilities and a conservative budget.
     ///
     /// This is the shape almost every agent should have; anything more has to
-    /// be argued for explicitly at the call site.
+    /// be argued for explicitly at the call site. The agent is created with
+    /// a classical baseline model so that the resulting manifest is valid
+    /// (CONTRACT-033: models are mandatory).
     pub fn research(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -137,13 +171,16 @@ impl AgentManifest {
             competencies: Vec::new(),
             limitations: Vec::new(),
             capabilities: CapabilitySet::read_only().with(Capability::PublishHypothesis),
+            memory_scope: MemoryScope::ResearchOnly,
             budget: Budget::research_default(),
             escalation: EscalationPolicy::ReturnPartial,
             escalates_to: None,
             owner: "investment-research".to_string(),
             reviewed_at,
             review_interval: Duration::from_days(90),
-            models: Vec::new(),
+            models: vec!["classical-baseline".to_string()],
+            evaluations: Vec::new(),
+            abstention_rules: AbstractionRules::new(true),
         }
     }
 
@@ -174,6 +211,26 @@ impl AgentManifest {
 
     pub fn with_limitations(mut self, limitations: Vec<String>) -> Self {
         self.limitations = limitations;
+        self
+    }
+
+    pub fn with_memory_scope(mut self, scope: MemoryScope) -> Self {
+        self.memory_scope = scope;
+        self
+    }
+
+    pub fn with_models(mut self, models: Vec<String>) -> Self {
+        self.models = models;
+        self
+    }
+
+    pub fn with_evaluations(mut self, evaluations: Vec<String>) -> Self {
+        self.evaluations = evaluations;
+        self
+    }
+
+    pub fn with_abstention_rules(mut self, rules: AbstractionRules) -> Self {
+        self.abstention_rules = rules;
         self
     }
 
@@ -273,6 +330,18 @@ impl AgentManifest {
                 self.id
             )));
         }
+
+        // Models are mandatory: an agent must declare what models it depends on,
+        // even if only a classical baseline. Blank entries are refused too:
+        // a list of empty strings declares nothing while passing an is_empty check.
+        if self.models.iter().all(|m| m.trim().is_empty()) {
+            return Err(Error::invalid(format!(
+                "agent {} declares no models; list the models it depends on with \
+                 `with_models` (can be a classical baseline or ensemble)",
+                self.id
+            )));
+        }
+
         Ok(())
     }
 

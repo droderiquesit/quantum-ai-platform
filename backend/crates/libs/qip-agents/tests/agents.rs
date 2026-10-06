@@ -12,7 +12,9 @@ use qip_agents::finding::{
     NumericProvenance,
 };
 use qip_agents::governance::{Roster, Severity};
-use qip_agents::manifest::{AgentManifest, AgentRole, EscalationPolicy};
+use qip_agents::manifest::{
+    AbstractionRules, AgentManifest, AgentRole, EscalationPolicy, MemoryScope,
+};
 use qip_agents::memory::{Episode, EpisodeOutcome, Lesson, PromotionPolicy, ResearchMemory};
 use qip_agents::runtime::{Agent, AgentContext, AgentHost, Gated, RunStatus, Upstream};
 use qip_ai::language::{DeterministicModel, ModelRequest};
@@ -281,6 +283,52 @@ fn delegation_must_name_a_delegate_and_not_be_self_referential() {
             .message()
             .contains("itself")
     );
+}
+
+#[test]
+fn a_brainspec_with_all_required_fields_validates_and_missing_models_is_refused() {
+    // A complete manifest with all BrainSpec fields (CONTRACT-033) validates.
+    let complete = researcher("macro", "Macro", "reads the world", now())
+        .with_memory_scope(MemoryScope::ResearchOnly)
+        .with_models(vec!["gpt-4-baseline".to_string()])
+        .with_evaluations(vec!["credit-spread".to_string()])
+        .with_abstention_rules(AbstractionRules::new(true));
+    assert!(
+        complete.validate().is_ok(),
+        "manifest with all BrainSpec fields validates"
+    );
+
+    // Empty models list is refused (agent must declare model dependencies).
+    let no_models = researcher("macro", "Macro", "reads the world", now()).with_models(vec![]);
+    let error = no_models.validate().unwrap_err();
+    assert!(
+        error.message().contains("models"),
+        "empty models must be refused: {}",
+        error.message()
+    );
+
+    // Blank model entries count as empty and are refused.
+    let blank_models = researcher("macro", "Macro", "reads the world", now())
+        .with_models(vec!["  ".to_string(), "".to_string()]);
+    assert!(
+        blank_models.validate().is_err(),
+        "blank model entries must be refused"
+    );
+
+    // Evaluations can be empty (internal-only agents have no formal evaluations).
+    let no_evals = researcher("macro", "Macro", "reads the world", now())
+        .with_models(vec!["classical-baseline".to_string()])
+        .with_evaluations(vec![]);
+    assert!(
+        no_evals.validate().is_ok(),
+        "empty evaluations list is allowed for internal-only agents"
+    );
+
+    // Memory scope is always declared (no default on new() call).
+    let scoped = researcher("macro", "Macro", "reads the world", now())
+        .with_models(vec!["ensemble".to_string()])
+        .with_memory_scope(MemoryScope::ResearchAndOperational);
+    assert!(scoped.validate().is_ok(), "declared memory scope validates");
 }
 
 // --- budgets ----------------------------------------------------------------
