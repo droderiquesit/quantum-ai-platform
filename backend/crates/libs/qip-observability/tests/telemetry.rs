@@ -827,3 +827,98 @@ fn the_foreground_telemetry_surface_echoes_its_log_records_and_the_default_one_d
     foreground.logger.warn("the drain could not post");
     assert_eq!(foreground.logger.records().len(), 1);
 }
+
+/// OBS-035: data plane SLO metrics record archive delay, refetch health, and
+/// lineage completeness so the data plane can measure its own objectives.
+#[test]
+fn data_slo_metrics_can_be_recorded() {
+    let metrics = Metrics::new("test");
+
+    metrics.gauge(
+        names::DATA_LINEAGE_COMPLETENESS,
+        labels([("plane", "data")]),
+        0.95,
+    );
+    metrics.observe_latency_ms(
+        names::DATA_ARCHIVE_DELAY_MINUTES,
+        labels([("archive", "2026-08-22")]),
+        5.0,
+    );
+    metrics.gauge(
+        names::DATA_REFETCH_HEALTH,
+        labels([("source", "alpha")]),
+        1.0,
+    );
+
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.gauge(
+            names::DATA_LINEAGE_COMPLETENESS,
+            &labels([("plane", "data")])
+        ),
+        Some(0.95),
+        "lineage completeness must be recorded"
+    );
+    assert_eq!(
+        snapshot.gauge(names::DATA_REFETCH_HEALTH, &labels([("source", "alpha")])),
+        Some(1.0),
+        "refetch health must be recorded"
+    );
+    let histogram = snapshot
+        .histogram(
+            names::DATA_ARCHIVE_DELAY_MINUTES,
+            &labels([("archive", "2026-08-22")]),
+        )
+        .expect("archive delay histogram must be recorded");
+    assert_eq!(
+        histogram.count, 1,
+        "archive delay must record one observation"
+    );
+}
+
+#[test]
+fn data_slo_metrics_integrate_with_slo_evaluation() {
+    let slos = default_slos();
+    let data_slos: Vec<_> = slos.iter().filter(|s| s.service == "data-plane").collect();
+    assert_eq!(data_slos.len(), 3, "three data-plane SLOs must be defined");
+
+    let metrics = Metrics::new("test");
+    metrics.gauge(
+        names::DATA_LINEAGE_COMPLETENESS,
+        labels([("plane", "data")]),
+        0.95,
+    );
+    metrics.gauge(
+        names::DATA_REFETCH_HEALTH,
+        labels([("source", "alpha")]),
+        1.0,
+    );
+    metrics.observe_latency_ms(
+        names::DATA_ARCHIVE_DELAY_MINUTES,
+        labels([("archive", "2026-08-22")]),
+        5.0,
+    );
+
+    let snapshot = metrics.snapshot();
+
+    let archive_histogram = snapshot
+        .histogram(
+            names::DATA_ARCHIVE_DELAY_MINUTES,
+            &labels([("archive", "2026-08-22")]),
+        )
+        .expect("archive delay metric recorded");
+    assert_eq!(archive_histogram.min, 5.0);
+    assert_eq!(archive_histogram.max, 5.0);
+
+    let lineage_slo = slos
+        .iter()
+        .find(|s| s.name == "data-lineage-completeness")
+        .expect("lineage completeness SLO must exist");
+    assert_eq!(lineage_slo.target, 0.95);
+
+    let refetch_slo = slos
+        .iter()
+        .find(|s| s.name == "data-refetch-health")
+        .expect("refetch health SLO must exist");
+    assert_eq!(refetch_slo.target, 0.99);
+}

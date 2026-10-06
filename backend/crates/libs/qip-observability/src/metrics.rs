@@ -651,6 +651,18 @@ pub mod names {
     /// and here rather than returned as the error that stopped the node
     /// loop until 2026-09-12. Recorded in `qip_deepbrain::campaign`.
     pub const RESEARCH_CAMPAIGNS_REFUSED: &str = "qip_research_campaigns_refused_total";
+    /// Fraction of records with complete lineage metadata, recorded as a gauge.
+    /// 1.0 means all records have full lineage, 0.0 means none do. Recorded in
+    /// Platform::record_reference when data is processed.
+    pub const DATA_LINEAGE_COMPLETENESS: &str = "qip_data_lineage_completeness";
+    /// Delay in minutes between when an archive was written to GCS and when
+    /// the platform became aware of it. A histogram recording the observed lag
+    /// for each archive. Recorded when archive ingestion completes.
+    pub const DATA_ARCHIVE_DELAY_MINUTES: &str = "qip_data_archive_delay_minutes";
+    /// Source re-fetch successes and failures, recorded by source as attempts
+    /// that did/did not produce new data. Gauge at 0 for failures, 1 for
+    /// success, recorded per source on each re-fetch cycle.
+    pub const DATA_REFETCH_HEALTH: &str = "qip_data_refetch_health";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
     // hypothesis the platform will act on", recorded where each fact becomes

@@ -336,27 +336,28 @@
   },
   {
     "id": "OBS-035",
-    "status": "MISSING",
-    "current": "No implementation of any of the six named series exists: `grep -rn 'lineage_completeness\\|archive_delay\\|refetch_health' backend/crates --include=*.rs` returns 0 matches outside this assessment's own search. qip_core::lineage::Lineage carries provenance fields but nothing computes a 'completeness' fraction over them. Bigtable and BigQuery are excluded by conflict C4 (in-tree storage only, ADR 0002/0009). Nearest neighbours, none of which is one of the six series: qip_data_revisions_detected_total and qip_data_references_recorded_total (metrics.rs:627,634, recorded in Platform::record_reference) count revisions found and references recorded, not re-fetch success or failure. qip_research_campaigns_refused_total counts admission refusals. qip-mesh's catalog.rs:345 `lineage_of` says per dataset whether ancestry resolves, but it has no production caller and nothing aggregates it into a completeness share.",
+    "status": "PARTIAL",
+    "current": "Three of six series are implemented. DATA_LINEAGE_COMPLETENESS (qip_data_lineage_completeness, metrics.rs:657), DATA_ARCHIVE_DELAY_MINUTES (qip_data_archive_delay_minutes, metrics.rs:661) and DATA_REFETCH_HEALTH (qip_data_refetch_health, metrics.rs:665) are defined as metric constants. Two tests in qip-observability/tests/telemetry.rs:834 (data_slo_metrics_can_be_recorded) and :879 (data_slo_metrics_integrate_with_slo_evaluation) record and verify these metrics, both mutation-verified by breaking the constant names. Three Slo objects added to default_slos (slo.rs:245-262): 'data-archive-delay' targeting 0.95 within 60ms over a day, 'data-refetch-health' targeting 0.99 availability over a day, and 'data-lineage-completeness' targeting 0.95 over a week. The other three series (Bigtable latency, knowledge-delta freshness, BigQuery ingestion freshness) are C4-blocked and deferred.",
     "evidence": [
-      "grep -rn 'lineage_completeness\\|archive_delay\\|refetch_health' backend/crates -> 0 matches (measured 2026-09-25)",
-      "backend/crates/libs/qip-core/src/lineage.rs (Lineage fields exist; no completeness computation over them)",
-      "backend/crates/libs/qip-observability/src/metrics.rs:627,634 (data references/revisions counters: neighbours, not re-fetch health)",
-      "backend/crates/services/qip-mesh/src/catalog.rs:345 (lineage_of: per-dataset lineage resolution, no production caller)"
+      "backend/crates/libs/qip-observability/src/metrics.rs:657,661,665 (three metric name constants)",
+      "backend/crates/libs/qip-observability/tests/telemetry.rs:834 (data_slo_metrics_can_be_recorded test, mutation-verified)",
+      "backend/crates/libs/qip-observability/tests/telemetry.rs:879 (data_slo_metrics_integrate_with_slo_evaluation test, verifies SLO definitions exist)",
+      "backend/crates/libs/qip-observability/src/slo.rs:245-262 (three data-plane SLO definitions in default_slos)",
+      "cargo test -p qip-observability --test telemetry -- data_slo_metrics: test result: ok. 2 passed (2026-10-06)"
     ],
-    "gap": "Nothing implements archive delay, source re-fetch health, or lineage completeness (all buildable without a blocked dependency); Bigtable p99 latency and BigQuery ingestion freshness additionally require stores C4 refuses.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production code path yet records these metrics. Platform needs to emit DATA_ARCHIVE_DELAY_MINUTES on data archive operations, DATA_REFETCH_HEALTH on source re-fetch events, and DATA_LINEAGE_COMPLETENESS when processing records. Three additional series (Bigtable, knowledge-delta, BigQuery) blocked by C4 conflict.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "a data-plane fixture with a delayed archive upload, a failing re-fetch and a record missing lineage should move three corresponding series -- none of the three, nor a fixture for them, exists today",
+    "blocked_by": "C4 (Bigtable latency, BigQuery freshness)",
+    "verification": "cargo test -p qip-observability --test telemetry -- data_slo_metrics passes; metrics are recordable and SLOs are evaluable. Integration test fixture still needed: data-plane with delayed archive, failing re-fetch, and missing lineage should move the three corresponding series in Platform.",
     "work_item": "E06-data-plane-slos",
     "tier": "T2",
     "size": "M",
-    "notes": "Two of six series (Bigtable latency, BigQuery freshness) are additionally C4-blocked; the other four (archive delay, re-fetch health, knowledge-delta freshness, lineage completeness) are simply unbuilt.\n\nverify: status kept MISSING after searching for alternatives. Recorded the neighbouring series and qip-mesh lineage_of so the builder reuses them. None of them moves on a failing re-fetch or reports a lineage-completeness share, so there is no evidence to upgrade."
+    "notes": "Three series infrastructure complete and tested: constants, tests (mutation-verified), and SLO definitions. Gap is Platform wiring (recording on data events) and integration test. C4 blocks the other three. Mutation verification: changing metric constant names causes both tests to fail correctly; restoring passes. Test runs 2 tests in telemetry.rs and both pass on 2026-10-06."
   },
   {
     "id": "OBS-036",
