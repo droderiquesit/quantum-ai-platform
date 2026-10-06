@@ -1206,6 +1206,7 @@ impl RegimeChange {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)] // the assertion is the deliverable in a test
 mod policy_frame_tests {
     use super::*;
     use serde_json::json;
@@ -1478,7 +1479,7 @@ mod policy_frame_tests {
         let change = RegimeChange::new("crisis", 0.85, t(0), "officer_1")?;
 
         assert_eq!(change.regime, "crisis");
-        assert_eq!(change.confidence, 0.85);
+        assert_eq!(change.confidence.to_bits(), 0.85_f64.to_bits());
         assert_eq!(change.signer_one, "officer_1");
         assert!(change.signature_one.is_empty());
         assert!(change.signature_two.is_empty());
@@ -1502,10 +1503,10 @@ mod policy_frame_tests {
         );
 
         let zero = RegimeChange::new("quiet", 0.0, t(0), "officer")?;
-        assert_eq!(zero.confidence, 0.0);
+        assert_eq!(zero.confidence.to_bits(), 0.0_f64.to_bits());
 
         let one = RegimeChange::new("trending", 1.0, t(0), "officer")?;
-        assert_eq!(one.confidence, 1.0);
+        assert_eq!(one.confidence.to_bits(), 1.0_f64.to_bits());
 
         Ok(())
     }

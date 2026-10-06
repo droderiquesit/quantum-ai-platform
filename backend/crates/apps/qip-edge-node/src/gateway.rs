@@ -605,20 +605,13 @@ impl Placer for SimulatedGateway {
         self.exchange.is_simulated()
     }
 
-    fn try_place(
-        &mut self,
-        _order_id: &str,
-        _object_id: &ObjectId,
-        _venue: &VenueId,
-        _side: BookSide,
-        _quantity: Decimal,
-        _price: Decimal,
-        _at: Timestamp,
-    ) -> Result<bool> {
-        // Simulated gateway always accepts orders (brokers queue capacity not implemented yet)
-        Ok(true)
-    }
-
+    // No `try_place` override, on purpose. `Cell::send` calls `try_place`,
+    // and the trait's default calls `place` below; an override answering
+    // `Ok(true)` without calling it (ad79d50) had the cell book an open order
+    // for every placement while the matching engine received none, so no
+    // order ever filled or rested at the simulated venue. Override it only
+    // when this gateway has a bounded queue that can say "full" — and then
+    // place through it.
     fn place(
         &mut self,
         order_id: &str,
@@ -974,20 +967,11 @@ impl Placer for RestGateway {
         self.adapter.is_simulated()
     }
 
-    fn try_place(
-        &mut self,
-        _order_id: &str,
-        _object_id: &ObjectId,
-        _venue: &VenueId,
-        _side: BookSide,
-        _quantity: Decimal,
-        _price: Decimal,
-        _at: Timestamp,
-    ) -> Result<bool> {
-        // REST gateway placeholder: not yet implemented
-        Err(Error::unavailable("REST gateway is not yet implemented"))
-    }
-
+    // No `try_place` override: the default calls `place`. An override that
+    // refused every order as unavailable (ad79d50) was not a paper-trading
+    // guard — `Cell::send` refuses a live-class gateway at `GATE_LIVE_VENUE`
+    // from `is_simulated`, and `run_pass` is typed to the simulated gateway —
+    // it only made this gateway's sandbox path unreachable.
     fn place(
         &mut self,
         order_id: &str,

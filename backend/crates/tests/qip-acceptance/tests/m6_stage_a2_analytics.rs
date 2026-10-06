@@ -145,7 +145,7 @@ fn a_feature_snapshot_clamps_late_knowledge() {
 #[test]
 fn a_feature_snapshot_immediate_stamps_both_times() {
     let key = FeatureKey::new("price", ObjectId::from_string("instr-003".to_string()));
-    let value = FeatureValue::Exact(dec!(150, 2));
+    let value = FeatureValue::Exact(dec!("1.50"));
     let at = Timestamp::from_secs(5000);
 
     let snapshot = FeatureSnapshot::immediate(key, value, at);
@@ -177,12 +177,20 @@ fn a_feature_snapshot_is_not_readable_before_knowable() {
         Timestamp::from_secs(2000),
     );
 
+    // Every instant from just after the fact was true up to just before it
+    // became knowable. The loop used to filter on a `Timestamp::secs()` that
+    // does not exist, so this file never compiled; the filter was also
+    // vacuous, since every instant here is below 2000 by construction.
     for i in 1..200 {
         let ts = Timestamp::from_secs(1000 + i * 5);
-        if ts.secs() < 2000 {
-            assert!(!snapshot.is_knowable_at(ts));
-        }
+        assert!(ts < Timestamp::from_secs(2000));
+        assert!(
+            !snapshot.is_knowable_at(ts),
+            "readable at {ts:?}, before knowable"
+        );
     }
+    // Without this the test passes for a snapshot that is never readable.
+    assert!(snapshot.is_knowable_at(Timestamp::from_secs(2000)));
 }
 
 // ============================================================================
@@ -217,7 +225,7 @@ fn a_forecast_lattice_computes_zero_disagreement_for_identical() {
     let lattice =
         ForecastLattice::new(key, Timestamp::from_secs(5000), vec![dist1, dist2]).unwrap();
 
-    assert_eq!(lattice.disagreement_width(), 0.0);
+    assert!(lattice.disagreement_width().abs() < 1e-12);
     assert!(lattice.is_consensus());
 }
 
@@ -291,7 +299,7 @@ fn a_forecast_lattice_consensus_includes_means() {
 
 #[test]
 fn a_feature_snapshot_holds_exact_decimal() {
-    let value = FeatureValue::Exact(dec!(1_000_000, 2));
+    let value = FeatureValue::Exact(dec!("10000.00"));
     let snapshot = FeatureSnapshot::immediate(
         FeatureKey::new("notional", ObjectId::from_string("instr-013".to_string())),
         value,
@@ -299,7 +307,7 @@ fn a_feature_snapshot_holds_exact_decimal() {
     );
 
     assert_eq!(snapshot.value(), value);
-    assert_eq!(snapshot.value().as_exact(), Some(dec!(1_000_000, 2)));
+    assert_eq!(snapshot.value().as_exact(), Some(dec!("10000.00")));
 }
 
 #[test]
@@ -399,7 +407,7 @@ fn backtesting_filters_by_knowable_not_instant_true() {
 fn a_feature_snapshot_serializes_to_json() {
     let snapshot = FeatureSnapshot::immediate(
         FeatureKey::new("price", ObjectId::from_string("instr-021".to_string())),
-        FeatureValue::Exact(dec!(150, 2)),
+        FeatureValue::Exact(dec!("1.50")),
         Timestamp::from_secs(1000),
     );
 
@@ -479,7 +487,7 @@ fn a_single_forecast_lattice_is_consensus() {
 
     let lattice = ForecastLattice::new(key, Timestamp::from_secs(5000), vec![dist]).unwrap();
 
-    assert_eq!(lattice.disagreement_width(), 0.0);
+    assert!(lattice.disagreement_width().abs() < 1e-12);
     assert!(lattice.is_consensus());
 }
 
@@ -664,7 +672,7 @@ fn complete_bitemporal_workflow_maintains_invariants() {
 
     let snapshot = FeatureSnapshot::new(
         feature_key,
-        FeatureValue::Exact(dec!(151, 2)),
+        FeatureValue::Exact(dec!("1.51")),
         time_market_true,
         time_known_early,
     );
