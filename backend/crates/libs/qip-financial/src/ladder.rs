@@ -247,8 +247,7 @@ impl Rung {
             | AssetClass::Derivative
             | AssetClass::Prediction
             | AssetClass::Commodity
-            | AssetClass::Rates
-            | AssetClass::Prediction => Self::ListedEquityAndFutures,
+            | AssetClass::Rates => Self::ListedEquityAndFutures,
             AssetClass::FixedIncome
             | AssetClass::Credit
             | AssetClass::Fund

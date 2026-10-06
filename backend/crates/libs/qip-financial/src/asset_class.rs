@@ -25,7 +25,6 @@ pub enum AssetClass {
     RealAsset,
     Cash,
     StructuredProduct,
-    Prediction,
 }
 
 impl AssetClass {
@@ -44,7 +43,6 @@ impl AssetClass {
         Self::RealAsset,
         Self::Cash,
         Self::StructuredProduct,
-        Self::Prediction,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -63,7 +61,6 @@ impl AssetClass {
             Self::RealAsset => "real_asset",
             Self::Cash => "cash",
             Self::StructuredProduct => "structured_product",
-            Self::Prediction => "prediction",
         }
     }
 
@@ -82,7 +79,6 @@ impl AssetClass {
                 | Self::DigitalAsset
                 | Self::Cash
                 | Self::Commodity
-                | Self::Prediction
         )
     }
 
