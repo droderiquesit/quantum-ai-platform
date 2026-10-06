@@ -1,9 +1,21 @@
-//! Envelope expiry as a halt trigger. When a strategy's capital envelope
-//! expires, the cell must halt and refuse new intents.
+//! Envelope expiry, per strategy. When a strategy's capital envelope
+//! expires, that strategy is refused every new intent — and the strategies
+//! beside it whose envelopes are live keep trading.
 //!
-//! This is REFLEX-067: when its freshness limits expire, a degraded cell must
-//! exit or halt. It must stop taking new risk rather than keep trading under an
-//! envelope it can no longer renew.
+//! ADR 0008: every envelope expires, so a partitioned cell is bounded by time
+//! as well as by size; and the bound is each envelope's, because each
+//! strategy was granted its own. f7ba812 halted the whole cell when *any*
+//! deployed envelope lapsed, which stopped every live strategy on one
+//! strategy's clock and set `WorkReport::halted` while `Cell::is_halted`
+//! stayed false — a report disagreeing with the cell it reports on, which
+//! is the exact thing the acceptance chaos suite's invariant 5 refuses. The
+//! two tests that commit added asserted that disagreement (`after.halted` on
+//! a cell whose `is_halted` answered false); they now assert what the cell
+//! does: no order after expiry, the refusal under `envelope_expiry` naming
+//! the expiry, on every later pass, and a report that agrees with the cell.
+//!
+//! REFLEX-067's "reports halted and withdraws its resting orders" is not
+//! implemented here; REFLEX.json's notes for it say what remains.
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -15,7 +27,7 @@ use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
-use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy};
+use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::policy::VerifiedPolicy;
 use qip_feature_dag::engine::FeatureEngine;
@@ -161,10 +173,9 @@ impl Placer for PaperGateway {
 }
 
 #[test]
-fn when_an_envelopes_expiry_is_reached_the_cell_halts_and_refuses_new_intents() -> Result<()> {
-    // REFLEX-067: when an envelope expires, the cell must stop trading.
-    // It should halt and refuse new intents rather than continue trading
-    // under an expired authorization.
+fn when_an_envelopes_expiry_is_reached_its_strategy_is_refused_new_intents() -> Result<()> {
+    // REFLEX-067's fail-closed minimum: past its envelope's expiry a strategy
+    // takes no new risk, and the cell says which gate stopped it.
 
     let metrics = Arc::new(Metrics::new("qip-edge-node"));
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
@@ -172,9 +183,8 @@ fn when_an_envelopes_expiry_is_reached_the_cell_halts_and_refuses_new_intents() 
     let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
 
     cell.apply_policy(fresh_policy(1, t(5))?, t(5))?;
-    cell.track(book()?); // track() doesn't return Result
+    cell.track(book()?);
 
-    // Deploy a strategy with an envelope that expires at t(3600).
     let (compiled, program) = strategy("alpha", SignalKind::Enter, "10")?;
     cell.deploy_with_pricing(
         compiled,
@@ -185,51 +195,55 @@ fn when_an_envelopes_expiry_is_reached_the_cell_halts_and_refuses_new_intents() 
 
     let mut gateway = PaperGateway;
 
-    // Before expiry at t(10), the strategy should place an order.
+    // Premise: before expiry the strategy does trade, so the silence below
+    // is the envelope's and not a strategy that never would have sent.
     let before = cell.work(t(10), &mut gateway)?;
     assert_eq!(
         before.orders.len(),
         1,
         "the strategy should place an order before expiry: {before:?}"
     );
-    assert!(!before.halted, "cell should not be halted before expiry");
+    assert!(
+        refusals_under(&before, "envelope_expiry").is_empty(),
+        "a live envelope was refused: {:?}",
+        before.refusals
+    );
 
-    // After expiry at t(3700), the cell should halt and refuse new intents
-    // under "envelope_halt" gate.
     let after = cell.work(t(3700), &mut gateway)?;
     assert!(
-        after.halted,
-        "cell should halt when envelope expires: {after:?}"
-    );
-    assert!(
         after.orders.is_empty(),
-        "no new orders should be placed after expiry: {after:?}"
+        "an order was sent on an expired envelope: {after:?}"
     );
-
-    // Check that envelope_halt refusal is recorded.
-    let envelope_halt_refusals: Vec<_> = after
-        .refusals
-        .iter()
-        .filter(|(gate, _)| gate == "envelope_halt")
-        .collect();
-    assert!(
-        !envelope_halt_refusals.is_empty(),
-        "envelope_halt refusal should be recorded: {:?}",
+    let expired = refusals_under(&after, "envelope_expiry");
+    assert_eq!(
+        expired.len(),
+        1,
+        "the expired envelope was not what refused: {:?}",
         after.refusals
     );
     assert!(
-        envelope_halt_refusals[0].1.contains("expired"),
-        "refusal reason should mention expiry"
+        expired[0].contains("expired"),
+        "the refusal does not name the expiry: {:?}",
+        expired[0]
     );
-
+    // And the refusal was the strategy's own: it did raise a signal, so
+    // the gate judged an intent rather than a strategy that stayed quiet.
+    assert!(
+        after.signals.iter().any(|s| s.strategy.as_str() == "alpha"),
+        "premise: alpha raised no signal: {after:?}"
+    );
+    assert_eq!(
+        after.halted,
+        cell.is_halted(),
+        "the report disagrees with the cell about whether it is halted"
+    );
     Ok(())
 }
 
 #[test]
-fn envelope_expiry_persists_across_passes() -> Result<()> {
-    // Once an envelope expires, the cell should remain halted on subsequent
-    // passes until the envelope is renewed (out of scope for this test) or
-    // the cell is reconfigured.
+fn an_expired_envelope_keeps_refusing_on_every_later_pass() -> Result<()> {
+    // Expiry is checked at every use, not once on arrival: a backstop that
+    // fired on one pass and then forgot would let the next pass trade.
 
     let metrics = Arc::new(Metrics::new("qip-edge-node"));
     let config = CellConfig::new(CELL, REGION).with_venue(venue());
@@ -237,7 +251,7 @@ fn envelope_expiry_persists_across_passes() -> Result<()> {
     let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
 
     cell.apply_policy(fresh_policy(1, t(5))?, t(5))?;
-    cell.track(book()?); // track() doesn't return Result
+    cell.track(book()?);
 
     let (compiled, program) = strategy("alpha", SignalKind::Enter, "10")?;
     cell.deploy_with_pricing(
@@ -249,20 +263,97 @@ fn envelope_expiry_persists_across_passes() -> Result<()> {
 
     let mut gateway = PaperGateway;
 
-    // At t(50), envelope is still live.
     let live = cell.work(t(50), &mut gateway)?;
-    assert!(!live.halted, "should not be halted while envelope is live");
-
-    // At t(150), envelope has expired.
-    let expired = cell.work(t(150), &mut gateway)?;
-    assert!(expired.halted, "should halt when envelope expires");
-
-    // At t(200), should still be halted.
-    let still_expired = cell.work(t(200), &mut gateway)?;
-    assert!(
-        still_expired.halted,
-        "should remain halted after envelope expiry"
+    assert_eq!(
+        live.orders.len(),
+        1,
+        "premise: a live envelope sent nothing"
     );
 
+    for at in [t(150), t(200), t(7200)] {
+        let pass = cell.work(at, &mut gateway)?;
+        assert!(
+            pass.orders.is_empty(),
+            "an order was sent on an expired envelope at {at:?}: {pass:?}"
+        );
+        assert_eq!(
+            refusals_under(&pass, "envelope_expiry").len(),
+            1,
+            "the expired envelope did not refuse at {at:?}: {:?}",
+            pass.refusals
+        );
+    }
     Ok(())
+}
+
+#[test]
+fn one_strategys_expired_envelope_stops_that_strategy_and_not_the_one_beside_it() -> Result<()> {
+    // ADR 0008: each strategy holds its own grant, and the worst a cell does
+    // is spend what somebody approved for as long as *that* grant runs. One
+    // lapsed envelope is not a reason to stop a strategy whose envelope is
+    // live — f7ba812 halted the whole cell on it, and this is the test that
+    // would have caught it.
+
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let config = CellConfig::new(CELL, REGION).with_venue(venue());
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(&metrics));
+
+    cell.apply_policy(fresh_policy(1, t(5))?, t(5))?;
+    cell.track(book()?);
+
+    for (id, expires_at) in [("alpha", t(100)), ("beta", t(3600))] {
+        let (compiled, program) = strategy(id, SignalKind::Enter, "10")?;
+        cell.deploy_with_pricing(
+            compiled,
+            program,
+            envelope(id, expires_at)?,
+            PricingPolicy::Marketable,
+        )?;
+    }
+
+    let mut gateway = PaperGateway;
+    let report = cell.work(t(150), &mut gateway)?;
+
+    assert!(
+        !report.halted && !cell.is_halted(),
+        "one strategy's expired envelope halted the cell: {:?}",
+        report.refusals
+    );
+    // Both strategies fired, so what follows is a gate's decision and not a
+    // strategy that was never going to ask.
+    for id in ["alpha", "beta"] {
+        assert!(
+            report.signals.iter().any(|s| s.strategy.as_str() == id),
+            "premise: {id} raised no signal: {report:?}"
+        );
+    }
+    let expired = refusals_under(&report, "envelope_expiry");
+    assert_eq!(
+        expired.len(),
+        1,
+        "alpha's lapsed envelope was not refused exactly once: {:?}",
+        report.refusals
+    );
+    assert_eq!(report.orders.len(), 1, "{report:?}");
+    assert_eq!(
+        report.orders[0]
+            .contributors
+            .iter()
+            .map(|c| c.strategy.as_str())
+            .collect::<Vec<_>>(),
+        vec!["beta"],
+        "the order did not carry beta alone: alpha rode it on a lapsed envelope, or beta \
+         was stopped by alpha's"
+    );
+    Ok(())
+}
+
+fn refusals_under<'a>(report: &'a WorkReport, gate: &str) -> Vec<&'a str> {
+    report
+        .refusals
+        .iter()
+        .filter(|(g, _)| g == gate)
+        .map(|(_, reason)| reason.as_str())
+        .collect()
 }
