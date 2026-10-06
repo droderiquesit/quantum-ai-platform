@@ -617,6 +617,7 @@ impl WorldModel {
                             available_at: item.published_at,
                             confidence: item.evidential_weight(),
                             imputed: item.quality.is_imputed,
+                            sources: vec!["world_stream:news".to_string()],
                         },
                     );
                 }
@@ -673,6 +674,7 @@ impl WorldModel {
             available_at: update.provenance.ingestion_time,
             confidence: update.quality.score(),
             imputed: update.quality.is_imputed,
+            sources: vec!["world_stream:fundamental".to_string()],
         };
         self.features
             .record(&update.metric, &update.entity_id, value);
@@ -687,6 +689,7 @@ impl WorldModel {
                     available_at: update.provenance.ingestion_time,
                     confidence: update.quality.score(),
                     imputed: update.quality.is_imputed,
+                    sources: vec!["world_stream:fundamental".to_string()],
                 },
             );
             // The predicate that owns this comparison, rather than a second
@@ -735,6 +738,7 @@ impl WorldModel {
             available_at: observation.provenance.ingestion_time,
             confidence: observation.quality.score(),
             imputed: observation.quality.is_imputed,
+            sources: vec!["world_stream:macro".to_string()],
         };
         if self
             .features
@@ -757,6 +761,7 @@ impl WorldModel {
                     available_at: observation.provenance.ingestion_time,
                     confidence: observation.quality.score(),
                     imputed: observation.quality.is_imputed,
+                    sources: vec!["world_stream:macro".to_string()],
                 },
             );
             if surprise.abs() > 0.1 {
@@ -792,6 +797,7 @@ impl WorldModel {
             available_at: point.provenance.ingestion_time,
             confidence: point.quality.score(),
             imputed: point.quality.is_imputed,
+            sources: vec!["world_stream:alternative".to_string()],
         };
         match AltMetric::recognise(&point.dataset, &point.metric)? {
             Some(metric) => {

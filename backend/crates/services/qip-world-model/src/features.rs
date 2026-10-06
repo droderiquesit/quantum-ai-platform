@@ -84,6 +84,10 @@ pub struct FeatureValue {
     pub confidence: f64,
     /// True when the value was imputed rather than observed.
     pub imputed: bool,
+    /// Sources this feature value draws from: e.g., ["tick_stream", "world_stream", "world:news"].
+    /// Used to verify that fused features depend on multiple data streams.
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 impl FeatureValue {
@@ -94,6 +98,7 @@ impl FeatureValue {
             available_at,
             confidence: 1.0,
             imputed: false,
+            sources: Vec::new(),
         }
     }
 
@@ -106,6 +111,11 @@ impl FeatureValue {
     pub fn imputed(mut self) -> Self {
         self.imputed = true;
         self.confidence *= 0.7;
+        self
+    }
+
+    pub fn with_sources(mut self, sources: Vec<String>) -> Self {
+        self.sources = sources;
         self
     }
 
