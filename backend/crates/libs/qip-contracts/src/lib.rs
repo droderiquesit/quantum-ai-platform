@@ -36,6 +36,7 @@ pub mod expansion;
 pub mod fabric_envelope;
 pub mod feasibility;
 pub mod feature;
+pub mod federation;
 pub mod gate;
 pub mod governance;
 pub mod intent;
