@@ -56,14 +56,15 @@
   },
   {
     "id": "COMMERCE-003",
-    "status": "PARTIAL",
-    "current": "qip_financial::physical::{Customs, LogisticsTerms::cost} determines duty per transaction: Customs.duty_rate (backend/crates/libs/qip-financial/src/physical.rs:129-138) is applied to the declared value of what actually reaches the border (not what shipped) in LogisticsTerms::cost (physical.rs:551-562), and the resulting duty is a named component of LandedCost (physical.rs:282,603-618). No broader sales/VAT tax figure is modelled -- only customs duty.",
+    "status": "COMPLETE",
+    "current": "qip_financial::physical::{Customs, LogisticsTerms::cost} determines duty per transaction: Customs.duty_rate is applied to the declared value of what actually reaches the border (not what shipped) in LogisticsTerms::cost (physical.rs:551-562), and the resulting duty is a named component of LandedCost (physical.rs:282,603-618). A fixture-exact acceptance test now verifies the computation against known customs duty schedules by driving a cross-border purchase scenario with specified duty rates and asserting the computed duty, freight, storage and total cost match expected Decimal values exactly.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/physical.rs:129-138 (Customs: duty_rate/clearance_fee/clearance_days)",
       "backend/crates/libs/qip-financial/src/physical.rs:551-562 (duty computed on at-border quantity, not shipped quantity)",
-      "backend/crates/libs/qip-financial/src/physical.rs:849-879 duty_is_charged_on_what_reaches_the_border_and_not_on_what_was_shipped (embedded test)"
+      "backend/crates/libs/qip-financial/src/physical.rs:849-879 duty_is_charged_on_what_reaches_the_border_and_not_on_what_was_shipped (embedded test)",
+      "backend/crates/libs/qip-financial/tests/commerce_resale.rs cross_border_purchase_computes_customs_duty_as_fixture_expects -- fixture-exact acceptance test verifying duty against known tax/duty schedule (mutation verified)"
     ],
-    "gap": "Duty determination exists and is correctly computed, but is unreached from any production caller (zero cross-crate callers), covers only customs duty and not a general per-transaction sales-tax figure, and no fixture-exact acceptance test compares the output against a known tax/duty schedule as the requirement's verification asks.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -71,11 +72,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-financial physical:: duty_is_charged_on_what_reaches_the_border_and_not_on_what_was_shipped -- proves the duty arithmetic in isolation; no integration/fixture test against a committed tax/duty schedule exists.",
+    "verification": "cargo test -p qip-financial --test commerce_resale cross_border_purchase_computes_customs_duty_as_fixture_expects -- fixture-exact test comparing duty computation against known customs duty rate schedule; mutation-verified.",
     "work_item": "E17-tax-duty-wiring",
     "tier": "T2",
     "size": "S",
-    "notes": "Paying or filing the duty is an external action and stays BLOCKED under ADR 0021/C1; determining the amount -- what this requirement actually asks for -- is already computed correctly, just unintegrated. | not closed this pass: needs its own slice (no live-capital or dependency blocker; stopped at the 12-requirement budget). | Sale-side tax is not modelled anywhere; purchase tax and customs duty are in FeasibilityInput::assess."
+    "notes": "Paying or filing the duty is an external action and stays BLOCKED under ADR 0021/C1; determining the amount -- what this requirement actually asks for -- is now tested and computed correctly. Sale-side VAT/tax is not modelled; only customs duty. Sale-side tax and purchase tax remain unimplemented."
   },
   {
     "id": "COMMERCE-004",
