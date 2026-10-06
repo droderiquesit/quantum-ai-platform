@@ -128,6 +128,18 @@ RULES: list[tuple[tuple[str, ...], str, str]] = [
     ),
 ]
 
+# Branches that change only through a reviewed pull request. With plain
+# pushes allowed for worker sessions (so a lane can publish its own branch),
+# nothing else stopped one from pushing straight to these: on 2026-10-06 a
+# lane session pushed five unreviewed commits onto the integration branch
+# minutes after pushes were allowed. A name is matched as a whole refspec
+# target -- after whitespace or a colon, and followed by the end of the
+# argument -- so "lane/L001-b-main-x" or "domain" is not mistaken for main.
+PROTECTED_PUSH = re.compile(
+    r"\bgit\s+push\b[^\n;&|]*?[\s:](?:refs/heads/)?(main|ccr-0c1bacf8-kla0dd)(?=$|[\s;&|])",
+    re.M,
+)
+
 HEREDOC = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
 
 
@@ -166,6 +178,16 @@ def main() -> int:
         return 0
 
     inspected = strip_heredocs(command)
+
+    protected = PROTECTED_PUSH.search(inspected)
+    if protected is not None:
+        sys.stderr.write(
+            "Refused by .claude/hooks/guard-dangerous-command.py: a direct push "
+            f"to the shared branch {protected.group(1)}\n\n"
+            "Push your own branch and open a pull request against it; the "
+            "orchestrator reviews and merges.\n"
+        )
+        return 2
 
     for needles, refused, instead in RULES:
         if all(needle in inspected for needle in needles):
