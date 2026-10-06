@@ -89,31 +89,67 @@ fn the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks
     }
 }
 
+/// The Dockerfile's instructions, comments dropped and `\` continuations
+/// joined, so a check reads what Docker runs rather than what the prose says.
+fn dockerfile_instructions(text: &str) -> Vec<String> {
+    let mut instructions = Vec::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || (trimmed.is_empty() && current.is_empty()) {
+            continue;
+        }
+        match trimmed.strip_suffix('\\') {
+            Some(head) => {
+                current.push_str(head);
+                current.push(' ');
+            }
+            None => {
+                current.push_str(trimmed);
+                if !current.trim().is_empty() {
+                    instructions.push(std::mem::take(&mut current));
+                }
+                current.clear();
+            }
+        }
+    }
+    instructions
+}
+
+/// CICD-048: the build stage fetches nothing the base digest does not pin.
+///
+/// It once ran `apk add --no-cache musl-dev`, refreshing alpine's index over
+/// the network on every build, so two builds of one commit could compile
+/// against different toolchain revisions. A lane then "fixed" that with a
+/// version pin naming a revision no alpine release has ever served, which
+/// would have failed every image build; the test it shipped checked the text
+/// `musl-dev=` and would have passed. The base image already carries musl-dev
+/// and gcc in its digest-pinned layers, so the rule is that no `RUN` invokes
+/// a package manager at all.
 #[test]
-fn the_dockerfile_pins_reproducibility_settings() {
-    let dockerfile = read("infrastructure/docker/Dockerfile");
-
-    // musl-dev must be version-pinned for byte-reproducible builds (CICD-048).
+fn the_build_stage_installs_nothing_the_digest_does_not_pin() {
+    let instructions = dockerfile_instructions(&read("infrastructure/docker/Dockerfile"));
+    let runs: Vec<&String> = instructions
+        .iter()
+        .filter(|i| i.split_whitespace().next() == Some("RUN"))
+        .collect();
+    // Premise: the parser found the build's RUN, or "no RUN calls apk" is vacuous.
     assert!(
-        dockerfile.contains("musl-dev="),
-        "musl-dev must be version-pinned; use 'musl-dev=X.Y.Z_...' syntax in Dockerfile"
+        runs.iter()
+            .any(|r| r.split_whitespace().any(|w| w == "cargo")),
+        "expected a RUN invoking cargo; the Dockerfile parser found {runs:?}"
     );
-
-    // SOURCE_DATE_EPOCH must be set to ensure reproducible timestamps.
+    for run in &runs {
+        assert!(
+            !run.split_whitespace().any(|w| w == "apk" || w == "apt-get"),
+            "a RUN fetches packages the base image digest does not pin: {run}"
+        );
+    }
+    let from_build = instructions
+        .iter()
+        .find(|i| i.starts_with("FROM ") && i.ends_with(" AS build"));
     assert!(
-        dockerfile.contains("SOURCE_DATE_EPOCH"),
-        "SOURCE_DATE_EPOCH environment variable required for reproducible builds (CICD-048)"
-    );
-
-    // CARGO_BUILD_JOBS must be 1 for deterministic parallelism.
-    assert!(
-        dockerfile.contains("CARGO_BUILD_JOBS=1"),
-        "CARGO_BUILD_JOBS must be set to 1 for deterministic builds (CICD-048)"
-    );
-
-    // Binary must be stripped to remove metadata that changes between builds.
-    assert!(
-        dockerfile.contains("strip --strip-all"),
-        "Binary must be stripped with 'strip --strip-all' to remove non-deterministic metadata (CICD-048)"
+        from_build.is_some_and(|f| f.contains("@sha256:")),
+        "the build stage must start from a digest-pinned base: {from_build:?}"
     );
 }

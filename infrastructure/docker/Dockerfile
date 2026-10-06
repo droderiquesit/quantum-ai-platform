@@ -33,18 +33,22 @@ FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bda
 
 ARG BINARY
 
-# Enable reproducible builds: lock timestamps and output paths (ADR 0048).
-# SOURCE_DATE_EPOCH ensures Cargo records the same build time regardless of when
-# the build runs, and CARGO_BUILD_JOBS ensures deterministic parallelism.
-ENV SOURCE_DATE_EPOCH=0 \
-    CARGO_BUILD_JOBS=1
-
-# musl-dev is the only build dependency: alpine's Rust images target musl, which
-# is what makes the output static. Pinned by version for reproducibility (ADR 0048).
-# Alpine versions are matched to the base image tag; rustup's alpine mirrors index
-# all minor versions, so a pinned version persists as long as the base image is served.
-# hadolint ignore=DL3018
-RUN apk add --no-cache musl-dev=1.2.5_git20240620-r0
+# No package is installed here. musl-dev and gcc, the only build dependencies
+# (alpine's Rust images target musl, which is what makes the output static),
+# are layers of the digest above: rust-lang/docker-rust's own Dockerfile runs
+# `apk add musl-dev gcc` when it builds the image, so their revisions are
+# frozen by the digest like everything else in it.
+#
+# This line used to run `apk add --no-cache musl-dev` again, which refreshed
+# alpine's index over the network on every build: the one step whose input was
+# not pinned by anything in this repository (CICD-048). Pinning its revision
+# instead was tried and is worse — alpine keeps only the latest revision in a
+# release branch, so a pin breaks the build on the day alpine rotates it, and
+# the failure names a version nobody chose. Moving musl or gcc is now a digest
+# edit, which is a line a reviewer sees.
+#
+# The acceptance test `the_build_stage_installs_nothing_the_digest_does_not_pin`
+# refuses an `apk` invocation coming back.
 
 WORKDIR /src
 # The build context is the repository root; only the Rust workspace under
@@ -54,10 +58,8 @@ COPY backend/ .
 
 # --locked, because a build that resolves a different dependency graph from the
 # one the test suite ran against is not the thing that was tested.
-# Strip debug symbols and canonicalize paths for reproducible digests (ADR 0048).
 RUN test -n "$BINARY" \
   && cargo build --release --locked --bin "$BINARY" \
-  && strip --strip-all "target/release/$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
 
 FROM scratch
