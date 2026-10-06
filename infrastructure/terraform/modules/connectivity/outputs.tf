@@ -63,11 +63,38 @@ output "google_apis_endpoint" {
 # The gap, as data. The infrastructure counterpart of the data module's
 # `enabled_without_an_adapter`: an operator reads this at plan time instead of
 # discovering at cutover that the private path was never finished.
+output "ha_vpn_gateways" {
+  description = "HA VPN gateways created as fallback for Interconnect, keyed by config name."
+  value = {
+    for name, gateway in google_compute_ha_vpn_gateway.backup : name => {
+      name   = gateway.name
+      region = gateway.region
+    }
+  }
+}
+
+output "ha_vpn_tunnels" {
+  description = "HA VPN tunnels created as fallback, keyed by tunnel name. Each gateway has two tunnels for HA."
+  value = {
+    for name, tunnel in google_compute_vpn_tunnel.backup : name => {
+      name            = tunnel.name
+      region          = tunnel.region
+      gateway         = split("-vpn-", tunnel.vpn_gateway)[1]
+      peer_ip         = tunnel.peer_ip
+      ike_version     = tunnel.ike_version
+      tunnel_number   = local.vpn_tunnels[name].tunnel_index
+      bgp_peer_asn    = local.vpn_tunnels[name].peer_asn
+      link_local_base = local.vpn_tunnels[name].link_local_base
+    }
+  }
+}
+
 output "still_needs_arranging_out_of_band" {
   description = "What exists here that a circuit, a partner or a DNS change elsewhere must still complete."
   value = compact([
     length(local.attachments) > 0 ? "partner interconnect: each attachment needs a partner circuit ordered against its pairing key, and stays PENDING_PARTNER until the partner provisions their half" : "",
     length([for a in values(local.attachments) : a if !a.admin_enabled]) > 0 ? "partner interconnect: attachments created with admin_enabled = false carry no traffic until somebody enables them after reviewing the far end" : "",
     var.enable_private_service_connect ? "private service connect: the endpoint answers only for traffic already directed at it, so the far end's resolver must map the Google API hostnames to ${var.private_service_connect_address}" : "",
+    length(local.vpn_configs) > 0 ? "HA VPN: each gateway needs to be connected to a peer VPN endpoint outside this repository, and the shared secrets transmitted securely to the peer" : "",
   ])
 }
