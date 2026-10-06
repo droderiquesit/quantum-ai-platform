@@ -1068,7 +1068,7 @@ impl RiskGate {
 /// requires two independent signatures — not a consensus between machines, but
 /// explicit human consent from two different roles (e.g., CRO and Portfolio
 /// Manager), so neither can unilaterally move the regime.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RegimeChange {
     /// The regime being entered.

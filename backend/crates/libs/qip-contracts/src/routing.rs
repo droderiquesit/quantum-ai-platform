@@ -116,14 +116,14 @@ impl QuantumRouter {
         }
 
         // Check performance: quantum must offer enough improvement.
-        let diff = classical.objective_value - quantum.objective_value;
+        let diff = classical.objective_value() - quantum.objective_value();
         if diff <= 0.0 {
             // Quantum is not better.
             return false;
         }
 
         // Calculate improvement in basis points.
-        let denominator = classical.objective_value.abs();
+        let denominator = classical.objective_value().abs();
         if denominator < 1e-10 {
             // Classical objective is essentially zero; can't compute basis point improvement.
             // Be conservative: prefer classical.

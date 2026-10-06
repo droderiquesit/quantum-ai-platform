@@ -249,7 +249,9 @@ impl LimitKind {
             | Self::MaxDailyLoss { limit }
             | Self::MaxDaysToLiquidate { limit }
             | Self::MaxCounterpartyExposure { limit }
-            | Self::MinCashBuffer { limit } => *limit,
+            | Self::MinCashBuffer { limit }
+            | Self::MaxVenueExposure { limit, .. }
+            | Self::MaxVenueNotionalRate { limit, .. } => *limit,
             Self::MinLiquidity { fraction, .. } => *fraction,
         }
     }
