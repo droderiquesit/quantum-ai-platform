@@ -707,11 +707,14 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs:565-603 (AcquisitionCriteria with basis-point validation and net_value_bp calculation)",
       "backend/crates/libs/qip-contracts/src/ambient.rs:620-745 (InfoRequest with status machine, cost tracking, deadline/threshold checks)",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:489-810 (7 mutation-verified tests: criteria validation, EVI calculation, request field validation, status transitions, cost accumulation, should_halt logic, halt behavior)"
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:489-810 (7 mutation-verified tests: criteria validation, EVI calculation, request field validation, status transitions, cost accumulation, should_halt logic, halt behavior)",
+      "backend/crates/libs/qip-contracts/src/expansion.rs:308-349 (CurriculumItem with expected_information_value, expected_economic_value)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:platform_learn (curriculum building, not value-based ranking)",
+      "rg 'value_of_information|EVI|information_gain' backend/crates: no acquisition-decision sites"
     ],
     "gap": "No ranking algorithm sorts candidate observations by net value and selects top N for acquisition. No orchestrator integrates InfoRequest into the decision loop or connects it to AMBIENT-013 and AMBIENT-031. Curriculum's expected_information_value and expected_economic_value fields still unused.",
-    "implemented": true,
-    "tested": true,
+    "implemented": false,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -724,7 +727,7 @@
     "work_item": "E09-evidence-acquisition-by-evi",
     "tier": "T2",
     "size": "M",
-    "notes": "Request types and validation complete; missing orchestrator to rank and select acquisitions. AMBIENT-031 (compute allocation) will record which work was chosen; AMBIENT-013 (opportunity waking) will feed candidate observations. No external dependency required; ranking engine is pure Rust logic in qip-contracts or a service."
+    "notes": "Request types and validation complete; missing orchestrator to rank and select acquisitions. AMBIENT-031 (compute allocation) will record which work was chosen; AMBIENT-013 (opportunity waking) will feed candidate observations. No external dependency required; ranking engine is pure Rust logic in qip-contracts or a service. CurriculumItem structure is in place; acquisition mechanism is missing. Not blocked by any external dependency; can be built in-tree."
   },
   {
     "id": "AMBIENT-030",

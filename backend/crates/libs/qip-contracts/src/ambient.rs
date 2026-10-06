@@ -744,3 +744,160 @@ impl InfoRequest {
         false
     }
 }
+/// One compute resource type the Meta-Intelligence brain allocates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputeResourceType {
+    Cpu,
+    Gpu,
+    Tpu,
+    Qpu,
+}
+
+impl ComputeResourceType {
+    pub const ALL: [Self; 4] = [Self::Cpu, Self::Gpu, Self::Tpu, Self::Qpu];
+}
+
+/// Model reputation tracked by domain, horizon, and regime. All fields are
+/// normalized to 0-10000 basis points so scale does not require decimals.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelReputation {
+    domain: String,
+    horizon: String,
+    regime: String,
+    accuracy_bp: u32,
+    signal_quality_bp: u32,
+    forecast_skill_bp: u32,
+}
+
+impl ModelReputation {
+    /// Creates a reputation record. Refuses empty domain, horizon, or regime,
+    /// and any metric above MAX_SEVERITY_BP (the standard bound for normalized
+    /// metrics in this module).
+    pub fn new(
+        domain: impl Into<String>,
+        horizon: impl Into<String>,
+        regime: impl Into<String>,
+        accuracy_bp: u32,
+        signal_quality_bp: u32,
+        forecast_skill_bp: u32,
+    ) -> Result<Self> {
+        let (domain, horizon, regime) = (domain.into(), horizon.into(), regime.into());
+        for (name, value) in [
+            ("domain", domain.as_str()),
+            ("horizon", horizon.as_str()),
+            ("regime", regime.as_str()),
+        ] {
+            if value.is_empty() {
+                return Err(Error::invalid(format!("{name} must not be empty")));
+            }
+        }
+        for (name, value) in [
+            ("accuracy_bp", accuracy_bp),
+            ("signal_quality_bp", signal_quality_bp),
+            ("forecast_skill_bp", forecast_skill_bp),
+        ] {
+            if value > MAX_SEVERITY_BP {
+                return Err(Error::invalid(format!(
+                    "{name} {value} exceeds maximum {MAX_SEVERITY_BP}; do not clamp it"
+                )));
+            }
+        }
+        Ok(Self {
+            domain,
+            horizon,
+            regime,
+            accuracy_bp,
+            signal_quality_bp,
+            forecast_skill_bp,
+        })
+    }
+
+    pub fn domain(&self) -> &str {
+        &self.domain
+    }
+    pub fn horizon(&self) -> &str {
+        &self.horizon
+    }
+    pub fn regime(&self) -> &str {
+        &self.regime
+    }
+    pub fn accuracy_bp(&self) -> u32 {
+        self.accuracy_bp
+    }
+    pub fn signal_quality_bp(&self) -> u32 {
+        self.signal_quality_bp
+    }
+    pub fn forecast_skill_bp(&self) -> u32 {
+        self.forecast_skill_bp
+    }
+
+    /// The overall reputation as a weighted average. Accuracy is weighted 40%,
+    /// signal quality 30%, forecast skill 30%.
+    pub fn overall_bp(&self) -> u32 {
+        ((self.accuracy_bp as u64 * 40
+            + self.signal_quality_bp as u64 * 30
+            + self.forecast_skill_bp as u64 * 30)
+            / 100) as u32
+    }
+}
+
+/// Compute allocation to a work item, recorded for auditability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComputeAllocation {
+    work_id: String,
+    resource_type: ComputeResourceType,
+    units: u32,
+    allocated_at: Timestamp,
+    model_reputation: ModelReputation,
+    rationale: String,
+}
+
+impl ComputeAllocation {
+    /// Records an allocation decision. Refuses empty work_id, rationale, or
+    /// zero units.
+    pub fn new(
+        work_id: impl Into<String>,
+        resource_type: ComputeResourceType,
+        units: u32,
+        allocated_at: Timestamp,
+        model_reputation: ModelReputation,
+        rationale: impl Into<String>,
+    ) -> Result<Self> {
+        let (work_id, rationale) = (work_id.into(), rationale.into());
+        if work_id.is_empty() || rationale.is_empty() {
+            return Err(Error::invalid(
+                "work_id and rationale must not be empty; supply both",
+            ));
+        }
+        if units == 0 {
+            return Err(Error::invalid(
+                "allocation units must be positive; do not record zero-unit allocations",
+            ));
+        }
+        Ok(Self {
+            work_id,
+            resource_type,
+            units,
+            allocated_at,
+            model_reputation,
+            rationale,
+        })
+    }
+
+    pub fn work_id(&self) -> &str {
+        &self.work_id
+    }
+    pub fn resource_type(&self) -> ComputeResourceType {
+        self.resource_type
+    }
+    pub fn units(&self) -> u32 {
+        self.units
+    }
+    pub fn model_reputation(&self) -> &ModelReputation {
+        &self.model_reputation
+    }
+    pub fn rationale(&self) -> &str {
+        &self.rationale
+    }
+}
