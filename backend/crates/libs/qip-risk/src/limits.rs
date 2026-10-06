@@ -1598,6 +1598,38 @@ impl LimitSet {
                     "cash over equity".into(),
                 );
             }
+            LimitKind::MaxVenueExposure {
+                venue,
+                limit: bound,
+            } => {
+                let value = state
+                    .venue_exposures
+                    .get(venue)
+                    .copied()
+                    .unwrap_or(Decimal::ZERO);
+                record(
+                    state.ratio(value.abs()),
+                    *bound,
+                    Some(venue.clone()),
+                    format!("gross exposure to venue {venue}"),
+                );
+            }
+            LimitKind::MaxVenueNotionalRate {
+                venue,
+                limit: bound,
+            } => {
+                let value = state
+                    .venue_exposures
+                    .get(venue)
+                    .copied()
+                    .unwrap_or(Decimal::ZERO);
+                record(
+                    value.abs().to_f64(),
+                    *bound,
+                    Some(venue.clone()),
+                    format!("notional rate to venue {venue} (circuit breaker)"),
+                );
+            }
         }
         out
     }

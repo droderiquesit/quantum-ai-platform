@@ -7,7 +7,7 @@ import { ChartJs } from "@/components/viz/ChartJs";
 import { ResourceView, StateBlock } from "@/components/data/States";
 import { platform } from "@/lib/api/client";
 import type { SystemStatus, Proposals, Opportunities } from "@/lib/api/types";
-import { formatCount, formatDecimal, formatPercent, formatTimestamp } from "@/lib/format";
+import { formatCount } from "@/lib/format";
 import { useResource } from "@/lib/hooks/useResource";
 import { useMemo } from "react";
 
@@ -70,10 +70,13 @@ export default function AnalyticsPage() {
       opps.length > 0 ? opps.reduce((sum, o) => sum + o.confidence, 0) / opps.length : 0;
 
     // Score distribution for chart (0-0.2, 0.2-0.4, etc.)
-    const bins = [0, 0, 0, 0, 0];
+    const bins: number[] = [0, 0, 0, 0, 0];
     opps.forEach((o) => {
       const binIndex = Math.min(Math.floor(o.score * 5), 4);
-      bins[binIndex]++;
+      const current = bins[binIndex];
+      if (current !== undefined) {
+        bins[binIndex] = current + 1;
+      }
     });
 
     return {
