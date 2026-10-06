@@ -1,12 +1,12 @@
 "use client";
 
 import { useMemo } from "react";
-import { Chip, Metric, MetricRow, StreamControls } from "@/components/data/Bits";
+import { Chip, Metric, MetricRow, StreamControls, StatusChip, Freshness } from "@/components/data/Bits";
 import { EventFeed } from "@/components/data/EventFeed";
 import { Panel, PanelBody, PanelHead } from "@/components/data/Panel";
 import { ResourceView, StateBlock } from "@/components/data/States";
 import { platform } from "@/lib/api/client";
-import type { RegimesRefusal } from "@/lib/api/types";
+import type { RegimesRefusal, SystemStatus } from "@/lib/api/types";
 import { formatClock, formatCount } from "@/lib/format";
 import { useEventStream } from "@/lib/hooks/useEventStream";
 import { useResource } from "@/lib/hooks/useResource";
@@ -60,6 +60,12 @@ function regimeOf(envelope: StreamEnvelope): string {
 }
 
 export default function RegimesPage() {
+  const status = useResource<SystemStatus>(platform.systemStatus, {
+    key: "regimes-status",
+    label: "GET /system/status",
+    intervalMs: 15_000,
+  });
+
   const signals = useEventStream({
     channel: "signals",
     label: "SSE /stream/signals (regimes)",
@@ -78,9 +84,34 @@ export default function RegimesPage() {
   const otherOnStream = signals.events.length - changes.length;
 
   return (
-    <div className="flex flex-col gap-3 p-3">
+    <div className="flex flex-col gap-3 p-3" data-testid="regimes-page">
+      <Panel>
+        <PanelHead
+          title="Regime changes"
+          meta={<Freshness resource={status} name="system" />}
+          actions={
+            status.data === null ? null : (
+              <StatusChip
+                tone={status.data.live_capable ? "bad" : "ok"}
+                label={status.data.live_capable ? "LIVE-CAPABLE" : "PAPER TRADING"}
+                title="GET /system/status: live_capable"
+              />
+            )
+          }
+        />
+        <PanelBody>
+          <p className="text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]">
+            <span className="chip mr-2" data-tone="ok" data-testid="regimes-paper-label">
+              PAPER TRADING
+            </span>
+            Market regime detection from the signal stream. The current regime is the newest{" "}
+            <code className="num">regime.changed</code> event received. Nothing on this page is
+            classified in the browser — the event payload is as the platform sent it.
+          </p>
+        </PanelBody>
+      </Panel>
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[2fr_3fr]">
-        <Panel>
+        <Panel data-testid="current-regime-panel">
           <PanelHead
             title="Current regime"
             meta={<StreamControls stream={signals} name="signals" />}

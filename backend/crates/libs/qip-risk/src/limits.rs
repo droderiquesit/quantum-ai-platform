@@ -455,6 +455,14 @@ impl LimitKind {
             {
                 Some("horizon")
             }
+            (
+                Self::MaxVenueExposure { venue: v1, .. },
+                Self::MaxVenueExposure { venue: v2, .. },
+            )
+            | (
+                Self::MaxVenueNotionalRate { venue: v1, .. },
+                Self::MaxVenueNotionalRate { venue: v2, .. },
+            ) if v1 != v2 => Some("venue"),
             _ => None,
         }
     }
@@ -715,6 +723,10 @@ pub struct RiskState {
     /// a producer fills this. A state built by a caller that never computes a
     /// liquidity ladder carries no claim about liquidity either way.
     pub unevaluated: BTreeMap<String, String>,
+    /// Gross exposure per venue, keyed by venue ID.
+    /// Tracks the notional exposure sent to each execution venue, used to
+    /// enforce venue credit line limits and circuit breakers.
+    pub venue_exposures: BTreeMap<String, Decimal>,
 }
 
 impl RiskState {
