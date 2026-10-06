@@ -9057,8 +9057,16 @@ impl Platform {
         self.finish_stage(&mut stages, decided, &mut mark);
         let acted = self.stage_act(now, &correlation_id);
         self.finish_stage(&mut stages, acted, &mut mark);
-        let learned = self.stage_learn(now);
-        self.finish_stage(&mut stages, learned, &mut mark);
+        if self.config.learn_stage_enabled {
+            let learned = self.stage_learn(now);
+            self.finish_stage(&mut stages, learned, &mut mark);
+        } else {
+            let skipped = StageOutcome::skipped(
+                Stage::Learn,
+                "LEARN stage disabled in fast-path configuration",
+            );
+            self.finish_stage(&mut stages, skipped, &mut mark);
+        }
 
         // Charge what the cycle consumed. A ledger per cycle rather than one
         // per process: the agent budget inside it is what refuses the next

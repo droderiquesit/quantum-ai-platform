@@ -250,6 +250,13 @@ pub struct PlatformConfig {
     pub autonomy_ceiling: AutonomyLevel,
     /// Whether a quantum provider is attached at all.
     pub quantum_enabled: bool,
+    /// Whether the LEARN stage runs on every cycle (true in deepbrain, false in fastbrain).
+    ///
+    /// The LEARN stage is computationally expensive and runs only in the slow lane
+    /// (qip-deepbrain). The fast lane (qip-fastbrain) skips it to maintain microsecond-to-millisecond
+    /// latency guarantees. ADR 0020 requires this distinction be structural, not just a matter of policy.
+    #[serde(default = "default_learn_stage_enabled")]
+    pub learn_stage_enabled: bool,
     pub mandate: Mandate,
     pub review: ReviewPolicy,
     pub routing: RoutingPolicy,
@@ -484,6 +491,12 @@ fn default_initial_equity() -> Decimal {
     Decimal::from_int(10_000_000)
 }
 
+/// LEARN stage runs by default. Set to false in fastbrain to enforce the fast-path
+/// constraint that the LEARN stage runs only in the slow lane (qip-deepbrain).
+fn default_learn_stage_enabled() -> bool {
+    true
+}
+
 /// Nothing set aside for exploration. The fail-closed default: a budget that
 /// appeared without anyone asking for it would take capital out of sizing on
 /// every deployment that had never heard of it.
@@ -551,6 +564,7 @@ impl Default for PlatformConfig {
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
             exploration_share: default_exploration_share(),
+            learn_stage_enabled: default_learn_stage_enabled(),
         }
     }
 }
@@ -572,6 +586,12 @@ impl PlatformConfig {
 
     pub fn with_quantum(mut self) -> Self {
         self.quantum_enabled = true;
+        self
+    }
+
+    /// Disable the LEARN stage. Used by qip-fastbrain to enforce that LEARN runs only in the slow lane.
+    pub fn without_learn_stage(mut self) -> Self {
+        self.learn_stage_enabled = false;
         self
     }
 

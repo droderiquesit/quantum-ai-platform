@@ -244,3 +244,54 @@ fn a_quiesce_that_did_not_come_from_this_node_is_refused_and_the_loop_keeps_runn
         "reading the quiesce endpoint asked the node to stop"
     );
 }
+
+#[test]
+fn the_fast_brain_does_not_run_the_learn_stage() {
+    // ARCH-020/021: The LEARN stage must not run in the fast-path cycle.
+    // LEARN is computationally expensive and would block the microsecond-to-millisecond
+    // latency guarantee the fast-brain exists to enforce.
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let config = PlatformConfig::default().without_learn_stage();
+    let context = qip_core::Context::new(clock.clone(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        qip_financial::universe::Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .expect("platform assembles");
+
+    // Verify the configuration is as expected (learn_stage_enabled = false)
+    assert!(
+        !platform.config().learn_stage_enabled,
+        "fastbrain platform configuration must have learn_stage_enabled = false"
+    );
+
+    // Mutation test: Run a cycle and check the LEARN stage is skipped.
+    let now = clock.now();
+    let report = platform.run_cycle(now);
+
+    // Find the LEARN stage in the report
+    let learn_stage = report
+        .stages
+        .iter()
+        .find(|stage| stage.stage == qip_kernel::cycle::Stage::Learn);
+
+    assert!(
+        learn_stage.is_some(),
+        "LEARN stage should be in the report (either skipped or run)"
+    );
+
+    let learn_stage = learn_stage.unwrap();
+    assert!(
+        !learn_stage.ran,
+        "LEARN stage must be skipped in fastbrain, but it ran. \
+         This violates ADR-020/021 which requires LEARN to run only in qip-deepbrain."
+    );
+    assert!(
+        learn_stage.detail.contains("disabled"),
+        "skipped LEARN stage should explain it was disabled, got: {}",
+        learn_stage.detail
+    );
+}
