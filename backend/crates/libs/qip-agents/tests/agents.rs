@@ -17,6 +17,7 @@ use qip_agents::manifest::{
 };
 use qip_agents::memory::{Episode, EpisodeOutcome, Lesson, PromotionPolicy, ResearchMemory};
 use qip_agents::runtime::{Agent, AgentContext, AgentHost, Gated, RunStatus, Upstream};
+use qip_agents::tools::{ToolKind, ToolSpec};
 use qip_ai::language::{DeterministicModel, ModelRequest};
 use qip_ai::memory::PrecedentDigest;
 use qip_core::error::{Error, Result};
@@ -1235,4 +1236,157 @@ fn a_precedent_knowable_at_or_after_the_question_is_refused_rather_than_briefed(
     let not_a_cosine = BriefPrecedent::new(digest, 1.5, Some(true), Duration::from_secs(1))
         .expect_err("a similarity outside [-1, 1] is not a cosine");
     assert!(not_a_cosine.message().contains("[-1, 1]"));
+}
+
+#[test]
+fn a_toolspec_with_all_required_fields_validates_and_missing_any_field_is_refused() {
+    // CONTRACT-034 requires ToolSpec to carry eight fields: capability, interface,
+    // permission scope, data handling, dependency/security provenance, sandbox
+    // tests, cost/latency, and allowed callers. Each is mandatory; validate()
+    // refuses any missing or blank field.
+
+    let valid = ToolSpec::new(
+        "solve-constraint",
+        ToolKind::Solver,
+        Capability::RunOptimization,
+        "fn solve(config: Config) -> Result",
+        "ephemeral; cleared after request",
+        "dep:qip-solver-v1.2; sec:mac",
+        vec![
+            "test_solver_basic".to_string(),
+            "test_solver_edge".to_string(),
+        ],
+        "tokens: 5000, latency: 2s",
+        vec!["portfolio-analyst".to_string(), "risk-agent".to_string()],
+    );
+    assert!(
+        valid.validate().is_ok(),
+        "premise: complete spec with all eight fields validates"
+    );
+
+    // Empty interface must be refused.
+    let no_interface = ToolSpec::new(
+        "solve-constraint",
+        ToolKind::Solver,
+        Capability::RunOptimization,
+        "",
+        "ephemeral; cleared after request",
+        "dep:qip-solver-v1.2; sec:mac",
+        vec!["test_solver_basic".to_string()],
+        "tokens: 5000, latency: 2s",
+        vec!["portfolio-analyst".to_string()],
+    );
+    let refused = no_interface
+        .validate()
+        .expect_err("empty interface must be refused");
+    assert!(
+        refused.message().contains("interface"),
+        "refusal must name interface: {}",
+        refused.message()
+    );
+
+    // Empty data_handling must be refused.
+    let no_handling = ToolSpec::new(
+        "solve-constraint",
+        ToolKind::Solver,
+        Capability::RunOptimization,
+        "fn solve(config: Config) -> Result",
+        "",
+        "dep:qip-solver-v1.2; sec:mac",
+        vec!["test_solver_basic".to_string()],
+        "tokens: 5000, latency: 2s",
+        vec!["portfolio-analyst".to_string()],
+    );
+    let refused = no_handling
+        .validate()
+        .expect_err("empty data_handling must be refused");
+    assert!(
+        refused.message().contains("data handling"),
+        "refusal must name data handling: {}",
+        refused.message()
+    );
+
+    // Empty provenance must be refused.
+    let no_prov = ToolSpec::new(
+        "solve-constraint",
+        ToolKind::Solver,
+        Capability::RunOptimization,
+        "fn solve(config: Config) -> Result",
+        "ephemeral; cleared after request",
+        "",
+        vec!["test_solver_basic".to_string()],
+        "tokens: 5000, latency: 2s",
+        vec!["portfolio-analyst".to_string()],
+    );
+    let refused = no_prov
+        .validate()
+        .expect_err("empty provenance must be refused");
+    assert!(
+        refused.message().contains("provenance"),
+        "refusal must name provenance: {}",
+        refused.message()
+    );
+
+    // Empty sandbox_tests must be refused.
+    let no_tests = ToolSpec::new(
+        "solve-constraint",
+        ToolKind::Solver,
+        Capability::RunOptimization,
+        "fn solve(config: Config) -> Result",
+        "ephemeral; cleared after request",
+        "dep:qip-solver-v1.2; sec:mac",
+        vec![],
+        "tokens: 5000, latency: 2s",
+        vec!["portfolio-analyst".to_string()],
+    );
+    let refused = no_tests
+        .validate()
+        .expect_err("empty sandbox_tests must be refused");
+    assert!(
+        refused.message().contains("sandbox test"),
+        "refusal must name sandbox tests: {}",
+        refused.message()
+    );
+
+    // Empty cost_latency must be refused.
+    let no_cost = ToolSpec::new(
+        "solve-constraint",
+        ToolKind::Solver,
+        Capability::RunOptimization,
+        "fn solve(config: Config) -> Result",
+        "ephemeral; cleared after request",
+        "dep:qip-solver-v1.2; sec:mac",
+        vec!["test_solver_basic".to_string()],
+        "",
+        vec!["portfolio-analyst".to_string()],
+    );
+    let refused = no_cost
+        .validate()
+        .expect_err("empty cost_latency must be refused");
+    assert!(
+        refused.message().contains("cost") || refused.message().contains("latency"),
+        "refusal must name cost/latency: {}",
+        refused.message()
+    );
+
+    // Empty allowed_callers must be refused.
+    let no_callers = ToolSpec::new(
+        "solve-constraint",
+        ToolKind::Solver,
+        Capability::RunOptimization,
+        "fn solve(config: Config) -> Result",
+        "ephemeral; cleared after request",
+        "dep:qip-solver-v1.2; sec:mac",
+        vec!["test_solver_basic".to_string()],
+        "tokens: 5000, latency: 2s",
+        vec![],
+    );
+    let refused = no_callers
+        .validate()
+        .expect_err("empty allowed_callers must be refused");
+    assert!(
+        refused.message().contains("caller"),
+        "refusal must name allowed callers: {}",
+        refused.message()
+    );
 }
