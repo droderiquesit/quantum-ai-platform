@@ -269,9 +269,6 @@ impl LimitKind {
             | Self::MaxVenueNotionalRate { limit, .. }
             | Self::MinCashBuffer { limit } => *limit,
             Self::MinLiquidity { fraction, .. } => *fraction,
-            Self::MaxVenueExposure { limit, .. } | Self::MaxVenueNotionalRate { limit, .. } => {
-                *limit
-            }
         }
     }
 

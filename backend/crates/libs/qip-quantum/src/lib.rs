@@ -39,6 +39,7 @@ pub mod qaoa;
 pub mod registry;
 pub mod solver;
 pub mod statevector;
+pub mod tiered_registry;
 
 pub use benchmark::{
     BenchmarkReport, ClassicalValidation, ClassicalValidator, QualityMeasure, Reliability,
@@ -56,3 +57,4 @@ pub use solver::{
     SolverEffort, SolverKind,
 };
 pub use statevector::{Complex, MAX_QUBITS, StateVector};
+pub use tiered_registry::{LocalRegistry, TieredRegistryBuilder, TieredSolverRegistry};
