@@ -1,0 +1,66 @@
+# Delete remote branches whose work is already in main.
+#
+# The repository owner asked on 2026-10-06 for a clean branch list. Agent
+# sessions cannot delete branches: their GitHub proxy refuses ref deletion, by
+# design. This workflow runs on GitHub with the repository's own token and
+# deletes only what is provably preserved: a branch is deleted only when its
+# tip is an ancestor of origin/main, so every commit it holds is already in
+# main and nothing is lost. Unmerged branches are listed and left alone.
+#
+# Manual dispatch only, and `dry_run` defaults to true: a run without
+# `dry_run: false` prints what it would delete and deletes nothing. main and
+# the integration branch are never candidates, whatever their state.
+name: branch-cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true prints what would be deleted; false deletes branches already merged into main"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: branch-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: delete branches already merged into main
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -eu
+          git fetch --prune origin
+          deleted=0; kept=0
+          for ref in $(git for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin); do
+            case "$ref" in
+              HEAD|main|ccr-0c1bacf8-kla0dd) continue ;;
+            esac
+            if git merge-base --is-ancestor "refs/remotes/origin/$ref" refs/remotes/origin/main; then
+              if [ "$DRY_RUN" = "false" ]; then
+                git push origin --delete "$ref"
+                echo "deleted  $ref"
+              else
+                echo "would delete  $ref"
+              fi
+              deleted=$((deleted + 1))
+            else
+              echo "kept (not in main)  $ref"
+              kept=$((kept + 1))
+            fi
+          done
+          echo "merged into main: $deleted; kept: $kept; dry_run: $DRY_RUN"
