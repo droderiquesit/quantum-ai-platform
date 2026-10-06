@@ -261,6 +261,9 @@ impl Running {
     /// that the protocol is no longer served (FABRIC-073).
     pub fn stop_data_plane(&mut self) {
         self.health.set_serving(false);
+        // Record serving=false in metrics when the data plane stops.
+        let telemetry = FabricdTelemetry::new(self.metrics.clone());
+        telemetry.serving(false);
         stop_listener(&self.stop_data, &self.address);
         if let Some(thread) = self.data_thread.take() {
             let _ = thread.join();
@@ -398,6 +401,7 @@ pub fn start_with_archive(
     let stop_housekeeping = Arc::new(AtomicBool::new(false));
 
     health.set_serving(true);
+    telemetry.serving(true);
     let data_thread = std::thread::spawn(move || {
         let _ = data.serve();
     });

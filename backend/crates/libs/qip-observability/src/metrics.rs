@@ -1274,6 +1274,7 @@ pub mod names {
     pub const EVENT_FABRIC_SEGMENTS_SEALED: &str = "qip_event_fabric_segments_sealed_total";
     pub const EVENT_FABRIC_ARCHIVE_LAG: &str = "qip_event_fabric_archive_lag_segments";
     pub const EVENT_FABRIC_GROUP_LAG: &str = "qip_event_fabric_group_lag";
+    pub const EVENT_FABRIC_SERVING: &str = "qip_event_fabric_serving";
 
     // Edge journal metrics (edge-node)
     pub const EDGE_JOURNAL_RING_DEPTH: &str = "qip_edge_journal_ring_depth";
