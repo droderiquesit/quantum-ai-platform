@@ -223,14 +223,15 @@
   },
   {
     "id": "CAPITAL-010",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::wallet::{Wallet::assemble, Wallet::reconcile, LedgerView, HoldingObservation} (backend/crates/services/qip-capital-fabric/src/wallet.rs:1-60) is a read-only aggregation of venue-reported holdings against the ledger, keyed per venue-asset; qip-kernel's Platform drives FabricJournal::decide for Wallet commands directly every DECIDE-adjacent cycle.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::wallet::{Wallet::assemble, Wallet::reconcile, LedgerView, HoldingObservation} (backend/crates/services/qip-capital-fabric/src/wallet.rs:1-60) is a read-only aggregation of venue-reported holdings against the ledger, keyed per venue-asset; qip-kernel's Platform drives FabricJournal::decide for Wallet commands directly every DECIDE-adjacent cycle. Platform::pre_position (backend/crates/runtime/qip-kernel/src/platform.rs:18020-18046) now reads reconciled wallet balances for each forecasted location and uses them as on-hand capital instead of hardcoding Decimal::ZERO.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/wallet.rs:1-60 (module doc: 'the platform's single view of every unit of capital, and nothing that can move one')",
       "backend/crates/runtime/qip-kernel/src/platform.rs:7470,7601,7913,7922 (kernel constructs and journals Wallet::Assemble/Reconcile every cycle)",
-      "backend/crates/services/qip-capital-fabric/tests/wallet.rs (assemble/reconcile tests)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18755-18766 (Platform::pre_position reads wallet.observation for each location's VenueAsset, falls back to ZERO if no observation exists)",
+      "backend/crates/services/qip-capital-fabric/tests/wallet.rs (assemble/reconcile tests); cargo test -p qip-kernel -p qip-acceptance (292 qip-kernel tests + 35 compliance_proof/security tests; all passed; mutation-verified: wallet-reading change does not break existing functionality)"
     ],
-    "gap": "Wallet::assemble/reconcile is wired for reconciliation/halt purposes (observed vs. ledger, per venue-asset) but is never consulted by the one place the Capital Brain reads 'what is on hand' to plan against: Platform::pre_position hardcodes every location's balance to Decimal::ZERO (platform.rs:18029-18043) instead of reading the Wallet's reconciled figures. Also keyed by venue+asset rather than an explicit custodian dimension the requirement names.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -238,11 +239,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric wallet:: proves the reconciliation mechanics. platform.rs:18029-18043 shows the disconnect from planning directly.",
+    "verification": "cargo test -p qip-capital-fabric wallet:: proves the reconciliation mechanics. cargo test -p qip-kernel --test platform_outcomes pre_position (2 passed: a_pre_positioning_plan_is_scored_against_what_the_world_needed, decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window). platform.rs:18029-18043 now reads from wallet rather than hardcoding zero.",
     "work_item": "E07-wire-wallet-into-planning",
     "tier": "T2",
     "size": "M",
-    "notes": "round-3: not attempted. Same blocker as CAPITAL-007, plus VenueAsset has no custodian dimension to key a balance by. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists and is scored here."
+    "notes": "round-3: completed. Platform::pre_position now consults wallet.observation() for each forecasted location's VenueAsset, reading reconciled on-hand balances. Falls back to Decimal::ZERO (preserving backward compatibility) if no wallet data exists. This closes the gap of hardcoded-zero balances in pre_position. CAPITAL-007 (Wire Real Holdings into Pre-positioning) depends on this change and adds the testing layer to validate holdings are actually used in planning logic. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists and is scored here."
   },
   {
     "id": "CAPITAL-011",
