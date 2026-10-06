@@ -76,7 +76,7 @@ pub use quantum::{ChosenPath, DecisionRequest, RoutingDecision, SolverKind, Solv
 pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};
 pub use routing::{QuantumRouter, RoutingConfig};
 pub use schema::{CompatibilityPolicy, SchemaDefinition, SchemaRegistry};
-pub use signal::{Conviction, Signal, SignalKind, StrategyId};
+pub use signal::{Conviction, OpportunityId, Signal, SignalKind, StrategyId};
 pub use stream_policy::{AckPolicy, OverloadBehavior, StreamPolicy};
 pub use time::{Stamped, Watermark};
 pub use venue::{Origin, VenueClass, VenueId, VenueStatus};

@@ -86,6 +86,9 @@ pub enum PolicyItem {
     /// ADR 0080: the retired strategies' lots this cell is to unwind. Not in
     /// §41.5's table; see [`Dispositions`].
     Dispositions,
+    /// Opportunity definitions that the strategy runtime evaluates against
+    /// live local state (REFLEX-026).
+    OpportunityDefinitions,
 }
 
 impl PolicyItem {
@@ -104,10 +107,11 @@ impl PolicyItem {
             Self::FeasibilityConstraints => "feasibility_constraints",
             Self::AdversaryProfiles => "adversary_profiles",
             Self::Dispositions => "dispositions",
+            Self::OpportunityDefinitions => "opportunity_definitions",
         }
     }
 
-    pub const fn all() -> [Self; 13] {
+    pub const fn all() -> [Self; 14] {
         [
             Self::TrainedModels,
             Self::CompiledPlan,
@@ -122,6 +126,7 @@ impl PolicyItem {
             Self::FeasibilityConstraints,
             Self::AdversaryProfiles,
             Self::Dispositions,
+            Self::OpportunityDefinitions,
         ]
     }
 
@@ -145,7 +150,8 @@ impl PolicyItem {
             | Self::CausalDigest
             | Self::RegimeState
             | Self::FeasibilityConstraints
-            | Self::Dispositions => Duration::from_secs(86_400),
+            | Self::Dispositions
+            | Self::OpportunityDefinitions => Duration::from_secs(86_400),
             // "seconds to minutes" — the conservative end is minutes.
             Self::BeliefPriors => Duration::from_secs(300),
             // "minutes".
@@ -179,7 +185,17 @@ impl PolicyItem {
             Self::BeliefPriors => Some(Capability::BeliefState),
             Self::EpisodicDigest => Some(Capability::EpisodicMemory),
             Self::CausalDigest => Some(Capability::CausalGraph),
-            _ => None,
+            Self::TrainedModels
+            | Self::CompiledPlan
+            | Self::RegimeState
+            | Self::CapitalGrants
+            | Self::CycleWhitelist
+            | Self::RiskEnvelope
+            | Self::InventoryTargets
+            | Self::FeasibilityConstraints
+            | Self::AdversaryProfiles
+            | Self::Dispositions
+            | Self::OpportunityDefinitions => None,
         }
     }
 }
@@ -268,6 +284,14 @@ impl<T> Slot<T> {
 pub struct ModelManifest {
     /// Model name to content digest, ordered so the wire form is stable.
     pub models: BTreeMap<String, String>,
+}
+
+/// Opportunity definitions keyed by opportunity ID, ordered for stable wire form.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpportunityManifest {
+    /// Opportunity ID to its definition digest, ordered so the wire form is stable.
+    pub opportunities: BTreeMap<String, String>,
 }
 
 /// The compiled plan, by digest and size. The plan itself ships elsewhere.
@@ -572,6 +596,13 @@ fn dispositions_unstated(slot: &Slot<Dispositions>) -> bool {
     slot.value().is_none_or(Dispositions::is_empty)
 }
 
+/// Whether a slot is unproduced and so stays off the wire and out of the
+/// signing string, allowing payloads signed before the slot existed to keep
+/// their digest.
+fn is_unproduced_slot<T>(slot: &Slot<T>) -> bool {
+    slot.is_unproduced()
+}
+
 /// The signed twelve-item payload one region receives, plus ADR 0080's
 /// thirteenth slot.
 ///
@@ -615,6 +646,11 @@ pub struct PolicyPayload {
     /// that follows.
     #[serde(default, skip_serializing_if = "dispositions_unstated")]
     pub dispositions: Slot<Dispositions>,
+    /// Opportunity definitions that the strategy runtime evaluates against
+    /// live state. Off the wire and out of the signing string while unproduced,
+    /// so payloads signed before this field existed keep their digest.
+    #[serde(default, skip_serializing_if = "is_unproduced_slot")]
+    pub opportunity_definitions: Slot<OpportunityManifest>,
     /// Hex MAC over [`Self::signing_payload`]. Empty until signed.
     pub signature: String,
 }
@@ -642,6 +678,7 @@ impl PolicyPayload {
             feasibility_constraints: Slot::unproduced(),
             adversary_profiles: Slot::unproduced(),
             dispositions: Slot::unproduced(),
+            opportunity_definitions: Slot::unproduced(),
             signature: String::new(),
         }
     }
@@ -666,6 +703,7 @@ impl PolicyPayload {
             PolicyItem::FeasibilityConstraints => self.feasibility_constraints.freshness(item, now),
             PolicyItem::AdversaryProfiles => self.adversary_profiles.freshness(item, now),
             PolicyItem::Dispositions => self.dispositions.freshness(item, now),
+            PolicyItem::OpportunityDefinitions => self.opportunity_definitions.freshness(item, now),
         };
         let expired = now > self.issued_at.saturating_add(self.valid_for) || now < self.issued_at;
         if expired && own == Freshness::Fresh {
@@ -732,7 +770,8 @@ impl PolicyPayload {
                 | PolicyItem::InventoryTargets
                 | PolicyItem::FeasibilityConstraints
                 | PolicyItem::AdversaryProfiles
-                | PolicyItem::Dispositions => false,
+                | PolicyItem::Dispositions
+                | PolicyItem::OpportunityDefinitions => false,
             })
             .collect()
     }
@@ -803,6 +842,12 @@ impl PolicyPayload {
         ];
         if !dispositions_unstated(&self.dispositions) {
             digests.push(digest(PolicyItem::Dispositions, &self.dispositions)?);
+        }
+        if !is_unproduced_slot(&self.opportunity_definitions) {
+            digests.push(digest(
+                PolicyItem::OpportunityDefinitions,
+                &self.opportunity_definitions,
+            )?);
         }
         Ok(digests)
     }
