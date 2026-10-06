@@ -3,6 +3,10 @@
 # This file demonstrates how to configure execution nodes across multiple regions.
 # Copy this to environments/<env>/terraform.tfvars and customize for your deployment.
 #
+# This is a template, not an environment. It lives outside
+# infrastructure/environments/ because `infra.yml` parses every tfvars file
+# there as one of the four environments.
+#
 # IMPORTANT: Each region is a separate ADR decision. Deploy one region first,
 # observe for 7+ days, then propose each additional region in a new ADR with evidence.
 #
@@ -10,8 +14,10 @@
 
 # --- The project ---
 
-project_id     = "algorik-platform-prod"
-project_number = 123456789012
+# Placeholders, as in the committed stage and prod tfvars: a template that
+# named a project would plan against it the moment somebody copied it.
+project_id     = "unprovisioned"
+project_number = 0
 environment    = "prod"
 region         = "us-east4" # Default region for resources without an explicit region
 
