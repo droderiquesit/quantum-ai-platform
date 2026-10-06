@@ -19,9 +19,26 @@ variable "region" {
   type        = string
 }
 
-variable "network_id" {
-  description = "The VPC the zone subnets are cut from and every rule below is written in."
+variable "reflex_network_id" {
+  description = "The Reflex VPC (execution nodes)."
   type        = string
+}
+
+variable "fabric_network_id" {
+  description = "The Fabric VPC (control-plane and event-fabric workloads)."
+  type        = string
+}
+
+variable "service_network_id" {
+  description = "The Service VPC (application and workload zones)."
+  type        = string
+}
+
+# Backward compatibility: old single network variable still accepted but deprecated.
+variable "network_id" {
+  description = "DEPRECATED: Use reflex_network_id, fabric_network_id, service_network_id instead. This maps to service_network_id."
+  type        = string
+  default     = ""
 }
 
 variable "zones" {

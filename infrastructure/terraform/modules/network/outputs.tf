@@ -1,9 +1,41 @@
+# Three separate networks per environment (GCP-009): Reflex for execution nodes,
+# Fabric for control-plane and event-fabric, Service for all other workloads.
+output "reflex_network_id" {
+  value       = google_compute_network.vpc["reflex"].id
+  description = "The Reflex network (execution nodes)."
+}
+
+output "reflex_network_name" {
+  value = google_compute_network.vpc["reflex"].name
+}
+
+output "fabric_network_id" {
+  value       = google_compute_network.vpc["fabric"].id
+  description = "The Fabric network (control-plane and event-fabric workloads)."
+}
+
+output "fabric_network_name" {
+  value = google_compute_network.vpc["fabric"].name
+}
+
+output "service_network_id" {
+  value       = google_compute_network.vpc["service"].id
+  description = "The Service network (application and workload zones)."
+}
+
+output "service_network_name" {
+  value = google_compute_network.vpc["service"].name
+}
+
+# Backward compatibility during migration: old single-network outputs now
+# reference the Service network where most workloads live.
 output "network_id" {
-  value = google_compute_network.vpc.id
+  value       = google_compute_network.vpc["service"].id
+  description = "The Service network (backward compatibility). Use reflex_network_id, fabric_network_id, or service_network_id for explicit network selection."
 }
 
 output "network_name" {
-  value = google_compute_network.vpc.name
+  value = google_compute_network.vpc["service"].name
 }
 
 # Null in an environment whose console does not reach the platform, which is
