@@ -509,7 +509,16 @@ jobs:
           VAR_FILES: ${{ steps.vars.outputs.files }}
         run: |
           terraform -chdir=infrastructure/terraform plan -input=false \
+            -out=tfplan \
             ${VAR_FILES}
+
+      - name: upload plan artifact
+        if: inputs.action == 'plan'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ inputs.environment }}
+          path: infrastructure/terraform/tfplan
+          retention-days: 7
 
       # There is no "repair a tainted service" step here any more. It untainted
       # a `google_cloud_run_v2_service` Cloud Run still had, so an apply
@@ -804,16 +813,21 @@ jobs:
             exit 1
           fi
 
-      # -auto-approve because there is nobody at a prompt: the review is the
-      # dispatch itself, recorded in the Actions log with who pressed it. The
-      # prod refusal above is what keeps that acceptable.
+      - name: download plan artifact
+        if: inputs.action == 'up'
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-${{ inputs.environment }}
+          path: infrastructure/terraform
+
       - name: up
         if: inputs.action == 'up'
-        env:
-          VAR_FILES: ${{ steps.vars.outputs.files }}
         run: |
-          terraform -chdir=infrastructure/terraform apply -input=false -auto-approve \
-            ${VAR_FILES}
+          if [ ! -f infrastructure/terraform/tfplan ]; then
+            echo "Plan artifact not found. Run 'plan' action first to generate and review the plan." >&2
+            exit 1
+          fi
+          terraform -chdir=infrastructure/terraform apply -input=false tfplan
 
       # ── The GitOps bootstrap (ADR 0036) ─────────────────────────────────
       #
@@ -1954,9 +1968,10 @@ jobs:
           # The address is targeted rather than the module, so the etcd key,
           # the three controller identities and the registry DNS zones stay in
           # state and come back with the cluster.
-          terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
+          terraform -chdir=infrastructure/terraform plan -input=false -out=tfplan-destroy \
             -target='module.gitops_control_plane[0].google_container_cluster.control_plane' \
             ${VAR_FILES}
+          terraform -chdir=infrastructure/terraform destroy -input=false tfplan-destroy
           echo "the ${ENVIRONMENT} control-plane cluster is gone; everything else in its module stands."
 
       - name: down
@@ -1982,9 +1997,10 @@ jobs:
           # because an environment may declare nodes tomorrow; it is not a
           # cost control today, and reading it as one is how the estate went
           # on billing for a cluster nobody had looked at.
-          terraform -chdir=infrastructure/terraform destroy -input=false -auto-approve \
+          terraform -chdir=infrastructure/terraform plan -input=false -out=tfplan-destroy \
             -target=module.execution_node \
             ${VAR_FILES}
+          terraform -chdir=infrastructure/terraform destroy -input=false tfplan-destroy
 
       - name: teardown
         if: inputs.action == 'teardown'
@@ -2072,7 +2088,7 @@ jobs:
           #    module.cicd. A refusal (a non-empty bucket with force_destroy
           #    false) stops Terraform's scheduling but not this step; what is
           #    left is printed by `what exists now` below.
-          tf destroy -input=false -auto-approve \
+          tf plan -input=false -out=tfplan-destroy \
             -target=module.execution_node \
             -target=module.gitops_control_plane \
             -target=module.cloud_run \
@@ -2092,7 +2108,8 @@ jobs:
             -target=module.binary_authorization \
             -target=module.scc \
             -target=module.identity \
-            ${VAR_FILES} \
+            ${VAR_FILES}
+          tf destroy -input=false tfplan-destroy \
             || echo "the destroy stopped before the end; the remainder is listed below and the refusal is in the log above." >&2
           echo "teardown finished; module.services and module.cicd were left standing by design."
 
