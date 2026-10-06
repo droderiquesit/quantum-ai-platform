@@ -2124,8 +2124,81 @@ fn no_service_account_key_exists_anywhere_in_the_terraform() {
             "{} creates a service-account key",
             path.display()
         );
+        assert!(
+            !content.contains("google_storage_hmac_key"),
+            "{} creates a storage HMAC key",
+            path.display()
+        );
     }
     assert!(scanned > 1000, "only {scanned} lines were scanned");
+}
+
+#[test]
+fn organization_policy_disables_service_account_key_creation() {
+    // GOV-028: Enforce Workload Identity Federation by disabling long-lived
+    // service-account key creation and upload at the project level. This
+    // structural refusal prevents circumvention of WIF-only authentication.
+    //
+    // Each constraint is checked inside its own resource body. The earlier
+    // form asked whether the file contained the resource name anywhere and
+    // `enforce = true` anywhere, so a creation policy flipped to
+    // `enforce = false` still passed on the strength of the upload policy's
+    // `enforce = true` -- a check that could not fire on the one value it
+    // existed to hold.
+    let root_no_comments = without_comments(&read("infrastructure/terraform/main.tf"));
+    let policies = terraform_resources(&root_no_comments, "google_org_policy_policy");
+    assert!(
+        !policies.is_empty(),
+        "infrastructure/terraform/main.tf declares no google_org_policy_policy at all"
+    );
+    for (resource, constraint) in [
+        (
+            "disable_service_account_key_creation",
+            "iam.disableServiceAccountKeyCreation",
+        ),
+        (
+            "disable_service_account_key_upload",
+            "iam.disableServiceAccountKeyUpload",
+        ),
+    ] {
+        let bodies: Vec<&String> = policies
+            .iter()
+            .filter(|(name, _)| name == resource)
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "main.tf must declare exactly one google_org_policy_policy \"{resource}\""
+        );
+        let lines: Vec<&str> = bodies[0].lines().map(str::trim).collect();
+        assert!(
+            lines.iter().any(|l| l.starts_with("name")
+                && l.ends_with(&format!("/policies/{constraint}\""))),
+            "{resource} must name {constraint} as its policy"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("parent")),
+            "{resource} must state the parent it is enforced on"
+        );
+        // The provider's `enforce` is the string "TRUE", inside `spec {
+        // rules {} }`. The first form of these policies wrote a bare `true`
+        // with `rules` outside `spec`, and `terraform validate` refused it.
+        assert!(
+            lines.contains(&"spec {"),
+            "{resource} must hold its rules inside spec {{}}"
+        );
+        assert!(
+            lines.contains(&"enforce = \"TRUE\""),
+            "{resource} must carry rules {{ enforce = \"TRUE\" }} in its own body"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("enforce") && l != &"enforce = \"TRUE\""),
+            "{resource} carries an enforce value other than \"TRUE\""
+        );
+    }
 }
 
 #[test]
@@ -5244,12 +5317,17 @@ fn the_retired_backup_plan_is_forgotten_rather_than_deleted_with_its_backups() {
         // `terraform fmt` aligns the `=` of a block's arguments, so the
         // literal spacing here is whatever its neighbours make it. This scan
         // lost a mutation to exactly that before it was written this way.
+        // The leading space makes `force` a delimited token: GOV-028's
+        // `enforce = true` on the key-creation org policies contains
+        // `force = true` as a substring, and the undelimited scan failed on
+        // it from the commit that added those policies.
         let text = without_comments(&std::fs::read_to_string(&path).expect("readable"))
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        let text = format!(" {text}");
         assert!(
-            !text.contains("force = true"),
+            !text.contains(" force = true"),
             "{} sets force = true, which is how a backup plan is deleted \
              together with the backups under it",
             path.display()
@@ -5331,23 +5409,34 @@ fn the_pipeline_authenticates_without_a_long_lived_key() {
     // A service-account key in a repository secret is a credential that never
     // expires, is copied by anyone who can read the secret, and leaves no trace
     // of which run used it.
-    let deploy = read(".github/workflows/deploy.yml");
-    assert!(
-        deploy.contains("id-token: write"),
-        "the pipeline cannot mint an OIDC token"
-    );
-    assert!(
-        deploy.contains("workload_identity_provider:"),
-        "the pipeline does not use workload identity federation"
-    );
-    assert!(
-        !deploy.contains("credentials_json"),
-        "the pipeline authenticates with a key"
-    );
-    assert!(
-        !deploy.contains("service_account_key"),
-        "the pipeline authenticates with a key"
-    );
+    for workflow_path in &[
+        ".github/workflows/deploy.yml",
+        ".github/workflows/infra.yml",
+        ".github/workflows/image.yml",
+        ".github/workflows/vendor.yml",
+    ] {
+        let workflow = read(workflow_path);
+        assert!(
+            workflow.contains("id-token: write"),
+            "{}: the pipeline cannot mint an OIDC token",
+            workflow_path
+        );
+        assert!(
+            workflow.contains("workload_identity_provider:"),
+            "{}: the pipeline does not use workload identity federation",
+            workflow_path
+        );
+        assert!(
+            !workflow.contains("credentials_json"),
+            "{}: the pipeline authenticates with a key",
+            workflow_path
+        );
+        assert!(
+            !workflow.contains("service_account_key"),
+            "{}: the pipeline authenticates with a key",
+            workflow_path
+        );
+    }
 
     // And the pool refuses every repository but this one. Without the
     // condition, any GitHub repository in the world can present a valid token.

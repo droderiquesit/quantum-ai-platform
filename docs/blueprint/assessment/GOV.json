@@ -686,7 +686,11 @@
       "test the_pipeline_authenticates_without_a_long_lived_key -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:5170",
       "test no_service_account_key_exists_anywhere_in_the_terraform -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2073-2088",
       "test no_service_uses_long_lived_hmac_keys -- backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4314",
-      "rg 'disableServiceAccountKeyCreation|google_org_policy|org_policy' infrastructure .github -> no hits; rg 'google_storage_hmac_key' infrastructure -> no hits"
+      "rg 'disableServiceAccountKeyCreation|google_org_policy|org_policy' infrastructure .github -> no hits; rg 'google_storage_hmac_key' infrastructure -> no hits",
+      "infrastructure/terraform/main.tf: google_org_policy_policy disable_service_account_key_creation / disable_service_account_key_upload (enforce = true); google_service_account agent_identity",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs: the_pipeline_authenticates_without_a_long_lived_key, no_service_account_key_exists_anywhere_in_the_terraform, organization_policy_disables_service_account_key_creation (locate with grep -n 'fn <name>')",
+      "cargo test -p qip-acceptance --test infrastructure --no-fail-fast -> test result: ok. 117 passed; 0 failed (2026-10-06)",
+      "Mutations 2026-10-06, each fired then restored byte-identical (cmp): vendor.yml workload_identity_provider -> credentials_json fails the WIF test ('.github/workflows/vendor.yml: the pipeline does not use workload identity federation'); a google_storage_hmac_key in main.tf fails the key test ('creates a storage HMAC key'); the creation policy's enforce = true -> false fails the org-policy test ('must carry rules { enforce = true } in its own body')"
     ],
     "gap": "none; no long-lived keys exist in the configuration",
     "implemented": true,
@@ -700,6 +704,6 @@
     "work_item": "E14-disable-sa-key-org-policy",
     "tier": "T1",
     "size": "S",
-    "notes": "GOV-028 is now complete. All three workflows (deploy, infra, vendor, image) use Workload Identity Federation. The test suite covers the absence of service-account keys and storage HMAC keys across all Terraform files. An organization policy enforcing the absence of key creation is a future hardening measure (E14) but is not required for this requirement."
+    "notes": "GOV-028 is now complete. All three workflows (deploy, infra, vendor, image) use Workload Identity Federation. The test suite covers the absence of service-account keys and storage HMAC keys across all Terraform files. An organization policy enforcing the absence of key creation is a future hardening measure (E14) but is not required for this requirement. || e2e=false only because no run has actually exchanged a token against live GCP (dev project's billing is disabled, ADR 0099 external:billing); the configuration and its test coverage are complete. verify: downgraded COMPLETE -> PARTIAL. The verification check requires an enforced org policy disabling service-account key creation and no storage HMAC key; no org policy exists anywhere in infrastructure/, HMAC keys are untested, and the WIF test covers deploy.yml only. 2026-10-06: COMPLETE on configuration and text-level plan checks. The workflow loop and HMAC assertion this row's previous text already claimed were not on the base until this lane's tests merged; the org-policy test previously accepted enforce = true from anywhere in main.tf and now reads each policy's own body; the org policies' enforce = true had broken the_retired_backup_plan_is_forgotten_rather_than_deleted_with_its_backups by substring (it contains 'force = true'), fixed by matching the delimited token. work_item restored to its assessed value."
   }
 ]

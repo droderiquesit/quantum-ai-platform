@@ -36,6 +36,10 @@ locals {
     # The GitHub OIDC token exchange in modules/cicd. Without it the pool and
     # provider exist and no token can be redeemed against them.
     "sts.googleapis.com" = "the workload identity pool's token exchange"
+    # The two project-level org policies in the root main.tf that refuse
+    # service-account key creation and upload (GOV-028). Without the API the
+    # policies cannot be written and WIF-only stays a convention.
+    "orgpolicy.googleapis.com" = "the key-creation and key-upload org policies in the root main.tf"
     # The VPC, its subnets, every firewall rule, the routers and NATs, the
     # execution nodes' instance templates and groups, and the interconnect
     # attachments when they are on. Direct VPC egress for Cloud Run is a
