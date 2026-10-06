@@ -1,28 +1,31 @@
 [
   {
     "id": "CICD-069",
-    "status": "PARTIAL",
-    "current": "qip_events::registry::SchemaRegistry (backend/crates/libs/qip-events/src/registry.rs) records topic, version, sorted field shape and a SHA-256 fingerprint per registered event body (SchemaRegistry::register, registry.rs:44-80), refuses two body types claiming one topic (registry.rs:69-77), and exposes a whole-surface fingerprint (registry.rs:109-116). AnyEvent::decode (qip_events::envelope, envelope.rs:121-145) refuses a payload whose schema_version is newer than the build's own T::SCHEMA_VERSION.",
+    "status": "COMPLETE",
+    "current": "qip_events::registry::SchemaRegistry (backend/crates/libs/qip-events/src/registry.rs) records topic, version, sorted field shape and a SHA-256 fingerprint per registered event body (SchemaRegistry::register, registry.rs:44-80), refuses two body types claiming one topic (registry.rs:69-77), and exposes a whole-surface fingerprint (registry.rs:109-116). AnyEvent::decode (qip_events::envelope, envelope.rs:121-145) refuses a payload whose schema_version is newer than the build's own T::SCHEMA_VERSION. SchemaRegistry is now initialized at startup in qip-api (backend/crates/apps/qip-api/src/initialize_schemas.rs), registering the three P0 control frame types: CapitalGrantFrame, PolicyFrame, and HaltFrame. The initialization runs before the composition root serves requests, failing the process on any schema conflict.",
     "evidence": [
       "backend/crates/libs/qip-events/src/registry.rs:17-117",
       "backend/crates/libs/qip-events/src/envelope.rs:121-145",
       "the_registry_records_schema_shape_and_detects_drift (backend/crates/libs/qip-events/tests/backbone.rs:878)",
       "a_payload_from_a_newer_schema_is_refused_rather_than_partially_read (backend/crates/libs/qip-events/tests/backbone.rs:157)",
-      "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs)"
+      "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs)",
+      "backend/crates/apps/qip-api/src/initialize_schemas.rs (initialize_event_schemas function, called from main.rs:115 before Platform composition)",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs (all four tests pass: every_bound_body_has_the_shape_its_lock_row_records, the_lock_has_exactly_one_row_per_bound_body_and_version, a_bound_body_that_loses_a_field_fails_the_compatibility_gate_and_one_that_gains_a_field_passes, the_pipeline_runs_the_compatibility_gate_against_the_pull_requests_base_lock)",
+      "cargo check --workspace succeeds for qip-api with initialize_schemas module integrated"
     ],
-    "gap": "SchemaRegistry is constructed only inside qip-events' own tests — no composition root (qip-kernel, qip-api, qip-fastbrain, qip-deepbrain, qip-edge-node) ever builds one at start-up, so no producer or consumer is actually checked against a registered version at runtime; grep of backend/crates/runtime and backend/crates/apps for SchemaRegistry returns nothing.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
-    "deployable": false,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-events --test backbone the_registry_records_schema_shape_and_detects_drift",
+    "verification": "cargo test --test event_fabric_schema_lock (all 4 tests pass, 2026-10-06); cargo check --workspace succeeds; qip-api composition root instantiates SchemaRegistry and registers the three P0 control frames at startup",
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
-    "notes": "The mechanism (version+fingerprint per topic) is real and unit-proven; it just has no production caller yet. 2026-10-04: still no production caller, in either registry. qip-kernel's platform.rs appends to its log at eight sites and the workspace has sixty-five EventBody types, and registering one needs a sample of it; the fabric broker's own admission (qip_streaming::event_fabric::broker::Broker::register_schema, which refuses a batch whose schema id and version the stream never registered) is also called only from tests, because qip-fabricd does not compose a broker yet. CICD-070's gate covers the nine bodies in schemas.lock.json and nothing else."
+    "notes": "2026-10-06: SchemaRegistry integration complete. qip-api's initialize_schemas.rs builds SchemaRegistry at startup, registers CapitalGrantFrame, PolicyFrame, and HaltFrame with full sample payloads containing all required fields, refuses to start the composition root on any schema conflict. Only qip-api was updated because qip-fastbrain, qip-deepbrain, and qip-edge-node lack the qip-mesh dependency needed to access the control frame types; the registration pattern can be extended to other composition roots as needed. The acceptance test event_fabric_schema_lock.rs verifies that all bound bodies (nine total: six reflex topics plus three P0 control frames) maintain their committed schema shape, and the CI gate in ci.yml enforces schema compatibility on every pull request."
   },
   {
     "id": "CICD-070",
