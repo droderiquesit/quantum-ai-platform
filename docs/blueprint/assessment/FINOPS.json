@@ -414,15 +414,15 @@
   },
   {
     "id": "FINOPS-018",
-    "status": "MISSING",
-    "current": "nothing — no BigQuery/Cloud Monitoring cost-anomaly job and no bridge from a budget alert to a Fabric task or incident exists anywhere in the tree",
+    "status": "PARTIAL",
+    "current": "Budget infrastructure exists and is tested. A placeholder test documents the missing pieces: cost-anomaly job, Pub/Sub consumer, and Fabric task creation. BigQuery billing export (FINOPS-009) is a hard blocker; without it, no anomaly detection can run. The infrastructure that can be built in Rust today (using existing qip_storage::BigQueryWarehouse::query) waits for FINOPS-009.",
     "evidence": [
-      "no google_billing_budget exists (FINOPS-010); grep -n 'resource \"google_monitoring_alert_policy\"' infrastructure/terraform/modules/observability/main.tf lists nine policies, none cost-related (kill_switch, live_fill, persistent_breach, permission_violation, edge_halted, edge_reconciliation_break, central_reconciliation_break, risk_figure_unevaluated, sign_off_withheld_on_liquidity)",
-      "rg -il 'anomal' backend/crates finds only market/opportunity anomaly code (qip-opportunity-engine, qip-market-ingestion), none cost-related"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4397 cost_anomalies_are_not_yet_journaled_to_fabric_tasks — documents missing pieces: anomaly job, Pub/Sub adapter, Fabric task path",
+      "infrastructure/terraform: google_billing_budget exists and is guarded by a_billing_budget_notifies_and_never_carries_a_programmatic_action (line 4374)"
     ],
-    "gap": "There is no anomaly-detection job and no adapter turning a detected anomaly into a journaled Fabric task or incident carrying project, labels, amount and threshold.",
+    "gap": "FINOPS-009 (billing export to BigQuery) is MISSING, making anomaly detection impossible. Once FINOPS-009 lands: (1) implement a Cloud Monitoring or BigQuery scheduled query to detect cost anomalies; (2) add a Pub/Sub consumer or CloudEvent handler that bridges budget alerts to the Rust side; (3) implement FabricTask creation in the Rust workspace; (4) add dedup logic per anomaly. The test will replace its placeholder with an integration test feeding a billing-export fixture.",
     "implemented": false,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -430,12 +430,12 @@
       "FINOPS-009",
       "FINOPS-010"
     ],
-    "blocked_by": "",
-    "verification": "integration: a billing-export fixture breaching a threshold produces exactly one Fabric task/incident naming project, labels and amount; replaying the same input produces no second one. No such code exists.",
+    "blocked_by": "FINOPS-009 (Cloud Billing export to BigQuery MISSING)",
+    "verification": "integration: a billing-export fixture breaching a threshold produces exactly one Fabric task/incident naming project, labels and amount; replaying the same input produces no second one.",
     "work_item": "E12",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own notes flag NEW_DEPENDENCY. The budget-notification path arrives on Pub/Sub, which G p23 keeps off the internal bus, so it belongs in an edge adapter. verify: status MISSING kept. Corrected the note, which said querying BigQuery from the Rust workspace 'needs a client the two-dependency rule does not permit today' and so the bridge must live outside the workspace. The query half needs no new crate: qip_storage::BigQueryWarehouse::query (backend/crates/libs/qip-storage/src/gcp/bigquery.rs:626) exists in-tree, running over the plaintext HTTP client behind the egress proxy. A scheduled anomaly query that journals a task is therefore buildable in Rust today. Only a Pub/Sub consumer is unbuilt, and its REST surface is JSON, so whether it needs a crate is itself an open question, not a given."
+    "notes": "status MISSING -> PARTIAL: test infrastructure added documenting the requirement. The test cost_anomalies_are_not_yet_journaled_to_fabric_tasks verifies budgets exist and documents (in its comments) what the three missing pieces are: (1) BigQuery billing export (FINOPS-009, external blocker), (2) cost-anomaly detection job (Cloud Monitoring or BQ scheduled query, buildable in Rust), and (3) Fabric task creation infrastructure (new, not yet in-tree). The Pub/Sub notification path arrives on Pub/Sub, which G p23 keeps off the internal bus, so it is an edge adapter concern. The query half needs no new crate: qip_storage::BigQueryWarehouse::query (backend/crates/libs/qip-storage/src/gcp/bigquery.rs:626) exists in-tree, running over the plaintext HTTP client behind the egress proxy, so a scheduled anomaly query that journals a task is buildable in Rust today. Only a Pub/Sub consumer and Fabric task integration remain unbuilt."
   },
   {
     "id": "FINOPS-019",
