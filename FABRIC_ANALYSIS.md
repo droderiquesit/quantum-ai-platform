@@ -274,3 +274,126 @@ execution_nodes = {
 - No production impact (dev only)
 
 **Mitigation for All:** Every commit includes mutation-verified tests.
+
+## Implementation Status (as of commit 5bea745b)
+
+### FABRIC-028 Phase 1: Unified Message Routing Contract ✅ COMPLETE
+
+**Commit:** b09361e7  
+**Status:** All gates pass (format, lint zero warnings, 10/10 tests)
+
+**Delivered:**
+- `backend/crates/libs/qip-events/src/event_fabric/message_routing.rs` (550 LOC)
+- `MessageTypeRouter` struct with 14 Topic registrations to 3 paths
+- `FabricPath` enum (VenueIo, LocalJournal, MeshLink) with `Ord` derive
+- 8 compile-time routing tests + 2 integration tests
+- `validate(topic, path)` method with Error::denied on violations
+- All tests mutation-verified
+
+**What's Proven:**
+- All 14 Topics registered exactly once
+- Every wrong-path combination raises Error::denied
+- Router is properly exported and available to subsystems
+- Acceptance suite proves exhaustiveness (every Topic covered)
+
+### FABRIC-028 Phase 2: Infrastructure Preparation ⏳ IN PROGRESS
+
+#### Phase 2 Blueprint: COMPLETE ✅
+
+**Commit:** edc8bffc  
+**Status:** 2 tests pass, 4 properly ignored with documented blockers
+
+**Delivered:**
+- `backend/crates/tests/qip-acceptance/tests/event_fabric_message_routing.rs`
+- `router_is_properly_exported_and_available()` - PASS
+- `every_topic_is_registered()` - PASS
+- 4 integration tests (ignored) with clear blocker documentation:
+  - `cell_rejects_venue_topics_on_non_venue_paths()` - blocked by execution_nodes = {}
+  - `transport_producer_refuses_local_topics()` - blocked by qip-transport server not deployed
+  - `broker_refuses_non_journal_topics()` - blocked by broker role not deployed
+  - `fabric_routing_contract_holds_end_to_end()` - blocked by all three
+
+**What's Proven:**
+- Test scaffold exists and compiles
+- Router is accessible from acceptance suite
+- Blockers are documented in test source
+- Framework is ready for Phase 2a/b/c implementation
+
+#### Phase 2a: qip-edge Cell Integration ✅ LOCAL WORK COMPLETE
+
+**Commit:** 5bea745b  
+**Status:** 4/4 tests pass, format/lint clean, zero warnings
+
+**Delivered:**
+- `backend/crates/edge/qip-edge/src/message_routing.rs`
+- `validate_venue_order(topic: Topic) -> Result<()>`
+- `validate_all_venue_topics() -> Result<()>`
+- 4 mutation-verified tests:
+  - Venue order topics validate successfully
+  - Batch validation passes for all 4 orders
+  - Non-venue topics (MeshLink, LocalJournal) rejected
+  - Error messages name the violation clearly
+
+**What's Ready:**
+- Cell can now call `message_routing::validate_venue_order()` before `place()`
+- Full integration awaits qip-edge-node deployment
+
+### FABRIC-028 Phase 2b: qip-transport Producer Integration ⏸️ BLOCKED
+
+**Status:** Architecture analyzed, implementation blocked
+
+**Finding:** Transport layer operates on `Batch` (with `message_type: MessageType`),  
+not on `Topic` (which lives in the event payload). Full integration would require:
+1. Decoding batch payload to extract Topic (expensive)
+2. Changing Batch structure to carry Topic info (major refactor)
+3. Creating higher-level producer wrapper (practical but different scope)
+
+**Recommendation:** Phase 2b work deferred until infrastructure (FABRIC-029) lands,  
+allowing real deployment testing to guide the design.
+
+### FABRIC-028 Phase 2c: qip-streaming Broker Integration ⏸️ BLOCKED
+
+**Status:** Similar architecture analysis as Phase 2b
+
+**Finding:** Streaming broker validates at stream level  
+(via streams.local.json ACL and payload codec), not at Topic level.  
+Routing enforcement at topic level requires upstream changes.
+
+**Recommendation:** Phase 2c work deferred until Phase 2b scope is clarified  
+by real deployment requirements.
+
+### FABRIC-028 Phase 3: Workload Lane Separation ⏸️ NOT STARTED
+
+**Status:** Blocked by FABRIC-029 (infrastructure gaps)
+
+**Requirement:** Separate execution lanes per workload.  
+Cannot proceed without execution_nodes deployment.
+
+## Blockers to Phase 2 Deployment Integration
+
+All Phase 2a/b/c full integration is blocked by FABRIC-029:
+
+1. **Boot Image Not Built**
+   - `image.yml` workflow never dispatched
+   - No Compute Engine image available
+   - Required for qip-edge-node deployment
+
+2. **region_allocation Not Chosen**
+   - ADR 0045 proposed `"1000000"`
+   - Decision gate: not yet taken
+   - Required before node deployment
+
+3. **execution_nodes Empty in All Environments**
+   - `infrastructure/environments/dev/terraform.tfvars`: `execution_nodes = {}`
+   - `qip-edge-node` binary builds and tests pass
+   - But no node to run passes, no deployed cell to validate with
+
+**Impact:** Phase 2 acceptance tests cannot run fully until these are resolved.  
+Local code is ready; deployment integration is not possible yet.
+
+## Next Steps
+
+1. **Short term (local):** Phase 2a integration code is ready to be wired into  
+   the actual Cell::place() call sites once node deployment becomes possible
+2. **Medium term:** Resolve FABRIC-029 blockers (boot image, ADR 0045 decision)
+3. **Long term:** Phase 2b/c integration design informed by Phase 2a real-world usage
