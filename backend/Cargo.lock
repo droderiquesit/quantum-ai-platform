@@ -59,6 +59,7 @@ dependencies = [
  "qip-orderbook",
  "qip-portfolio",
  "qip-portfolio-engine",
+ "qip-prediction",
  "qip-protocols",
  "qip-quantum",
  "qip-reasoning-engine",

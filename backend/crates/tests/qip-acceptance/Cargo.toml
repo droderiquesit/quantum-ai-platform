@@ -119,5 +119,10 @@ qip-streaming.workspace = true
 # walk fill-to-ledger reconciliation without a second manifest edge.
 qip-portfolio.workspace = true
 
+# EVENT-001 integration test for event prediction scoring. This crate holds
+# the scoring module that compares platform probability against market
+# probability for event contracts. In-tree; the two-dependency rule is untouched.
+qip-prediction.workspace = true
+
 [lints]
 workspace = true

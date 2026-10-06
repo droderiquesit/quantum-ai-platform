@@ -6,7 +6,7 @@
 //!
 //! The shape of the organisation is the point:
 //!
-//! * Seven research analysts and a causal analyst read and publish. None can
+//! * Eight research analysts and a causal analyst read and publish. None can
 //!   reach the market.
 //! * One microstructure analyst runs on the fast path with no language model
 //!   at all and a fifty-millisecond budget.
@@ -39,6 +39,7 @@ pub mod ids {
     pub const FX_RATES: &str = "fx-rates-analyst";
     pub const ALT_DATA: &str = "alternative-data-analyst";
     pub const CAUSAL: &str = "causal-analyst";
+    pub const EVENT: &str = "event-prediction-analyst";
     pub const ADVERSARIAL: &str = "adversarial-reviewer";
     pub const SIMULATION: &str = "simulation-analyst";
     pub const CONSTRUCTION: &str = "portfolio-construction";
@@ -295,6 +296,28 @@ pub fn causal_analyst(reviewed_at: Timestamp) -> AgentManifest {
     ])
 }
 
+pub fn event_prediction_analyst(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::EVENT,
+        "Event and Prediction Analyst",
+        "assesses event contracts and betting markets, forming outcome probability distributions and fair-value pricing from structural and information models",
+        owners::QUANTITATIVE,
+        reviewed_at,
+        &[Capability::CallLanguageModel],
+    )
+    .with_competencies(vec![
+        "constructing scenario trees and conditional probability distributions over event outcomes".into(),
+        "applying Bayesian updating as information and evidence arrives".into(),
+        "pricing outcomes under the market's settlement rules and payoff structure".into(),
+        "identifying arbitrage and basis trades across event venues".into(),
+    ])
+    .with_limitations(vec![
+        "refuses to trade against its own fair-value estimate unless the market has moved beyond the bid-ask spread".into(),
+        "a forecast is recorded with its confidence interval, never as a point estimate".into(),
+        "event contracts are priced under the venue's rules; a pricing model outside those rules is not advice".into(),
+    ])
+}
+
 pub fn adversarial_reviewer(reviewed_at: Timestamp) -> AgentManifest {
     // No PublishHypothesis: an adversary that can publish its own theses stops
     // being a check on the others and becomes one of them.
@@ -516,6 +539,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         fx_rates_analyst(reviewed_at),
         alternative_data_analyst(reviewed_at),
         causal_analyst(reviewed_at),
+        event_prediction_analyst(reviewed_at),
         adversarial_reviewer(reviewed_at),
         simulation_analyst(reviewed_at),
         portfolio_construction(reviewed_at),
