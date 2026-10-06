@@ -2,7 +2,7 @@
   {
     "id": "EXPAND-034",
     "status": "MISSING",
-    "current": "nothing. No type or module named Ontology, OntologyRegistry, OntologyPatch, or anything holding versioned entity/event/relationship/market/asset/product/causal-driver/lifecycle type families exists anywhere in backend/crates. The nearest neighbours are qip-world-model's KnowledgeGraph (graph.rs, Node/NodeKind/Fact \u2014 a data store over the ontology, not a registry of the type schema itself) and qip-contracts' fixed, compiled-in enums (SignalKind, AssetClass, etc.), which are Rust types versioned only by the crate's own semver, not by a runtime-registrable, queryable schema version.",
+    "current": "nothing. No type or module named Ontology, OntologyRegistry, OntologyPatch, or anything holding versioned entity/event/relationship/market/asset/product/causal-driver/lifecycle type families exists anywhere in backend/crates. The nearest neighbours are qip-world-model's KnowledgeGraph (graph.rs, Node/NodeKind/Fact — a data store over the ontology, not a registry of the type schema itself) and qip-contracts' fixed, compiled-in enums (SignalKind, AssetClass, etc.), which are Rust types versioned only by the crate's own semver, not by a runtime-registrable, queryable schema version.",
     "evidence": [
       "rg -c 'OntologyRegistry|OntologyPatch' backend/crates --type rust -> no matches (checked 2026-09-25)",
       "backend/crates/services/qip-world-model/src/graph.rs (KnowledgeGraph holds instances of fixed Node/NodeKind types, not a versioned type schema)"
@@ -15,7 +15,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need: register a type in each of the 8 families, assert every stored type carries a version, and that fetching an old version returns that version's definition \u2014 none of this can be written today because there is no registry to call.",
+    "verification": "No test exists. Would need: register a type in each of the 8 families, assert every stored type carries a version, and that fetching an old version returns that version's definition — none of this can be written today because there is no registry to call.",
     "work_item": "E08-ontology-registry",
     "tier": "T4",
     "size": "XL",
@@ -27,7 +27,7 @@
     "current": "nothing. There is no OntologyPatch type and no governed-extension pipeline, because EXPAND-034's Ontology Registry it would extend does not exist either. qip-contracts' schema-compatibility gates (CONTRACT-046, CONTRACT-047, per this requirement's own notes) do the equivalent job for wire-schema versioning on the Fabric's envelopes, but that is a different object (wire schema, not ontology type schema) and does not accept or evaluate a patch to the type system.",
     "evidence": [
       "rg -c 'OntologyPatch' backend/crates --type rust -> no matches",
-      "backend/crates/services/qip-streaming/src/schema.rs (EnvelopeWire, SchemaCompatibility \u2014 the wire-schema analogue this requirement's notes distinguish from ontology extension)"
+      "backend/crates/services/qip-streaming/src/schema.rs (EnvelopeWire, SchemaCompatibility — the wire-schema analogue this requirement's notes distinguish from ontology extension)"
     ],
     "gap": "No governed patch pipeline exists at all: nothing to submit a patch to, nothing to evaluate or version-admit it, and no direct-write path to refuse either, because there is no Ontology Registry.",
     "implemented": false,
@@ -43,7 +43,7 @@
     "work_item": "E08-ontology-registry",
     "tier": "T4",
     "size": "XL",
-    "notes": "Strictly depends on EXPAND-034 existing first \u2014 there is no ontology to extend."
+    "notes": "Strictly depends on EXPAND-034 existing first — there is no ontology to extend."
   },
   {
     "id": "EXPAND-036",
@@ -170,7 +170,7 @@
   {
     "id": "EXPAND-041",
     "status": "PARTIAL",
-    "current": "No Capability Registry exists (EXPAND-040 is MISSING) so there is no registry entry carrying a per-capability eligibility boundary. The substantive guarantee the entry would report \u2014 that trade/settle/hedge/transfer/purchase are paper-only and cannot be widened \u2014 is itself real and independently enforced by the three structural layers `01-security-and-safety.md` names: Terraform's refusal of a live ceiling (infrastructure/terraform/variables.tf), `AutonomyLevel::deployable` refusing the same at composition-root start-up, and `qip-edge`'s `Cell` having no constructor taking a non-paper ceiling. All three are proven by the acceptance suite.",
+    "current": "No Capability Registry exists (EXPAND-040 is MISSING) so there is no registry entry carrying a per-capability eligibility boundary. The substantive guarantee the entry would report — that trade/settle/hedge/transfer/purchase are paper-only and cannot be widened — is itself real and independently enforced by the three structural layers `01-security-and-safety.md` names: Terraform's refusal of a live ceiling (infrastructure/terraform/variables.tf), `AutonomyLevel::deployable` refusing the same at composition-root start-up, and `qip-edge`'s `Cell` having no constructor taking a non-paper ceiling. All three are proven by the acceptance suite.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:219 the_three_layers_the_safety_rules_name_each_still_have_a_test",
       "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs:37 a_configured_live_ceiling_stops_the_deployment_instead_of_being_lowered_to_paper",
@@ -191,7 +191,7 @@
     "work_item": "E08-capability-registry",
     "tier": "T3",
     "size": "M",
-    "notes": "The requirement is explicit that the registry is 'a fourth place the boundary is read, never a fourth place it is decided' \u2014 the three layers already carry full authority and are intact; only the registry surface is missing. verify: e2e set true -> false. The paper_boundary tests call AutonomyLevel::deployable in-process and scan source files; none crosses processes or stages, so they are acceptance-suite unit/scan tests, not e2e. Two cited lines were off by one (147 -> 148, 218 -> 219). Status PARTIAL unchanged."
+    "notes": "The requirement is explicit that the registry is 'a fourth place the boundary is read, never a fourth place it is decided' — the three layers already carry full authority and are intact; only the registry surface is missing. verify: e2e set true -> false. The paper_boundary tests call AutonomyLevel::deployable in-process and scan source files; none crosses processes or stages, so they are acceptance-suite unit/scan tests, not e2e. Two cited lines were off by one (147 -> 148, 218 -> 219). Status PARTIAL unchanged."
   },
   {
     "id": "EXPAND-042",
@@ -279,7 +279,7 @@
     "status": "MISSING",
     "current": "The five named failure types are each independently recorded as events/series today (vetoes and reconciliation breaks per the observability domain's qip_central_reconciliation_breaks_total and qip_central_cell_halts_total; qip-lifecycle's demotion triggers for performance decay; qip-world-model's causal edge retirement after RETIREMENT_CONSECUTIVE_FAILURES=3), but nothing turns a repeated occurrence of any of them into an explicit LearningObjective, because no such type or CurriculumEngine exists.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs:52-275 (RETIREMENT_CONSECUTIVE_FAILURES=3 \u2014 the nearest existing 'repeated failure has a consequence' pattern, but it retires an edge, it does not create a learning objective)",
+      "backend/crates/services/qip-world-model/src/causal.rs:52-275 (RETIREMENT_CONSECUTIVE_FAILURES=3 — the nearest existing 'repeated failure has a consequence' pattern, but it retires an edge, it does not create a learning objective)",
       "rg -c 'LearningObjective' backend/crates --type rust -> no matches"
     ],
     "gap": "No LearningObjective type or curriculum exists to receive repeated-failure signals from the five sources named.",
@@ -296,7 +296,7 @@
     "work_item": "E08-curriculum-engine",
     "tier": "T4",
     "size": "XL",
-    "notes": "This requirement explicitly never relaxes the control that raised the underlying failure (veto, halt, retirement) \u2014 those controls are real and unaffected; only the curriculum-feeding step is absent. 2026-10-05: not closed. Adverse selection and failed arbitrage sagas have no event on the central log, so a replayed history cannot contain all five failure types."
+    "notes": "This requirement explicitly never relaxes the control that raised the underlying failure (veto, halt, retirement) — those controls are real and unaffected; only the curriculum-feeding step is absent. 2026-10-05: not closed. Adverse selection and failed arbitrage sagas have no event on the central log, so a replayed history cannot contain all five failure types."
   },
   {
     "id": "EXPAND-046",
@@ -349,7 +349,7 @@
     "work_item": "E16-expansion-engine-build-pipeline",
     "tier": "T4",
     "size": "XL",
-    "notes": "GCP v2.1 \u00a713 gives agent roles and hard boundaries for exactly this capability; this repository's actual self-modification path today is the human-supervised branch+PR workflow, which satisfies the safety intent but is not the platform capability the requirement describes. verify: upgraded MISSING -> PARTIAL. The assessor looked only for a code-building sandbox and missed the deep brain's evolution and learning loops, which build strategy and model candidates at runtime and hold them below any authority. The other four kinds, gap-driven triggering and branch artifacts remain."
+    "notes": "GCP v2.1 §13 gives agent roles and hard boundaries for exactly this capability; this repository's actual self-modification path today is the human-supervised branch+PR workflow, which satisfies the safety intent but is not the platform capability the requirement describes. verify: upgraded MISSING -> PARTIAL. The assessor looked only for a code-building sandbox and missed the deep brain's evolution and learning loops, which build strategy and model candidates at runtime and hold them below any authority. The other four kinds, gap-driven triggering and branch artifacts remain."
   },
   {
     "id": "EXPAND-048",
@@ -383,12 +383,12 @@
   {
     "id": "EXPAND-049",
     "status": "PARTIAL",
-    "current": "Binary Authorization (infrastructure/terraform/modules/binaryauthorization/main.tf) gates every deployed container image at the infrastructure layer \u2014 a real, applied control over what image reaches Cloud Run. Inside the running platform, qip_ai::registry::ModelRegistry::promote_artifact (backend/crates/libs/qip-ai/src/registry.rs:304-342) verifies a SHA-256 digest match and refuses re-promoting a reference whose artifact bytes changed, but this is content-integrity checking, not a signature: it proves the bytes are the bytes claimed, not who produced them or that they were evaluated by anyone authorised.",
+    "current": "Binary Authorization (infrastructure/terraform/modules/binaryauthorization/main.tf) gates every deployed container image at the infrastructure layer — a real, applied control over what image reaches Cloud Run. Inside the running platform, qip_ai::registry::ModelRegistry::promote_artifact (backend/crates/libs/qip-ai/src/registry.rs:304-342) verifies a SHA-256 digest match and refuses re-promoting a reference whose artifact bytes changed, but this is content-integrity checking, not a signature: it proves the bytes are the bytes claimed, not who produced them or that they were evaluated by anyone authorised.",
     "evidence": [
       "infrastructure/terraform/modules/binaryauthorization/main.tf (Binary Authorization module, wired into infrastructure/terraform/main.tf)",
       "backend/crates/libs/qip-ai/src/registry.rs:304-326 (promote_artifact: digest verification + refusal of a changed-bytes re-promotion, no signature)"
     ],
-    "gap": "No in-tree capability promotion (model, strategy, tool, brain) is cryptographically signed; only container-image deployment is. A promotion signed over the wrong digest, or entirely unsigned, cannot currently be distinguished from a correctly signed one for any in-platform capability, because there is no signature mechanism \u2014 only a digest check.",
+    "gap": "No in-tree capability promotion (model, strategy, tool, brain) is cryptographically signed; only container-image deployment is. A promotion signed over the wrong digest, or entirely unsigned, cannot currently be distinguished from a correctly signed one for any in-platform capability, because there is no signature mechanism — only a digest check.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -402,7 +402,7 @@
     "work_item": "E13-capability-promotion-signing",
     "tier": "T4",
     "size": "L",
-    "notes": "In-tree asymmetric signing is prohibited by ADR 0043 (proposed) and by ADR 0002/0009's two-dependency rule, so closing this gap for in-platform capabilities requires either a new dependency class (C2, needs its own record) or routing through Artifact Registry/KMS (a MANAGED_SERVICE decision, also under C2/C4's territory) as GCP v2.1 \u00a721.4 describes."
+    "notes": "In-tree asymmetric signing is prohibited by ADR 0043 (proposed) and by ADR 0002/0009's two-dependency rule, so closing this gap for in-platform capabilities requires either a new dependency class (C2, needs its own record) or routing through Artifact Registry/KMS (a MANAGED_SERVICE decision, also under C2/C4's territory) as GCP v2.1 §21.4 describes."
   },
   {
     "id": "EXPAND-050",
@@ -410,7 +410,7 @@
     "current": "qip_agents::capability::Capability::sensitivity (backend/crates/libs/qip-agents/src/capability.rs:131-157) ranks every capability 0-3 (read-only, computation, production-write, authority) and AgentManifest::validate_separation_of_duties (manifest.rs:265) refuses specific higher-tier grants without qualifying conditions (e.g. OverrideRiskLimit requires the Control role; SubmitOrder requires the Execution role and refuses if PublishHypothesis is also held). This is a real, tested, tiered authority structure, but it is a fixed set of pairwise prohibitions, not a table stating minimum evidence/rollback provision per tier that a candidate's evidence is checked against, and 'evidence' and 'rollback' are not modelled at all on Capability or AgentManifest. Separately, and not examined by the assessor, the strategy lifecycle is a real authority-tier table with evidence per tier: GateStage Candidate < Holdout < Paper < Shadow < Pilot < Scaled (qip-contracts/src/gate.rs:14-31), one gate per rung demanding that rung's evidence (qip-lifecycle/src/gates.rs), no rung skippable because AuthorisedPromotion derives the target from GateStage::next, and a capital-holding rung refused without a dual approval. Demotion to any lower rung needs no approver. It is held by CentralPlane's StrategyFactory (qip-kernel/src/central/factory.rs:245,273; plane.rs:931).",
     "evidence": [
       "backend/crates/libs/qip-agents/src/capability.rs:131-157 (sensitivity 0-3 ranking)",
-      "backend/crates/libs/qip-agents/src/manifest.rs:265-330 (validate_separation_of_duties \u2014 tier-crossing refusals, no evidence/rollback fields)",
+      "backend/crates/libs/qip-agents/src/manifest.rs:265-330 (validate_separation_of_duties — tier-crossing refusals, no evidence/rollback fields)",
       "backend/crates/libs/qip-agents/tests/agents.rs:94 a_research_agent_cannot_be_granted_order_submission",
       "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:385 a_promotion_that_skips_a_rung_cannot_be_constructed",
       "backend/crates/services/qip-lifecycle/tests/lifecycle.rs:407 promotion_to_a_capital_holding_stage_without_a_dual_approval_is_refused",
@@ -434,7 +434,7 @@
   {
     "id": "EXPAND-051",
     "status": "PARTIAL",
-    "current": "qip_agents::capability::Capability (backend/crates/libs/qip-agents/src/capability.rs:23-56) and qip_agents::manifest::AgentManifest::validate_separation_of_duties (manifest.rs:265-330) structurally enforce this: `AgentRole::is_research_side` (manifest.rs) forbids any research-side role (Research/Adversarial/Learning/Coordination) from ever holding a market-touching capability (Capability::touches_market \u2014 SubmitOrder/CancelOrder/OverrideRiskLimit), checked at manifest validation time, before an agent runs. qip-investment-agents' 7-agent roster (analysts.rs) is built from these manifests and is reached from production via qip-deepbrain/src/roster.rs and qip-fastbrain/src/roster.rs, which import qip_investment_agents::manifests.",
+    "current": "qip_agents::capability::Capability (backend/crates/libs/qip-agents/src/capability.rs:23-56) and qip_agents::manifest::AgentManifest::validate_separation_of_duties (manifest.rs:265-330) structurally enforce this: `AgentRole::is_research_side` (manifest.rs) forbids any research-side role (Research/Adversarial/Learning/Coordination) from ever holding a market-touching capability (Capability::touches_market — SubmitOrder/CancelOrder/OverrideRiskLimit), checked at manifest validation time, before an agent runs. qip-investment-agents' 7-agent roster (analysts.rs) is built from these manifests and is reached from production via qip-deepbrain/src/roster.rs and qip-fastbrain/src/roster.rs, which import qip_investment_agents::manifests.",
     "evidence": [
       "backend/crates/libs/qip-agents/src/manifest.rs:265-278 (validate_separation_of_duties: role.is_research_side() refuses any touches_market() capability)",
       "backend/crates/libs/qip-agents/src/capability.rs:166-169 (Capability::touches_market: SubmitOrder | CancelOrder | OverrideRiskLimit)",
@@ -508,30 +508,31 @@
   },
   {
     "id": "EXPAND-054",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Each of the analysts in qip-investment-agents hard-codes its own scope check and returns support::out_of_scope (support.rs:174-184, AgentFinding::deferred - status Deferred, zero weight) for a query it cannot answer; e.g. MacroAnalyst defers on a horizon shorter than macro publication lag (analysts.rs:84-93). Above the analysts, Organisation::dispatch (chief.rs:370) records an agent whose accepts() is false as deferred without running it, and the reasoning engine drops Deferred findings from evidence (qip-reasoning-engine/src/engine.rs:188). This is production-reached through Organisation::standard on Platform. The declared AgentManifest.competencies list is not read by any of it: abstention is per-analyst logic against an implicit scope.",
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/support.rs:174-184 (out_of_scope -> AgentFinding::deferred)",
       "backend/crates/agents/qip-investment-agents/src/analysts.rs:85,95,241,253,379,546,701,712,831,1009 (out_of_scope call sites)",
       "backend/crates/agents/qip-investment-agents/src/chief.rs:370 (an agent that does not accept the brief is recorded as deferred)",
       "backend/crates/services/qip-reasoning-engine/src/engine.rs:188 (Deferred findings excluded from evidence)",
-      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon (asserts Deferred and zero effective conviction)"
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon (asserts Deferred and zero effective conviction)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs an_analyst_abstains_on_every_desk_instrument_outside_its_asset_class_remit (EquityAnalyst on WTI and EURUSD, CommoditiesAnalyst on ACME and EURUSD: Deferred, remit reason, zero conviction) and the_credit_analyst_abstains_on_a_brief_about_no_instrument"
     ],
     "gap": "Abstention is hard-coded per analyst against an implicit scope, not enforced against a declared, registered competency boundary (EXPAND-053 is MISSING and AgentManifest.competencies is never read). Only named cases are tested - no property test over generated out-of-boundary queries across the roster.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
-    "e2e": true,
+    "e2e": false,
     "depends_on": [
       "EXPAND-053"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation the_macro_analyst_defers_on_an_intraday_horizon. agents_defer_on_queries_outside_their_declared_competencies test added and passes: validates MacroAnalyst, EquityAnalyst, CreditAnalyst, and CommoditiesAnalyst all defer on queries outside their declared competencies.",
+    "verification": "cargo test -p qip-investment-agents --test organisation the_macro_analyst_defers_on_an_intraday_horizon. and an_analyst_abstains_on_every_desk_instrument_outside_its_asset_class_remit, the_credit_analyst_abstains_on_a_brief_about_no_instrument (cargo test -p qip-investment-agents --no-fail-fast -> organisation: test result: ok. 43 passed; 0 failed, 2026-10-06). No property test across generated out-of-boundary queries.",
     "work_item": "E08-brain-registry",
     "tier": "T2",
     "size": "M",
-    "notes": "Applies however a specialist is invoked per the requirement's notes, including an ambient wake (EXPAND-024) \u2014 that wake path was not verified in this pass. verify: status PARTIAL unchanged; test citation corrected. The cited vocabulary.rs:255 test asserts FindingStatus::NoView via the no_data path (the subject has no geography), which is 'looked and found nothing', not abstention. Replaced with organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon, which asserts Deferred, and added the dispatch-level deferral (chief.rs:370) and the reasoning engine's exclusion (engine.rs:188). 2026-10-05: not closed. AgentManifest.competencies is free prose, so abstention cannot be enforced against it; that needs a machine-readable boundary declared for every manifest, which is a design decision."
+    "notes": "Applies however a specialist is invoked per the requirement's notes, including an ambient wake (EXPAND-024) — that wake path was not verified in this pass. verify: status PARTIAL unchanged; test citation corrected. The cited vocabulary.rs:255 test asserts FindingStatus::NoView via the no_data path (the subject has no geography), which is 'looked and found nothing', not abstention. Replaced with organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon, which asserts Deferred, and added the dispatch-level deferral (chief.rs:370) and the reasoning engine's exclusion (engine.rs:188). 2026-10-05: not closed. AgentManifest.competencies is free prose, so abstention cannot be enforced against it; that needs a machine-readable boundary declared for every manifest, which is a design decision. 2026-10-06: still PARTIAL. Lane L040 added remit-abstention tests for the equity and commodities analysts over every off-remit instrument the test desk holds, mutation-verified (inverting either asset-class check makes the analyst return NoView instead of Deferred). The credit analyst has no asset-class remit check; its only abstention is a brief with no instrument. A first draft of these tests passed for the wrong reason (briefs carried no instrument, so every analyst deferred on 'needs an instrument' whatever the question said) and claimed COMPLETE with e2e true; both reverted. Closing still needs a machine-readable competency boundary per manifest (EXPAND-053) and a generated-query property test."
   },
   {
     "id": "EXPAND-055",
@@ -559,7 +560,7 @@
     "status": "MISSING",
     "current": "qip_ai::evaluation (backend/crates/libs/qip-ai/src/evaluation.rs) computes general calibration (expected_calibration_error, CalibrationBin) over a set of predictions, and is used generically for confidence-arithmetic scoring elsewhere in the platform (ADR 0005). Neither qip-deepbrain's promote_candidate nor qip-ai's registry evaluates calibration specifically on held-out stress or regime-shift sets, and no candidate is refused for losing calibration on either.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/evaluation.rs:59-72 (expected_calibration_error \u2014 general purpose, not tied to stress/regime-shift sets)",
+      "backend/crates/libs/qip-ai/src/evaluation.rs:59-72 (expected_calibration_error — general purpose, not tied to stress/regime-shift sets)",
       "rg -n 'stress|regime_shift|calibration_error' backend/crates/apps/qip-deepbrain/src/learning.rs -> no matches"
     ],
     "gap": "No stress-set or regime-shift-set calibration check gates promotion; promote_candidate's own gate is an RMSE comparison, not a calibration-error bound, and no declared calibration-error bound exists anywhere.",
@@ -581,7 +582,7 @@
   {
     "id": "EXPAND-057",
     "status": "PARTIAL",
-    "current": "qip_strategy::compile::StrategyCompiler (backend/crates/edge/qip-strategy/src/compile.rs) enforces a static, deterministic worst-case node-count budget (CompilerLimits::max_nodes, default 512, compile.rs:35-46) and refuses to emit a compiled plan whose worst-case cost exceeds it \u2014 even after common-subexpression sharing reduces the literal size below the ceiling, the pre-sharing cost still refuses (compile.rs:340,395). This is reached from production: qip-edge-node/src/strategies.rs and qip-deepbrain's evolution/succession paths construct StrategyCompiler. Two further partial budgets, not cited by the assessor: qip-training's FidelityPolicy caps a distilled reflex student at maximum_student_cost 64 worst-case evaluation steps and is applied in the production promote_candidate path (qip-deepbrain/src/learning.rs, approved_student(&FidelityPolicy::default())); and the performance acceptance suite measures wall-clock cost per operation against stated ceilings (strategy_evaluation_costs_what_the_budget_says), as a test rather than a deployment gate.",
+    "current": "qip_strategy::compile::StrategyCompiler (backend/crates/edge/qip-strategy/src/compile.rs) enforces a static, deterministic worst-case node-count budget (CompilerLimits::max_nodes, default 512, compile.rs:35-46) and refuses to emit a compiled plan whose worst-case cost exceeds it — even after common-subexpression sharing reduces the literal size below the ceiling, the pre-sharing cost still refuses (compile.rs:340,395). This is reached from production: qip-edge-node/src/strategies.rs and qip-deepbrain's evolution/succession paths construct StrategyCompiler. Two further partial budgets, not cited by the assessor: qip-training's FidelityPolicy caps a distilled reflex student at maximum_student_cost 64 worst-case evaluation steps and is applied in the production promote_candidate path (qip-deepbrain/src/learning.rs, approved_student(&FidelityPolicy::default())); and the performance acceptance suite measures wall-clock cost per operation against stated ceilings (strategy_evaluation_costs_what_the_budget_says), as a test rather than a deployment gate.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/compile.rs:35-46 (CompilerLimits, max_nodes default 512)",
       "backend/crates/edge/qip-strategy/src/compile.rs:340,395 ('above the budget of {}' refusal at both the direct and post-sharing cost checks)",
@@ -604,7 +605,7 @@
     "work_item": "E04-reflex-benchmark-harness",
     "tier": "T3",
     "size": "L",
-    "notes": "deployable=false because qip-edge-node (the only binary that runs Cell::work / compiled reflex plans) is not deployed in any environment \u2014 execution_nodes = {} everywhere, per the observability domain rule. verify: status PARTIAL and flags unchanged; added the distilled-student cost cap and the performance suite's latency ceilings as further partial evidence. Neither measures memory, CPU or failure modes under fault injection, and neither gates a regional deployment. Citation compile.rs:340,395: the two refusals are at :342 ('above the budget') and :397 ('worst-case cost exceeds the budget')."
+    "notes": "deployable=false because qip-edge-node (the only binary that runs Cell::work / compiled reflex plans) is not deployed in any environment — execution_nodes = {} everywhere, per the observability domain rule. verify: status PARTIAL and flags unchanged; added the distilled-student cost cap and the performance suite's latency ceilings as further partial evidence. Neither measures memory, CPU or failure modes under fault injection, and neither gates a regional deployment. Citation compile.rs:340,395: the two refusals are at :342 ('above the budget') and :397 ('worst-case cost exceeds the budget')."
   },
   {
     "id": "EXPAND-058",
@@ -612,7 +613,7 @@
     "current": "Partial, non-uniform lineage exists per subsystem. qip_ai::registry::ModelCard records training_datasets and the promoted artifact_digest (identifying code/model bytes) and evaluations (registry.rs:56-95), giving 3 of the 6 named ancestors (datasets, model, evaluations) for models specifically. qip_evolution::generate::StrategyGenerator carries only a naming-lineage string ({lineage}-g{n}, generate.rs:175-205), not a resolvable ancestor chain. Nothing records a research-campaign link, code-commit reference, or rollback parent on any promotion record, and no promotion is refused for missing an ancestor. For strategies, qip_lifecycle::evidence::StrategyEvidence (evidence.rs:440-466) carries the simulation DatasetManifest the holdout was run over and the TrialAccount it was charged under, and the holdout gate fails a strategy whose manifest or trial account is absent - one ancestor kind whose absence does refuse promotion. Each ladder move is a qip_contracts::gate::Promotion (gate.rs:131-139) recording from/to rung, approver, rationale and evidence ids.",
     "evidence": [
       "backend/crates/libs/qip-ai/src/registry.rs:56-95 (ModelCard: training_datasets, evaluations, artifact_digest present; no rollback parent, no campaign link)",
-      "backend/crates/services/qip-evolution/src/generate.rs:175-205 (lineage: String \u2014 a naming string, not a resolvable ancestor chain)",
+      "backend/crates/services/qip-evolution/src/generate.rs:175-205 (lineage: String — a naming string, not a resolvable ancestor chain)",
       "backend/crates/services/qip-lifecycle/src/evidence.rs:440-466 (StrategyEvidence: simulation DatasetManifest, trial_account; None fails the holdout gate)",
       "backend/crates/libs/qip-contracts/src/gate.rs:131-139 (Promotion record)"
     ],
@@ -715,10 +716,10 @@
   {
     "id": "EXPAND-062",
     "status": "MISSING",
-    "current": "No world-model federation exists to retire from. qip-world-model's WorldModel is a single monolithic instance held live on qip-kernel's Platform (platform.rs:806, `world: Upstream<WorldModel>`) \u2014 there is exactly one world model per running process, never a federation of independently spawned, competing world models with individual lineage and retirement.",
+    "current": "No world-model federation exists to retire from. qip-world-model's WorldModel is a single monolithic instance held live on qip-kernel's Platform (platform.rs:806, `world: Upstream<WorldModel>`) — there is exactly one world model per running process, never a federation of independently spawned, competing world models with individual lineage and retirement.",
     "evidence": [
       "rg -c 'Federation' backend/crates --type rust -> no matches",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:806 (world: Upstream<WorldModel> \u2014 one live instance, not a federation)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:806 (world: Upstream<WorldModel> — one live instance, not a federation)"
     ],
     "gap": "No federation of world models exists, so there is nothing to retire and no governed retirement path to test.",
     "implemented": false,
@@ -734,14 +735,14 @@
     "work_item": "E09-world-model-federation",
     "tier": "T4",
     "size": "XL",
-    "notes": "Split from the Phase 9 exit per this requirement's notes; spawning (EXPAND-018) is the prerequisite half and is equally unbuilt \u2014 there is no federation to spawn into or retire from."
+    "notes": "Split from the Phase 9 exit per this requirement's notes; spawning (EXPAND-018) is the prerequisite half and is equally unbuilt — there is no federation to spawn into or retire from."
   },
   {
     "id": "EXPAND-063",
     "status": "MISSING",
     "current": "Of the eight named registries, only the Model Registry (qip_ai::registry::ModelRegistry, EXPAND-038) exists in any form, and even it is versioned only per-model (ModelCard.version is a caller-supplied string identifying one model's release) rather than registry-wide (there is no way to ask the ModelRegistry itself 'what did you look like as of time T' and get back the full prior state). The other seven registries (source-as-a-standalone-registry beyond qip-data-finder's catalogue, ontology, memory, brain, tool, research, capability) do not exist at all.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/registry.rs:56-95 (ModelCard.version \u2014 per-model version string, no registry-wide point-in-time snapshot/replay)",
+      "backend/crates/libs/qip-ai/src/registry.rs:56-95 (ModelCard.version — per-model version string, no registry-wide point-in-time snapshot/replay)",
       "rg -c 'OntologyRegistry|MemoryRegistry|BrainRegistry|ResearchRegistry|CapabilityRegistry' backend/crates --type rust -> no matches",
       "backend/crates/libs/qip-ai/src/registry.rs:229-231 (ModelRegistry::register inserts by name@version and silently replaces an existing card)",
       "backend/crates/libs/qip-agents/tests/agents.rs:842 a_superseded_lesson_stays_readable_for_the_dates_it_governed (ResearchMemory - never written in production)"
@@ -763,7 +764,7 @@
     "work_item": "E08-registry-versioning",
     "tier": "T4",
     "size": "XL",
-    "notes": "Priority P1 per the requirement's own notes, because the P1 registries (source EXPAND-033, ontology EXPAND-034, memory EXPAND-036, model EXPAND-038) are meant to be versioned from the start \u2014 three of those four do not exist yet at all. verify: status MISSING confirmed and strengthened: even the model registry is not versioned in the requirement's sense - register() silently replaces a card under an existing name@version, and record_evaluation/record_drift/promote/retire mutate cards in place; only promote_artifact refuses changed bytes under one reference. ResearchMemory keeps superseded lessons readable as of their dates, but nothing writes to it in production."
+    "notes": "Priority P1 per the requirement's own notes, because the P1 registries (source EXPAND-033, ontology EXPAND-034, memory EXPAND-036, model EXPAND-038) are meant to be versioned from the start — three of those four do not exist yet at all. verify: status MISSING confirmed and strengthened: even the model registry is not versioned in the requirement's sense - register() silently replaces a card under an existing name@version, and record_evaluation/record_drift/promote/retire mutate cards in place; only promote_artifact refuses changed bytes under one reference. ResearchMemory keeps superseded lessons readable as of their dates, but nothing writes to it in production."
   },
   {
     "id": "EXPAND-064",
@@ -827,7 +828,7 @@
     "current": "nothing. No CrossDomainHypothesis type or cross-domain link-search capability exists. qip-world-model's causal graph (causal.rs) and Granger-style discovery (granger.rs) find causal edges within the data it is given, and could in principle supply the substrate for a cross-domain search, but nothing in the tree searches across declared domains (e.g. weather -> shipping -> commodity basis -> FX) or records a chain as a CrossDomainHypothesis.",
     "evidence": [
       "rg -c 'CrossDomainHypothesis' backend/crates --type rust -> no matches",
-      "backend/crates/services/qip-world-model/src/granger.rs:151-210 (temporal-precedence causal discovery \u2014 within-graph, not a declared cross-domain multi-hop search)"
+      "backend/crates/services/qip-world-model/src/granger.rs:151-210 (temporal-precedence causal discovery — within-graph, not a declared cross-domain multi-hop search)"
     ],
     "gap": "No cross-domain synthesis capability or CrossDomainHypothesis type exists to search for or record multi-hop causal/economic chains across domains.",
     "implemented": false,
