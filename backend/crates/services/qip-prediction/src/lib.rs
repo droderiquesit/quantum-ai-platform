@@ -36,6 +36,7 @@ pub mod adapter;
 pub mod arbitrage;
 pub mod belief;
 pub mod cross;
+pub mod definitions;
 pub mod market;
 pub mod oracle;
 pub mod pricing;
@@ -48,6 +49,7 @@ pub use adapter::{
 };
 pub use arbitrage::{SetArbitrage, SetArbitrageKind, implied_sum, set_arbitrage};
 pub use cross::{CrossMarketPair, CrossVenueArbitrage};
+pub use definitions::{DefinitionStore, EventDefinition};
 pub use market::{
     EventMarket, FeeSchedule, MarketKind, MarketVerdict, Outcome, OutcomeId, ScalarBucket,
 };
