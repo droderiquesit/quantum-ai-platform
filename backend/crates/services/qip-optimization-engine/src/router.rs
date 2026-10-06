@@ -17,7 +17,7 @@
 //! behaviour an operator should be able to rely on.
 
 use crate::problem::{PortfolioProblem, QuboEncoding};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::rng::Xoshiro256;
 use qip_core::time::Duration;
 use qip_numerics::anneal::{AnnealSettings, anneal, solve_exact};
@@ -450,6 +450,21 @@ impl ComputeRouter {
         let encoding = self.encoding_for(problem);
         let qubo = problem.to_qubo(&encoding)?;
         let result = provider.solve_qubo(&qubo, &self.policy.qaoa)?;
+
+        // Validate the claimed QUBO energy against recomputation.
+        // The provider's energy is a number it computed; recomputing it guards
+        // against claims that don't match the assignment. This is the classical
+        // validation gate QUANT-012 requires before using any quantum result.
+        let recomputed_qubo_energy = qubo.evaluate(&result.assignment);
+        let discrepancy = (recomputed_qubo_energy - result.energy).abs();
+        let tolerance = 1e-6; // Same tolerance as ClassicalValidator
+        if !discrepancy.is_finite() || discrepancy > tolerance {
+            return Err(Error::guard(format!(
+                "quantum provider claimed QUBO energy {:.6} but the assignment is worth {:.6}: a gap of {:.3e} exceeds tolerance {:.3e}. The result is refused.",
+                result.energy, recomputed_qubo_energy, discrepancy, tolerance
+            )));
+        }
+
         let weights = encoding.to_weights(&result.assignment);
 
         let mut relaxations = vec![encoding.describe()];

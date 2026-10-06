@@ -376,6 +376,27 @@ fn a_simulated_result_is_labelled_as_not_being_evidence_of_advantage() -> Result
 struct ScriptedProvider {
     assignment: Vec<u8>,
     simulated: bool,
+    claimed_energy: Option<f64>,
+}
+
+impl ScriptedProvider {
+    /// Create a provider that returns a specific assignment with the correct claimed energy.
+    fn with_assignment(assignment: Vec<u8>, simulated: bool) -> Self {
+        Self {
+            assignment,
+            simulated,
+            claimed_energy: None,
+        }
+    }
+
+    /// Create a provider that claims wrong energy for the assignment.
+    fn with_wrong_energy(assignment: Vec<u8>, wrong_energy: f64, simulated: bool) -> Self {
+        Self {
+            assignment,
+            simulated,
+            claimed_energy: Some(wrong_energy),
+        }
+    }
 }
 
 impl QuantumProvider for ScriptedProvider {
@@ -396,8 +417,11 @@ impl QuantumProvider for ScriptedProvider {
     }
     fn solve_qubo(&self, qubo: &Qubo, _settings: &QaoaSettings) -> Result<QaoaResult> {
         let assignment = self.assignment.clone();
+        let energy = self
+            .claimed_energy
+            .unwrap_or_else(|| qubo.evaluate(&assignment));
         Ok(QaoaResult {
-            energy: qubo.evaluate(&assignment),
+            energy,
             assignment,
             expectation: 0.0,
             success_probability: 1.0,
@@ -434,10 +458,9 @@ fn a_quantum_answer_that_ties_loses_to_the_classical_baseline() -> Result<()> {
 
     let decision = ComputeRouter::classical(1)
         .with_policy(policy)
-        .with_quantum(Arc::new(ScriptedProvider {
-            assignment,
-            simulated: false,
-        }))
+        .with_quantum(Arc::new(ScriptedProvider::with_assignment(
+            assignment, false,
+        )))
         .solve(&problem)?;
 
     assert_ne!(decision.chosen, Solver::Quantum);
@@ -463,10 +486,10 @@ fn an_infeasible_quantum_answer_is_rejected_however_good_its_objective() -> Resu
     // Every asset held: a flagrant breach of a three-name mandate.
     let decision = ComputeRouter::classical(1)
         .with_policy(policy)
-        .with_quantum(Arc::new(ScriptedProvider {
-            assignment: vec![1; 12],
-            simulated: false,
-        }))
+        .with_quantum(Arc::new(ScriptedProvider::with_assignment(
+            vec![1; 12],
+            false,
+        )))
         .solve(&problem)?;
 
     assert_ne!(decision.chosen, Solver::Quantum);
@@ -478,6 +501,46 @@ fn an_infeasible_quantum_answer_is_rejected_however_good_its_objective() -> Resu
     let quantum = decision.run_for(Solver::Quantum).unwrap();
     assert!(!quantum.feasible);
     assert_eq!(quantum.violated_constraint, "cardinality");
+    Ok(())
+}
+
+#[test]
+fn a_quantum_answer_whose_claimed_energy_does_not_match_the_assignment_is_refused() -> Result<()> {
+    // QUANT-012: before any quantum result is used, the claimed energy is
+    // re-evaluated classically. A claim that doesn't match the assignment is
+    // refused, whatever it claimed to be worth.
+    let problem = discrete(12, 4)?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 12,
+        ..RoutingPolicy::default()
+    };
+    // A feasible three-name assignment.
+    let mut good_assignment = vec![0u8; 12];
+    good_assignment[0] = 1;
+    good_assignment[1] = 1;
+    good_assignment[2] = 1;
+
+    // Claim it has an energy far better than it actually does.
+    let wrong_claimed_energy = -9999.0;
+
+    let decision = ComputeRouter::classical(1)
+        .with_policy(policy)
+        .with_quantum(Arc::new(ScriptedProvider::with_wrong_energy(
+            good_assignment,
+            wrong_claimed_energy,
+            false,
+        )))
+        .solve(&problem)?;
+
+    // The quantum path should fail because the claim doesn't match.
+    // The decision should fall back to classical.
+    assert_ne!(decision.chosen, Solver::Quantum);
+    assert!(
+        decision.rationale.contains("quantum attempt failed"),
+        "{}",
+        decision.rationale
+    );
     Ok(())
 }
 
@@ -529,10 +592,7 @@ fn a_genuinely_better_feasible_quantum_answer_is_used_and_the_gain_is_measured()
 
     let decision = ComputeRouter::classical(99)
         .with_policy(policy)
-        .with_quantum(Arc::new(ScriptedProvider {
-            assignment: better,
-            simulated: false,
-        }))
+        .with_quantum(Arc::new(ScriptedProvider::with_assignment(better, false)))
         .solve(&problem)?;
 
     assert_eq!(decision.chosen, Solver::Quantum, "{}", decision.rationale);
@@ -606,10 +666,7 @@ fn a_feasible_quantum_answer_better_by_less_than_the_margin_loses_to_the_classic
     };
     let decision = ComputeRouter::classical(seed)
         .with_policy(policy)
-        .with_quantum(Arc::new(ScriptedProvider {
-            assignment: better,
-            simulated: false,
-        }))
+        .with_quantum(Arc::new(ScriptedProvider::with_assignment(better, false)))
         .solve(&problem)?;
 
     assert_ne!(decision.chosen, Solver::Quantum, "{}", decision.rationale);
@@ -833,10 +890,9 @@ fn the_classical_objective_is_always_used_as_the_baseline_for_quantum_comparison
         // (baseline_obj) to measure improvement.
         let decision = ComputeRouter::classical(99)
             .with_policy(policy)
-            .with_quantum(Arc::new(ScriptedProvider {
-                assignment,
-                simulated: false,
-            }))
+            .with_quantum(Arc::new(ScriptedProvider::with_assignment(
+                assignment, false,
+            )))
             .solve(&problem)?;
 
         // The classical objective in the decision must equal the one we computed.
