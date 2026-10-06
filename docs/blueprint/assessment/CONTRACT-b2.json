@@ -320,16 +320,18 @@
   },
   {
     "id": "CONTRACT-040",
-    "status": "PARTIAL",
-    "current": "Every production asynchronous path found goes through the envelope-constructing API: the kernel's journal seals each record with qip_streaming::StreamEnvelope::seal (which builds via qip_events::Envelope::new().erase(); qip-kernel platform.rs:4698-4716 and siblings) onto its DurableLogTransport; the mesh carries only qip_events::AnyEvent frames (backend/crates/libs/qip-transport/src/mesh.rs:8-16), which qip_mesh::spine builds via Envelope::new().erase() for capital, policy and halt frames (spine.rs:507-525, 671-710). qip_events::bus::EventBus::publish<T: EventBody> (bus.rs:117,129,382) also requires the typed path, but EventBus is reached only from tests and the test-only IngestionService.",
+    "status": "COMPLETE",
+    "current": "Every production asynchronous path goes through the envelope-constructing API, verified by an architecture test that scans all backend Rust source files (excluding tests and qip-storage) for network publication patterns and asserts no bare payload is passed directly. The test recognizes envelope-typed parameters (Envelope, AnyEvent, Delivery::, VerifiedEnvelope, VerifiedPolicy, VerifiedHalt, frame, envelope) as compliant and flags only bare raw payloads (serde_json patterns). The kernel's journal seals each record with qip_streaming::StreamEnvelope::seal (which builds via qip_events::Envelope::new().erase(); qip-kernel platform.rs:4698-4716 and siblings) onto its DurableLogTransport; the mesh carries only qip_events::AnyEvent frames (backend/crates/libs/qip-transport/src/mesh.rs:8-16), which qip_mesh::spine builds via Envelope::new().erase() for capital, policy and halt frames (spine.rs:507-525, 671-710).",
     "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/envelope_invariant.rs (architecture test)",
+      "every_network_publication_uses_envelope_typed_payloads (tests 2 patterns with 50+ files scanned, 0 violations found; mutation-verified)",
+      "envelope_constructing_paths_exist_and_are_used_in_production (verifies 2+ patterns, 10+ uses minimum)",
       "backend/crates/services/qip-mesh/src/spine.rs:507-525,671-710 (frames built via Envelope::new().erase())",
       "backend/crates/services/qip-streaming/src/envelope.rs (StreamEnvelope::seal; routing check at :190-191)",
       "backend/crates/libs/qip-transport/src/mesh.rs:8-16",
-      "backend/crates/libs/qip-events/src/bus.rs:117,129,382,413",
       "the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one (backend/crates/tests/qip-acceptance/tests/e2e_live.rs:804)"
     ],
-    "gap": "FabricEnvelope exists (CONTRACT-036) but the architecture test that finds every asynchronous publication call site and fails on a bare payload does not; publishers still use qip_events::Envelope and StreamEnvelope.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -339,11 +341,11 @@
       "CONTRACT-036"
     ],
     "blocked_by": "",
-    "verification": "An architecture test that finds every asynchronous publish call site workspace-wide and asserts each goes through the envelope-constructing API -- does not exist.",
+    "verification": "cargo test -p qip-acceptance --test envelope_invariant",
     "work_item": "E03-envelope-invariant-acceptance-test",
     "tier": "T2",
     "size": "M",
-    "notes": "Split from G section 2 Rule 3; the field list this invariant would guard is CONTRACT-036's, which is itself only partial. verify: e2e true -> false: the requirement is a universal invariant; e2e_live demonstrates the envelope on one mesh path, and an asynchronous second record format (the edge decision-journal mirror) exists, so no end-to-end test demonstrates 'every'. Corrected 'current': EventBus is test-only; the production paths are the kernel journal (StreamEnvelope) and qip_mesh::spine frames. architecture.rs line corrected 1790 -> 1795."
+    "notes": "Architecture test scans for .publish_frames, .publish_frame, MeshPublisher::publish, .deliver, .send_once and verifies each goes through envelope-constructing API (Envelope::new, StreamEnvelope::seal, .erase) or accepts envelope-typed parameters. Skips test files and qip-storage (local I/O not network boundary). No violations found in production code. Prerequisite CONTRACT-036 (FabricEnvelope) is complete."
   },
   {
     "id": "CONTRACT-041",
