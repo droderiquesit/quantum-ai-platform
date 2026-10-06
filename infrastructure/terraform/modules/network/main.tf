@@ -67,6 +67,136 @@ resource "google_compute_firewall" "deny_ingress" {
   }
 }
 
+# --- Data and Engineering VPCs (GCP-051) ----------------------------------------
+#
+# Two separate VPCs for the Data and Engineering planes, as required by GCP-051.
+# Each is structurally identical to the main VPC: deny-all ingress, private
+# Google APIs zone, but no regional subnets or console egress — those stay in
+# the shared VPC, `modules/trust-zones` and `modules/execution-node` are its
+# tenants. These networks join others only through NCC spokes.
+
+resource "google_compute_network" "data_vpc" {
+  project = var.project_id
+  name    = "qip-${var.environment}-data"
+
+  auto_create_subnetworks = false
+  routing_mode            = "REGIONAL"
+}
+
+resource "google_compute_firewall" "data_vpc_deny_ingress" {
+  project = var.project_id
+  name    = "qip-${var.environment}-data-deny-ingress"
+  network = google_compute_network.data_vpc.id
+
+  direction = "INGRESS"
+  priority  = 65534
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_dns_managed_zone" "data_googleapis" {
+  project     = var.project_id
+  name        = "qip-${var.environment}-data-googleapis"
+  dns_name    = "googleapis.com."
+  description = "Sends every Google API to the restricted VIP in the Data VPC."
+  visibility  = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.data_vpc.id
+    }
+  }
+
+  labels = var.labels
+}
+
+resource "google_dns_record_set" "data_restricted_vip" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.data_googleapis.name
+  name         = "restricted.googleapis.com."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "data_googleapis_wildcard" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.data_googleapis.name
+  name         = "*.googleapis.com."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["restricted.googleapis.com."]
+}
+
+resource "google_compute_network" "engineering_vpc" {
+  project = var.project_id
+  name    = "qip-${var.environment}-engineering"
+
+  auto_create_subnetworks = false
+  routing_mode            = "REGIONAL"
+}
+
+resource "google_compute_firewall" "engineering_vpc_deny_ingress" {
+  project = var.project_id
+  name    = "qip-${var.environment}-engineering-deny-ingress"
+  network = google_compute_network.engineering_vpc.id
+
+  direction = "INGRESS"
+  priority  = 65534
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_dns_managed_zone" "engineering_googleapis" {
+  project     = var.project_id
+  name        = "qip-${var.environment}-engineering-googleapis"
+  dns_name    = "googleapis.com."
+  description = "Sends every Google API to the restricted VIP in the Engineering VPC."
+  visibility  = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.engineering_vpc.id
+    }
+  }
+
+  labels = var.labels
+}
+
+resource "google_dns_record_set" "engineering_restricted_vip" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.engineering_googleapis.name
+  name         = "restricted.googleapis.com."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "engineering_googleapis_wildcard" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.engineering_googleapis.name
+  name         = "*.googleapis.com."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["restricted.googleapis.com."]
+}
+
 # --- Google APIs without an external address ---------------------------------
 #
 # Every subnet on this platform has private Google access and no external

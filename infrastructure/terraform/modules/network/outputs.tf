@@ -23,3 +23,23 @@ output "google_apis_zone" {
   value       = google_dns_managed_zone.googleapis.name
   description = "The private zone that resolves every Google API to the restricted VIP."
 }
+
+output "data_vpc_id" {
+  value       = google_compute_network.data_vpc.id
+  description = "The Data plane's VPC (GCP-051)."
+}
+
+output "data_vpc_name" {
+  value       = google_compute_network.data_vpc.name
+  description = "The Data plane's VPC name."
+}
+
+output "engineering_vpc_id" {
+  value       = google_compute_network.engineering_vpc.id
+  description = "The Engineering plane's VPC (GCP-051)."
+}
+
+output "engineering_vpc_name" {
+  value       = google_compute_network.engineering_vpc.name
+  description = "The Engineering plane's VPC name."
+}

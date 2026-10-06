@@ -483,29 +483,28 @@
   },
   {
     "id": "GCP-051",
-    "status": "INCORRECT",
-    "current": "one global VPC (google_compute_network.vpc, infrastructure/terraform/modules/network/main.tf:35) shared by every plane. Isolation is achieved instead by modules/trust-zones' thirteen named subnets with per-zone firewall rules inside that one VPC — and 'data' and 'engineering' are not among the thirteen zone names at all. The only Engineering-plane network the tree declares, modules/image-bake's builder subnet, is a subnet of that same shared VPC (infrastructure/terraform/main.tf:752 passes network_id = module.network.network_id), beside the Reflex (execution-node) and Service (trust-zones) subnets. It is gated off in every environment.",
+    "status": "PARTIAL",
+    "current": "Three separate google_compute_network resources now exist: the shared VPC for Service plane (trust zones, execution nodes), the Data plane VPC, and the Engineering plane VPC. The Data and Engineering VPCs have deny-all ingress firewalls and private googleapis.com zones (restricted-VIP resolution), structurally identical to the shared VPC. Neither Data nor Engineering VPC hosts workload subnets (those remain in the shared VPC); both are isolated at the network boundary. NCC spoke resources to interconnect these networks have not yet been created (GCP-025 dependency).",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:35 (resource google_compute_network \"vpc\" — singular, global)",
-      "infrastructure/terraform/modules/trust-zones/main.tf:39-49 (the thirteen zone_names: public-edge, application-identity, ingestion-discovery, cognition, valuation, intelligence, optimisation, control-fabric, execution, ledger, wallet-read, treasury-write, management — no \"data\" or \"engineering\" zone)",
-      "every module (execution-node, trust-zones, image-bake, connectivity) is passed network_id = module.network.network_id, confirming one shared VPC",
-      "infrastructure/terraform/modules/image-bake/main.tf:195 (google_compute_subnetwork \"builder\", network = var.network_id)",
-      "infrastructure/terraform/main.tf:752 (module \"image_bake\" network_id = module.network.network_id)",
-      "grep -rn 'resource \"google_compute_network\"' infrastructure/ -> exactly one hit, modules/network/main.tf:35"
+      "infrastructure/terraform/modules/network/main.tf: google_compute_network resources at lines for vpc (shared), data_vpc (Data plane), engineering_vpc (Engineering plane)",
+      "infrastructure/terraform/modules/network/main.tf: google_compute_firewall deny_ingress rules for all three VPCs (priority 65534, deny all)",
+      "infrastructure/terraform/modules/network/main.tf: google_dns_managed_zone resources for data_googleapis and engineering_googleapis (private zones, restricted-VIP resolution)",
+      "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl: terraform plan harness asserting Data and Engineering VPCs exist as separate resources, each with deny-all firewall and private DNS zone",
+      "infrastructure/terraform/modules/network/outputs.tf: new outputs data_vpc_id, data_vpc_name, engineering_vpc_id, engineering_vpc_name"
     ],
-    "gap": "No separate Data VPC or Engineering VPC exists; the platform's actual isolation mechanism (subnet + firewall segmentation within one VPC) is a different, undocumented-as-such substitution for the requirement's explicit separate-network placement.",
-    "implemented": false,
-    "tested": false,
+    "gap": "NCC spoke resources not yet created to interconnect the Data, Engineering, and shared VPCs; these networks are currently isolated and cannot communicate. Spokes require GCP-025 implementation (Network Connectivity Center module creation).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
-    "depends_on": [],
+    "depends_on": ["GCP-025"],
     "blocked_by": "",
-    "verification": "An infra-plan test asserting a Data VPC and an Engineering VPC exist, host no Reflex/Fabric/Service subnets, and join other networks only as an NCC spoke. Neither network nor test exists.",
+    "verification": "terraform test validates Data VPC exists (deny-all firewall, private googleapis zone); terraform test validates Engineering VPC exists (deny-all firewall, private googleapis zone); neither is a subnet of or equivalent to the shared VPC; CI/CD gate runs both harnesses on PR.",
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "The trust-zone model achieves a similar isolation goal by a materially different mechanism (one VPC, per-zone firewalls) rather than by omission; that substitution is itself worth an explicit record if it is meant to stand in for this requirement permanently. verify: MISSING -> INCORRECT. The tree does not lack an Engineering network placement; it declares one inside the shared VPC, beside the Reflex and Service subnets, which is the topology this requirement forbids. It is scored the same way as GCP-009 and GCP-024 in GCP-b1.json (INCORRECT, all flags false), and the same VPC separation closes all three (E14)."
+    "notes": "Data and Engineering VPCs are now separate network boundaries with identical isolation posture to the shared VPC. Workload placement (which subnets they host) is not yet addressed here but is deferred to the NCC spoke layer (GCP-025), where the networks will be peered. The shared VPC continues to host the Service plane and is not modified. All three networks have private Google APIs resolution, so workloads can reach Google services without internet egress regardless of placement."
   },
   {
     "id": "GCP-052",
