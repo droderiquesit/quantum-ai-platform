@@ -77,7 +77,7 @@
   {
     "id": "TICK-037",
     "status": "PARTIAL",
-    "current": "In code the classes exist and are enforced: qip_events::retention::RetentionClass (retention.rs:55-77, ADR 0089, blueprint §22.1) is declared exhaustively per Topic (topic.rs:532-640, no wildcard arm), and the file-backable EventLog's two retention seams read it (log.rs:818-835,887). Own orders/fills/verdicts are Irreplaceable (Retention::Permanent, never evicted -- a full log refuses the append); world-sourced records (NewsReceived, FundamentalUpdated, MarketTrade, ...) are Referenced (ManifestOnly); beliefs are Semantic; raw ticks/quotes/book deltas are Transient (Retention::Never, 'a bounded ring measured in seconds'); book state at each own order/fill is EventAnchored (90-day rolling). qip_data_finder's bounded pass-through retention (retention.rs, campaign.rs ResearchCache/CacheBound) handles fetched world data. At the infra layer google_storage_bucket.archive (data/main.tf:115-160) carries one retention_policy and two age-based lifecycle_rule blocks for one undifferentiated namespace, and enable_cloud_storage = false in every environment.",
+    "current": "In code the classes exist and are enforced: qip_events::retention::RetentionClass (retention.rs:55-77, ADR 0089, blueprint \u00a722.1) is declared exhaustively per Topic (topic.rs:532-640, no wildcard arm), and the file-backable EventLog's two retention seams read it (log.rs:818-835,887). Own orders/fills/verdicts are Irreplaceable (Retention::Permanent, never evicted -- a full log refuses the append); world-sourced records (NewsReceived, FundamentalUpdated, MarketTrade, ...) are Referenced (ManifestOnly); beliefs are Semantic; raw ticks/quotes/book deltas are Transient (Retention::Never, 'a bounded ring measured in seconds'); book state at each own order/fill is EventAnchored (90-day rolling). qip_data_finder's bounded pass-through retention (retention.rs, campaign.rs ResearchCache/CacheBound) handles fetched world data. At the infra layer google_storage_bucket.archive (data/main.tf:115-160) carries one retention_policy and two age-based lifecycle_rule blocks for one undifferentiated namespace, and enable_cloud_storage = false in every environment.",
     "evidence": [
       "backend/crates/libs/qip-events/src/retention.rs:55-77,171-182",
       "backend/crates/libs/qip-events/src/topic.rs:532-640 (Topic::retention_class)",
@@ -310,7 +310,7 @@
   {
     "id": "TICK-046",
     "status": "MISSING",
-    "current": "nothing -- no microstructure training/evaluation service exists in this tree at all (the §8.2 'microstructure training service' row this requirement splits from has no implementation). qip_kernel::family_review.rs evaluates strategy candidates generally (deflated Sharpe, family_review.rs:162,334-352) with no venue x asset x regime x horizon breakdown of any kind.",
+    "current": "nothing -- no microstructure training/evaluation service exists in this tree at all (the \u00a78.2 'microstructure training service' row this requirement splits from has no implementation). qip_kernel::family_review.rs evaluates strategy candidates generally (deflated Sharpe, family_review.rs:162,334-352) with no venue x asset x regime x horizon breakdown of any kind.",
     "evidence": [
       "rg -n microstructure backend/crates -> agent/feature/market-structure hits only, no training or evaluation service",
       "backend/crates/runtime/qip-kernel/src/family_review.rs (generic strategy evaluation, no slice breakdown)"
@@ -430,7 +430,7 @@
     "work_item": "E06-tick-level-backtest",
     "tier": "T2",
     "size": "L",
-    "notes": ""
+    "notes": "[Session lane/backtest-engine-simulation: Work commenced 2026-10-06. Analyzing requirements and dependencies.]"
   },
   {
     "id": "TICK-051",
@@ -459,7 +459,7 @@
     "work_item": "E06-twin-calibration-loop",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: MISSING -> PARTIAL. The assessor looked only at FlowCalibration; qip-edge's FillTimes (latency, reached from qip-edge-node) and qip-evolution's CostModelCalibration (cost/impact, test-only) are real calibrations against the platform's own fills. integrated=true refers to the edge latency window only; deployable=false because it runs only in qip-edge-node."
+    "notes": "verify: MISSING -> PARTIAL. The assessor looked only at FlowCalibration; qip-edge's FillTimes (latency, reached from qip-edge-node) and qip-evolution's CostModelCalibration (cost/impact, test-only) are real calibrations against the platform's own fills. integrated=true refers to the edge latency window only; deployable=false because it runs only in qip-edge-node.\n[Session lane/backtest-engine-simulation: Work commenced 2026-10-06. Analyzing requirements and dependencies.]"
   },
   {
     "id": "TICK-052",
@@ -765,7 +765,7 @@
       "backend/crates/services/qip-twin/src/counterfactual.rs:48-68,494,544,639,818",
       "backend/crates/runtime/qip-kernel/tests/learning.rs (DoNotTrade priced alongside Trade in score_filled/score_declined)"
     ],
-    "gap": "This covers only trading decisions. There is no general 'intervention simulation' for a non-trading proposed platform action (the causal-agency framing GCP §11 names) -- agency of that kind does not exist in this build at all; ADR 0099 keeps causal agency shadow-only and unbuilt.",
+    "gap": "This covers only trading decisions. There is no general 'intervention simulation' for a non-trading proposed platform action (the causal-agency framing GCP \u00a711 names) -- agency of that kind does not exist in this build at all; ADR 0099 keeps causal agency shadow-only and unbuilt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
