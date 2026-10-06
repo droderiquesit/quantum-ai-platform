@@ -285,11 +285,11 @@ Region 2 broker ─← registry sync ─── Archive storage (S3)
 ```
 Each region runs an independent M5 slice; archive provides durability across regions.
 
-### Real Venues
+### Provider sandboxes
 ```
-edge-node → broker (P2 journal) → central → venue connector → real venue
+edge-node → broker (P2 journal) → central → sandbox connector → provider sandbox
 ```
-Simulated venue is swapped for a real connector; tape replaced with live feed. Paper boundary (fence 1–3) still holds.
+A provider sandbox may stand in for the simulated venue; it is still paper trading. No connector to a production venue exists or is planned: paper trading is not a phase (ADR 0003), and a live path would require an accepted ADR (the proposed ADR 0107) and code changes, not a deployment variant.
 
 ## Deployment Variants
 
@@ -317,7 +317,7 @@ Real venue connector reads live ticks (no orders sent)
 Central plane computes what it would trade
 Edge node produces hypothetical fills
 Ledger posts to a shadow balance sheet
-Operator can review trades before live is enabled
+Operator reviews hypothetical trades; shadow mode is not a step towards live trading
 ```
 
 ## Performance Characteristics

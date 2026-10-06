@@ -132,7 +132,7 @@ Once observation is complete:
 
 ### Phase 3: Scale to Seven Regions
 
-Once the primary cell is stable in live mode:
+Once the primary cell is stable outside shadow mode (still paper trading against simulated venues and provider sandboxes):
 
 1. **Add secondary regions to `terraform.tfvars`:**
    ```hcl
@@ -193,7 +193,7 @@ See `modules/execution-node/README.md` for §41.3 thread assignment details.
 
 ### Venue Configuration
 
-Venues are keyed by identifier (e.g., "nyse", "nasdaq", "sim"):
+Venues are keyed by identifier (e.g., "sim", or a provider sandbox's name). Every entry is a simulated venue or a provider sandbox; a production exchange is never listed, because the platform does not trade live (ADR 0003):
 
 ```hcl
 venues = {
@@ -201,16 +201,12 @@ venues = {
     cidr = "10.0.0.0/8"  # Simulated broker (always accessible)
     port = 443
   }
-  "nyse" = {
-    cidr = "206.108.0.0/16"  # Real venue (if known)
-    port = 443
-  }
 }
 ```
 
 **Shadow Mode:** Firewall rules are empty; the node cannot reach any venue.
 
-**Live Mode:** Firewall rules are created, one per venue. The node can reach only those venues.
+**Outside shadow mode:** Firewall rules are created, one per listed venue (simulated or provider sandbox). The node can reach only those venues, and its ceiling is still paper trading.
 
 ### Region Allocation
 
