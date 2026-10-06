@@ -5477,3 +5477,67 @@ fn the_proving_hook_refreshes_from_the_api_server_and_not_from_a_file_written_on
         );
     }
 }
+
+#[test]
+fn a_cloud_run_service_with_cnrm_deletion_policy_abandon_survives_gitops_control_plane_loss() {
+    // RES-087: A Cloud Run service is structurally independent of the GitOps
+    // control-plane cluster. Once a revision is routed, Cloud Run serves it
+    // independently; the cluster only produces new desired state. A chaos test
+    // that actually stops the cluster is deferred (no deployment exists yet),
+    // but this test verifies the precondition: every RunService carries the
+    // cnrm deletion-policy: abandon, so losing or rebuilding the control plane
+    // cannot cascade-delete a serving service.
+    //
+    // Mutation: If the deletion-policy is omitted, the service would be
+    // deleted when the cluster is deleted. If the metadata is changed or the
+    // annotation key is misspelled, the service is unprotected.
+
+    let services: Vec<Manifest> = manifests_under(ENVS)
+        .into_iter()
+        .filter(|manifest| manifest.kind() == "RunService")
+        .collect();
+    assert!(
+        !services.is_empty(),
+        "no RunService manifests found; this test is pinned to the wrong filter"
+    );
+
+    for service in &services {
+        let metadata = at(&service.value, &["metadata"]).unwrap_or_else(|| {
+            panic!(
+                "{} has no metadata (this is not a valid Kubernetes resource)",
+                service.describe()
+            )
+        });
+
+        let annotations = at(metadata, &["annotations"])
+            .and_then(|a| a.as_object())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} has no annotations object; Cloud NAT Manager protection requires \
+                     cnrm.cloud.google.com/deletion-policy: abandon",
+                    service.describe()
+                )
+            });
+
+        let deletion_policy = annotations
+            .get("cnrm.cloud.google.com/deletion-policy")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} carries no cnrm deletion-policy annotation. Without it, the service \
+                     is deleted when the control plane is deleted, even though Cloud Run serves \
+                     it independently of the control plane.",
+                    service.describe()
+                )
+            });
+
+        assert_eq!(
+            deletion_policy,
+            "abandon",
+            "{} has deletion-policy: {}, not abandon. The service will be cascade-deleted \
+             if the control plane is lost.",
+            service.describe(),
+            deletion_policy
+        );
+    }
+}
