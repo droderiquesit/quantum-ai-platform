@@ -49,6 +49,7 @@ use qip_core::error::Result;
 use qip_data_finder::catalogue::CandidateEntry;
 use qip_data_finder::probe::{NetworkProbe, SourceProbe};
 use qip_kernel::{Platform, SourceAssessment};
+use std::collections::BTreeSet;
 
 /// How this platform identifies itself to a publisher it probes.
 ///
@@ -62,16 +63,28 @@ pub const DISCOVERY_USER_AGENT: &str = "qip-deepbrain-source-probe/1.0";
 ///
 /// `every_cycles` defaults to zero — no discovery — which `Default` states
 /// structurally rather than a hand-written impl restating it.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DiscoveryConfig {
     /// Run a pass every this many research cycles. Zero disables the pass
     /// entirely — a deployment's honest way of saying "no discovery here"
     /// rather than an unset variable nobody can distinguish from a bug.
     pub every_cycles: u64,
+    /// Jurisdictions this platform is eligible to research in. Used by
+    /// ResearchQueue::admit to validate research tasks (EXPAND-060).
+    pub eligible_jurisdictions: BTreeSet<String>,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            every_cycles: 0,
+            eligible_jurisdictions: BTreeSet::from(["US".to_string()]),
+        }
+    }
 }
 
 impl DiscoveryConfig {
-    /// Read the one operator-facing knob from the environment.
+    /// Read operator-facing knobs from the environment.
     pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Result<Self> {
         let mut config = Self::default();
         if let Some(raw) = lookup("QIP_DEEPBRAIN_DISCOVER_EVERY") {
@@ -81,6 +94,20 @@ impl DiscoveryConfig {
                      discovery pass"
                 ))
             })?;
+        }
+        // Optional: read eligible jurisdictions from environment. Comma-separated list.
+        // Defaults to ["US"] if not set.
+        if let Some(raw) = lookup("QIP_DEEPBRAIN_ELIGIBLE_JURISDICTIONS") {
+            config.eligible_jurisdictions = raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if config.eligible_jurisdictions.is_empty() {
+                return Err(qip_core::error::Error::invalid(
+                    "QIP_DEEPBRAIN_ELIGIBLE_JURISDICTIONS is set but empty after parsing",
+                ));
+            }
         }
         Ok(config)
     }
@@ -94,6 +121,9 @@ pub struct DiscoveryDesk {
     /// A scripted probe answering for every entry, or `None` for the
     /// production shape: one [`NetworkProbe`] per entry, through its route.
     probe: Option<Box<dyn SourceProbe>>,
+    /// Sources that passed the licensing gate and were catalogued. Updated
+    /// after each discovery pass (EXPAND-060).
+    licensed_sources: BTreeSet<String>,
 }
 
 impl std::fmt::Debug for DiscoveryDesk {
@@ -101,6 +131,7 @@ impl std::fmt::Debug for DiscoveryDesk {
         f.debug_struct("DiscoveryDesk")
             .field("every_cycles", &self.config.every_cycles)
             .field("candidates", &self.entries.len())
+            .field("licensed_sources", &self.licensed_sources.len())
             .finish_non_exhaustive()
     }
 }
@@ -112,6 +143,7 @@ impl DiscoveryDesk {
             config,
             entries,
             probe: None,
+            licensed_sources: BTreeSet::new(),
         }
     }
 
@@ -127,6 +159,7 @@ impl DiscoveryDesk {
             config,
             entries,
             probe: Some(probe),
+            licensed_sources: BTreeSet::new(),
         }
     }
 
@@ -136,6 +169,17 @@ impl DiscoveryDesk {
 
     pub fn entries(&self) -> &[CandidateEntry] {
         &self.entries
+    }
+
+    /// Sources that passed the licensing gate and were catalogued by the latest
+    /// discovery pass. Empty until the first pass runs (EXPAND-060).
+    pub fn licensed_sources(&self) -> &BTreeSet<String> {
+        &self.licensed_sources
+    }
+
+    /// Jurisdictions this platform is eligible to research in (EXPAND-060).
+    pub fn eligible_jurisdictions(&self) -> &BTreeSet<String> {
+        &self.config.eligible_jurisdictions
     }
 
     /// Run a pass if this cycle is on the cadence, cloning each candidate
@@ -210,6 +254,10 @@ impl DiscoveryDesk {
         merged
             .decisions
             .sort_by(|left, right| left.source_id().cmp(right.source_id()));
+        // Capture the licensed sources for use by EXPAND-060: the sources that
+        // passed the licensing gate and were catalogued. These become the
+        // licensed_sources set for ResearchQueue::admit.
+        self.licensed_sources = merged.catalogued.iter().cloned().collect();
         Ok(Some(merged))
     }
 }
@@ -331,7 +379,10 @@ mod tests {
     fn a_desk_configured_off_never_reaches_the_probe() -> Result<()> {
         let mut platform = platform();
         let mut desk = DiscoveryDesk::with_probe(
-            DiscoveryConfig { every_cycles: 0 },
+            DiscoveryConfig {
+                every_cycles: 0,
+                eligible_jurisdictions: BTreeSet::from(["US".to_string()]),
+            },
             vec![candidate("a")?],
             Box::new(RefusingProbe::default()),
         );
@@ -344,7 +395,10 @@ mod tests {
     fn a_desk_on_cadence_reaches_the_platforms_assess_sources() -> Result<()> {
         let mut platform = platform();
         let mut desk = DiscoveryDesk::with_probe(
-            DiscoveryConfig { every_cycles: 2 },
+            DiscoveryConfig {
+                every_cycles: 2,
+                eligible_jurisdictions: BTreeSet::from(["US".to_string()]),
+            },
             vec![candidate("a")?, candidate("b")?],
             Box::new(RefusingProbe::default()),
         );
@@ -454,7 +508,10 @@ mod tests {
         ));
         let watch = Watched(script.clone());
         let mut desk = DiscoveryDesk::with_probe(
-            DiscoveryConfig { every_cycles: 1 },
+            DiscoveryConfig {
+                every_cycles: 1,
+                eligible_jurisdictions: BTreeSet::from(["US".to_string()]),
+            },
             vec![
                 entry("a-unrelated", "http://127.0.0.1:9")?,
                 entry_covering("z-northwind", "http://127.0.0.1:9", "ent-northwind")?,
@@ -554,7 +611,10 @@ mod tests {
 
         let mut platform = platform();
         let mut desk = DiscoveryDesk::with_probe(
-            DiscoveryConfig { every_cycles: 2 },
+            DiscoveryConfig {
+                every_cycles: 2,
+                eligible_jurisdictions: BTreeSet::from(["US".to_string()]),
+            },
             vec![terms],
             Box::new(Watched(script)),
         );
@@ -632,7 +692,10 @@ mod tests {
         };
         let mut platform = platform();
         let mut desk = DiscoveryDesk::new(
-            DiscoveryConfig { every_cycles: 1 },
+            DiscoveryConfig {
+                every_cycles: 1,
+                eligible_jurisdictions: BTreeSet::from(["US".to_string()]),
+            },
             vec![entry("a", &format!("http://127.0.0.1:{port}"))?],
         );
         let assessment = desk
