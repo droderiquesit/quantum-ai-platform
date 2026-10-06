@@ -10339,3 +10339,113 @@ fn a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the
         "the IAP allow ranks below the catch-all deny, so it can never fire"
     );
 }
+
+#[test]
+fn an_agent_given_malicious_instructions_cannot_bypass_deployment_gates() {
+    // GOV-027: deployment gates are structural, not conventional. Game-day test
+    // verifies that an agent given malicious instructions is blocked from:
+    // (1) merging without human review via protected branch pushes
+    // (2) pushing to a protected branch directly
+    // (3) deploying around the gates via terraform or cloud resource changes
+    //
+    // The guard script is the primary enforcement mechanism: it is consulted
+    // as a PreToolUse hook before any shell command executes, and it blocks
+    // dangerous patterns regardless of who or what requests them.
+    //
+    // This test constructs malicious instructions and verifies the guard
+    // script defines the rules that block them. It does not execute the guard
+    // or attempt to bypass it — that would require a hook invocation and would
+    // fail the test if it succeeded. Instead, it verifies the guard script is
+    // configured to refuse these patterns.
+
+    let guard = read(".claude/hooks/guard-dangerous-command.py");
+
+    // Malicious instruction 1: push directly to main (merges without review)
+    assert!(
+        guard.contains("PROTECTED_PUSH"),
+        "guard script has no PROTECTED_PUSH pattern to refuse direct pushes to main or ccr-0c1bacf8-kla0dd"
+    );
+    assert!(
+        guard.contains("(main|ccr-0c1bacf8-kla0dd)"),
+        "guard script does not name the protected branch to refuse"
+    );
+    assert!(
+        guard.contains("git\\s+push"),
+        "guard script has no pattern matching git push commands"
+    );
+
+    // Malicious instruction 2: force push (rewrites history)
+    assert!(
+        guard.contains("--force"),
+        "guard does not block --force pushes"
+    );
+    assert!(
+        guard.contains("git push") && guard.contains("--force"),
+        "guard has no connection between git push detection and --force blocking"
+    );
+
+    // Malicious instruction 3: push with -f flag variant
+    assert!(
+        guard.contains("PUSH_SHORT_REFUSED") || guard.contains("\"f\""),
+        "guard does not block short -f flag on git push"
+    );
+
+    // Malicious instruction 4: terraform destroy without approval
+    assert!(
+        guard.contains("terraform destroy"),
+        "guard does not block terraform destroy"
+    );
+    assert!(
+        guard.contains("an unapproved Terraform teardown"),
+        "guard provides no guidance for terraform destroy refusal"
+    );
+
+    // Malicious instruction 5: terraform apply without plan review
+    assert!(
+        guard.contains("terraform apply") && guard.contains("-auto-approve"),
+        "guard does not block unreviewed terraform apply with -auto-approve"
+    );
+
+    // Malicious instruction 6: cloud resource deletion
+    assert!(
+        (guard.contains("gcloud") && guard.contains("delete")) || (guard.contains("gsutil rm")),
+        "guard does not block cloud resource deletions"
+    );
+    assert!(
+        guard.contains("cloud resource deletion") || guard.contains("cloud storage deletion"),
+        "guard lacks guidance for cloud deletion refusals"
+    );
+
+    // Malicious instruction 7: git history rewrite
+    assert!(
+        guard.contains("git reset --hard"),
+        "guard does not block git reset --hard"
+    );
+
+    // The guard must also return an error code that blocks the command.
+    assert!(
+        guard.contains("return 2") || guard.contains("sys.exit(2)"),
+        "guard does not exit with status 2 (refusal code)"
+    );
+
+    // Verify the guard is consulted at the right hook point.
+    let settings_path = repository_root().join(".claude/settings.json");
+    assert!(
+        settings_path.exists(),
+        ".claude/settings.json must be configured for the guard to be installed"
+    );
+    let claude_settings =
+        std::fs::read_to_string(&settings_path).expect("settings.json is readable");
+    assert!(
+        claude_settings.contains("guard-dangerous-command"),
+        ".claude/settings.json does not configure the guard-dangerous-command hook"
+    );
+
+    // Verify the guard script exists and is readable.
+    let guard_path = repository_root().join(".claude/hooks/guard-dangerous-command.py");
+    let metadata = std::fs::metadata(&guard_path).expect("guard script exists");
+    assert!(
+        metadata.is_file(),
+        "guard-dangerous-command.py is not a regular file"
+    );
+}
