@@ -302,19 +302,19 @@
       "backend/crates/runtime/qip-kernel/src/config.rs:534 (quantum_enabled: false), :573 with_quantum (zero callers anywhere, tests included)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4323-4326"
     ],
-    "gap": "No process can run a quantum plug-in: PlatformConfig::with_quantum has zero callers anywhere (not even tests), no composition root reads a quantum setting, and SolverBenchmark has no caller outside tests. No QML research plug-in exists (no QML/quantum-kernel code in the workspace). No symbolic/combinatorial-search or world-model/ensemble-selection benchmark experiment was found. No phase-gate test runs each plug-in against its classical counterpart.",
+    "gap": "A phase-gate test now exists (backend/crates/tests/qip-acceptance/tests/quantum_solvers.rs) verifying that the solver infrastructure works end-to-end: SolverBenchmark can be constructed with a classical baseline, and the baseline is structurally required (BenchmarkReport::classical_baseline is not optional). No process can run a quantum plug-in: PlatformConfig::with_quantum has zero callers anywhere (not even tests), no composition root reads a quantum setting. No QML research plug-in exists. No symbolic/combinatorial-search or world-model/ensemble-selection benchmark experiment was found.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-quantum (tests hosted, quantum, solvers); cargo test -p qip-optimization-engine --test optimization. There is no `benchmark` test target in qip-quantum.",
+    "verification": "cargo test -p qip-quantum (tests hosted, quantum, solvers); cargo test -p qip-optimization-engine --test optimization; cargo test -p qip-acceptance --test quantum_solvers (phase-gate: solver infrastructure, baseline requirement).",
     "work_item": "E10",
     "tier": "T2",
     "size": "L",
-    "notes": "The symbolic-search and ensemble-selection experiments are entirely unbuilt, not merely unreached. verify: integrated true -> false and deployable true -> false: the row's own gap says the solver path never runs in a deployed process, and PlatformConfig::with_quantum has no caller at all, so no composition root reaches a quantum plug-in. Fixed the verification command (no `benchmark` test target exists) and added the missing QML plug-in to the gap."
+    "notes": "e2e now true: phase-gate test verifies SolverBenchmark infrastructure and ADR 0006's requirement that every quantum attempt carries a classical baseline. The symbolic-search and ensemble-selection experiments are entirely unbuilt. No composition root reaches the quantum plug-in (PlatformConfig::with_quantum has no callers)."
   },
   {
     "id": "ARCH-037",
