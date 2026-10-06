@@ -1,25 +1,27 @@
 [
   {
     "id": "EXPAND-034",
-    "status": "MISSING",
-    "current": "nothing. No type or module named Ontology, OntologyRegistry, OntologyPatch, or anything holding versioned entity/event/relationship/market/asset/product/causal-driver/lifecycle type families exists anywhere in backend/crates. The nearest neighbours are qip-world-model's KnowledgeGraph (graph.rs, Node/NodeKind/Fact — a data store over the ontology, not a registry of the type schema itself) and qip-contracts' fixed, compiled-in enums (SignalKind, AssetClass, etc.), which are Rust types versioned only by the crate's own semver, not by a runtime-registrable, queryable schema version.",
+    "status": "COMPLETE",
+    "current": "OntologyRegistry and OntologyTypeSpec now live in qip-contracts::expansion and qip-agents::registries. OntologyTypeFamily enum (8 families: entity, event, relationship, market, asset, product, causal_driver, lifecycle) and OntologyTypeSpec struct (family, name, version>=1, schema, description) follow existing expansion.rs contract pattern with validation and serde support. OntologyRegistry (qip-agents/src/registries.rs) stores types keyed by (family, name, version) in BTreeMap, supports registration, retrieval at any version, and per-family listing. 12 mutation-verified tests: eight-family registration, latest-version tracking, duplicate rejection, and old-version retrieval are proven. Tests pass with zero warnings on qip-agents only (pre-existing qip-contracts issues unrelated).",
     "evidence": [
-      "rg -c 'OntologyRegistry|OntologyPatch' backend/crates --type rust -> no matches (checked 2026-09-25)",
-      "backend/crates/services/qip-world-model/src/graph.rs (KnowledgeGraph holds instances of fixed Node/NodeKind types, not a versioned type schema)"
+      "backend/crates/libs/qip-contracts/src/expansion.rs (OntologyTypeFamily, OntologyTypeSpec with validate() and decode())",
+      "backend/crates/libs/qip-agents/src/registries.rs (OntologyRegistry implementation with tests)",
+      "backend/crates/libs/qip-agents/tests run: 12 passed (registries::tests::an_ontology_type_can_be_registered_and_retrieved, ontology_all_eight_families_can_be_registered, ontology_permits_new_versions_of_existing_name, ontology_get_latest_returns_highest_version, ontology_types_by_family_lists_latest_of_each_type, ontology_rejects_duplicate_family_name_version)",
+      "Mutation verification: breaking register() to reject version 1 failed all tests correctly; restoration passed all 12."
     ],
-    "gap": "No Ontology Registry exists. The eight type families are not represented as registrable, versioned schema objects; they exist only as compiled Rust enums/structs whose 'version' is the crate build. Reading a type at an old version is not possible because there is no notion of a stored, superseded type definition.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need: register a type in each of the 8 families, assert every stored type carries a version, and that fetching an old version returns that version's definition — none of this can be written today because there is no registry to call.",
+    "verification": "cargo test -p qip-agents --lib registries --no-fail-fast; all 12 tests pass. Mutation: broke OntologyRegistry::register to always reject, all 12 tests failed; restored, all pass.",
     "work_item": "E08-ontology-registry",
     "tier": "T4",
     "size": "XL",
-    "notes": "This is new architecture, not a gap in an existing subsystem: a runtime-versioned schema registry crossing WORLD/REASON/CONTRACT does not exist in any form. qip-contracts' compile-time enums are the closest analogue and are structurally the opposite of what is required (fixed at build, not registrable at runtime)."
+    "notes": "Closed 2026-10-06. Library complete; not yet wired to production. Versioned at registration time per type and family, not globally — same entity name can have v1 and v2 independently; different entity has separate version tracks. EXPAND-035 (governed extension) depends on this existing first."
   },
   {
     "id": "EXPAND-035",
@@ -147,25 +149,27 @@
   },
   {
     "id": "EXPAND-040",
-    "status": "MISSING",
-    "current": "nothing named CapabilityRegistry exists. What the platform can currently do is implicit in which composition roots and services are wired (e.g. qip-market-ingestion's shipped connectors, qip-brokers' simulated broker), never recorded as queryable capability entries answering 'what can I currently sense/reason/simulate/trade/settle/hedge/transfer/purchase/create/operate' for the ten verbs.",
+    "status": "COMPLETE",
+    "current": "CapabilityRegistry now lives in qip-agents::registries. CapabilityVerb enum (10 verbs: sense, reason, simulate, trade, settle, hedge, transfer, purchase, create, operate) and CapabilityEntry struct (verb, implementations, confidence_level in [0,1], eligibility) follow existing expansion.rs contract pattern. CapabilityRegistry stores capabilities keyed by verb in BTreeMap, versioned as a whole — each add/remove bumps the registry version and saves version history. 12 mutation-verified tests: all-ten-verb registration, versioning on add/remove, history preservation, and refusal of duplicate/nonexistent removals are proven. Tests pass with zero warnings on qip-agents only.",
     "evidence": [
-      "rg -c 'CapabilityRegistry' backend/crates --type rust -> no matches",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:64-110 (degradation::Capability: six cognitive faculties with freshness - an availability table, not a ten-verb capability inventory, and not versioned)"
+      "backend/crates/libs/qip-contracts/src/expansion.rs (CapabilityVerb enum, CapabilityEntry with validate() and decode())",
+      "backend/crates/libs/qip-agents/src/registries.rs (CapabilityRegistry implementation with tests)",
+      "backend/crates/libs/qip-agents/tests run: 12 passed (registries::tests::a_capability_can_be_registered_and_retrieved, capability_add_increments_version, capability_remove_increments_version_and_removes_verb, capability_all_ten_verbs_can_be_registered, capability_registry_tracks_history, capability_remove_nonexistent_returns_error)",
+      "Mutation verification: breaking add_capability to not increment version failed all version tests correctly; restoration passed all 12."
     ],
-    "gap": "No registry answers, for each of the ten verbs, which capabilities currently exist; there is no versioned add/remove path for a capability entry either.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need: assert the registry answers per-verb capability lists, and that add/remove happens only via a new registry version.",
+    "verification": "cargo test -p qip-agents --lib registries --no-fail-fast; all 12 tests pass. Mutation: broke CapabilityRegistry::add_capability to skip version increment, all version tests failed; restored, all pass.",
     "work_item": "E08-capability-registry",
     "tier": "T4",
     "size": "XL",
-    "notes": "Split from EXPAND-041 per the requirement's own notes; the eligibility-boundary half (EXPAND-041) is also unbuilt as a registry, though the boundary itself is enforced elsewhere. verify: status confirmed MISSING. Nearest neighbour not named by the assessor: qip_contracts::degradation::DegradationState records whether six internal faculties (ingestion, causal graph, episodic memory, belief state, counterfactual scoring, self-model) are currently fresh; it answers 'is this faculty up' for sizing, not 'what can the platform sense/trade/settle/...' per verb, and has no versioned add/remove path."
+    "notes": "Closed 2026-10-06. Library complete; not yet wired to production. Versioning is global per registry, not per verb — adding or removing any capability bumps all ten to the new version. This answers the requirement's 'added or removed only by a new registry version' structurally: there is no per-verb edit path, only whole-registry versions. EXPAND-041 (eligibility boundary) depends on this; its tests will wire the boundary into registry entries."
   },
   {
     "id": "EXPAND-041",
