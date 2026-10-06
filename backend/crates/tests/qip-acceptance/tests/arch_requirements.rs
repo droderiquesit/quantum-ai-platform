@@ -12,7 +12,7 @@
 use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp, dec};
 use qip_edge::cell::{Cell, CellConfig};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
@@ -248,11 +248,17 @@ fn arch_010_each_region_keeps_reflex_state_local() -> Result<()> {
 
 /// Helper: Create a signed capital envelope with the given limits.
 fn signed_capital_envelope(gross_limit: &str, order_limit: &str) -> Result<CapitalEnvelope> {
+    let decimal = |field: &str, text: &str| {
+        Decimal::parse(text)
+            .ok_or_else(|| Error::invalid(format!("{field} {text:?} is not a decimal")))
+    };
+    let gross = decimal("gross limit", gross_limit)?;
+    let order = decimal("order limit", order_limit)?;
     let unsigned = CapitalEnvelope::new(
         StrategyId::new("arch-test-strategy"),
         CELL_NAME,
-        Decimal::parse(gross_limit).expect("a valid decimal"),
-        Decimal::parse(order_limit).expect("a valid decimal"),
+        gross,
+        order,
         dec!("50000"),
         vec![VenueId::new("XLON")],
         timestamp(0),
@@ -265,8 +271,8 @@ fn signed_capital_envelope(gross_limit: &str, order_limit: &str) -> Result<Capit
     CapitalEnvelope::new(
         StrategyId::new("arch-test-strategy"),
         CELL_NAME,
-        Decimal::parse(gross_limit).expect("a valid decimal"),
-        Decimal::parse(order_limit).expect("a valid decimal"),
+        gross,
+        order,
         dec!("50000"),
         vec![VenueId::new("XLON")],
         timestamp(0),
