@@ -638,6 +638,7 @@ mod tests {
             object_id: ObjectId::from_string(HEDGE),
             venue: "XNAS".into(),
             at: at(),
+            capture_time: None,
             price: dec!("100"),
             size: Decimal::from_int(100),
             aggressor: None,

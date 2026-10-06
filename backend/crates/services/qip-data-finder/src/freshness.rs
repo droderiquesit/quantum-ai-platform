@@ -625,6 +625,7 @@ mod tests {
             object_id: qip_core::ids::ObjectId::from_string("obj:aaa"),
             venue: "sim".to_string(),
             at: start(),
+            capture_time: None,
             price: Decimal::from_int(10),
             volume: Decimal::ZERO,
             quality: DataQuality::clean(),

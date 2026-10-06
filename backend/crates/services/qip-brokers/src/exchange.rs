@@ -1122,6 +1122,7 @@ impl VenueAdapter for SimulatedExchange {
                 object_id: object_id.clone(),
                 venue: self.venue.as_str().to_string(),
                 at,
+                capture_time: None,
                 bid: bid.price,
                 ask: ask.price,
                 bid_size: bid.size,

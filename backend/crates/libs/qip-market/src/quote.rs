@@ -13,7 +13,12 @@ pub use crate::book::Side;
 pub struct Quote {
     pub object_id: ObjectId,
     pub venue: String,
+    /// When the event occurred in the market (event time).
     pub at: Timestamp,
+    /// When the event was captured by the platform (known-at time).
+    /// Bitemporal: distinguishes when something was true from when it became knowable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_time: Option<Timestamp>,
     pub bid: Decimal,
     pub ask: Decimal,
     pub bid_size: Decimal,
@@ -163,7 +168,12 @@ impl TradeCondition {
 pub struct Trade {
     pub object_id: ObjectId,
     pub venue: String,
+    /// When the trade executed in the market (event time).
     pub at: Timestamp,
+    /// When the trade was captured by the platform (known-at time).
+    /// Bitemporal: distinguishes when something was true from when it became knowable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_time: Option<Timestamp>,
     pub price: Decimal,
     pub size: Decimal,
     /// Side the aggressor was on, where the venue reports it.
@@ -223,7 +233,12 @@ impl EventBody for Trade {
 pub struct Tick {
     pub object_id: ObjectId,
     pub venue: String,
+    /// When the tick occurred in the market (event time).
     pub at: Timestamp,
+    /// When the tick was captured by the platform (known-at time).
+    /// Bitemporal: distinguishes when something was true from when it became knowable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_time: Option<Timestamp>,
     pub price: Decimal,
     #[serde(default)]
     pub volume: Decimal,
