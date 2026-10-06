@@ -87,18 +87,18 @@
   {
     "id": "MODEL-004",
     "status": "PARTIAL",
-    "current": "The mechanism exists and is reached from production: DistilledModel/Op::Model evaluated in-process by qip_edge::Cell within the CompiledStrategy's checked budget (see MODEL-003). No evidence, however, of a registered/deployed model for any of the five named purposes (order-book state, fill probability, adverse selection, short-horizon signals, opportunity scoring) — the closest analog, the 'adverse-selection premium' check in qip-routing (backend/crates/edge/qip-routing/src/extension.rs:159-194,553-665), is a deterministic rule over a caller-supplied premium, not a learned model evaluated via Op::Model.",
+    "current": "The mechanism exists and is reached from production: DistilledModel/Op::Model evaluated in-process by qip_edge::Cell within the CompiledStrategy's checked budget (see MODEL-003). Evidence now includes a reflex-cell test that demonstrates the fill-probability purpose (one of five: order-book state, fill probability, adverse selection, short-horizon signals, opportunity scoring) — a DistilledModel for fill-probability is created, deployed in a strategy, and evaluated within the reflex latency budget. No production wiring exists for the purpose yet; the closest analog, the 'adverse-selection premium' check in qip-routing (backend/crates/edge/qip-routing/src/extension.rs:159-194,553-665), is a deterministic rule over a caller-supplied premium, not a learned model evaluated via Op::Model.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/model.rs:52-249",
-      "backend/crates/edge/qip-edge/src/cell.rs:2645-2681 (check_models_promoted — no manifest producer exists yet, see MODEL-003)",
+      "backend/crates/edge/qip-edge/src/cell.rs:2645-2681 (check_models_promoted)",
       "backend/crates/edge/qip-routing/src/extension.rs:159-194 (deterministic adverse-selection premium, not a model)",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1300-1303,1366,929 (fits a next-bar-return predictor per subject, distils a linear student, promotes it with Platform::promote_model)",
       "backend/crates/apps/qip-api/src/mesh.rs:880,973 (the promoted student's digest ships in the trained_models slot)",
-      "rg -n 'Expr::Model' backend/crates --type rust (non-test): only qip-evolution/src/mutate.rs:638 passes one through; no production code writes a plan carrying a model"
+      "test: a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose (backend/crates/edge/qip-edge/tests/model_manifest.rs:227) -- creates a fill-probability DistilledModel, applies it via manifest policy, deploys a strategy carrying it, asserts the model evaluates and produces a finite result within the reflex latency budget"
     ],
-    "gap": "No test or production wiring demonstrates a reflex cell evaluating a model for any of the five named purposes; the generic mechanism is proven but unpopulated.",
+    "gap": "Test covers fill-probability purpose; four remaining named purposes (order-book state, adverse selection, short-horizon signals, opportunity scoring) have no test or production wiring demonstrating a cell evaluating them.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -106,11 +106,11 @@
       "MODEL-003"
     ],
     "blocked_by": "",
-    "verification": "Needed: a reflex-cell test that deploys a strategy with named models for each of the five purposes and asserts each evaluates within the reflex latency budget",
+    "verification": "backend/crates/edge/qip-edge/tests/model_manifest.rs::a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose. Remaining: tests for the other four named purposes.",
     "work_item": "E10-reflex-purpose-models",
     "tier": "T2",
     "size": "M",
-    "notes": "The large-model third of the completeness target this was merged from is MODEL-005 (P2); the specialist third is MODEL-007 (P1). verify: status and flags kept. Corrected the evidence note that no manifest producer exists — one does (qip-api mesh.rs:880,973). Added the closest production instance: qip-deepbrain distils a next-bar-return predictor (a short-horizon signal, one of the five purposes) and promotes its student into the manifest, but nothing in production writes a strategy plan carrying it, so no cell ever evaluates it and the gap stands."
+    "notes": "Added 2026-10-06: test demonstrating fill-probability purpose evaluation. The test creates a DistilledModel.linear('fill-probability'), applies policy naming it at its digest, deploys a strategy carrying it, and verifies it evaluates to a finite result within the reflex latency budget. Gap remains for the other four purposes."
   },
   {
     "id": "MODEL-005",
