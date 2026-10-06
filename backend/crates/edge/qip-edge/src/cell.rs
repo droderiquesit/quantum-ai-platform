@@ -37,6 +37,7 @@ use qip_contracts::degradation::{DegradationState, StrategyClass};
 use qip_contracts::intent::{Contributor, CycleLeg, Intent, NetIntent, net, netting_ratio};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::Dispositions;
+use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
@@ -1293,6 +1294,15 @@ pub struct Cell {
     /// truncation nobody can see would understate an incident.
     breaks: Vec<String>,
     breaks_omitted: u32,
+    /// Regional episodes (EXPAND-009): typed events recorded locally by this
+    /// cell, including latency spikes, fill/slippage, anomalies, failures,
+    /// microstructure observations, and venue-behaviour changes. Each episode
+    /// names this cell and region.
+    ///
+    /// Bounded by a maximum to prevent unbounded growth under load; older
+    /// episodes are dropped after being written to the journal. Used to
+    /// explain the cell's decisions and routing choices.
+    episodes: Vec<RegionalEpisode>,
     order_sequence: u64,
     /// Passes of [`Self::work`] so far, counting the halted ones. What a
     /// [`CrossingInterval::Passes`] window is measured in.
@@ -1489,6 +1499,7 @@ impl Cell {
             realised: RealisedLedger::default(),
             breaks: Vec::new(),
             breaks_omitted: 0,
+            episodes: Vec::new(),
             order_sequence: 0,
             pass: 0,
             crossing_history: BTreeMap::new(),
@@ -3946,6 +3957,48 @@ impl Cell {
         Ok(())
     }
 
+    /// Record a regional episode (EXPAND-009).
+    ///
+    /// Episodes are typed observations of latency spikes, fill/slippage,
+    /// anomalies, failures, microstructure changes, and venue-behaviour changes.
+    /// Each episode names the cell and region where it occurred.
+    ///
+    /// Episodes are kept in a bounded vec; older episodes are discarded after
+    /// being written to the journal to prevent unbounded growth under load.
+    pub fn record_episode(
+        &mut self,
+        kind: EpisodeKind,
+        detail: String,
+        now: Timestamp,
+    ) -> &mut Self {
+        let episode = RegionalEpisode::new(
+            self.config.cell_id.clone(),
+            self.config.region.clone(),
+            kind,
+            now,
+            detail,
+        );
+        // Bounded to prevent unbounded growth. When the limit is reached,
+        // older episodes are dropped in FIFO order. This is acceptable because
+        // the journal holds the record.
+        const MAX_RETAINED_EPISODES: usize = 128;
+        self.episodes.push(episode);
+        if self.episodes.len() > MAX_RETAINED_EPISODES {
+            self.episodes.remove(0);
+        }
+        self
+    }
+
+    /// Get all currently recorded regional episodes.
+    pub fn episodes(&self) -> &[RegionalEpisode] {
+        &self.episodes
+    }
+
+    /// Clear all recorded episodes.
+    pub fn clear_episodes(&mut self) {
+        self.episodes.clear();
+    }
+
     /// One pass of decide-and-act.
     ///
     /// Every gate that refuses records why, in order, so the reason a cell was
@@ -5825,27 +5878,25 @@ impl Cell {
         now: Timestamp,
     ) -> Option<ConfirmedFill> {
         if !execution.quantity.is_positive() || !execution.price.is_positive() {
-            self.break_on(
-                format!(
-                    "the order-entry channel reports {} at {} on order {}; a fill needs both \
-                     positive, and one that is not is a record the cell cannot book",
-                    execution.quantity, execution.price, execution.order_id
-                ),
-                now,
+            let detail = format!(
+                "the order-entry channel reports {} at {} on order {}; a fill needs both \
+                 positive, and one that is not is a record the cell cannot book",
+                execution.quantity, execution.price, execution.order_id
             );
+            self.record_episode(EpisodeKind::Anomaly, detail.clone(), now);
+            self.break_on(detail, now);
             return None;
         }
         let Some(working) = self.working.get_mut(&execution.order_id) else {
-            self.break_on(
-                format!(
-                    "the order-entry channel reports a fill of {} on order {} at {} and the cell \
-                     has no open order under that id",
-                    execution.quantity,
-                    execution.order_id,
-                    execution.venue.as_str()
-                ),
-                now,
+            let detail = format!(
+                "the order-entry channel reports a fill of {} on order {} at {} and the cell \
+                 has no open order under that id",
+                execution.quantity,
+                execution.order_id,
+                execution.venue.as_str()
             );
+            self.record_episode(EpisodeKind::Anomaly, detail.clone(), now);
+            self.break_on(detail, now);
             return None;
         };
         if working.order.venue != execution.venue {
@@ -5855,6 +5906,7 @@ impl Cell {
                 execution.venue.as_str(),
                 working.order.venue.as_str()
             );
+            self.record_episode(EpisodeKind::Anomaly, detail.clone(), now);
             self.break_on(detail, now);
             return None;
         }
@@ -5868,6 +5920,7 @@ impl Cell {
         // would otherwise chase.
         let release_at = working.order.release_at;
         let was_complete = working.order.filled >= working.order.quantity;
+        let order_price = working.order.price;
         working.order.filled += execution.quantity;
         // §32.1's measurement is of a *completed* order: the leg stops
         // being an exposure when the last of it has traded, and a first
@@ -5875,6 +5928,8 @@ impl Cell {
         // rather than how long the cell was exposed.
         let completed = !was_complete && working.order.filled >= working.order.quantity;
         let overfilled = working.order.filled > working.order.quantity;
+        let final_filled_qty = working.order.filled;
+        let sent_quantity = working.order.quantity;
         if working.order.filled >= working.order.quantity {
             working.order.closed = Some("filled".to_string());
         }
@@ -5900,7 +5955,7 @@ impl Cell {
         let overfill_detail = overfilled.then(|| {
             format!(
                 "order {} was sent for {} and the order-entry channel has now reported {} filled",
-                fill.order_id, working.order.quantity, working.order.filled
+                fill.order_id, sent_quantity, final_filled_qty
             )
         });
 
@@ -6003,9 +6058,43 @@ impl Cell {
             let taken = fill.at.since(release_at);
             self.fill_times.observe(&fill.venue, taken);
             self.metrics.fill_time(&fill.venue, taken);
+            // Record a LatencySpike episode if fill took significant time.
+            let latency_ms = taken.as_millis() as f64;
+            if latency_ms > 100.0 {
+                self.record_episode(
+                    EpisodeKind::LatencySpike,
+                    format!(
+                        "order {} filled at {} after {:.0} ms",
+                        fill.order_id,
+                        fill.venue.as_str(),
+                        latency_ms
+                    ),
+                    now,
+                );
+            }
+        }
+        // Record a FillSlippage episode if fill price differs significantly from order price.
+        if order_price != fill.price {
+            let slippage_bps = if order_price > Decimal::ZERO {
+                ((order_price - fill.price) / order_price * Decimal::from(10000i32)).to_f64()
+            } else {
+                0.0
+            };
+            if slippage_bps.abs() > 1.0 {
+                self.record_episode(
+                    EpisodeKind::FillSlippage,
+                    format!(
+                        "order {} filled at {} vs expected {}, slippage {:.0} bps",
+                        fill.order_id, fill.price, order_price, slippage_bps
+                    ),
+                    now,
+                );
+            }
         }
         self.confirmed.push(fill.clone());
         if let Some(detail) = overfill_detail {
+            // Record a Failure episode for overfill anomaly
+            self.record_episode(EpisodeKind::Failure, detail.clone(), now);
             self.break_on(detail, now);
         }
         Some(fill)
@@ -6024,8 +6113,14 @@ impl Cell {
             self.breaks_omitted = self.breaks_omitted.saturating_add(1);
         }
         self.metrics.reconciliation_break();
-        self.journal
-            .record(Decision::ReconciliationBreak { detail }, now);
+        self.journal.record(
+            Decision::ReconciliationBreak {
+                detail: detail.clone(),
+            },
+            now,
+        );
+        // Record a Failure episode for this reconciliation break.
+        self.record_episode(EpisodeKind::Failure, detail, now);
         if !self.halted_other_than_by_journal() {
             self.autonomy.kill_switch_mut().trip_global(
                 now,
