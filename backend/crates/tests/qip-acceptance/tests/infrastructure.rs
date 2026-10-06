@@ -2129,6 +2129,48 @@ fn no_service_account_key_exists_anywhere_in_the_terraform() {
 }
 
 #[test]
+fn organization_policy_disables_service_account_key_creation() {
+    // GOV-028: Enforce Workload Identity Federation by disabling long-lived
+    // service-account key creation and upload at the project level. This
+    // structural refusal prevents circumvention of WIF-only authentication.
+    let root_module = read("infrastructure/terraform/main.tf");
+    let root_no_comments = without_comments(&root_module);
+
+    // Verify the policy disabling key creation is declared.
+    assert!(
+        root_no_comments.contains("disable_service_account_key_creation"),
+        "infrastructure/terraform/main.tf must declare google_org_policy_policy \
+         resource 'disable_service_account_key_creation' to refuse service-account key creation"
+    );
+
+    // Verify it targets the correct constraint.
+    assert!(
+        root_no_comments.contains("constraints/iam.disableServiceAccountKeyCreation"),
+        "The org policy must target constraints/iam.disableServiceAccountKeyCreation"
+    );
+
+    // Verify the policy is enforced (rules { enforce = true }).
+    assert!(
+        root_no_comments.contains("disable_service_account_key_creation")
+            && root_no_comments.contains("enforce = true"),
+        "The disable_service_account_key_creation policy must have rules {{ enforce = true }}"
+    );
+
+    // Verify the policy disabling key upload is also declared.
+    assert!(
+        root_no_comments.contains("disable_service_account_key_upload"),
+        "infrastructure/terraform/main.tf must declare google_org_policy_policy \
+         resource 'disable_service_account_key_upload' to refuse service-account key upload"
+    );
+
+    // Verify it targets the correct constraint.
+    assert!(
+        root_no_comments.contains("constraints/iam.disableServiceAccountKeyUpload"),
+        "The org policy must target constraints/iam.disableServiceAccountKeyUpload"
+    );
+}
+
+#[test]
 fn every_service_account_terraform_creates_runs_something_or_signs_something() {
     // Two identities existed with nothing attached to them once. An unused
     // service account is not merely tidy-up: it is a set of permissions
