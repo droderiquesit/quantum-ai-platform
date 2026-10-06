@@ -347,3 +347,93 @@ impl CurriculumItem {
         Ok(v)
     }
 }
+
+/// The eight type families in an Ontology Registry (EXPAND-034).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OntologyTypeFamily {
+    Entity,
+    Event,
+    Relationship,
+    Market,
+    Asset,
+    Product,
+    CausalDriver,
+    Lifecycle,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OntologyTypeSpec {
+    pub family: OntologyTypeFamily,
+    pub name: String,
+    pub version: u32,
+    pub schema: String,
+    pub description: String,
+}
+
+impl OntologyTypeSpec {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "OntologyTypeSpec";
+        text(R, "name", &self.name)?;
+        text(R, "schema", &self.schema)?;
+        text(R, "description", &self.description)?;
+        if self.version == 0 {
+            return Err(Error::invalid(
+                "OntologyTypeSpec.version must be at least 1",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes).map_err(|e| {
+            Error::schema(format!("not an OntologyTypeSpec: {e}; supply every field"))
+        })?;
+        v.validate()?;
+        Ok(v)
+    }
+}
+
+/// The ten capability verbs in a Capability Registry (EXPAND-040).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityVerb {
+    Sense,
+    Reason,
+    Simulate,
+    Trade,
+    Settle,
+    Hedge,
+    Transfer,
+    Purchase,
+    Create,
+    Operate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityEntry {
+    pub verb: CapabilityVerb,
+    pub implementations: Vec<String>,
+    pub confidence_level: f64,
+    pub eligibility: String,
+}
+
+impl CapabilityEntry {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "CapabilityEntry";
+        list(R, "implementations", &self.implementations)?;
+        finite(R, "confidence_level", self.confidence_level, 0.0, 1.0)?;
+        text(R, "eligibility", &self.eligibility)?;
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes).map_err(|e| {
+            Error::schema(format!("not a CapabilityEntry: {e}; supply every field"))
+        })?;
+        v.validate()?;
+        Ok(v)
+    }
+}
