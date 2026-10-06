@@ -7,8 +7,8 @@
 use qip_ai::embedding::{Embedder, Embedding, HashingEmbedder};
 use qip_ai::evaluation::{Calibration, DriftReport, PredictionOutcome};
 use qip_ai::language::{
-    Completion, DeterministicModel, FallbackChain, FieldSpec, LanguageModel, ModelRequest,
-    NumericGuard, OutputSchema, RemoteModel, RemoteModelConfig,
+    DeterministicModel, FallbackChain, FieldSpec, LanguageModel, ModelRequest, NumericGuard,
+    OutputSchema, RemoteModel, RemoteModelConfig,
 };
 use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage};
 use qip_ai::retrieval::{Document, SearchIndex, SearchWeights};
@@ -784,10 +784,6 @@ fn drift_on_a_degenerate_sample_is_neutral() {
     let report = DriftReport::compare(&[1.0], &[2.0], 10);
     assert_eq!(report.population_stability_index, 0.0);
     assert!(!report.requires_attention());
-}
-
-fn _completion_is_inspectable(c: &Completion) -> bool {
-    c.is_complete() && c.total_tokens() > 0
 }
 
 // --- promote with an artifact (ADR 0083) --------------------------------------
