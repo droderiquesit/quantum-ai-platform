@@ -141,9 +141,57 @@ resource "google_storage_bucket" "archive" {
     is_locked        = false
   }
 
+  # Market data: Tick/Quote/Book updates (Transient class in event log).
+  # Raw ticks are retained for 30 days in hot storage, then archived to cold storage.
+  # This retention period supports replay and training on recent market regimes
+  # while expiring raw captures to avoid unbounded growth (TICK-037).
   lifecycle_rule {
     condition {
-      age = 90
+      age             = 30
+      prefix_match    = ["lake/class=market/"]
+      matches_storage = ["STANDARD"]
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+  }
+
+  # Market data older than 90 days in COLDLINE is deleted (retention policy
+  # for transient market history per TICK-037; raw bytes not kept beyond this).
+  lifecycle_rule {
+    condition {
+      age          = 90
+      prefix_match = ["lake/class=market/"]
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  # Internal financial history: orders, fills, verdicts, decisions.
+  # Classed as Irreplaceable (Permanent retention, never evicted).
+  # Must be retained indefinitely for audit, compliance and replay.
+  # Transition to COLDLINE for cost optimization but never delete (TICK-037).
+  lifecycle_rule {
+    condition {
+      age             = 180
+      prefix_match    = ["lake/class=internal/"]
+      matches_storage = ["STANDARD"]
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "COLDLINE"
+    }
+  }
+
+  # Metadata: retain indefinitely (segment records, manifests, ledgers).
+  # Not prefixed by class=, so stored at lake root or in other paths.
+  lifecycle_rule {
+    condition {
+      age             = 365
+      matches_storage = ["STANDARD"]
+      prefix_match    = ["lake/"]
     }
     action {
       type          = "SetStorageClass"
@@ -153,7 +201,9 @@ resource "google_storage_bucket" "archive" {
 
   lifecycle_rule {
     condition {
-      age = 365
+      age             = 730
+      matches_storage = ["NEARLINE"]
+      prefix_match    = ["lake/"]
     }
     action {
       type          = "SetStorageClass"

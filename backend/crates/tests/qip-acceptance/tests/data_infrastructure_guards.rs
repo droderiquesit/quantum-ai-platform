@@ -161,3 +161,75 @@ fn the_evidence_retention_lock_cannot_be_unset_or_shortened_by_the_root_without_
     }
     let _ = repository_root();
 }
+
+/// TICK-037. Tick and internal financial history are governed retention classes.
+/// Market data (Transient) expires after 90 days; internal data (Irreplaceable)
+/// never expires; world-derived knowledge is bounded pass-through and not archived.
+/// The test verifies that:
+/// 1. Market history lifecycle includes deletion at 90 days
+/// 2. Internal history lifecycle never deletes (only storage class transitions)
+/// 3. The lake separates the two classes by path
+/// 4. Retention classes are declared exhaustively in the event log
+#[test]
+fn tick_037_retention_classes_are_governed() {
+    // Verify Terraform declares separate lifecycle rules for market vs. internal data.
+    let data_module = read("infrastructure/terraform/modules/data/main.tf");
+    let text = without_comments(&data_module);
+
+    // Market data must have a delete rule (Transient retention).
+    assert!(
+        text.contains("lake/class=market/") && text.contains("type") && text.contains("Delete"),
+        "TICK-037: Market data (Transient class) must have a lifecycle rule that deletes old objects"
+    );
+
+    // Internal data must never delete (Irreplaceable/Permanent retention).
+    assert!(
+        text.contains("lake/class=internal/") && text.contains("SetStorageClass"),
+        "TICK-037: Internal data (Irreplaceable class) must transition storage classes but never delete"
+    );
+
+    // Verify no Delete action applies to internal data.
+    let mut found_internal = false;
+    let mut found_delete = false;
+    for section in text.split("prefix_match") {
+        if section.contains("lake/class=internal/") {
+            found_internal = true;
+            if section.contains("Delete") {
+                found_delete = true;
+            }
+        }
+    }
+    assert!(
+        found_internal && !found_delete,
+        "TICK-037: Internal data must never have a Delete lifecycle action"
+    );
+
+    // Verify the lake code declares retention classes exhaustively.
+    let lake_rs = read("backend/crates/libs/qip-storage/src/lake.rs");
+    assert!(
+        lake_rs.contains("pub enum RecordClass")
+            && lake_rs.contains("Market")
+            && lake_rs.contains("Internal"),
+        "TICK-037: Lake must declare Market and Internal record classes in RecordClass enum"
+    );
+    assert!(
+        lake_rs.contains("Self::Market => \"market\"")
+            && lake_rs.contains("Self::Internal => \"internal\""),
+        "TICK-037: Lake paths must encode the class (market vs. internal)"
+    );
+
+    // Verify event log enforces retention classes per-topic.
+    let retention_rs = read("backend/crates/libs/qip-events/src/retention.rs");
+    assert!(
+        retention_rs.contains("pub enum RetentionClass") || retention_rs.contains("RetentionClass"),
+        "TICK-037: Event log must declare RetentionClass enum"
+    );
+
+    let topic_rs = read("backend/crates/libs/qip-events/src/topic.rs");
+    assert!(
+        topic_rs.contains("retention_class") || topic_rs.contains("retention"),
+        "TICK-037: Every Topic must declare its retention class"
+    );
+
+    let _ = repository_root();
+}

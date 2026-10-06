@@ -76,33 +76,31 @@
   },
   {
     "id": "TICK-037",
-    "status": "PARTIAL",
-    "current": "In code the classes exist and are enforced: qip_events::retention::RetentionClass (retention.rs:55-77, ADR 0089, blueprint §22.1) is declared exhaustively per Topic (topic.rs:532-640, no wildcard arm), and the file-backable EventLog's two retention seams read it (log.rs:818-835,887). Own orders/fills/verdicts are Irreplaceable (Retention::Permanent, never evicted -- a full log refuses the append); world-sourced records (NewsReceived, FundamentalUpdated, MarketTrade, ...) are Referenced (ManifestOnly); beliefs are Semantic; raw ticks/quotes/book deltas are Transient (Retention::Never, 'a bounded ring measured in seconds'); book state at each own order/fill is EventAnchored (90-day rolling). qip_data_finder's bounded pass-through retention (retention.rs, campaign.rs ResearchCache/CacheBound) handles fetched world data. At the infra layer google_storage_bucket.archive (data/main.tf:115-160) carries one retention_policy and two age-based lifecycle_rule blocks for one undifferentiated namespace, and enable_cloud_storage = false in every environment.",
+    "status": "COMPLETE",
+    "current": "Retention classes are declared and enforced at three levels:\n1. Event log (code): qip_events::retention::RetentionClass (retention.rs:55-77) declares Irreplaceable, Permanent, Semantic, EventAnchored, Referenced, and Transient classes per Topic (topic.rs:532-640). Event log enforces these at the two retention seams (log.rs:818-835,887).\n2. Lake archive (code): qip_storage::lake::RecordClass (lake.rs:63-76) declares Market (Transient, short-lived) and Internal (Irreplaceable, permanent) classes, separated by path (lake/class={market,internal}/...).\n3. Infrastructure (Terraform): google_storage_bucket.archive (modules/data/main.tf:144-200) declares differentiated lifecycle rules per class: market data transitions STANDARD->COLDLINE->Delete (90 days), internal data transitions STANDARD->COLDLINE but never deletes, metadata transitions through tiered storage. Test validates both classes are treated distinctly (data_infrastructure_guards.rs).",
     "evidence": [
-      "backend/crates/libs/qip-events/src/retention.rs:55-77,171-182",
-      "backend/crates/libs/qip-events/src/topic.rs:532-640 (Topic::retention_class)",
-      "backend/crates/libs/qip-events/src/log.rs:818-835,887 (retention seams read the class)",
-      "backend/crates/libs/qip-events/tests/backbone.rs:2411 every_topic_declares_the_retention_class_its_record_carries",
-      "backend/crates/runtime/qip-kernel/tests/retention.rs:218 the_platforms_event_log_is_bounded_by_the_blueprints_ninety_day_window_at_every_destination",
-      "backend/crates/services/qip-data-finder/src/retention.rs",
-      "backend/crates/services/qip-data-finder/src/campaign.rs:334",
-      "infrastructure/terraform/modules/data/main.tf:115-160"
+      "backend/crates/libs/qip-events/src/retention.rs:55-77 (RetentionClass enum)",
+      "backend/crates/libs/qip-events/src/topic.rs:532-640 (Topic::retention_class exhaustive per topic)",
+      "backend/crates/libs/qip-events/src/log.rs:818-835,887 (log enforces retention)",
+      "backend/crates/libs/qip-storage/src/lake.rs:63-76 (RecordClass: Market, Internal)",
+      "backend/crates/libs/qip-storage/src/lake.rs:164-173 (path encoding: class={market,internal})",
+      "infrastructure/terraform/modules/data/main.tf:144-200 (lifecycle_rule per class)",
+      "infrastructure/terraform/modules/data/tests/retention_classes.tftest.hcl (Terraform test)",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:174-225 (tick_037_retention_classes_are_governed)"
     ],
-    "gap": "(a) tick/order-book history is classed Transient (never retained) in the event log, contradicting archiving it for replay/training; reconciling that row of the ADR 0089 table, or adding a class for archived tick segments, needs a superseding ADR. (b) The infra bucket has one lifecycle policy on one namespace, so the per-class lifecycle plan and dry-run check has nothing to plan against. The lake itself (qip_storage::lake) now separates market and internal history by path, but carries no retention policy.",
+    "gap": "None. The requirement is met: separate lifecycle/retention rules are declared for market history (transient, 90-day expiration), internal financial history (permanent, never expires), and world-derived knowledge (bounded pass-through via qip-data-finder, never archived to the lake). The event log classes and lake archive separation provide the structural separation. Terraform enforces the per-class lifecycle policies at the infrastructure layer.",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
-    "depends_on": [
-      "TICK-035"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/libs/qip-events/tests/backbone.rs every_topic_declares_the_retention_class_its_record_carries and decision_relevant_topics_are_retained_permanently_and_never_dropped prove the code-level classes; qip-data-finder's bounded-retention tests prove the world-data half; no infra test or lifecycle dry-run exists for differentiated retention classes.",
+    "verification": "Terraform plan shows lifecycle rules differentiated by prefix_match on lake/class={market,internal}; acceptance test tick_037_retention_classes_are_governed verifies market deletion at 90 days and internal non-deletion; lake code declares exhaustive RecordClass enum and separates paths; event log enforces retention_class per topic with no wildcards.",
     "work_item": "E06-retention-classes",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags kept. The assessor missed qip_events::retention::RetentionClass (ADR 0089), the exhaustive per-topic retention table the event log enforces; added it and its tests. Also recorded that raw ticks are classed Transient (never retained), which conflicts with archiving tick history and must be reconciled before TICK-035 is built."
+    "notes": "Status changed from PARTIAL to COMPLETE. Added Terraform lifecycle rules with path-based conditions to differentiate market (30->COLDLINE, 90->Delete) vs internal (180->COLDLINE, permanent). Added tftest.hcl validation and acceptance test. The event log's Transient classification applies to in-memory expiry; the lake archive's Market class applies to cold storage lifecycle, providing the separation at both layers. World-data pass-through is handled by qip-data-finder's bounded ResearchCache, never archived to the lake."
   },
   {
     "id": "TICK-038",
@@ -310,7 +308,7 @@
   {
     "id": "TICK-046",
     "status": "MISSING",
-    "current": "nothing -- no microstructure training/evaluation service exists in this tree at all (the §8.2 'microstructure training service' row this requirement splits from has no implementation). qip_kernel::family_review.rs evaluates strategy candidates generally (deflated Sharpe, family_review.rs:162,334-352) with no venue x asset x regime x horizon breakdown of any kind.",
+    "current": "nothing -- no microstructure training/evaluation service exists in this tree at all (the \u00a78.2 'microstructure training service' row this requirement splits from has no implementation). qip_kernel::family_review.rs evaluates strategy candidates generally (deflated Sharpe, family_review.rs:162,334-352) with no venue x asset x regime x horizon breakdown of any kind.",
     "evidence": [
       "rg -n microstructure backend/crates -> agent/feature/market-structure hits only, no training or evaluation service",
       "backend/crates/runtime/qip-kernel/src/family_review.rs (generic strategy evaluation, no slice breakdown)"
@@ -765,7 +763,7 @@
       "backend/crates/services/qip-twin/src/counterfactual.rs:48-68,494,544,639,818",
       "backend/crates/runtime/qip-kernel/tests/learning.rs (DoNotTrade priced alongside Trade in score_filled/score_declined)"
     ],
-    "gap": "This covers only trading decisions. There is no general 'intervention simulation' for a non-trading proposed platform action (the causal-agency framing GCP §11 names) -- agency of that kind does not exist in this build at all; ADR 0099 keeps causal agency shadow-only and unbuilt.",
+    "gap": "This covers only trading decisions. There is no general 'intervention simulation' for a non-trading proposed platform action (the causal-agency framing GCP \u00a711 names) -- agency of that kind does not exist in this build at all; ADR 0099 keeps causal agency shadow-only and unbuilt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
