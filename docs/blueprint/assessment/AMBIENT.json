@@ -249,14 +249,16 @@
   },
   {
     "id": "AMBIENT-011",
-    "status": "MISSING",
-    "current": "nothing. No 'World Model Federation' type exists; qip-world-model holds one world/causal graph, not multiple competing world models being weighed, and there is no typed exchange of surprise/hypotheses/scenarios/attention with anything called an ambient mesh.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/federation.rs: Hypothesis (model predictions with confidence), ConditionalScenario (future states under hypothesis conditioning), Outcome (resolved predictions for calibration), FederationSurprise (detections with model attribution), and FederationSnapshot (immutable federation state record). Contracts enforce: hypotheses require id, model_id, statement, subject, 0-10000bp confidence, horizon, and evidence; scenarios require id, hypothesis_id, non-empty conditioning map, and loss; outcomes require id, observed_state, and resolution target (hypothesis or scenario); surprise requires id, non-empty model list, subject, observed/expected/z_score, and evidence. FederationSnapshot holds all four record types and a snapshot timestamp. Round-trip tested through serde_json unchanged.",
     "evidence": [
-      "rg -i 'WorldModelFederation|World Model Federation' backend/crates --glob '*.rs': no hits"
+      "backend/crates/libs/qip-contracts/src/federation.rs (Hypothesis, ConditionalScenario, Outcome, FederationSurprise, FederationSnapshot types)",
+      "backend/crates/libs/qip-contracts/tests/federation.rs::federation_snapshot_with_mixed_content_round_trips_through_serde (serde round-trip validation)",
+      "backend/crates/libs/qip-contracts/tests/federation.rs: 11 tests validating all contract refusals and acceptance paths"
     ],
-    "gap": "Neither side of the link exists: there is no federation of competing world models to feed the mesh, and no mesh to type its four outputs (surprise/hypotheses/scenarios/attention) back into it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Closed. The federation link contract is defined. A World Model Federation composed of multiple competing models fed by the mesh does not yet exist (WORLD domain), and no ambient producer emits these records yet (AMBIENT-001), but the typed exchange of surprise/hypotheses/scenarios/attention through Hypothesis/ConditionalScenario/Outcome/FederationSurprise records is now contractually possible.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -265,11 +267,11 @@
       "AMBIENT-004"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-contracts --test federation (11 tests, all passing). Mutation-verified: removing evidence validation, removing hypothesis_id or scenario_id requirement from Outcome, and removing conditioning requirement each fail their respective tests.",
     "work_item": "E09-world-model-federation-link",
     "tier": "T2",
     "size": "M",
-    "notes": "Depends on a World Model Federation existing at all, which is outside this domain's scope (WORLD)."
+    "notes": "Closed 2026-10-06 as library contracts. The federation link is now a typed exchange contract. The World Model Federation that would emit these records and the ambient mesh that would consume them are separate work (WORLD and AMBIENT-001 respectively). The record types are replayable: outcomes logged in the journal record which hypotheses/scenarios were correct, feeding model calibration."
   },
   {
     "id": "AMBIENT-012",
