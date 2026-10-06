@@ -477,16 +477,7 @@ fn run() -> Result<()> {
     // find that out.
     let mut feed = match config.feed {
         Some(FeedChoice::Simulated) => {
-            if gateway.simulated_mut().is_none() {
-                return Err(Error::denied(format!(
-                    "configuration: {FEED_VARIABLE}={SIMULATED_FEED} prices passes off the \
-                     in-process venue, and this node's order entry is {} on {}; a simulated \
-                     feed does not drive a live gateway. Unset {ADAPTER_VARIABLE} or unset \
-                     {FEED_VARIABLE}",
-                    gateway.class(),
-                    gateway.venue()
-                )));
-            }
+            gateway.simulated_for_feed()?;
             let feed = SimulatedFeed::new(gateway_venue);
             feed.attach(&mut cell)?;
             Some(feed)

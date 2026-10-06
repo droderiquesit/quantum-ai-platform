@@ -44,7 +44,8 @@
 //!
 //! [`Cell`]: qip_edge::cell::Cell
 
-use crate::venue::{LiveVenueChoice, VenueChoice};
+use crate::feed::{FEED_VARIABLE, SIMULATED_FEED};
+use crate::venue::{ADAPTER_VARIABLE, LiveVenueChoice, VenueChoice};
 use qip_brokers::adapter::{PositionSnapshot, VenueAdapter};
 use qip_brokers::connection::ConnectionPhase;
 use qip_brokers::credential::{
@@ -605,20 +606,13 @@ impl Placer for SimulatedGateway {
         self.exchange.is_simulated()
     }
 
-    fn try_place(
-        &mut self,
-        _order_id: &str,
-        _object_id: &ObjectId,
-        _venue: &VenueId,
-        _side: BookSide,
-        _quantity: Decimal,
-        _price: Decimal,
-        _at: Timestamp,
-    ) -> Result<bool> {
-        // Simulated gateway always accepts orders (brokers queue capacity not implemented yet)
-        Ok(true)
-    }
-
+    // No `try_place` override, on purpose. `Cell::send` calls `try_place`,
+    // and the trait's default calls `place` below; an override answering
+    // `Ok(true)` without calling it (ad79d50) had the cell book an open order
+    // for every placement while the matching engine received none, so no
+    // order ever filled or rested at the simulated venue. Override it only
+    // when this gateway has a bounded queue that can say "full" — and then
+    // place through it.
     fn place(
         &mut self,
         order_id: &str,
@@ -974,20 +968,20 @@ impl Placer for RestGateway {
         self.adapter.is_simulated()
     }
 
-    fn try_place(
-        &mut self,
-        _order_id: &str,
-        _object_id: &ObjectId,
-        _venue: &VenueId,
-        _side: BookSide,
-        _quantity: Decimal,
-        _price: Decimal,
-        _at: Timestamp,
-    ) -> Result<bool> {
-        // REST gateway placeholder: not yet implemented
-        Err(Error::unavailable("REST gateway is not yet implemented"))
-    }
-
+    // No `try_place` override: the default calls `place`. An override that
+    // refused every order as unavailable (ad79d50) was not a paper-trading
+    // guard, and neither is `is_simulated` above: it answers `true` for every
+    // adapter class this gateway can hold, so `Cell::send`'s `GATE_LIVE_VENUE`
+    // check never fires on it. What keeps this gateway out of the cell's pass
+    // is structural, in three places: `run_pass` takes only
+    // `&mut SimulatedGateway` (`pass.rs`), so no `RestGateway` can be named
+    // there; start-up refuses a simulated feed combined with this gateway
+    // (`NodeGateway::simulated_for_feed`, called from `main.rs`), so no node
+    // with this gateway has a pass loop; and the pass loop narrows with
+    // `NodeGateway::simulated_mut`, which is `None` for this variant. The
+    // override only made this gateway's sandbox path unreachable.
+    // `tests/venue.rs::a_rest_gateway_cannot_reach_the_pass_path_although_it_reports_itself_simulated`
+    // holds the last two.
     fn place(
         &mut self,
         order_id: &str,
@@ -1198,6 +1192,29 @@ impl NodeGateway {
         match self {
             Self::Simulated(gateway) => Some(gateway),
             Self::Live(_) => None,
+        }
+    }
+
+    /// The simulated gateway a simulated feed prices passes against, or the
+    /// start-up refusal when the node's order entry is anything else.
+    ///
+    /// A simulated feed on a REST gateway would send orders to a socket priced
+    /// off a book nobody trades, and the node must not come up to find that
+    /// out. This is the refusal, kept here rather than inline in `main.rs` so
+    /// a test can reach it; it does not consult [`Placer::is_simulated`],
+    /// which is `true` for the REST variant as well and so cannot tell the
+    /// two apart.
+    pub fn simulated_for_feed(&mut self) -> Result<&mut SimulatedGateway> {
+        match self {
+            Self::Simulated(gateway) => Ok(gateway),
+            Self::Live(gateway) => Err(Error::denied(format!(
+                "configuration: {FEED_VARIABLE}={SIMULATED_FEED} prices passes off the \
+                 in-process venue, and this node's order entry is {} on {}; a simulated \
+                 feed does not drive a live gateway. Unset {ADAPTER_VARIABLE} or unset \
+                 {FEED_VARIABLE}",
+                gateway.class(),
+                gateway.venue()
+            ))),
         }
     }
 

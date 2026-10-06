@@ -18,6 +18,7 @@
 
 pub mod causal;
 pub mod confounder;
+pub mod evidence;
 pub mod exposure;
 pub mod falsification;
 pub mod features;
@@ -38,6 +39,7 @@ pub use causal::{
     Retirement,
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
+pub use evidence::{AuthenticitySignal, EvidenceRecord, TemporalConsistency};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SecondOrderReview, SharedDriver, UnheldDependency,
     hidden_concentration, instruments_exposed_to, second_order_exposure, unheld_dependencies,

@@ -326,15 +326,14 @@
   {
     "id": "CICD-048",
     "status": "PARTIAL",
-    "current": "infrastructure/docker/Dockerfile pins the Rust base image by digest (rust:1.94-alpine@sha256:..., Dockerfile:32), and the build runs `cargo build --release --locked` (Dockerfile:58), so the dependency graph is the one Cargo.lock records; ci.yml also runs `cargo build --workspace --release --locked` (ci.yml:92).",
+    "current": "infrastructure/docker/Dockerfile pins the Rust base image by digest (rust:1.94-alpine@sha256:..., alpine 3.23.4 per the image config) and installs nothing over it: the build stage's former `apk add --no-cache musl-dev` was removed because musl-dev and gcc are already layers of that digest, so every toolchain input to the build is frozen by the digest and Cargo.lock. The build runs `cargo build --release --locked`; ci.yml also runs `cargo build --workspace --release --locked`.",
     "evidence": [
-      "infrastructure/docker/Dockerfile:32 (digest-pinned base image)",
-      "infrastructure/docker/Dockerfile:38-47 (unpinned `apk add --no-cache musl-dev`, named 'the one part of the build that is not byte-reproducible')",
-      "infrastructure/docker/Dockerfile:58 (cargo build --release --locked)",
-      ".github/workflows/ci.yml:92",
-      ".github/workflows/deploy.yml:388-400 ('a second build of the same commit is different bytes and the registry refuses to move binary:<sha> onto them', so re-runs skip the rebuild)"
+      "infrastructure/docker/Dockerfile (digest-pinned FROM ... AS build; no package install; comment states why a version pin was rejected)",
+      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs::the_build_stage_installs_nothing_the_digest_does_not_pin",
+      ".github/workflows/ci.yml (cargo build --workspace --release --locked)",
+      ".github/workflows/deploy.yml ('a second build of the same commit is different bytes and the registry refuses to move binary:<sha> onto them', so re-runs skip the rebuild)"
     ],
-    "gap": "The repository states the property does not hold. deploy.yml:390-393 records that a second build of the same commit produces different bytes, and the pipeline works around this by skipping the rebuild when the tag already exists instead of fixing it. The Dockerfile names the unpinned musl-dev install as one source. No test rebuilds a commit and compares digests, which is the acceptance method, and no normalisation (SOURCE_DATE_EPOCH, path remapping, fixed layer timestamps) is configured.",
+    "gap": "The property itself is still unproven and the repository still says it does not hold: deploy.yml records that a second build of the same commit produces different bytes and works around it by skipping the rebuild. Removing the network package fetch closes one stated input; the likeliest remaining cause is image-layer metadata (the scratch stage's COPY carries the binary's build-time mtime, and docker build is not run with SOURCE_DATE_EPOCH plus BuildKit rewrite-timestamp), which nothing normalises. No test rebuilds a commit and compares digests, which is the acceptance method.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -342,11 +341,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needed: build the same commit twice in independent contexts and assert byte-identical image digests.",
+    "verification": "Partial: cargo test -p qip-acceptance --test pipeline_waivers the_build_stage_installs_nothing_the_digest_does_not_pin refuses a package fetch in the build stage and an unpinned base. Still needed: build the same commit twice in independent contexts and assert byte-identical image digests.",
     "work_item": "E01-pin-builder-os-packages",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status PARTIAL and flags kept, and the gap was sharpened. deploy.yml:390-393 states outright that rebuilding a commit gives different bytes, so the requirement's core property is known false, not merely unmeasured. Dockerfile line numbers were corrected (FROM :32, apk :47, cargo build :58)."
+    "notes": "verify: status PARTIAL and flags kept, and the gap was sharpened. deploy.yml:390-393 states outright that rebuilding a commit gives different bytes, so the requirement's core property is known false, not merely unmeasured. Dockerfile line numbers were corrected (FROM :32, apk :47, cargo build :58). 2026-10-06 review of PR #64: the PR pinned musl-dev=1.2.5_git20240620-r0, a revision no alpine release serves (3.20-3.23 serve 1.2.5-r3/-r11/-r12/-r23; the base is 3.23.4), which would have failed every image build; its test checked substrings (`musl-dev=`, `SOURCE_DATE_EPOCH`) that a comment satisfies, and it set tested=true without the digest comparison. Reviewer replaced the pin with removing the install, dropped the unproven SOURCE_DATE_EPOCH/CARGO_BUILD_JOBS=1/strip changes (rustc embeds no build time; CARGO_BUILD_JOBS only slowed the build), and restored tested=false. Status PARTIAL unchanged."
   },
   {
     "id": "CICD-049",

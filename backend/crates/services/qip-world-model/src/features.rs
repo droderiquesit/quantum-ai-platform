@@ -1291,12 +1291,12 @@ mod knowable_instant_guard_tests {
             on_time.is_some(),
             "a value with available_at=110 must be returned at known_at=110"
         );
-        assert_eq!(on_time.unwrap().value, 99.5);
+        assert_eq!(on_time.unwrap().value.to_bits(), 99.5_f64.to_bits());
 
         // After arrival, reads earlier than the value are still answered from
         // this value if nothing newer has arrived.
         let later_read = store.value_as_of("close", "AAPL", at(105), at(200));
-        assert_eq!(later_read.unwrap().value, 99.5);
+        assert_eq!(later_read.unwrap().value.to_bits(), 99.5_f64.to_bits());
     }
 
     /// The guard respects both dimensions independently. A value answering to
@@ -1412,7 +1412,7 @@ mod knowable_instant_guard_tests {
         }
 
         match store.lookup_as_of("metric", "server-1", at(50), at(60)) {
-            FeatureLookup::Value(v) => assert_eq!(v.value, 42.0),
+            FeatureLookup::Value(v) => assert_eq!(v.value.to_bits(), 42.0_f64.to_bits()),
             other => panic!("trait method lookup_as_of must return when available, got {other:?}"),
         }
     }
