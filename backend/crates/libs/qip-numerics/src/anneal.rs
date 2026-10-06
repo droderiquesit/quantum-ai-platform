@@ -9,7 +9,7 @@ use qip_core::rng::Rng;
 use serde::{Deserialize, Serialize};
 
 /// Upper-triangular QUBO: `minimise x'Qx` for `x` in `{0,1}^n`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Qubo {
     pub n: usize,
     /// `entries[(i, j)]` with `i <= j`; the diagonal holds the linear terms.
@@ -39,6 +39,11 @@ impl Qubo {
 
     pub fn add_linear(&mut self, i: usize, weight: f64) {
         self.add(i, i, weight);
+    }
+
+    /// Number of binary variables in this problem.
+    pub fn num_variables(&self) -> usize {
+        self.n
     }
 
     /// Objective value at a binary assignment.

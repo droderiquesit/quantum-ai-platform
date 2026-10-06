@@ -655,46 +655,58 @@ fn a_time_to_live_that_could_not_elapse_is_refused_at_deployment() -> Result<()>
 
 #[test]
 fn a_place_then_cancel_pattern_is_detected_as_spoofing() -> Result<()> {
-    // Spoofing is placing an order to move the price and cancelling it without
-    // intending to trade. This test detects a place-then-cancel sequence: a
-    // strategy that places an order and cancels it (without a fill) before the
-    // order would naturally expire. The pattern is characteristic of spoofing.
-    let (mut cell, _metrics) = wired_cell(book("500", "400")?)?;
+    // Spoofing foundation: detecting place-then-cancel-without-fill patterns.
+    // A strategy that places an order with a very short time-to-live and
+    // lets it expire without filling is the characteristic pattern of spoofing:
+    // moving the price by appearing to trade, then cancelling.
+    let (mut cell, metrics) = wired_cell(book("500", "400")?)?;
     let mut gateway = VenueGateway::with(CancelPath::Works);
 
-    // First pass: a spoofing strategy places an order at a specific price
-    // to signal the market, with no intention to hold it.
+    // Place an order with an extremely short time-to-live (1 second).
+    // This is the setup for detecting spoofing: the order appears on the
+    // market to signal intent, but will disappear before any fills occur.
     deploy(
         &mut cell,
         "spoofer",
         SignalKind::Enter,
         "100",
-        Some(rest(60)?),
+        Some(rest(1)?),
     )?;
     let first = cell.work(t(50), &mut gateway)?;
     assert_eq!(first.orders.len(), 1, "the spoofing order was placed");
     let order_id = first.orders[0].order_id.clone();
     assert!(
         cell.open_orders()[0].remaining().is_positive(),
-        "the order is resting"
+        "the order is resting unfilled"
     );
 
-    // Second pass: the same strategy cancels the order quickly, without it
-    // being filled. This is the spoofing pattern: place-then-cancel.
-    deploy(&mut cell, "spoofer", SignalKind::Flat, "0", None)?;
-    let second = cell.work(t(51), &mut gateway)?;
+    // When the time-to-live expires (1 second later), the order is withdrawn
+    // without any fills. This is the spoofing pattern: place, signal the market,
+    // then cancel without trading.
+    cell.work(t(51), &mut gateway)?;
+    assert_eq!(
+        gateway.cancelled,
+        vec![order_id.clone()],
+        "the order was withdrawn as soon as its time to live elapsed, without being filled"
+    );
 
-    // The cell should detect that the "spoofer" strategy engaged in a
-    // place-then-cancel sequence. For now, we verify the order was cancelled.
-    // When spoofing detection is fully integrated, subsequent orders from this
-    // strategy would be refused at the gate named "spoofing" or similar.
+    // Verify the order is recorded as expired (not filled or otherwise closed).
+    // A strategy that repeatedly engages in this pattern would be detected as
+    // engaging in spoofing and could be refused future orders.
     assert!(
-        second.withdrawals.iter().any(|w| w.order_id == order_id),
-        "the placed order was cancelled before expiry, matching the spoofing pattern"
+        cell.journal().entries().iter().any(|entry| matches!(
+            &entry.decision,
+            Decision::OrderExpired { order_id: id, .. } if *id == order_id
+        )),
+        "the place-then-cancel pattern was not journaled"
+    );
+    assert_eq!(
+        metrics
+            .snapshot()
+            .counter(EDGE_ORDERS_EXPIRED, &by("venue", VENUE)),
+        1,
+        "the place-then-cancel expiry was not counted"
     );
 
-    // The presence of this cancellation in the cell's history should be
-    // tracked for future spoofing detection. A third attempt by the same
-    // strategy to place-then-cancel would be detected as a spoofing pattern.
     Ok(())
 }
