@@ -1683,3 +1683,95 @@ fn a_resolved_claim_is_scored_against_the_regime_it_resolved_in() -> Result<()> 
     );
     Ok(())
 }
+
+// --- CAPITAL-036: shadow portfolios run counterfactual allocations -----------
+
+#[test]
+fn shadow_portfolios_hold_alternate_sizes_and_rejected_opportunities() -> Result<()> {
+    use qip_contracts::action::{ShadowPortfolio, ShadowRecord};
+
+    let mut portfolio = ShadowPortfolio::new("alloc-001".to_string());
+
+    assert!(
+        !portfolio.is_complete(),
+        "a new portfolio with no shadows should not be complete"
+    );
+    assert_eq!(portfolio.size_alternatives.len(), 0);
+    assert_eq!(portfolio.rejected_opportunities.len(), 0);
+
+    portfolio.add_size_alternative(ShadowRecord::new(
+        "opp-smaller".to_string(),
+        "AAA".to_string(),
+    ));
+
+    assert!(
+        !portfolio.is_complete(),
+        "portfolio with only size alternatives should not be complete"
+    );
+    assert_eq!(portfolio.size_alternatives.len(), 1);
+
+    portfolio.add_rejected_opportunity(ShadowRecord::new(
+        "opp-declined".to_string(),
+        "BBB".to_string(),
+    ));
+
+    assert!(
+        portfolio.is_complete(),
+        "portfolio with at least one of each shadow type should be complete"
+    );
+    assert_eq!(portfolio.size_alternatives.len(), 1);
+    assert_eq!(portfolio.rejected_opportunities.len(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn one_allocation_yields_at_least_one_alternate_size_and_one_rejected_opportunity_shadow()
+-> Result<()> {
+    use qip_contracts::action::{ShadowPortfolio, ShadowRecord};
+
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 90));
+
+    let order_id = refuse_one(&mut platform, "prop-test", start())?;
+
+    platform.observe(bars_after("AAA", start(), 5));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    let declined_scores = platform.declined_scores();
+    assert!(
+        !declined_scores.is_empty(),
+        "at least one order should have been declined and scored"
+    );
+
+    for score in declined_scores {
+        assert!(
+            score.alternatives > 0,
+            "each scored path should have generated alternatives"
+        );
+    }
+
+    let mut portfolio = ShadowPortfolio::new(order_id.to_string());
+
+    for score in declined_scores {
+        if score.regret {
+            portfolio.add_rejected_opportunity(ShadowRecord::new(
+                score.order_id.to_string(),
+                score.object_id.to_string(),
+            ));
+        }
+        if score.alternatives > 1 {
+            portfolio.add_size_alternative(ShadowRecord::new(
+                score.order_id.to_string(),
+                format!("alt-{}", score.object_id),
+            ));
+        }
+    }
+
+    assert!(
+        portfolio.is_complete(),
+        "a declined allocation should generate both size and opportunity shadows"
+    );
+
+    Ok(())
+}
