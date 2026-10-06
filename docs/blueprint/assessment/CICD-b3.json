@@ -286,27 +286,25 @@
   },
   {
     "id": "CICD-081",
-    "status": "COMPLETE",
-    "current": ".github/pull_request_template.md enforces two required fields on every pull request: **Goal ID** (incident #, backlog item #, or expansion gap ID) and **Goal Origin** (incident / backlog item / expansion gap). The template is rendered on PR creation and cannot be bypassed; PRs without these fields filled require editing. The template also includes the gate checklist from .claude/rules/02-change-management.md as a section titled 'Verification', ensuring every PR author is reminded of required checks. backend/crates/tests/qip-acceptance/tests/cicd_governance.rs contains a mutation-verified test that asserts both fields exist in the template, preventing accidental removal.",
+    "status": "PARTIAL",
+    "current": ".github/pull_request_template.md carries a 'Goal ID' line and a 'Goal Origin' line naming the three origin classes (incident / backlog item / expansion gap). It is a prompt, not enforcement: GitHub renders it only in the web UI, so a PR opened through the API or `gh pr create --body` (how agents open PRs) never sees it, a person can delete it, and no CI check reads a PR body. backend/crates/tests/qip-acceptance/tests/cicd_governance.rs pins the template's two lines and the exact origin taxonomy so they cannot be removed silently.",
     "evidence": [
-      ".github/pull_request_template.md (contains '**Goal ID:**' and '**Goal Origin:**' with three valid values: incident, backlog item, expansion gap)",
-      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs::pr_template_requires_goal_id_and_goal_origin (mutation-verified: test fails when Goal ID field removed, passes on restoration)",
-      "commit 71d8768: PR template enforces goal traceability + mutation verification evidence",
-      "gate verification: cargo fmt PASS, cargo clippy --test cicd_governance PASS (zero warnings), cicd_governance test PASS, dependencies PASS (11 third-party all permitted), secrets PASS (nothing found)"
+      ".github/pull_request_template.md ('**Goal ID:**' and '**Goal Origin:** (incident / backlog item / expansion gap)')",
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs::pr_template_requires_goal_id_and_goal_origin"
     ],
-    "gap": "No CI check yet verifies that the Goal ID and Goal Origin fields are actually filled (non-empty) in submitted PRs; the template enforces the fields exist, but GitHub permits a PR to be created and merged with placeholder text. A future enhancement could add a check that validates values match allowed patterns (e.g., 'incident-<number>' or 'backlog-<item-id>').",
-    "implemented": true,
-    "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "gap": "Nothing requires or verifies that an agent-authored PR links to exactly one goal: no CI check parses the PR body, the template never reaches API-opened PRs, and main is unprotected (CICD-045), so even a check would flag rather than refuse.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test cicd_governance pr_template_requires_goal_id_and_goal_origin: PASS. Mutation verification: edit .github/pull_request_template.md to remove '**Goal ID:**' field, run test (fails with 'PR template must contain Goal ID field'), restore byte-for-byte, run test (passes).",
-    "work_item": "L019",
+    "verification": "cargo test -p qip-acceptance --test cicd_governance (pins the template only; the requirement's check 'each agent-authored PR links to exactly one goal' is not yet verifiable)",
+    "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": "2026-10-06: Implemented PR template with Goal ID and Goal Origin fields. Template is rendered by GitHub on every new PR and cannot be bypassed. Mutation-verified test ensures both fields remain present. Next enhancement: add CI check to validate fields are filled with non-placeholder text, and optionally add goal-link webhook to validate against actual incidents/backlog items."
+    "notes": "verify: status unchanged (MISSING). Added the delivery-workflow convention to 'current'; it is prose, carries no origin taxonomy, and nothing checks linkage. No .github template or hook enforces it (.github holds only workflows; .claude/hooks has no such check). 2026-10-04: left MISSING. A required goal line on every pull request changes how every pull request is opened, which is the owner's decision, and with main unprotected (CICD-045) a check for it would flag and not refuse. 2026-10-06 (L019): MISSING -> PARTIAL. A PR template now prompts for the goal in the web UI; COMPLETE needs a CI check on the PR body that refuses anything but exactly one goal line, which still waits on CICD-045."
   },
   {
     "id": "CICD-082",
