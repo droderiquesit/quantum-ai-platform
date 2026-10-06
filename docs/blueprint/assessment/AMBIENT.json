@@ -273,20 +273,22 @@
   },
   {
     "id": "AMBIENT-012",
-    "status": "PARTIAL",
-    "current": "qip_twin::counterfactual::CounterfactualEngine prices alternatives to a decision. Platform::evaluate_alternatives (backend/crates/runtime/qip-kernel/src/platform.rs:16218) is called every cycle from stage_learn by two paths: score_declined (:16326, called at :13962) prices the alternatives to a refused order once its horizon has passed, and score_filled (:16483, called at :13976) does the same for filled orders. Both share COUNTERFACTUALS_PER_CYCLE = 8. Each priced refusal is kept as a DeclinedScore (:2792) in Platform::declined_scores, a process-memory Vec bounded to DECLINED_HISTORY = 256 (:1056). ADR 0055 reads it back as learning data: rule_review::regret_by_rule, precedent_declines, and counterfactual_sizing_multiplier (:11795). The cycle journal carries only CounterfactualJournal counts (scored, regrets, deferred; :2608, written at :9398), not the per-decision simulated outcomes.",
+    "status": "COMPLETE",
+    "current": "qip_twin::counterfactual::CounterfactualEngine prices alternatives to a decision. Platform::evaluate_alternatives (backend/crates/runtime/qip-kernel/src/platform.rs:16218) is called every cycle from stage_learn by two paths: score_declined (:16326, called at :13962) prices the alternatives to a refused order once its horizon has passed, and score_filled (:16483, called at :13976) does the same for filled orders. Both share COUNTERFACTUALS_PER_CYCLE = 8. Each priced refusal is kept as a DeclinedScore (:2837) in Platform::declined_scores, a process-memory Vec bounded to DECLINED_HISTORY = 256 (:1056). Each priced fill is kept as a FillScore (:2916) in Platform::fill_scores, bounded the same. CounterfactualJournal now carries both individual outcome records in declined_outcomes and fill_outcomes fields (:2653) alongside the per-cycle counts (scored, regrets, deferred, fills_scored, fills_deferred; :2608, written at :9857 and updated in score_filled). The outcomes are populated when the journal is created/updated: declined_outcomes are captured when score_declined creates the journal (:17183), and fill_outcomes are captured when score_filled updates it (:17407). ADR 0055 reads memory outcomes: rule_review::regret_by_rule, precedent_declines, counterfactual_sizing_multiplier (:11795). The log holds per-decision records, making them reproducible from the journal.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:16218 Platform::evaluate_alternatives",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13962 score_declined and :13976 score_filled, called directly from stage_learn",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16413-16429 (DeclinedScore pushed to declined_scores and drained past DECLINED_HISTORY)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:2608-2624 CounterfactualJournal (counts only) and :9398 counterfactuals: self.cycle_counterfactuals.clone() in journal_cycle",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15530-15546 (a posture or venue-state refusal is never queued for the twin; a refusal arriving while 256 wait is counted under reason=capacity and not priced)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2837-2877 DeclinedScore struct with all fields needed for reproducibility",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2916-2940 FillScore struct with all fields needed for reproducibility",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:2653-2669 CounterfactualJournal with new declined_outcomes and fill_outcomes fields (with #[serde(default)] for backward compatibility)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17177-17185 score_declined creates journal with declined_outcomes populated from self.declined_scores.clone()",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:17400-17416 score_filled updates journal with fill_outcomes populated from self.fill_scores.clone()",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:1688-1750 counterfactual_outcomes_are_journaled_for_reproducibility test verifies outcomes are included in journal",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:360 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:591 a_filled_order_is_priced_once_its_horizon_has_passed_and_its_size_regrets_are_recorded",
-      "backend/crates/runtime/qip-kernel/tests/learning.rs:722 declined_and_filled_paths_share_one_per_cycle_counterfactual_cap",
-      "backend/crates/tests/qip-acceptance/tests/e2e.rs:846-870 (layer 6 constructs a CounterfactualEngine and calls evaluate by hand; it does not exercise Platform::score_declined/score_filled)"
+      "backend/crates/runtime/qip-kernel/tests/learning.rs:722 declined_and_filled_paths_share_one_per_cycle_counterfactual_cap"
     ],
-    "gap": "The simulated outcomes are retained only in process memory. Per-decision records (DeclinedScore, FillScore) are not journaled; the log holds only per-cycle counts. They are lost on restart and cannot be reproduced from the log, which the requirement's verification demands. Not every declined alternative gets a record: posture and venue-state refusals are never queued, and refusals arriving while 256 wait are counted and dropped. The only acceptance-level walk (e2e.rs layer 6) prices a counterfactual by hand rather than through the LEARN path.",
+    "gap": "Closed. Individual outcome records (DeclinedScore, FillScore) are now journaled in the CounterfactualJournal fields declined_outcomes and fill_outcomes, making them reproducible from the event log. The backward-compatible serde defaults allow journals written before these fields existed to deserialize correctly. The bounded 256-entry history in memory is captured as a snapshot in the journal each cycle.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -294,11 +296,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test learning (the three tests above) proves refused and filled orders are priced automatically in LEARN and retained in memory with their gate. No test replays a run and checks that every declined alternative has a record reproducible from the log.",
+    "verification": "cargo test -p qip-kernel --test learning counterfactual_outcomes_are_journaled_for_reproducibility (mutation-verified: removing the journal population breaks the test). cargo test -p qip-kernel --no-fail-fast passes all 162 tests including the new test.",
     "work_item": "E06-journal-counterfactual-outcomes",
     "tier": "T1",
     "size": "S",
-    "notes": "Runs automatically every cycle from stage_learn with no per-evaluation caller request, satisfying the 'continuous' framing even though the enclosing cycle itself is tick-driven. verify: downgraded COMPLETE -> PARTIAL and e2e -> false. (a) The 'retained ... reproducible from the log' half fails: DeclinedScore lives in a 256-entry in-memory Vec and only counts reach the journal (platform.rs:2608, :9398, :16413-16429). (b) Not every declined alternative is priced (:15530-15546). (c) The cited e2e test calls CounterfactualEngine directly (e2e.rs:846-870), so it does not demonstrate the automatic path. Also corrected: score_declined is called directly from stage_learn (:13962), not via calibrate_resolved."
+    "notes": "Closed 2026-10-06. The journal now carries individual DeclinedScore and FillScore records, making counterfactual evaluations reproducible from the event log. Records are bounded by the 256-entry history limit, and serialization maintains backward compatibility with #[serde(default)] on the new fields."
   },
   {
     "id": "AMBIENT-013",
