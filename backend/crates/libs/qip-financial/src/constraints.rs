@@ -103,7 +103,7 @@ pub struct RegulatoryConstraints {
     pub jurisdictions: BTreeSet<Jurisdiction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub restrictions: Vec<TradingRestriction>,
-    /// Venues on which this instrument may be traded. Empty means unrestricted.
+    /// Venues on which this instrument may be traded. Empty means no venues are approved (fail-closed).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub approved_venues: BTreeSet<String>,
     /// Regulatory capital charge as a fraction of notional, where one applies.
@@ -164,6 +164,6 @@ impl RegulatoryConstraints {
 
     /// Whether `venue` may be used for this instrument.
     pub fn permits_venue(&self, venue: &str) -> bool {
-        self.approved_venues.is_empty() || self.approved_venues.contains(venue)
+        !self.approved_venues.is_empty() && self.approved_venues.contains(venue)
     }
 }
