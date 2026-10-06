@@ -237,3 +237,135 @@ resource "google_compute_firewall" "console_egress_google_apis" {
   destination_ranges = [local.restricted_vip_range]
   target_tags        = [local.console_egress_tag]
 }
+
+# --- Data and Engineering VPCs (GCP-051) ----------------------------------------
+#
+# Separate isolated VPC networks for Data and Engineering planes.
+# These networks are isolated from Reflex, Fabric, and Service planes
+# and connect to other networks only as NCC spokes.
+
+resource "google_compute_network" "data_vpc" {
+  project = var.project_id
+  name    = "qip-${var.environment}-data"
+
+  auto_create_subnetworks = false
+  routing_mode            = "REGIONAL"
+
+  description = "Data plane VPC: isolated from Reflex, Fabric, and Service networks"
+}
+
+resource "google_compute_firewall" "data_vpc_deny_ingress" {
+  project = var.project_id
+  name    = "qip-${var.environment}-data-deny-ingress"
+  network = google_compute_network.data_vpc.id
+
+  direction = "INGRESS"
+  priority  = 65534
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_dns_managed_zone" "data_googleapis" {
+  project     = var.project_id
+  name        = "qip-${var.environment}-data-googleapis"
+  dns_name    = "googleapis.com."
+  description = "Restricted Google APIs for Data VPC"
+  visibility  = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.data_vpc.id
+    }
+  }
+
+  labels = var.labels
+}
+
+resource "google_dns_record_set" "data_restricted_vip" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.data_googleapis.name
+  name         = "restricted.googleapis.com."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "data_googleapis_wildcard" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.data_googleapis.name
+  name         = "*.googleapis.com."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["restricted.googleapis.com."]
+}
+
+resource "google_compute_network" "engineering_vpc" {
+  project = var.project_id
+  name    = "qip-${var.environment}-engineering"
+
+  auto_create_subnetworks = false
+  routing_mode            = "REGIONAL"
+
+  description = "Engineering/build plane VPC: isolated from Reflex, Fabric, and Service networks"
+}
+
+resource "google_compute_firewall" "engineering_vpc_deny_ingress" {
+  project = var.project_id
+  name    = "qip-${var.environment}-engineering-deny-ingress"
+  network = google_compute_network.engineering_vpc.id
+
+  direction = "INGRESS"
+  priority  = 65534
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_dns_managed_zone" "engineering_googleapis" {
+  project     = var.project_id
+  name        = "qip-${var.environment}-engineering-googleapis"
+  dns_name    = "googleapis.com."
+  description = "Restricted Google APIs for Engineering VPC"
+  visibility  = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.engineering_vpc.id
+    }
+  }
+
+  labels = var.labels
+}
+
+resource "google_dns_record_set" "engineering_restricted_vip" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.engineering_googleapis.name
+  name         = "restricted.googleapis.com."
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "engineering_googleapis_wildcard" {
+  project      = var.project_id
+  managed_zone = google_dns_managed_zone.engineering_googleapis.name
+  name         = "*.googleapis.com."
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = ["restricted.googleapis.com."]
+}

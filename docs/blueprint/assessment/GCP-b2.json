@@ -481,29 +481,27 @@
   },
   {
     "id": "GCP-051",
-    "status": "INCORRECT",
-    "current": "one global VPC (google_compute_network.vpc, infrastructure/terraform/modules/network/main.tf:35) shared by every plane. Isolation is achieved instead by modules/trust-zones' thirteen named subnets with per-zone firewall rules inside that one VPC — and 'data' and 'engineering' are not among the thirteen zone names at all. The only Engineering-plane network the tree declares, modules/image-bake's builder subnet, is a subnet of that same shared VPC (infrastructure/terraform/main.tf:752 passes network_id = module.network.network_id), beside the Reflex (execution-node) and Service (trust-zones) subnets. It is gated off in every environment.",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/network/main.tf now declares three separate VPC networks: the primary qip-${environment} VPC for Reflex/Fabric/Service planes, and two new isolated networks: qip-${environment}-data for the Data plane and qip-${environment}-engineering for the Engineering/build plane. Each isolated VPC has its own deny-all ingress firewall rule and private DNS zone for Google API resolution. The Data and Engineering VPCs do not host Reflex, Fabric, or Service workload subnets.",
     "evidence": [
-      "infrastructure/terraform/modules/network/main.tf:35 (resource google_compute_network \"vpc\" — singular, global)",
-      "infrastructure/terraform/modules/trust-zones/main.tf:39-49 (the thirteen zone_names: public-edge, application-identity, ingestion-discovery, cognition, valuation, intelligence, optimisation, control-fabric, execution, ledger, wallet-read, treasury-write, management — no \"data\" or \"engineering\" zone)",
-      "every module (execution-node, trust-zones, image-bake, connectivity) is passed network_id = module.network.network_id, confirming one shared VPC",
-      "infrastructure/terraform/modules/image-bake/main.tf:195 (google_compute_subnetwork \"builder\", network = var.network_id)",
-      "infrastructure/terraform/main.tf:752 (module \"image_bake\" network_id = module.network.network_id)",
-      "grep -rn 'resource \"google_compute_network\"' infrastructure/ -> exactly one hit, modules/network/main.tf:35"
+      "infrastructure/terraform/modules/network/main.tf:242-370 (google_compute_network.data_vpc, data_vpc_deny_ingress, data_googleapis DNS zone)",
+      "infrastructure/terraform/modules/network/main.tf:372-501 (google_compute_network.engineering_vpc, engineering_vpc_deny_ingress, engineering_googleapis DNS zone)",
+      "infrastructure/terraform/modules/network/outputs.tf:27-40 (outputs: data_vpc_id, data_vpc_name, engineering_vpc_id, engineering_vpc_name)",
+      "grep -c 'resource \"google_compute_network\"' infrastructure/terraform/modules/network/main.tf -> 3 (vpc, data_vpc, engineering_vpc)"
     ],
-    "gap": "No separate Data VPC or Engineering VPC exists; the platform's actual isolation mechanism (subnet + firewall segmentation within one VPC) is a different, undocumented-as-such substitution for the requirement's explicit separate-network placement.",
-    "implemented": false,
-    "tested": false,
+    "gap": "VPC declarations are complete, but integration remains: (1) zone→VPC mapping for 13 trust-zones still maps to primary VPC only, (2) data plane (ingestion-discovery) placement not decided (stays in service VPC), (3) Reflex/Fabric VPC assignment not decided (stay in primary VPC), (4) NCC topology for cross-VPC communication not implemented, (5) firewall rule refactoring across VPC boundaries not done, (6) migration path for existing deployments not tested. The declared VPCs are isolated stubs; full integration across modules pending architectural decisions.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "An infra-plan test asserting a Data VPC and an Engineering VPC exist, host no Reflex/Fabric/Service subnets, and join other networks only as an NCC spoke. Neither network nor test exists.",
+    "blocked_by": "Full integration blocked pending architectural decision: zone→VPC mapping, ingestion plane placement, Reflex/Fabric VPC assignment, NCC topology, firewall refactoring, migration strategy. VPC skeletons declared and tested in isolation; they await wiring to 4-5 other modules.",
+    "verification": "infrastructure/terraform/modules/network declares google_compute_network.data_vpc and google_compute_network.engineering_vpc with deny-all ingress rules and private DNS zones (verified). No Reflex, Fabric, or Service workload subnets are declared in these networks (verified). terraform validate and terraform test pass on the network module in isolation. Full verification requires trust-zones, execution-node, image-bake, and connectivity modules to declare subnets in these networks and NCC spokes connecting them.",
     "work_item": "E14",
     "tier": "T2",
-    "size": "M",
-    "notes": "The trust-zone model achieves a similar isolation goal by a materially different mechanism (one VPC, per-zone firewalls) rather than by omission; that substitution is itself worth an explicit record if it is meant to stand in for this requirement permanently. verify: MISSING -> INCORRECT. The tree does not lack an Engineering network placement; it declares one inside the shared VPC, beside the Reflex and Service subnets, which is the topology this requirement forbids. It is scored the same way as GCP-009 and GCP-024 in GCP-b1.json (INCORRECT, all flags false), and the same VPC separation closes all three (E14)."
+    "size": "L",
+    "notes": "2026-10-06: VPC network structures implemented (3 networks, deny-all ingress, DNS zones, outputs declared). This satisfies the 'VPCs exist' half of the requirement but not the 'integration is complete' half. The trust-zone model (13 zones in one VPC with per-zone firewall rules) has not been refactored to map to multiple VPCs. No NCC spokes connect the isolated VPCs. No workload subnets are declared in data/engineering VPCs. Size remains L (integration work across 4-5 modules still pending). Recommend: create ADR documenting zone→VPC map, data-plane placement, Reflex/Fabric placement, NCC topology, get approval, then execute refactoring in another commit."
   },
   {
     "id": "GCP-052",
@@ -658,7 +656,7 @@
   },
   {
     "id": "GCP-058",
-    "status": "MISSING",
+    "status": "BLOCKED",
     "current": "21 google_compute_firewall resources exist across network, trust-zones, execution-node, image-bake and gitops-control-plane — all VPC-level, none hierarchical. No google_compute_firewall_policy (org/folder-level) exists anywhere.",
     "evidence": [
       "grep -rn 'resource \"google_compute_firewall\"' infrastructure/terraform/modules/*/*.tf infrastructure/terraform/*.tf -> 21 matches, none hierarchical",
@@ -674,7 +672,7 @@
     "depends_on": [
       "GCP-016"
     ],
-    "blocked_by": "",
+    "blocked_by": "GCP-016 (organization/folder hierarchy) — external infrastructure decision, unmerged work. Hierarchical firewall policy cannot be attached until org/folder structure is defined in another lane.",
     "verification": "An infra-plan test asserting a google_compute_firewall_policy associated with the org or a folder denies inter-plane traffic by default and allows only named flows. Neither the resource nor the test exists.",
     "work_item": "E14",
     "tier": "T2",
