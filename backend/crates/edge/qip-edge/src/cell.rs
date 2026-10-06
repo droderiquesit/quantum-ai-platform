@@ -9852,11 +9852,37 @@ pub trait Placer: std::fmt::Debug {
     /// `simulated` flag from this rather than from anything the caller says.
     fn is_simulated(&self) -> bool;
 
+    /// Accept an order for the venue.
+    ///
+    /// `at` is the instant before which the gateway must not release the
+    /// order — "release no earlier than", not "when it was sent" (ADR 0084).
+    /// The cell stamps it from the cycle's release schedule so that the legs
+    /// of a multi-venue cycle arrive together; a gateway that releases
+    /// immediately whatever `at` says was correct before that record and is
+    /// wrong after it. A gateway that finds `at` further in the past than it
+    /// will send late withdraws the order and reports it through
+    /// [`Self::unreleased`] rather than sending it late.
+    #[allow(clippy::too_many_arguments)]
+    fn place(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<()>;
+
     /// Try to accept an order for the venue without blocking.
     ///
     /// Non-blocking handoff: returns Ok(true) if queued, Ok(false) if the
     /// broker queue is at capacity and cannot accept more orders this pass.
     /// This is the primary path for Cell.work() to use (SLICE-04, ADR 0100).
+    ///
+    /// Defaults to calling [`Self::place`] and returning Ok(true) on success,
+    /// or propagating errors. Gateways with bounded queues should override
+    /// this to return Ok(false) when full rather than blocking or erroring.
     ///
     /// `at` is the instant before which the gateway must not release the
     /// order — "release no earlier than", not "when it was sent" (ADR 0084).
@@ -9876,39 +9902,9 @@ pub trait Placer: std::fmt::Debug {
         quantity: Decimal,
         price: Decimal,
         at: Timestamp,
-    ) -> Result<bool>;
-
-    /// Accept an order for the venue.
-    ///
-    /// `at` is the instant before which the gateway must not release the
-    /// order — "release no earlier than", not "when it was sent" (ADR 0084).
-    /// The cell stamps it from the cycle's release schedule so that the legs
-    /// of a multi-venue cycle arrive together; a gateway that releases
-    /// immediately whatever `at` says was correct before that record and is
-    /// wrong after it. A gateway that finds `at` further in the past than it
-    /// will send late withdraws the order and reports it through
-    /// [`Self::unreleased`] rather than sending it late.
-    ///
-    /// Defaults to calling [`Self::try_place`] and panicking if it returns
-    /// false, which is the blocking behavior. Gateways that require blocking
-    /// semantics should override this.
-    #[allow(clippy::too_many_arguments)]
-    fn place(
-        &mut self,
-        order_id: &str,
-        object_id: &ObjectId,
-        venue: &VenueId,
-        side: BookSide,
-        quantity: Decimal,
-        price: Decimal,
-        at: Timestamp,
-    ) -> Result<()> {
-        match self.try_place(order_id, object_id, venue, side, quantity, price, at)? {
-            true => Ok(()),
-            false => Err(Error::guard(
-                "broker queue is at capacity and cannot accept this order this pass",
-            )),
-        }
+    ) -> Result<bool> {
+        self.place(order_id, object_id, venue, side, quantity, price, at)?;
+        Ok(true)
     }
 
     /// Orders the gateway withdrew without sending since the last call,
@@ -10256,19 +10252,6 @@ mod crossing_tests {
             true
         }
 
-        fn try_place(
-            &mut self,
-            _order_id: &str,
-            _object_id: &ObjectId,
-            _venue: &VenueId,
-            _side: BookSide,
-            _quantity: Decimal,
-            _price: Decimal,
-            _at: Timestamp,
-        ) -> Result<bool> {
-            Err(qip_core::error::Error::io("the venue refused the order"))
-        }
-
         fn place(
             &mut self,
             _order_id: &str,
@@ -10334,20 +10317,6 @@ mod crossing_tests {
     impl Placer for ClassedGateway {
         fn is_simulated(&self) -> bool {
             self.simulated
-        }
-
-        fn try_place(
-            &mut self,
-            order_id: &str,
-            _object_id: &ObjectId,
-            _venue: &VenueId,
-            _side: BookSide,
-            _quantity: Decimal,
-            _price: Decimal,
-            _at: Timestamp,
-        ) -> Result<bool> {
-            self.placed.push(order_id.to_string());
-            Ok(true)
         }
 
         fn place(

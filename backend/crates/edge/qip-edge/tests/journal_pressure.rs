@@ -20,7 +20,7 @@ use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
     Cell, CellConfig, ExecutionReport, GATE_JOURNAL_PRESSURE, Placer, PricingPolicy, WorkReport,
@@ -178,21 +178,6 @@ impl Placer for ScriptedVenue {
         true
     }
 
-    fn try_place(
-        &mut self,
-        order_id: &str,
-        _object_id: &ObjectId,
-        _venue: &VenueId,
-        _side: BookSide,
-        quantity: Decimal,
-        _price: Decimal,
-        _at: Timestamp,
-    ) -> Result<bool> {
-        self.placed.push((order_id.to_string(), quantity));
-        self.open.push((order_id.to_string(), quantity));
-        Ok(true)
-    }
-
     fn place(
         &mut self,
         order_id: &str,
@@ -206,6 +191,20 @@ impl Placer for ScriptedVenue {
         self.placed.push((order_id.to_string(), quantity));
         self.open.push((order_id.to_string(), quantity));
         Ok(())
+    }
+
+    fn try_place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<bool> {
+        self.place(order_id, _object_id, _venue, _side, quantity, _price, _at)?;
+        Ok(true)
     }
 
     fn execution_reports(&mut self) -> Vec<ExecutionReport> {
@@ -681,6 +680,23 @@ fn try_send_refuses_when_broker_queue_is_full() -> Result<()> {
             true
         }
 
+        fn place(
+            &mut self,
+            _order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            if self.queued >= self.capacity {
+                return Err(Error::guard("queue is at capacity"));
+            }
+            self.queued += 1;
+            Ok(())
+        }
+
         fn try_place(
             &mut self,
             _order_id: &str,
@@ -716,7 +732,7 @@ fn try_send_refuses_when_broker_queue_is_full() -> Result<()> {
     // First order succeeds (queue has room)
     let first = market_cell.work(t(10), &mut gateway)?;
     assert!(
-        first.orders.len() > 0,
+        !first.orders.is_empty(),
         "first order should succeed: {:?}",
         first.orders
     );
@@ -738,7 +754,7 @@ fn try_send_refuses_when_broker_queue_is_full() -> Result<()> {
         .filter(|(g, _)| g == "guard" || g.contains("queue") || g.contains("broker"))
         .collect();
     assert!(
-        !guard_refusals.is_empty() || second.refusals.len() > 0,
+        !guard_refusals.is_empty() || !second.refusals.is_empty(),
         "second pass should have refusals: {:?}",
         second.refusals
     );
