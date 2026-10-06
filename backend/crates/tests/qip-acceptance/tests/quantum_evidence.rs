@@ -21,14 +21,15 @@ fn quantum_results_are_typed_as_advisory_candidates() {
         42.5,
         1_000_000,
         "test_problem",
-    ).expect("valid quantum result");
-    
+    )
+    .expect("valid quantum result");
+
     // The key invariant: quantum results need classical baseline verification
     assert!(
         quantum_result.kind().needs_classical_baseline(),
         "quantum results must be marked as needing classical baseline verification"
     );
-    
+
     // This type constraint ensures that quantum results cannot become
     // direct evidence without passing through classical validation
     assert_eq!(
@@ -51,8 +52,9 @@ fn quantum_inspired_results_remain_advisory() {
         88.3,
         500_000,
         "qi_problem",
-    ).expect("valid qi result");
-    
+    )
+    .expect("valid qi result");
+
     // Quantum-inspired solvers also need classical baseline comparison
     assert!(
         qi_result.kind().needs_classical_baseline(),
@@ -73,8 +75,9 @@ fn classical_results_are_the_baseline() {
         50.0,
         250_000,
         "classical_problem",
-    ).expect("valid classical result");
-    
+    )
+    .expect("valid classical result");
+
     // Classical results are the baseline and do not need verification
     // against another solver
     assert!(
@@ -91,14 +94,15 @@ fn classical_results_are_the_baseline() {
 #[test]
 fn quantum_results_must_be_validated_against_request() {
     use qip_contracts::quantum::DecisionRequest;
-    
+
     let request = DecisionRequest::new(
         "test_q",
         3,
         vec![(0, 0, 1.0), (1, 1, 2.0), (0, 1, 3.0)],
         0.0,
-    ).expect("valid request");
-    
+    )
+    .expect("valid request");
+
     // Valid result for this request
     let valid = SolverResult::new(
         SolverKind::Quantum,
@@ -106,13 +110,14 @@ fn quantum_results_must_be_validated_against_request() {
         4.0,
         1_000_000,
         "test_q",
-    ).expect("valid quantum result");
-    
+    )
+    .expect("valid quantum result");
+
     assert!(
         valid.is_valid_for(&request),
         "correctly formed result must validate"
     );
-    
+
     // Invalid result: wrong request ID
     let wrong_id = SolverResult::new(
         SolverKind::Quantum,
@@ -120,13 +125,14 @@ fn quantum_results_must_be_validated_against_request() {
         4.0,
         1_000_000,
         "wrong_request",
-    ).expect("valid result structure");
-    
+    )
+    .expect("valid result structure");
+
     assert!(
         !wrong_id.is_valid_for(&request),
         "result with wrong request ID must fail validation"
     );
-    
+
     // Invalid result: wrong assignment size
     let wrong_size = SolverResult::new(
         SolverKind::Quantum,
@@ -134,13 +140,14 @@ fn quantum_results_must_be_validated_against_request() {
         4.0,
         1_000_000,
         "test_q",
-    ).expect("valid result structure");
-    
+    )
+    .expect("valid result structure");
+
     assert!(
         !wrong_size.is_valid_for(&request),
         "result with wrong size must fail validation"
     );
-    
+
     // This validation ensures quantum results cannot be applied to the wrong
     // problem, which would allow misuse as evidence modification.
 }
