@@ -246,7 +246,7 @@
     "work_item": "E07",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: PARTIAL upheld; e2e true -> false. No qip-edge-node pass test or qip-acceptance e2e test drives a net-edge or fee-floor refusal; the only evidence is crate/unit tests. Added the cell.rs call sites of the cycle cost gate."
+    "notes": "Work in progress: lane/arbitrage-veto-sequencing (session session_012RELRme2pQN7SYpjtzEuXo)"
   },
   {
     "id": "REFLEX-035",
@@ -325,7 +325,7 @@
     "work_item": "E11",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. The cited decomposition test covers a 25% first fill; by the decomposition module's documented design a zero-fill first leg is 'Unanswered' and the rest of the cycle goes out whole under all-at-once, and passive.rs:549 (the only zero-fill test) says so itself. All evidence is qip-edge crate tests; no node pass test sends a cycle."
+    "notes": "Work in progress: lane/arbitrage-veto-sequencing (session session_012RELRme2pQN7SYpjtzEuXo)"
   },
   {
     "id": "REFLEX-038",
