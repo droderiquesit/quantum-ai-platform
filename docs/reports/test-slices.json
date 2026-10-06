@@ -1,0 +1,1254 @@
+[
+ {
+  "slice": 1,
+  "tests": 72,
+  "files": [
+   "backend/crates/agents/qip-investment-agents/tests/organisation.rs",
+   "backend/crates/apps/qip-deepbrain/src/status.rs",
+   "backend/crates/libs/qip-contracts/tests/market_state.rs",
+   "backend/crates/libs/qip-quantum/src/registry.rs",
+   "backend/crates/services/qip-market-ingestion/tests/live_connectors.rs",
+   "backend/crates/tests/qip-acceptance/tests/path_router.rs"
+  ]
+ },
+ {
+  "slice": 2,
+  "tests": 79,
+  "files": [
+   "backend/crates/apps/qip-api/tests/api.rs"
+  ]
+ },
+ {
+  "slice": 3,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/ledger_routes.rs",
+   "backend/crates/apps/qip-cli/tests/registrations.rs",
+   "backend/crates/apps/qip-deepbrain/src/reference.rs",
+   "backend/crates/edge/qip-edge/src/decomposition.rs",
+   "backend/crates/runtime/qip-kernel/src/counterfactual_trial.rs",
+   "backend/crates/services/qip-mesh/tests/peer.rs",
+   "backend/crates/tests/qip-acceptance/tests/api_boundary.rs"
+  ]
+ },
+ {
+  "slice": 4,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/mesh.rs",
+   "backend/crates/apps/qip-ledgerd/src/consumer.rs",
+   "backend/crates/libs/qip-compliance/tests/release_governance.rs",
+   "backend/crates/libs/qip-numerics/tests/online.rs",
+   "backend/crates/libs/qip-portfolio/tests/lifecycle.rs",
+   "backend/crates/runtime/qip-kernel/tests/self_model.rs",
+   "backend/crates/services/qip-data-finder/tests/durable_footprint.rs",
+   "backend/crates/services/qip-world-model/tests/belief_refusal.rs"
+  ]
+ },
+ {
+  "slice": 5,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/statement.rs",
+   "backend/crates/apps/qip-api/tests/stream.rs",
+   "backend/crates/edge/qip-edge/tests/feasibility.rs",
+   "backend/crates/libs/qip-transport/tests/server.rs",
+   "backend/crates/services/qip-data-finder/tests/replacement.rs",
+   "backend/crates/services/qip-learning-engine/src/research.rs",
+   "backend/crates/tests/qip-acceptance/tests/market_creation.rs",
+   "backend/crates/tests/qip-acceptance/tests/stress.rs"
+  ]
+ },
+ {
+  "slice": 6,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-cli/tests/demo.rs",
+   "backend/crates/edge/qip-edge/tests/whitelist.rs",
+   "backend/crates/libs/qip-events/tests/event_fabric_codec.rs",
+   "backend/crates/services/qip-brokers/tests/safety.rs",
+   "backend/crates/services/qip-market-ingestion/src/connectors/alpaca_bars.rs",
+   "backend/crates/services/qip-market-ingestion/src/connectors/nyfed_effr.rs",
+   "backend/crates/services/qip-mesh/tests/peer_rules.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_catalogue.rs"
+  ]
+ },
+ {
+  "slice": 7,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/src/config.rs",
+   "backend/crates/libs/qip-agents/tests/explicit_grants.rs",
+   "backend/crates/libs/qip-storage/tests/chain.rs",
+   "backend/crates/services/qip-mesh/src/spine.rs",
+   "backend/crates/services/qip-mesh/tests/local_adapters.rs",
+   "backend/crates/services/qip-optimization-engine/src/regime.rs",
+   "backend/crates/services/qip-simulation-engine/tests/agents.rs",
+   "backend/crates/tests/qip-acceptance/tests/lane_placement.rs"
+  ]
+ },
+ {
+  "slice": 8,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/venues.rs",
+   "backend/crates/apps/qip-deepbrain/src/evolution.rs",
+   "backend/crates/edge/qip-sequencing/tests/clock.rs",
+   "backend/crates/libs/qip-events/tests/canonical_reexport.rs",
+   "backend/crates/libs/qip-financial/tests/costs.rs",
+   "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs",
+   "backend/crates/services/qip-capital/tests/dated_ladder.rs",
+   "backend/crates/tests/qip-acceptance/tests/downward_signed_path.rs"
+  ]
+ },
+ {
+  "slice": 9,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/src/learning.rs",
+   "backend/crates/apps/qip-deepbrain/src/roster.rs",
+   "backend/crates/libs/qip-financial/src/category.rs",
+   "backend/crates/libs/qip-financial/src/physical.rs",
+   "backend/crates/libs/qip-financial/tests/credit.rs",
+   "backend/crates/services/qip-capital-fabric/tests/sourced_tolerance.rs",
+   "backend/crates/services/qip-capital/tests/funding.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_architecture.rs"
+  ]
+ },
+ {
+  "slice": 10,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/src/node.rs",
+   "backend/crates/apps/qip-edge-node/tests/mesh.rs",
+   "backend/crates/libs/qip-financial/src/pool.rs",
+   "backend/crates/libs/qip-observability/src/aiops.rs",
+   "backend/crates/libs/qip-quantum/tests/solvers.rs",
+   "backend/crates/services/qip-capital/src/compounding.rs",
+   "backend/crates/services/qip-data-finder/tests/source_alpha.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs"
+  ]
+ },
+ {
+  "slice": 11,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/degraded.rs",
+   "backend/crates/apps/qip-edge-node/tests/gateway.rs",
+   "backend/crates/edge/qip-edge/tests/best_venue.rs",
+   "backend/crates/edge/qip-protocols/tests/itch.rs",
+   "backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs",
+   "backend/crates/services/qip-brokers/tests/fees.rs",
+   "backend/crates/services/qip-streaming/tests/bounds.rs"
+  ]
+ },
+ {
+  "slice": 12,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-cli/tests/event_fabric_grant.rs",
+   "backend/crates/apps/qip-deepbrain/src/language.rs",
+   "backend/crates/apps/qip-edge-node/tests/pass.rs",
+   "backend/crates/apps/qip-fastbrain/tests/tape.rs",
+   "backend/crates/services/qip-market-ingestion/src/connector_feed.rs",
+   "backend/crates/services/qip-mesh/tests/catalog.rs"
+  ]
+ },
+ {
+  "slice": 13,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-arbitrage/tests/arbitrage.rs",
+   "backend/crates/edge/qip-arbitrage/tests/coverage.rs",
+   "backend/crates/edge/qip-orderbook/tests/l3.rs",
+   "backend/crates/libs/qip-ai/src/memory/experience.rs",
+   "backend/crates/runtime/qip-kernel/src/central/belief.rs",
+   "backend/crates/runtime/qip-kernel/tests/asset_classes.rs",
+   "backend/crates/services/qip-execution-engine/src/quoting.rs"
+  ]
+ },
+ {
+  "slice": 14,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/cell.rs",
+   "backend/crates/libs/qip-contracts/src/degradation.rs",
+   "backend/crates/libs/qip-storage/tests/segment.rs",
+   "backend/crates/services/qip-mesh/tests/rebalance.rs",
+   "backend/crates/services/qip-simulation-engine/tests/harness.rs",
+   "backend/crates/services/qip-streaming/tests/transports.rs",
+   "backend/crates/services/qip-world-model/tests/liquidity.rs",
+   "backend/crates/tests/qip-acceptance/tests/paper_boundary.rs"
+  ]
+ },
+ {
+  "slice": 15,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/cross_region.rs",
+   "backend/crates/libs/qip-contracts/tests/ledger_event.rs",
+   "backend/crates/runtime/qip-kernel/src/config.rs",
+   "backend/crates/services/qip-streaming/src/event_fabric/partition.rs",
+   "backend/crates/services/qip-training/tests/serving.rs",
+   "backend/crates/services/qip-world-model/tests/entity_types.rs",
+   "backend/crates/tests/qip-acceptance/tests/m6_stage_a3_policy.rs",
+   "backend/crates/tests/qip-acceptance/tests/quote_loop.rs"
+  ]
+ },
+ {
+  "slice": 16,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/tests/registrations.rs",
+   "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs",
+   "backend/crates/libs/qip-numerics/src/streaming.rs",
+   "backend/crates/libs/qip-portfolio/src/ledger.rs",
+   "backend/crates/libs/qip-transport/tests/reliability.rs",
+   "backend/crates/services/qip-capital/tests/bank.rs",
+   "backend/crates/services/qip-execution-engine/src/observation.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_delivery_claims.rs"
+  ]
+ },
+ {
+  "slice": 17,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/quote_limits.rs",
+   "backend/crates/edge/qip-routing/src/path.rs",
+   "backend/crates/libs/qip-storage/tests/segment_archive.rs",
+   "backend/crates/services/qip-market-ingestion/src/tape.rs",
+   "backend/crates/services/qip-optimization-engine/tests/deserialisation.rs",
+   "backend/crates/tests/qip-acceptance/tests/cognition.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs"
+  ]
+ },
+ {
+  "slice": 18,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/openobserve.rs",
+   "backend/crates/apps/qip-cli/tests/blueprint.rs",
+   "backend/crates/apps/qip-edge-node/tests/cross_region.rs",
+   "backend/crates/apps/qip-edge-node/tests/priority.rs",
+   "backend/crates/edge/qip-routing/tests/routing.rs",
+   "backend/crates/services/qip-data-finder/tests/probe_port.rs"
+  ]
+ },
+ {
+  "slice": 19,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/src/health.rs",
+   "backend/crates/edge/qip-strategy/tests/strategy.rs",
+   "backend/crates/libs/qip-contracts/src/reflex.rs",
+   "backend/crates/libs/qip-financial/src/secondary_exit.rs",
+   "backend/crates/services/qip-data-finder/tests/registration.rs",
+   "backend/crates/services/qip-world-model/tests/resolution_source.rs"
+  ]
+ },
+ {
+  "slice": 20,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/mesh.rs",
+   "backend/crates/edge/qip-edge/tests/journal_pressure.rs",
+   "backend/crates/libs/qip-agents/tests/agents.rs",
+   "backend/crates/runtime/qip-kernel/src/regime_allocation.rs",
+   "backend/crates/runtime/qip-kernel/src/rule_review.rs",
+   "backend/crates/services/qip-mesh/tests/peer_guarantees.rs"
+  ]
+ },
+ {
+  "slice": 21,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/src/connectors.rs",
+   "backend/crates/edge/qip-edge/tests/release.rs",
+   "backend/crates/edge/qip-routing/tests/consolidation.rs",
+   "backend/crates/libs/qip-ai/tests/model_infrastructure.rs",
+   "backend/crates/services/qip-prediction/tests/scoring.rs",
+   "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs"
+  ]
+ },
+ {
+  "slice": 22,
+  "tests": 92,
+  "files": [
+   "backend/crates/libs/qip-contracts/tests/contracts.rs"
+  ]
+ },
+ {
+  "slice": 23,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/event_fabric_control.rs",
+   "backend/crates/libs/qip-core/tests/decimal.rs",
+   "backend/crates/runtime/qip-kernel/src/causal_review.rs",
+   "backend/crates/services/qip-training/tests/vertex.rs",
+   "backend/crates/services/qip-world-model/tests/federation.rs",
+   "backend/crates/tests/qip-acceptance/tests/decentralised_venue.rs",
+   "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs"
+  ]
+ },
+ {
+  "slice": 24,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/venue.rs",
+   "backend/crates/edge/qip-routing/src/pathcycle.rs",
+   "backend/crates/libs/qip-core/tests/primitives.rs",
+   "backend/crates/libs/qip-risk/tests/shared_cause.rs",
+   "backend/crates/runtime/qip-kernel/src/central/learning.rs",
+   "backend/crates/services/qip-data-finder/tests/schema_drift.rs",
+   "backend/crates/services/qip-market-ingestion/src/service.rs",
+   "backend/crates/tests/qip-acceptance/tests/mesh_lane.rs"
+  ]
+ },
+ {
+  "slice": 25,
+  "tests": 72,
+  "files": [
+   "backend/crates/agents/qip-investment-agents/src/support.rs",
+   "backend/crates/edge/qip-edge/src/quoting.rs",
+   "backend/crates/edge/qip-sequencing/tests/failover.rs",
+   "backend/crates/libs/qip-core/tests/timekeeping.rs",
+   "backend/crates/libs/qip-transport/tests/breaker.rs",
+   "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs",
+   "backend/crates/services/qip-simulation-engine/tests/position_lifecycle.rs"
+  ]
+ },
+ {
+  "slice": 26,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs",
+   "backend/crates/libs/qip-events/tests/backbone.rs",
+   "backend/crates/runtime/qip-kernel/src/central/episodic.rs",
+   "backend/crates/runtime/qip-kernel/tests/solver_routing.rs",
+   "backend/crates/runtime/qip-kernel/tests/universe_grade.rs"
+  ]
+ },
+ {
+  "slice": 27,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/downlink_source.rs",
+   "backend/crates/edge/qip-edge/tests/venue_failure.rs",
+   "backend/crates/libs/qip-financial/tests/cashflow.rs",
+   "backend/crates/libs/qip-transport/tests/spool.rs",
+   "backend/crates/services/qip-mesh/tests/managed_providers.rs",
+   "backend/crates/services/qip-world-model/src/vocabulary.rs"
+  ]
+ },
+ {
+  "slice": 28,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/tests/openobserve.rs",
+   "backend/crates/edge/qip-orderbook/tests/book.rs",
+   "backend/crates/edge/qip-orderbook/tests/replay.rs",
+   "backend/crates/libs/qip-financial/tests/commerce.rs",
+   "backend/crates/runtime/qip-kernel/tests/collateral.rs",
+   "backend/crates/runtime/qip-kernel/tests/source_discovery.rs",
+   "backend/crates/services/qip-simulation-engine/tests/scenario_construction.rs",
+   "backend/crates/services/qip-world-model/src/features.rs"
+  ]
+ },
+ {
+  "slice": 29,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-cli/tests/event_fabric_schema_gate.rs",
+   "backend/crates/apps/qip-deepbrain/src/main.rs",
+   "backend/crates/apps/qip-ledgerd/src/read_api.rs",
+   "backend/crates/libs/qip-financial/tests/ladder.rs",
+   "backend/crates/services/qip-market-ingestion/tests/nyfed_effr.rs",
+   "backend/crates/services/qip-streaming/tests/envelope_integrity.rs"
+  ]
+ },
+ {
+  "slice": 30,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/registrations.rs",
+   "backend/crates/apps/qip-deepbrain/src/openobserve.rs",
+   "backend/crates/libs/qip-contracts/tests/replay_manifest.rs",
+   "backend/crates/libs/qip-financial/tests/object_model.rs",
+   "backend/crates/libs/qip-storage/tests/outcome_lake.rs",
+   "backend/crates/services/qip-capital-fabric/tests/custody_mirror.rs"
+  ]
+ },
+ {
+  "slice": 31,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/src/routes.rs",
+   "backend/crates/libs/qip-contracts/src/policy.rs",
+   "backend/crates/libs/qip-contracts/src/quantum.rs",
+   "backend/crates/libs/qip-financial/tests/valuation.rs",
+   "backend/crates/runtime/qip-kernel/tests/foundry.rs",
+   "backend/crates/services/qip-execution-engine/src/feasibility.rs",
+   "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs"
+  ]
+ },
+ {
+  "slice": 32,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-cli/tests/storage.rs",
+   "backend/crates/apps/qip-edge-node/tests/dark.rs",
+   "backend/crates/edge/qip-edge/tests/paper_boundary.rs",
+   "backend/crates/libs/qip-market/tests/structure.rs",
+   "backend/crates/runtime/qip-kernel/tests/horizon_seam.rs",
+   "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs"
+  ]
+ },
+ {
+  "slice": 33,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/research.rs",
+   "backend/crates/libs/qip-market/tests/volatility.rs",
+   "backend/crates/runtime/qip-kernel/src/cross_margin.rs",
+   "backend/crates/runtime/qip-kernel/tests/learning.rs",
+   "backend/crates/runtime/qip-kernel/tests/regime_boundary.rs",
+   "backend/crates/services/qip-mesh/tests/spine.rs",
+   "backend/crates/tests/qip-acceptance/tests/e2e_live.rs",
+   "backend/crates/tests/qip-acceptance/tests/security_controls.rs"
+  ]
+ },
+ {
+  "slice": 34,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-ledgerd/src/telemetry.rs",
+   "backend/crates/libs/qip-confidential/tests/boundary.rs",
+   "backend/crates/libs/qip-numerics/tests/linalg.rs",
+   "backend/crates/libs/qip-quantum/tests/hosted.rs",
+   "backend/crates/runtime/qip-kernel/tests/capital_calls.rs",
+   "backend/crates/runtime/qip-kernel/tests/stress.rs",
+   "backend/crates/services/qip-data-finder/tests/registration_is_not_ingestion.rs",
+   "backend/crates/services/qip-world-model/tests/confounders.rs"
+  ]
+ },
+ {
+  "slice": 35,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/feed.rs",
+   "backend/crates/apps/qip-edge-node/tests/tape.rs",
+   "backend/crates/edge/qip-edge/tests/failure_isolation.rs",
+   "backend/crates/libs/qip-core/tests/canonical.rs",
+   "backend/crates/libs/qip-numerics/tests/optimisation.rs",
+   "backend/crates/libs/qip-transport/tests/event_fabric_client.rs",
+   "backend/crates/services/qip-brokers/tests/conformance.rs"
+  ]
+ },
+ {
+  "slice": 36,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/src/passive.rs",
+   "backend/crates/libs/qip-compliance/tests/model_risk.rs",
+   "backend/crates/libs/qip-contracts/src/fabric_envelope.rs",
+   "backend/crates/libs/qip-contracts/tests/market_event.rs",
+   "backend/crates/libs/qip-numerics/tests/statistics.rs",
+   "backend/crates/runtime/qip-kernel/tests/central_feasibility.rs"
+  ]
+ },
+ {
+  "slice": 37,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/settlement.rs",
+   "backend/crates/edge/qip-protocols/tests/sbe.rs",
+   "backend/crates/libs/qip-ai/src/serving.rs",
+   "backend/crates/libs/qip-observability/tests/telemetry.rs",
+   "backend/crates/runtime/qip-kernel/src/venue_admission.rs",
+   "backend/crates/runtime/qip-kernel/tests/autonomy_ceiling.rs",
+   "backend/crates/tests/qip-acceptance/tests/quantum_routing.rs"
+  ]
+ },
+ {
+  "slice": 38,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/control.rs",
+   "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs",
+   "backend/crates/edge/qip-edge/src/dispersion.rs",
+   "backend/crates/libs/qip-portfolio/tests/accounting.rs",
+   "backend/crates/runtime/qip-kernel/src/quote_loop.rs",
+   "backend/crates/services/qip-streaming/tests/processing.rs",
+   "backend/crates/tests/qip-acceptance/tests/m5_performance.rs"
+  ]
+ },
+ {
+  "slice": 39,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/tests/outcome_lake.rs",
+   "backend/crates/edge/qip-edge/tests/quoting.rs",
+   "backend/crates/edge/qip-edge/tests/telemetry.rs",
+   "backend/crates/edge/qip-sequencing/tests/arbitration.rs",
+   "backend/crates/libs/qip-quantum/tests/quantum.rs",
+   "backend/crates/runtime/qip-kernel/tests/exploration.rs",
+   "backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs",
+   "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs"
+  ]
+ },
+ {
+  "slice": 40,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/src/node.rs",
+   "backend/crates/libs/qip-contracts/src/reflex_journal.rs",
+   "backend/crates/libs/qip-financial/tests/history.rs",
+   "backend/crates/libs/qip-risk/tests/limit_fixtures.rs",
+   "backend/crates/services/qip-market-ingestion/tests/connector_feed_frankfurter.rs",
+   "backend/crates/services/qip-world-model/tests/second_order.rs"
+  ]
+ },
+ {
+  "slice": 41,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/sequence.rs",
+   "backend/crates/apps/qip-fabricd/src/telemetry.rs",
+   "backend/crates/libs/qip-contracts/src/feasibility.rs",
+   "backend/crates/libs/qip-risk/tests/risk.rs"
+  ]
+ },
+ {
+  "slice": 42,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-cli/tests/replay.rs",
+   "backend/crates/apps/qip-deepbrain/src/succession.rs",
+   "backend/crates/edge/qip-arbitrage/tests/leg_limit.rs",
+   "backend/crates/libs/qip-storage/src/redis.rs",
+   "backend/crates/services/qip-prediction/tests/access.rs",
+   "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs"
+  ]
+ },
+ {
+  "slice": 43,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/src/config.rs",
+   "backend/crates/apps/qip-fastbrain/src/openobserve.rs",
+   "backend/crates/libs/qip-contracts/tests/reflex.rs",
+   "backend/crates/libs/qip-storage/tests/engine.rs",
+   "backend/crates/runtime/qip-kernel/tests/absorption.rs",
+   "backend/crates/services/qip-streaming/tests/event_fabric_leader.rs",
+   "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs",
+   "backend/crates/tests/qip-acceptance/tests/regime_allocation.rs"
+  ]
+ },
+ {
+  "slice": 44,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/telemetry.rs",
+   "backend/crates/edge/qip-edge/tests/direction.rs",
+   "backend/crates/libs/qip-storage/tests/gcp.rs",
+   "backend/crates/runtime/qip-kernel/tests/attribution.rs",
+   "backend/crates/runtime/qip-kernel/tests/serving.rs",
+   "backend/crates/services/qip-world-model/tests/inference.rs"
+  ]
+ },
+ {
+  "slice": 45,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-ledgerd/src/config.rs",
+   "backend/crates/edge/qip-routing/src/mirror.rs",
+   "backend/crates/libs/qip-compliance/tests/point_in_time.rs",
+   "backend/crates/libs/qip-confidential/tests/privacy_budget.rs",
+   "backend/crates/libs/qip-storage/tests/settings.rs",
+   "backend/crates/runtime/qip-kernel/tests/region_shares.rs",
+   "backend/crates/services/qip-data-finder/src/retention.rs",
+   "backend/crates/services/qip-world-model/src/exposure.rs"
+  ]
+ },
+ {
+  "slice": 46,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/src/mesh.rs",
+   "backend/crates/edge/qip-edge/src/region.rs",
+   "backend/crates/edge/qip-edge/tests/fills.rs",
+   "backend/crates/libs/qip-events/tests/schema_compat.rs",
+   "backend/crates/libs/qip-transport/tests/http_client.rs",
+   "backend/crates/runtime/qip-kernel/src/adversary_review.rs",
+   "backend/crates/services/qip-data-finder/tests/source_registry.rs"
+  ]
+ },
+ {
+  "slice": 47,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/src/console.rs",
+   "backend/crates/apps/qip-cli/src/main.rs",
+   "backend/crates/quant/qip-quant/tests/quant.rs",
+   "backend/crates/runtime/qip-kernel/src/hedge_review.rs",
+   "backend/crates/runtime/qip-kernel/tests/platform_services.rs",
+   "backend/crates/services/qip-world-model/tests/conditions.rs",
+   "backend/crates/tests/qip-acceptance/tests/slo.rs"
+  ]
+ },
+ {
+  "slice": 48,
+  "tests": 102,
+  "files": [
+   "backend/crates/runtime/qip-kernel/src/platform.rs"
+  ]
+ },
+ {
+  "slice": 49,
+  "tests": 80,
+  "files": [
+   "backend/crates/runtime/qip-kernel/tests/central.rs"
+  ]
+ },
+ {
+  "slice": 50,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/disposition.rs",
+   "backend/crates/libs/qip-contracts/src/ledger.rs",
+   "backend/crates/libs/qip-financial/src/manifest.rs",
+   "backend/crates/libs/qip-storage/tests/persistence.rs",
+   "backend/crates/runtime/qip-kernel/tests/falsification.rs",
+   "backend/crates/runtime/qip-kernel/tests/kernel.rs"
+  ]
+ },
+ {
+  "slice": 51,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/pricing.rs",
+   "backend/crates/edge/qip-orderbook/src/ladder.rs",
+   "backend/crates/libs/qip-contracts/src/schema.rs",
+   "backend/crates/libs/qip-transport/tests/mesh.rs",
+   "backend/crates/runtime/qip-kernel/tests/ledger.rs",
+   "backend/crates/services/qip-data-finder/tests/candidate_catalogue.rs"
+  ]
+ },
+ {
+  "slice": 52,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/src/openobserve.rs",
+   "backend/crates/apps/qip-edge-node/src/cross_region.rs",
+   "backend/crates/apps/qip-fastbrain/src/roster.rs",
+   "backend/crates/runtime/qip-kernel/tests/hedge.rs",
+   "backend/crates/services/qip-agency/tests/agency.rs",
+   "backend/crates/services/qip-execution-engine/src/session.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_harness.rs"
+  ]
+ },
+ {
+  "slice": 53,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/src/trust.rs",
+   "backend/crates/libs/qip-contracts/src/routing.rs",
+   "backend/crates/services/qip-brokers/tests/exchange.rs",
+   "backend/crates/services/qip-capital/src/collateral.rs",
+   "backend/crates/services/qip-expansion/tests/expansion.rs",
+   "backend/crates/services/qip-lifecycle/src/venue_ladder.rs",
+   "backend/crates/services/qip-twin/src/asof.rs"
+  ]
+ },
+ {
+  "slice": 54,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/features.rs",
+   "backend/crates/edge/qip-edge/tests/dispersion.rs",
+   "backend/crates/libs/qip-events/tests/event_fabric_policy.rs",
+   "backend/crates/services/qip-brokers/tests/matching.rs",
+   "backend/crates/services/qip-brokers/tests/rest.rs",
+   "backend/crates/services/qip-capital-fabric/tests/attestation_binding.rs",
+   "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs"
+  ]
+ },
+ {
+  "slice": 55,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/src/discovery.rs",
+   "backend/crates/apps/qip-deepbrain/src/health.rs",
+   "backend/crates/edge/qip-edge/src/telemetry.rs",
+   "backend/crates/runtime/qip-kernel/src/session_replay.rs",
+   "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs",
+   "backend/crates/services/qip-world-model/tests/granger.rs"
+  ]
+ },
+ {
+  "slice": 56,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/arbitrage.rs",
+   "backend/crates/apps/qip-fabricd/tests/broker.rs",
+   "backend/crates/libs/qip-financial/src/derivative_permissions.rs",
+   "backend/crates/libs/qip-transport/tests/event_fabric_protocol.rs",
+   "backend/crates/services/qip-capital-fabric/tests/corridor_and_gate.rs",
+   "backend/crates/services/qip-capital/tests/exploration.rs"
+  ]
+ },
+ {
+  "slice": 57,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/proposals.rs",
+   "backend/crates/libs/qip-contracts/tests/action.rs",
+   "backend/crates/services/qip-capital-fabric/tests/journal.rs",
+   "backend/crates/services/qip-learning-engine/tests/self_model.rs",
+   "backend/crates/services/qip-market-ingestion/src/connectors/kalshi_markets.rs",
+   "backend/crates/services/qip-opportunity-engine/tests/catalyst.rs",
+   "backend/crates/services/qip-world-model/tests/contradictions.rs"
+  ]
+ },
+ {
+  "slice": 58,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/filled_terms.rs",
+   "backend/crates/edge/qip-orderbook/tests/venue.rs",
+   "backend/crates/runtime/qip-kernel/src/central/realised.rs",
+   "backend/crates/services/qip-capital-fabric/tests/wallet.rs",
+   "backend/crates/services/qip-optimization-engine/src/tiers.rs",
+   "backend/crates/tests/qip-acceptance/tests/adversary.rs"
+  ]
+ },
+ {
+  "slice": 59,
+  "tests": 72,
+  "files": [
+   "backend/crates/libs/qip-compliance/tests/incident_response.rs",
+   "backend/crates/libs/qip-numerics/src/sketch.rs",
+   "backend/crates/libs/qip-observability/tests/golden.rs",
+   "backend/crates/runtime/qip-kernel/tests/insights.rs",
+   "backend/crates/runtime/qip-kernel/tests/valuation_credit.rs",
+   "backend/crates/services/qip-capital/tests/capital.rs"
+  ]
+ },
+ {
+  "slice": 60,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/drawdown.rs",
+   "backend/crates/libs/qip-contracts/tests/knowledge_pack.rs",
+   "backend/crates/libs/qip-portfolio/src/life_stage.rs",
+   "backend/crates/services/qip-capital/tests/user_ledger.rs",
+   "backend/crates/services/qip-market-ingestion/tests/ecb_key_rates.rs",
+   "backend/crates/tests/qip-acceptance/tests/compliance_proof.rs"
+  ]
+ },
+ {
+  "slice": 61,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/src/mirror.rs",
+   "backend/crates/libs/qip-portfolio/tests/tax_lots.rs",
+   "backend/crates/libs/qip-transport/src/event_fabric/producer.rs",
+   "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs",
+   "backend/crates/services/qip-capital/tests/treasury.rs",
+   "backend/crates/services/qip-chain/tests/pools.rs",
+   "backend/crates/services/qip-learning-engine/src/attribution.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_wire_format.rs"
+  ]
+ },
+ {
+  "slice": 62,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/persistence.rs",
+   "backend/crates/apps/qip-deepbrain/src/campaign.rs",
+   "backend/crates/apps/qip-fastbrain/src/feed.rs",
+   "backend/crates/apps/qip-fastbrain/src/trust.rs",
+   "backend/crates/services/qip-chain/tests/rpc_node.rs",
+   "backend/crates/services/qip-data-finder/tests/robots_precedence.rs"
+  ]
+ },
+ {
+  "slice": 63,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/fabric.rs",
+   "backend/crates/apps/qip-api/tests/recalibrations.rs",
+   "backend/crates/libs/qip-core/tests/hashing.rs",
+   "backend/crates/services/qip-cost-router/tests/cost_router.rs",
+   "backend/crates/services/qip-market-ingestion/tests/hostile_rate_table.rs",
+   "backend/crates/services/qip-market-ingestion/tests/restart.rs",
+   "backend/crates/services/qip-world-model/tests/no_copied_documents.rs"
+  ]
+ },
+ {
+  "slice": 64,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/feed.rs",
+   "backend/crates/apps/qip-fastbrain/tests/node.rs",
+   "backend/crates/edge/qip-edge/src/feasibility.rs",
+   "backend/crates/runtime/qip-kernel/src/family_review.rs",
+   "backend/crates/runtime/qip-kernel/tests/models.rs",
+   "backend/crates/services/qip-data-finder/tests/legality.rs",
+   "backend/crates/services/qip-market-ingestion/src/connectors/nws_station_observations.rs"
+  ]
+ },
+ {
+  "slice": 65,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-ledgerd/tests/store.rs",
+   "backend/crates/apps/qip-web/tests/console.rs",
+   "backend/crates/libs/qip-events/src/event_fabric/bindings.rs",
+   "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs",
+   "backend/crates/services/qip-entity-resolution/tests/resolution.rs",
+   "backend/crates/services/qip-world-model/src/confounder.rs",
+   "backend/crates/tests/qip-acceptance/tests/blueprint_rules.rs",
+   "backend/crates/tests/qip-acceptance/tests/region_share.rs"
+  ]
+ },
+ {
+  "slice": 66,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/gateway_terms.rs",
+   "backend/crates/runtime/qip-kernel/src/central/causal.rs",
+   "backend/crates/runtime/qip-kernel/src/sizing_review.rs",
+   "backend/crates/runtime/qip-kernel/tests/trial_book.rs",
+   "backend/crates/services/qip-data-finder/tests/discovery_targets.rs",
+   "backend/crates/services/qip-evolution/tests/evolution.rs"
+  ]
+ },
+ {
+  "slice": 67,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-cli/src/blueprint.rs",
+   "backend/crates/apps/qip-web/tests/web.rs",
+   "backend/crates/libs/qip-financial/src/position_record.rs",
+   "backend/crates/services/qip-execution-engine/src/multileg.rs",
+   "backend/crates/services/qip-mesh/src/delta.rs",
+   "backend/crates/services/qip-simulation-engine/tests/baseline.rs",
+   "backend/crates/tests/qip-acceptance/tests/arch_requirements.rs"
+  ]
+ },
+ {
+  "slice": 68,
+  "tests": 72,
+  "files": [
+   "backend/crates/libs/qip-compliance/tests/licensing.rs",
+   "backend/crates/libs/qip-numerics/tests/equity_returns.rs",
+   "backend/crates/libs/qip-transport/tests/event_fabric_transport_auth.rs",
+   "backend/crates/runtime/qip-kernel/tests/registrations.rs",
+   "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs",
+   "backend/crates/services/qip-execution-engine/tests/execution.rs"
+  ]
+ },
+ {
+  "slice": 69,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/src/resume.rs",
+   "backend/crates/edge/qip-routing/src/extension.rs",
+   "backend/crates/libs/qip-contracts/tests/ambient.rs",
+   "backend/crates/libs/qip-observability/tests/sampling.rs",
+   "backend/crates/services/qip-learning-engine/tests/learning.rs",
+   "backend/crates/services/qip-market-ingestion/src/connectors/frankfurter_rates.rs",
+   "backend/crates/services/qip-reasoning-engine/tests/huggingface.rs"
+  ]
+ },
+ {
+  "slice": 70,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/max_legs_config.rs",
+   "backend/crates/libs/qip-agents/tests/expansion_registries.rs",
+   "backend/crates/services/qip-lifecycle/tests/lifecycle.rs",
+   "backend/crates/services/qip-training/src/estimators.rs",
+   "backend/crates/tests/qip-acceptance/tests/streaming_estimators.rs"
+  ]
+ },
+ {
+  "slice": 71,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/src/artifacts.rs",
+   "backend/crates/apps/qip-edge-node/tests/halt.rs",
+   "backend/crates/edge/qip-edge/tests/policy_rollback.rs",
+   "backend/crates/services/qip-data-finder/src/reference.rs",
+   "backend/crates/services/qip-market-ingestion/tests/alternative_data.rs",
+   "backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs"
+  ]
+ },
+ {
+  "slice": 72,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/tests/openobserve.rs",
+   "backend/crates/edge/qip-edge/tests/unevaluated.rs",
+   "backend/crates/libs/qip-compliance/tests/compliance_plane.rs",
+   "backend/crates/services/qip-market-ingestion/tests/book_depth.rs",
+   "backend/crates/services/qip-simulation-engine/tests/crowding.rs",
+   "backend/crates/tests/qip-acceptance/tests/console_route.rs"
+  ]
+ },
+ {
+  "slice": 73,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-arbitrage/tests/ranking.rs",
+   "backend/crates/libs/qip-confidential/tests/differencing.rs",
+   "backend/crates/runtime/qip-kernel/tests/risk_aggregates.rs",
+   "backend/crates/services/qip-capital-fabric/tests/rebalance.rs",
+   "backend/crates/services/qip-data-finder/tests/tiers.rs",
+   "backend/crates/services/qip-execution-engine/src/modes.rs",
+   "backend/crates/services/qip-market-ingestion/tests/connector_contract.rs",
+   "backend/crates/services/qip-world-model/tests/exposure.rs"
+  ]
+ },
+ {
+  "slice": 74,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/tests/self_model_routes.rs",
+   "backend/crates/edge/qip-protocols/tests/framing.rs",
+   "backend/crates/libs/qip-ai/tests/episodic.rs",
+   "backend/crates/libs/qip-events/src/retention.rs",
+   "backend/crates/runtime/qip-kernel/tests/episodic.rs",
+   "backend/crates/runtime/qip-kernel/tests/vocabulary.rs",
+   "backend/crates/services/qip-market-ingestion/tests/connector_manifest.rs",
+   "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs"
+  ]
+ },
+ {
+  "slice": 75,
+  "tests": 73,
+  "files": [
+   "backend/crates/agents/qip-investment-agents/src/vocabulary.rs",
+   "backend/crates/libs/qip-compliance/tests/provenance.rs",
+   "backend/crates/libs/qip-portfolio/tests/ledger_postings.rs",
+   "backend/crates/runtime/qip-kernel/src/central/regions.rs",
+   "backend/crates/runtime/qip-kernel/tests/retention.rs",
+   "backend/crates/services/qip-data-finder/src/freshness.rs",
+   "backend/crates/services/qip-market-ingestion/tests/connector_runtime.rs"
+  ]
+ },
+ {
+  "slice": 76,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-cli/src/demo/mod.rs",
+   "backend/crates/edge/qip-edge/tests/journal_v2.rs",
+   "backend/crates/edge/qip-edge/tests/mesh.rs",
+   "backend/crates/libs/qip-numerics/tests/granger_controls.rs",
+   "backend/crates/runtime/qip-kernel/src/adaptive_cadence.rs",
+   "backend/crates/services/qip-market-ingestion/tests/narrative_feed.rs",
+   "backend/crates/services/qip-streaming/tests/event_fabric_control_fencing.rs"
+  ]
+ },
+ {
+  "slice": 77,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/src/realised_loss.rs",
+   "backend/crates/edge/qip-edge/src/settlement.rs",
+   "backend/crates/libs/qip-confidential/tests/cohort_threshold.rs",
+   "backend/crates/libs/qip-events/tests/schema_retirement.rs",
+   "backend/crates/runtime/qip-kernel/src/venue_review.rs",
+   "backend/crates/services/qip-lifecycle/src/demotion.rs",
+   "backend/crates/services/qip-market-ingestion/tests/rest_feed.rs"
+  ]
+ },
+ {
+  "slice": 78,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/crossing.rs",
+   "backend/crates/edge/qip-sequencing/tests/tracker.rs",
+   "backend/crates/libs/qip-core/src/secret.rs",
+   "backend/crates/libs/qip-portfolio/src/lifecycle.rs",
+   "backend/crates/services/qip-market-ingestion/tests/sense.rs",
+   "backend/crates/services/qip-market-ingestion/tests/soak.rs",
+   "backend/crates/services/qip-reasoning-engine/tests/rules.rs"
+  ]
+ },
+ {
+  "slice": 79,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/feed_recovery.rs",
+   "backend/crates/runtime/qip-kernel/src/central/structure.rs",
+   "backend/crates/services/qip-opportunity-engine/tests/discovery.rs",
+   "backend/crates/services/qip-world-model/tests/falsification.rs",
+   "backend/crates/tests/qip-acceptance/tests/m5_critical_path.rs",
+   "backend/crates/tests/qip-acceptance/tests/m6_critical_path.rs",
+   "backend/crates/tests/qip-acceptance/tests/tick_replay.rs"
+  ]
+ },
+ {
+  "slice": 80,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-cli/tests/agency.rs",
+   "backend/crates/apps/qip-edge-node/tests/control.rs",
+   "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
+   "backend/crates/edge/qip-edge/tests/model_manifest.rs",
+   "backend/crates/services/qip-optimization-engine/tests/families_and_horizons.rs",
+   "backend/crates/services/qip-prediction/tests/belief.rs"
+  ]
+ },
+ {
+  "slice": 81,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/tests/cycle_log.rs",
+   "backend/crates/edge/qip-edge/src/reservation.rs",
+   "backend/crates/edge/qip-edge/tests/region_table.rs",
+   "backend/crates/edge/qip-sequencing/tests/align.rs",
+   "backend/crates/libs/qip-storage/tests/lake.rs",
+   "backend/crates/runtime/qip-kernel/src/central/plane.rs",
+   "backend/crates/services/qip-optimization-engine/tests/optimization.rs"
+  ]
+ },
+ {
+  "slice": 82,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/src/mesh.rs",
+   "backend/crates/apps/qip-edge-node/tests/strategies.rs",
+   "backend/crates/apps/qip-fastbrain/src/status.rs",
+   "backend/crates/edge/qip-edge/src/cell.rs",
+   "backend/crates/libs/qip-core/src/error.rs",
+   "backend/crates/runtime/qip-kernel/tests/resolution_source.rs",
+   "backend/crates/services/qip-portfolio-engine/tests/portfolio.rs"
+  ]
+ },
+ {
+  "slice": 83,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/src/envelope.rs",
+   "backend/crates/libs/qip-confidential/tests/statistics.rs",
+   "backend/crates/services/qip-chain/tests/chain.rs",
+   "backend/crates/services/qip-data-finder/src/category.rs",
+   "backend/crates/services/qip-market-ingestion/src/connectors/ecb_key_rates.rs",
+   "backend/crates/services/qip-prediction/tests/arbitrage.rs",
+   "backend/crates/services/qip-prediction/tests/markets.rs",
+   "backend/crates/tests/qip-acceptance/tests/browser_reach.rs"
+  ]
+ },
+ {
+  "slice": 84,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/main.rs",
+   "backend/crates/edge/qip-edge/tests/passive.rs",
+   "backend/crates/runtime/qip-kernel/src/precedent_declines.rs",
+   "backend/crates/runtime/qip-kernel/src/references.rs",
+   "backend/crates/services/qip-execution-engine/src/origination.rs",
+   "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs"
+  ]
+ },
+ {
+  "slice": 85,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-api/src/main.rs",
+   "backend/crates/edge/qip-edge/tests/arbitrage.rs",
+   "backend/crates/libs/qip-contracts/tests/reflex_v2.rs",
+   "backend/crates/libs/qip-storage/tests/archive_and_rowkey.rs",
+   "backend/crates/runtime/qip-kernel/tests/references.rs",
+   "backend/crates/services/qip-risk-engine/tests/risk_engine.rs"
+  ]
+ },
+ {
+  "slice": 86,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/mirror.rs",
+   "backend/crates/libs/qip-financial/src/private_stage.rs",
+   "backend/crates/runtime/qip-kernel/src/capacity_review.rs",
+   "backend/crates/services/qip-data-finder/src/ledger.rs",
+   "backend/crates/services/qip-data-finder/tests/lifecycle.rs",
+   "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs"
+  ]
+ },
+ {
+  "slice": 87,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/reprice.rs",
+   "backend/crates/edge/qip-edge/tests/reservation.rs",
+   "backend/crates/runtime/qip-kernel/src/self_watch.rs",
+   "backend/crates/runtime/qip-kernel/src/shared_cause.rs",
+   "backend/crates/services/qip-reasoning-engine/tests/reasoners.rs",
+   "backend/crates/services/qip-simulation-engine/tests/simulation.rs"
+  ]
+ },
+ {
+  "slice": 88,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/src/event_fabric/telemetry.rs",
+   "backend/crates/edge/qip-orderbook/tests/admission.rs",
+   "backend/crates/libs/qip-contracts/tests/expansion.rs",
+   "backend/crates/services/qip-streaming/tests/schema_evolution.rs",
+   "backend/crates/services/qip-training/tests/training.rs",
+   "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs"
+  ]
+ },
+ {
+  "slice": 89,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/allocation.rs",
+   "backend/crates/edge/qip-edge/src/priority.rs",
+   "backend/crates/libs/qip-risk/tests/hedge.rs",
+   "backend/crates/runtime/qip-kernel/src/regime_transition.rs",
+   "backend/crates/services/qip-brokers/src/dex.rs",
+   "backend/crates/services/qip-mesh/tests/evidence_store.rs",
+   "backend/crates/services/qip-twin/tests/twin.rs"
+  ]
+ },
+ {
+  "slice": 90,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/lane0.rs",
+   "backend/crates/edge/qip-edge/tests/path_assignment.rs",
+   "backend/crates/libs/qip-quantum/tests/foundry.rs",
+   "backend/crates/runtime/qip-kernel/src/asset_class_registry.rs",
+   "backend/crates/services/qip-world-model/tests/understanding.rs",
+   "backend/crates/tests/qip-acceptance/tests/chaos.rs"
+  ]
+ },
+ {
+  "slice": 91,
+  "tests": 73,
+  "files": [
+   "backend/crates/apps/qip-api/tests/web_limits.rs",
+   "backend/crates/libs/qip-confidential/tests/reproducible_noise.rs",
+   "backend/crates/libs/qip-transport/tests/event_fabric_auth.rs",
+   "backend/crates/runtime/qip-kernel/src/pre_positioning.rs",
+   "backend/crates/runtime/qip-kernel/tests/self_observation.rs",
+   "backend/crates/services/qip-data-finder/src/personal_data.rs",
+   "backend/crates/tests/qip-acceptance/tests/architecture.rs"
+  ]
+ },
+ {
+  "slice": 92,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-cli/tests/event_fabric_admin.rs",
+   "backend/crates/apps/qip-deepbrain/src/attestation.rs",
+   "backend/crates/runtime/qip-kernel/src/venue_measurement.rs",
+   "backend/crates/services/qip-mesh/tests/bigquery.rs",
+   "backend/crates/services/qip-world-model/tests/retirement.rs",
+   "backend/crates/tests/qip-acceptance/tests/documentation.rs",
+   "backend/crates/tests/qip-acceptance/tests/truth_loop.rs"
+  ]
+ },
+ {
+  "slice": 93,
+  "tests": 72,
+  "files": [
+   "backend/crates/agents/qip-investment-agents/tests/vocabulary.rs",
+   "backend/crates/runtime/qip-kernel/src/central/whitelist.rs",
+   "backend/crates/runtime/qip-kernel/tests/bridges.rs",
+   "backend/crates/tests/qip-acceptance/tests/acceptance.rs",
+   "backend/crates/tests/qip-acceptance/tests/e2e.rs",
+   "backend/crates/tests/qip-acceptance/tests/egress.rs",
+   "backend/crates/tests/qip-acceptance/tests/resilience.rs",
+   "backend/crates/tests/qip-acceptance/tests/terraform_contract.rs"
+  ]
+ },
+ {
+  "slice": 94,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-edge-node/tests/telemetry_wiring.rs",
+   "backend/crates/edge/qip-orderbook/tests/integrity.rs",
+   "backend/crates/libs/qip-risk/tests/aggregate.rs",
+   "backend/crates/services/qip-capital/src/exploration.rs",
+   "backend/crates/services/qip-data-finder/src/campaign.rs",
+   "backend/crates/services/qip-streaming/tests/registry.rs",
+   "backend/crates/tests/qip-acceptance/tests/gitops.rs"
+  ]
+ },
+ {
+  "slice": 95,
+  "tests": 115,
+  "files": [
+   "backend/crates/tests/qip-acceptance/tests/infrastructure.rs"
+  ]
+ },
+ {
+  "slice": 96,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fastbrain/src/main.rs",
+   "backend/crates/edge/qip-protocols/tests/fix.rs",
+   "backend/crates/edge/qip-routing/src/ratelimit.rs",
+   "backend/crates/libs/qip-observability/tests/aiops.rs",
+   "backend/crates/runtime/qip-kernel/tests/capital.rs",
+   "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs",
+   "backend/crates/tests/qip-acceptance/tests/m6_foundation.rs"
+  ]
+ },
+ {
+  "slice": 97,
+  "tests": 72,
+  "files": [
+   "backend/crates/libs/qip-observability/src/trace.rs",
+   "backend/crates/libs/qip-risk/tests/venue_credit_lines.rs",
+   "backend/crates/runtime/qip-kernel/src/feature_statistics.rs",
+   "backend/crates/services/qip-data-finder/tests/personal_data.rs",
+   "backend/crates/services/qip-execution-engine/src/creation.rs",
+   "backend/crates/tests/qip-acceptance/tests/m6_stage_a2_analytics.rs"
+  ]
+ },
+ {
+  "slice": 98,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-deepbrain/src/trust.rs",
+   "backend/crates/edge/qip-routing/tests/reprice.rs",
+   "backend/crates/libs/qip-financial/tests/commerce_resale.rs",
+   "backend/crates/services/qip-mesh/tests/point_in_time_reads.rs",
+   "backend/crates/services/qip-streaming/tests/routing.rs",
+   "backend/crates/tests/qip-acceptance/tests/cross_margin.rs",
+   "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs"
+  ]
+ },
+ {
+  "slice": 99,
+  "tests": 72,
+  "files": [
+   "backend/crates/edge/qip-edge/tests/decomposition.rs",
+   "backend/crates/libs/qip-compliance/tests/capital_approval.rs",
+   "backend/crates/libs/qip-financial/tests/catalogue.rs",
+   "backend/crates/libs/qip-transport/tests/event_fabric_batcher.rs",
+   "backend/crates/services/qip-simulation-engine/src/backtest.rs",
+   "backend/crates/tests/qip-acceptance/tests/performance.rs",
+   "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs"
+  ]
+ },
+ {
+  "slice": 100,
+  "tests": 72,
+  "files": [
+   "backend/crates/apps/qip-fabricd/src/config.rs",
+   "backend/crates/edge/qip-orderbook/tests/throughput.rs",
+   "backend/crates/services/qip-capital/tests/tax_lots.rs",
+   "backend/crates/services/qip-data-finder/src/admission.rs",
+   "backend/crates/services/qip-data-finder/src/registration.rs",
+   "backend/crates/services/qip-training/tests/labels.rs",
+   "backend/crates/tests/qip-acceptance/tests/security.rs"
+  ]
+ }
+]

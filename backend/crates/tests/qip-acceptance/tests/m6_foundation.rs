@@ -18,7 +18,7 @@ use qip_contracts::feature::{
     Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,
     KnowableAt, Revision,
 };
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{ObjectId, Timestamp};
 
 // ============================================================================
@@ -78,12 +78,15 @@ fn a_feature_before_its_knowable_instant_is_refused_in_a_pit_read() -> Result<()
 /// SLICE-50-2: A fact cannot be known before it was true.
 ///
 /// If a feed reports `instant_true > knowable_at`, the snapshot clamps
-/// `knowable_at` forward to match `instant_true`. The clamp is detectable,
-/// indicating a clock issue or parsing anomaly.
+/// `knowable_at` forward to match `instant_true`. It said here that the clamp
+/// is detectable; on `FeatureSnapshot` it is not — the constructor's doc
+/// names a `FeatureSnapshot::was_clamped` that does not exist (only
+/// `Stamped::was_clamped` does), so a clock or parsing anomaly is absorbed
+/// silently. That is reported as a defect, not asserted here.
 ///
 /// Mutation to verify: Remove the clamp logic that sets
 /// `clamped_knowable = instant_true` when `knowable_at < instant_true`.
-/// The test should fail because the impossible state will not be rejected.
+/// The test fails because the snapshot then reads as knowable at 130.
 #[test]
 fn a_knowable_instant_before_the_true_instant_is_clamped_forward() -> Result<()> {
     let key = FeatureKey::new("price", obj("ACME"));
@@ -96,14 +99,21 @@ fn a_knowable_instant_before_the_true_instant_is_clamped_forward() -> Result<()>
         t(130), // knowable_at < instant_true
     );
 
-    // The knowable instant must be clamped to match or exceed instant_true
-    assert!(
-        snapshot.knowable_at().instant() >= snapshot.instant_true(),
-        "knowable instant is before the true instant; a clamp was not applied"
-    );
+    // The knowable instant is moved forward to exactly the true instant —
+    // not merely "at or after", which a clamp to some later instant would
+    // also satisfy.
+    assert_eq!(snapshot.knowable_at().instant(), t(150));
 
-    // At t=145 (between the originals, but after the clamp), it must be readable
-    assert!(snapshot.is_knowable_at(t(145)));
+    // 145 lies between the two stamps given. It is after the stamp the caller
+    // claimed and before the clamp, so the snapshot must NOT be readable
+    // there. This line used to assert the opposite — readable at 145 — which
+    // is the look-ahead leak the clamp exists to stop; it never ran because
+    // this file did not compile.
+    assert!(
+        !snapshot.is_knowable_at(t(145)),
+        "readable before the fact was true"
+    );
+    assert!(snapshot.is_knowable_at(t(150)));
 
     Ok(())
 }
@@ -562,10 +572,10 @@ fn forecast_lattice_disagreement_is_median_spread() -> Result<()> {
     let lattice = ForecastLattice::new(key, t(100), vec![dist1, dist2])?;
 
     // Disagreement is 105 - 95 = 10
-    assert_eq!(
-        lattice.disagreement_width(),
-        10.0,
-        "disagreement width does not match median spread"
+    assert!(
+        (lattice.disagreement_width() - 10.0).abs() < 1e-9,
+        "disagreement width {} does not match median spread",
+        lattice.disagreement_width()
     );
 
     Ok(())
@@ -636,7 +646,7 @@ fn quantum_routing_requires_complete_feature_vectors() -> Result<()> {
     // The distinction determines routing behavior
     // A complete vector may enter quantum; an incomplete one must not.
     assert_eq!(complete.undefined().len(), 0);
-    assert!(incomplete.undefined().len() > 0);
+    assert!(!incomplete.undefined().is_empty());
 
     Ok(())
 }
@@ -883,7 +893,7 @@ fn forecast_lattice_aggregates_model_disagreement() -> Result<()> {
     let lattice = ForecastLattice::new(key, t(100), vec![model_a, model_b, model_c])?;
 
     // Disagreement should be max(105) - min(100) = 5
-    assert_eq!(lattice.disagreement_width(), 5.0);
+    assert!((lattice.disagreement_width() - 5.0).abs() < 1e-9);
 
     // With three independent forecasts, disagreement is present
     assert!(lattice.disagreement_width() > 0.0);
@@ -935,29 +945,41 @@ fn point_in_time_reads_use_knowable_instant_not_true_instant() -> Result<()> {
     Ok(())
 }
 
-/// SLICE-53-6: A revision stale earlier than the as_of time is out of date.
+/// SLICE-53-6: A cached revision is detectably stale once the feature moves.
 ///
-/// Strategies cache features with their revision. If the revision has not
-/// advanced, the cached value is current. If a new revision exists, the
-/// strategy must recalculate.
+/// Strategies cache a feature with the revision `FeatureVector::revision_of`
+/// reported. When the DAG writes a new value the vector must report the new
+/// revision in the same slot, or a consumer comparing revisions believes a
+/// stale value is current.
 ///
-/// Mutation to verify: Remove the revision comparison. The test should fail because
-/// staleness detection will not work.
+/// This test used to compare `Revision::new(2) > Revision::new(1)` and
+/// nothing else — it never touched a vector, so it held whatever the vector
+/// did. It now goes through `insert` and `revision_of`.
 #[test]
 fn feature_revision_staleness_is_detected() -> Result<()> {
     let key = FeatureKey::new("volatility", obj("ACME"));
+    let mut vector = FeatureVector::new(t(100));
 
-    // A strategy sees this feature at revision 1
-    let _cached_at_rev_1 = Revision::new(1);
+    vector.insert(key.clone(), FeatureValue::Statistic(0.20), Revision::new(1));
+    let cached = vector
+        .revision_of(&key)
+        .ok_or_else(|| Error::invalid("premise: the inserted feature has no revision"))?;
+    assert_eq!(cached, Revision::new(1));
 
-    // The DAG later updates it to revision 2
-    let current_rev = Revision::new(2);
+    // The DAG recomputes the feature.
+    vector.insert(key.clone(), FeatureValue::Statistic(0.25), cached.next());
 
-    // The revision has advanced
-    assert!(current_rev > _cached_at_rev_1);
-
-    // The strategy's cached value is stale
-    // (The logic here is structural: a higher revision means the value changed)
+    let current = vector
+        .revision_of(&key)
+        .ok_or_else(|| Error::invalid("the recomputed feature has no revision"))?;
+    assert!(
+        current > cached,
+        "a recomputed feature still reports the cached revision"
+    );
+    assert_eq!(vector.get(&key), Some(FeatureValue::Statistic(0.25)));
+    // One slot per key: a second entry would let `revision_of` answer from
+    // the stale one depending on lookup order.
+    assert_eq!(vector.len(), 1);
 
     Ok(())
 }

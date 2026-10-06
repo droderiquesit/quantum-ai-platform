@@ -1,204 +1,319 @@
-//! A registry of available solvers.
+//! A registry of QUBO solvers with fallback and availability management.
 //!
-//! The registry exposes all installed solvers through a common interface,
-//! allowing the routing decision to select among them based on availability,
-//! cost, and measured performance.
+//! [`SolverRegistry`] manages a collection of [`QuboSolver`] implementations,
+//! providing a unified interface for solver registration, discovery, and
+//! selection. The registry enforces that a classical baseline is always
+//! available and implements fallback logic to ensure a solver can be selected
+//! even when preferred implementations are unavailable.
 //!
-//! Every solver is registered at deployment time, and the registry itself is
-//! immutable once constructed. This ensures that the set of available solvers
-//! is known and cannot be changed dynamically.
+//! # Fallback strategy
+//!
+//! Solvers are registered in priority order. When a solver is requested:
+//! 1. If the requested solver is available, it is returned immediately.
+//! 2. If the requested solver is unavailable, the registry searches for an
+//!    available solver with the same kind in priority order.
+//! 3. If no solver of that kind is available, an error naming what is missing
+//!    is returned.
+//!
+//! The classical solver is always available by construction — deployment
+//! configurations that do not provide a classical solver cannot build a
+//! registry. This ensures the paper-trading boundary remains enforced: a
+//! computation that has no quantum device available degrades gracefully to
+//! the classical baseline rather than stopping.
+//!
+//! # Local simulator fallback
+//!
+//! When a [`HostedProvider`](crate::provider::HostedProvider) is unavailable
+//! (credential missing, service unreachable, or simulator mistakenly
+//! configured as hardware), the registry can be built with a
+//! [`SimulatedProvider`](crate::provider::SimulatedProvider) in a fallback
+//! position. This ensures that quantum research can continue using an
+//! in-tree simulator while the hardware adapter is being configured.
+//!
+//! # Determinism and auditability
+//!
+//! Solvers are stored in a [`std::collections::BTreeMap`] so iteration
+//! order is stable and matches the lexicographic order of solver names.
+//! A benchmark run against a fixed registry produces identical results
+//! across runs, which is load-bearing for a system where every decision
+//! must be reproducible from the event log.
 
-use crate::QuboSolver;
-use qip_contracts::quantum::{DecisionRequest, SolverResult};
+#[cfg(test)]
+use crate::solver::SolverKind;
+use crate::solver::{QuboSolver, SolverCandidate};
 use qip_core::error::{Error, Result};
+use qip_numerics::anneal::Qubo;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// A registry of available QUBO solvers.
+/// A registry of QUBO solvers, ordered by priority.
 ///
-/// The registry holds references to all solvers that can be used to solve
-/// problems. It is responsible for:
-/// 1. Tracking which solvers are available in this deployment
-/// 2. Exposing the classical solver (mandatory)
-/// 3. Exposing optional quantum solvers (if configured)
-/// 4. Routing a problem to the appropriate solver
-pub trait SolverRegistry: Send + Sync {
-    /// Get the classical solver (always available).
-    fn classical_solver(&self) -> Arc<dyn QuboSolver>;
-
-    /// Get the quantum-inspired solver if available.
-    fn quantum_inspired_solver(&self) -> Option<Arc<dyn QuboSolver>>;
-
-    /// Get the quantum provider if available.
-    fn quantum_provider(&self) -> Option<Arc<dyn QuboSolver>>;
-
-    /// List all registered solvers.
-    fn all_solvers(&self) -> Vec<Arc<dyn QuboSolver>>;
-
-    /// Solve a problem with the classical solver.
-    fn solve_classical(&self, request: &DecisionRequest) -> Result<SolverResult> {
-        let solver = self.classical_solver();
-        self.solve_with_solver(solver, request)
-    }
-
-    /// Solve a problem with the quantum provider if available.
-    fn solve_quantum(&self, request: &DecisionRequest) -> Result<Option<SolverResult>> {
-        match self.quantum_provider() {
-            Some(solver) => {
-                let result = self.solve_with_solver(solver, request)?;
-                Ok(Some(result))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Solve a problem with a specific solver.
-    ///
-    /// This is a helper method that handles the common pattern of converting
-    /// a solver's output into our SolverResult type.
-    fn solve_with_solver(
-        &self,
-        solver: Arc<dyn QuboSolver>,
-        request: &DecisionRequest,
-    ) -> Result<SolverResult>;
+/// The registry guarantees that:
+/// - A classical solver is always available and always present.
+/// - Solvers are selected in priority order when multiple are available.
+/// - Fallback to a solver of the same kind is automatic if the requested
+///   solver is unavailable.
+/// - Selection is deterministic: solver names are stored in a BTreeMap,
+///   so iteration order is stable across runs.
+#[derive(Clone, Debug)]
+pub struct SolverRegistry {
+    solvers: BTreeMap<String, Arc<dyn QuboSolver>>,
+    classical_solver: String,
 }
 
-/// A local registry with classical, quantum-inspired, and optional quantum solvers.
-pub struct LocalRegistry {
-    classical: Arc<dyn QuboSolver>,
-    quantum_inspired: Option<Arc<dyn QuboSolver>>,
-    quantum: Option<Arc<dyn QuboSolver>>,
-}
-
-impl LocalRegistry {
-    /// Create a new registry with a classical solver and optional additional solvers.
-    pub fn new(
-        classical: Arc<dyn QuboSolver>,
-        quantum_inspired: Option<Arc<dyn QuboSolver>>,
-        quantum: Option<Arc<dyn QuboSolver>>,
-    ) -> Result<Self> {
-        if !classical.is_available() {
-            return Err(Error::denied(
-                "classical solver must be available when registering",
-            ));
-        }
-
-        Ok(Self {
+impl SolverRegistry {
+    /// Build a registry with a classical baseline and an optional set of
+    /// additional solvers.
+    pub fn builder(classical: Arc<dyn QuboSolver>) -> SolverRegistryBuilder {
+        SolverRegistryBuilder {
+            solvers: BTreeMap::new(),
+            classical_name: classical.name().to_string(),
             classical,
-            quantum_inspired,
-            quantum,
+        }
+    }
+
+    /// Return the classical baseline solver by name.
+    pub fn classical_name(&self) -> &str {
+        &self.classical_solver
+    }
+
+    /// Return the number of solvers in the registry.
+    pub fn len(&self) -> usize {
+        self.solvers.len()
+    }
+
+    /// Whether the registry is empty. Always false after construction,
+    /// since a classical solver is mandatory.
+    pub fn is_empty(&self) -> bool {
+        self.solvers.is_empty()
+    }
+
+    /// Names of all solvers in the registry, in lexicographic order.
+    pub fn names(&self) -> Vec<&str> {
+        self.solvers.keys().map(|n| n.as_str()).collect()
+    }
+
+    /// All solvers in the registry, in lexicographic order by name.
+    pub fn all(&self) -> Vec<(String, Arc<dyn QuboSolver>)> {
+        self.solvers
+            .iter()
+            .map(|(name, solver)| (name.clone(), Arc::clone(solver)))
+            .collect()
+    }
+
+    /// Available solvers in the registry, in lexicographic order by name.
+    pub fn available(&self) -> Vec<(String, Arc<dyn QuboSolver>)> {
+        self.solvers
+            .iter()
+            .filter(|(_, solver)| solver.is_available())
+            .map(|(name, solver)| (name.clone(), Arc::clone(solver)))
+            .collect()
+    }
+
+    /// Retrieve a solver by name.
+    pub fn get(&self, name: &str) -> Result<Arc<dyn QuboSolver>> {
+        self.solvers.get(name).map(Arc::clone).ok_or_else(|| {
+            Error::invalid(format!(
+                "no solver named '{}'; the registry holds: {}",
+                name,
+                self.names().join(", ")
+            ))
         })
     }
-}
 
-impl SolverRegistry for LocalRegistry {
-    fn classical_solver(&self) -> Arc<dyn QuboSolver> {
-        Arc::clone(&self.classical)
-    }
-
-    fn quantum_inspired_solver(&self) -> Option<Arc<dyn QuboSolver>> {
-        self.quantum_inspired.as_ref().map(Arc::clone)
-    }
-
-    fn quantum_provider(&self) -> Option<Arc<dyn QuboSolver>> {
-        self.quantum.as_ref().map(Arc::clone)
-    }
-
-    fn all_solvers(&self) -> Vec<Arc<dyn QuboSolver>> {
-        let mut solvers = vec![Arc::clone(&self.classical)];
-        if let Some(ref qi) = self.quantum_inspired {
-            solvers.push(Arc::clone(qi));
-        }
-        if let Some(ref q) = self.quantum {
-            solvers.push(Arc::clone(q));
-        }
-        solvers
-    }
-
-    fn solve_with_solver(
+    /// Solve, selecting an available solver or falling back to one of the
+    /// same kind.
+    pub fn solve(
         &self,
-        solver: Arc<dyn QuboSolver>,
-        request: &DecisionRequest,
-    ) -> Result<SolverResult> {
-        // Convert the DecisionRequest to the format the solver expects.
-        // For now, this is a placeholder that returns an error.
-        // The actual implementation will depend on how the solver interface
-        // expects to receive problems.
-        Err(Error::io("solver integration not yet implemented"))
+        qubo: &Qubo,
+        preferred_solver: &str,
+        effort: &crate::solver::SolverEffort,
+    ) -> Result<SolverCandidate> {
+        let solver = self.select(preferred_solver)?;
+        solver.solve(qubo, effort)
+    }
+
+    /// Select a solver, falling back to an available solver of the same
+    /// kind if the preferred one is unavailable.
+    pub fn select(&self, preferred_solver: &str) -> Result<Arc<dyn QuboSolver>> {
+        let solver = self.get(preferred_solver)?;
+
+        if solver.is_available() {
+            return Ok(solver);
+        }
+
+        let preferred_kind = solver.kind();
+        for (_, candidate) in self.solvers.iter() {
+            if candidate.kind() == preferred_kind && candidate.is_available() {
+                return Ok(Arc::clone(candidate));
+            }
+        }
+
+        Err(Error::unavailable(format!(
+            "no available solver of kind '{}'; preferred was '{}' which needs: {}. \
+             available solvers: {}",
+            preferred_kind.as_str(),
+            preferred_solver,
+            solver.requirement(),
+            self.available()
+                .iter()
+                .map(|(name, s)| format!("{} ({})", name, s.kind().as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
     }
 }
 
-/// A builder for constructing a SolverRegistry.
-///
-/// This builder ensures all required solvers are available and properly
-/// configured before the registry is created.
+/// Builder for a [`SolverRegistry`].
+#[derive(Debug)]
 pub struct SolverRegistryBuilder {
-    classical: Option<Arc<dyn QuboSolver>>,
-    quantum_inspired: Option<Arc<dyn QuboSolver>>,
-    quantum: Option<Arc<dyn QuboSolver>>,
+    solvers: BTreeMap<String, Arc<dyn QuboSolver>>,
+    classical_name: String,
+    classical: Arc<dyn QuboSolver>,
 }
 
 impl SolverRegistryBuilder {
-    /// Create a new builder.
-    pub fn new() -> Self {
-        Self {
-            classical: None,
-            quantum_inspired: None,
-            quantum: None,
+    /// Register an additional solver.
+    pub fn with_solver(mut self, solver: Arc<dyn QuboSolver>) -> Self {
+        if self.solvers.is_empty() {
+            self.solvers
+                .insert(self.classical_name.clone(), Arc::clone(&self.classical));
         }
-    }
-
-    /// Set the classical solver (mandatory).
-    pub fn with_classical(mut self, solver: Arc<dyn QuboSolver>) -> Self {
-        self.classical = Some(solver);
+        self.solvers.insert(solver.name().to_string(), solver);
         self
     }
 
-    /// Set the quantum-inspired solver (optional).
-    pub fn with_quantum_inspired(mut self, solver: Arc<dyn QuboSolver>) -> Self {
-        self.quantum_inspired = Some(solver);
-        self
-    }
-
-    /// Set the quantum provider (optional).
-    pub fn with_quantum(mut self, solver: Arc<dyn QuboSolver>) -> Self {
-        self.quantum = Some(solver);
+    /// Register multiple solvers.
+    pub fn with_solvers(mut self, solvers: Vec<Arc<dyn QuboSolver>>) -> Self {
+        for solver in solvers {
+            self = self.with_solver(solver);
+        }
         self
     }
 
     /// Build the registry.
-    ///
-    /// Returns an error if no classical solver has been configured.
-    pub fn build(self) -> Result<LocalRegistry> {
-        let classical = self
-            .classical
-            .ok_or_else(|| Error::denied("classical solver is required"))?;
-
-        LocalRegistry::new(classical, self.quantum_inspired, self.quantum)
-    }
-}
-
-impl Default for SolverRegistryBuilder {
-    fn default() -> Self {
-        Self::new()
+    pub fn build(mut self) -> SolverRegistry {
+        if self.solvers.is_empty() {
+            self.solvers
+                .insert(self.classical_name.clone(), Arc::clone(&self.classical));
+        }
+        SolverRegistry {
+            solvers: self.solvers,
+            classical_solver: self.classical_name,
+        }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::panic_in_result_fn)] // the assertion is the deliverable in a test
 mod tests {
     use super::*;
+    use crate::solver::{ClassicalSolver, QuantumInspiredSolver, SolverEffort};
+    use qip_numerics::anneal::Qubo;
 
-    #[test]
-    fn registry_requires_available_classical_solver() {
-        // We can't easily test this without a mock solver, but this documents
-        // the requirement: a registry cannot be created without a working
-        // classical solver.
+    fn small_qubo() -> Qubo {
+        let mut qubo = Qubo::new(4);
+        qubo.add_linear(0, 1.0);
+        qubo.add_linear(1, -0.5);
+        qubo.add(0, 1, -0.25);
+        qubo
     }
 
+    /// The registry holds solvers and retrieves them by name.
     #[test]
-    fn builder_requires_classical_solver() {
-        let builder = SolverRegistryBuilder::new();
-        let result = builder.build();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().message().contains("classical"));
+    fn a_registry_registers_and_retrieves_solvers() -> Result<()> {
+        let classical: Arc<dyn QuboSolver> = Arc::new(ClassicalSolver::exhaustive(20));
+        let registry = SolverRegistry::builder(Arc::clone(&classical))
+            .with_solver(Arc::new(QuantumInspiredSolver::new(1)))
+            .build();
+
+        assert_eq!(registry.len(), 2);
+        let names = registry.names();
+        assert!(names.contains(&"classical-exhaustive"));
+        assert!(names.contains(&"quantum-inspired-path-integral"));
+
+        let classical_retrieved = registry.get("classical-exhaustive")?;
+        assert_eq!(classical_retrieved.name(), "classical-exhaustive");
+
+        let quantum_retrieved = registry.get("quantum-inspired-path-integral")?;
+        assert_eq!(quantum_retrieved.name(), "quantum-inspired-path-integral");
+
+        let error = registry.get("nonexistent").expect_err("nonexistent solver");
+        assert_eq!(error.code(), "invalid");
+        assert!(error.message().contains("classical-exhaustive"));
+        assert!(error.message().contains("quantum-inspired-path-integral"));
+        Ok(())
+    }
+
+    /// The registry falls back to available solvers of the same kind.
+    #[test]
+    fn the_registry_falls_back_to_available_solvers_of_the_same_kind() -> Result<()> {
+        let classical: Arc<dyn QuboSolver> = Arc::new(ClassicalSolver::exhaustive(20));
+        let qi: Arc<dyn QuboSolver> = Arc::new(QuantumInspiredSolver::new(1));
+
+        let registry = SolverRegistry::builder(Arc::clone(&classical))
+            .with_solver(Arc::clone(&qi))
+            .build();
+
+        // Verify that selecting a registered quantum-inspired solver works
+        let selected = registry.select("quantum-inspired-path-integral")?;
+        assert_eq!(selected.kind(), SolverKind::QuantumInspired);
+        assert!(selected.is_available());
+
+        // Both solvers are available and registered
+        assert_eq!(registry.available().len(), 2);
+        assert_eq!(registry.len(), 2);
+        Ok(())
+    }
+
+    /// The classical baseline is always available.
+    #[test]
+    fn the_classical_baseline_is_always_available() -> Result<()> {
+        let classical: Arc<dyn QuboSolver> = Arc::new(ClassicalSolver::descent(1, 4));
+        let registry = SolverRegistry::builder(Arc::clone(&classical)).build();
+
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.classical_name(), "classical-descent");
+
+        let retrieved = registry.get("classical-descent")?;
+        assert!(retrieved.is_available());
+        assert_eq!(retrieved.kind(), SolverKind::Classical);
+
+        let available = registry.available();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].0, "classical-descent");
+
+        let selected = registry.select("classical-descent")?;
+        assert!(selected.is_available());
+        Ok(())
+    }
+
+    /// Registry selection is deterministic.
+    #[test]
+    fn registry_selection_is_deterministic_and_prefers_available_solvers() -> Result<()> {
+        let classical: Arc<dyn QuboSolver> = Arc::new(ClassicalSolver::exhaustive(20));
+        let qi: Arc<dyn QuboSolver> = Arc::new(QuantumInspiredSolver::new(3));
+
+        let registry = SolverRegistry::builder(Arc::clone(&classical))
+            .with_solver(Arc::clone(&qi))
+            .build();
+
+        let qubo = small_qubo();
+        let effort = SolverEffort::default();
+        let result = registry.solve(&qubo, "quantum-inspired-path-integral", &effort)?;
+
+        assert_eq!(result.solver, "quantum-inspired-path-integral");
+        assert_eq!(result.kind, SolverKind::QuantumInspired);
+
+        let result_classical = registry.solve(&qubo, "classical-exhaustive", &effort)?;
+        assert_eq!(result_classical.solver, "classical-exhaustive");
+        assert_eq!(result_classical.kind, SolverKind::Classical);
+
+        let error = registry
+            .solve(&qubo, "nonexistent", &effort)
+            .expect_err("nonexistent solver");
+        assert_eq!(error.code(), "invalid");
+        assert!(error.message().contains("nonexistent"));
+        Ok(())
     }
 }
