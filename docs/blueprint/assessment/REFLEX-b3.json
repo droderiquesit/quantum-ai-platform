@@ -1,29 +1,28 @@
 [
   {
     "id": "REFLEX-051",
-    "status": "COMPLETE",
-    "current": "qip_edge_node::main — flush thread spawned in run() at main.rs:707-711, sends FlushRequest messages via mpsc channel on 100ms timer (FLUSH_INTERVAL constant at main.rs:114). serve() loop processes flush requests independently via try_recv() before accepting connections (main.rs:913-924). Two threads run concurrently: the flush thread wakes on its own timer (REFLEX-051 requirement met: timer is independent of health probes). Verified by tests: flush_thread_exists_and_runs_independently and separate_threads_have_distinct_thread_ids both pass and are mutation-verified.",
+    "status": "INCORRECT",
+    "current": "qip_edge_node::main::serve — the node's single event loop. `cell.flush(mirror, now)` (main.rs:852) and `run_pass(cell, ...)` (main.rs:888, which calls `Cell::work`) run sequentially inside the same `for incoming in listener.incoming()` iteration, on the one thread the process has. `infrastructure/terraform/modules/execution-node/main.tf` renders `CPUAffinity=${first_isolated_cpu}` (startup.sh.tftpl:342) pinning that single thread to core 2 of the isolated range `2-${vcpus-1}`.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:107-111 (FLUSH_INTERVAL and FlushRequest struct)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:819-828 (run_flush_thread function)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:700-711 (flush thread spawned in run())",
-      "backend/crates/apps/qip-edge-node/src/main.rs:913-924 (serve loop processes flush requests independently)",
-      "backend/crates/apps/qip-edge-node/tests/flush_thread_separation.rs::flush_thread_exists_and_runs_independently (mutation: verified)",
-      "backend/crates/apps/qip-edge-node/tests/flush_thread_separation.rs::separate_threads_have_distinct_thread_ids (mutation: verified)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:757-761 (module doc: 'this node has no scheduler ... A production cell drains on a timer instead')",
+      "backend/crates/apps/qip-edge-node/src/main.rs:852 (cell.flush) and :888 (run_pass) in the same loop iteration",
+      "infrastructure/terraform/modules/execution-node/main.tf:82-100 (local.first_isolated_cpu, comment: 'For a one-thread process the process-level pin is the per-thread pin')",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:337-342 (CPUAffinity=2)",
+      "infrastructure/terraform/modules/execution-node/tests/affinity.tftest.hcl (proves the single-core pin, not a disjoint pair)"
     ],
-    "gap": "",
-    "implemented": true,
-    "tested": true,
-    "integrated": true,
+    "gap": "The requirement is that the journal writer run on a CPU core disjoint from the decision thread's; in-tree there is exactly one thread doing both, on one core, and the node's own doc comment names this as a deliberate simplification ('a production cell drains on a timer instead') rather than the target shape — the opposite of what REFLEX-051 requires.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/apps/qip-edge-node/tests/flush_thread_separation.rs contains two mutation-verified tests proving the requirement: (1) flush_thread_exists_and_runs_independently: mutation of removing flush flag assignment caused expected test failure; (2) separate_threads_have_distinct_thread_ids: mutation of assert_ne! to assert_eq! caused expected failure with distinct thread IDs shown. Tests pass on restored code. Integration verified by: cargo fmt --all --check (pass), cargo clippy -p qip-edge-node (2 expected warnings: unreachable code in infinite loop, too_many_arguments from added flush_rx param), cargo test -p qip-edge-node --test flush_thread_separation (2/2 pass), ./scripts/check-dependencies.sh (all permitted), ./scripts/check-secrets.sh (nothing found).",
-    "work_item": "L075",
+    "verification": "None demonstrates the requirement. infrastructure/terraform/modules/execution-node/tests/affinity.tftest.hcl (run an_admitted_shape_pins_the_process_onto_the_first_isolated_core) and qip-acceptance infrastructure.rs::the_unit_pins_the_node_onto_the_first_isolated_core_so_the_isolcpus_refusal_guards_something prove today's single-core pin (CPUAffinity=2), which is the non-compliant shape. Needed: a flush thread or timer with its own isolated core, and a test proving the two core sets are disjoint.",
+    "work_item": "E04",
     "tier": "T1",
     "size": "M",
-    "notes": "Completed 2026-10-06. Architecture: flush thread uses std::sync::mpsc channel for message passing instead of Arc<Mutex<>> to avoid Send trait violations with Cell's non-Send trait objects. Timer-based wakeup (100ms) is independent of health probe frequency, meeting REFLEX-051 latency budget requirement. No new dependencies. Not deployable because execution_nodes = {} in all environments; deployment not attempted. Pre-existing test failures in allocation.rs and strategies.rs tests are unrelated to this change (verified by stashing changes and reproducing failures). Code changes isolated to main.rs only."
+    "notes": "Fixing this needs a dedicated flush thread or timer inside qip-edge-node (in-tree Rust, no new dependency) plus a second isolated-core assignment in the Terraform module. verify: status INCORRECT kept; tested true->false and integrated true->false. The affinity tests prove the one-thread, one-core pin, which is the shape the requirement forbids, so no test demonstrates the required behaviour. What is integrated is that forbidden shape (cell.flush at main.rs:852 and run_pass at main.rs:888 in one loop iteration); the required disjoint writer does not exist, so the flags now describe the required behaviour. Line references main.rs:761/852/888, main.tf:100 and startup.sh.tftpl:342 checked and correct."
   },
   {
     "id": "REFLEX-052",

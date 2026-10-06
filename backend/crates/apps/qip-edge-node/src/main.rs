@@ -82,8 +82,7 @@ use qip_storage::settings::{ROOT_VARIABLE, StorageSettings, TARGET_VARIABLE};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
-use std::thread;
+use std::sync::Arc;
 
 /// Exit code for a configuration problem, matching `sysexits.h`.
 ///
@@ -106,11 +105,6 @@ const EX_CONFIG: i32 = 78;
 /// Two seconds is far longer than a loopback probe or the Ops Agent's scrape
 /// needs, and far shorter than either one's own timeout.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// The flush thread wakes on this interval to drain the journal independently
-/// of health probes. REFLEX-051: this ensures flush runs on a separate thread
-/// from decision making, on a scheduler independent of external probes.
-const FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 fn main() {
     match run() {
@@ -686,20 +680,6 @@ fn run() -> Result<()> {
         requoter: requoter.as_mut(),
     });
 
-    // REFLEX-051: Create a channel for the flush thread to signal the serve
-    // loop. The flush thread wakes on its own schedule, independent of health
-    // probes. The serve loop processes flush requests as they arrive.
-    let (flush_tx, flush_rx) = mpsc::channel();
-
-    // Spawn the flush thread before serve so it can start signaling flush
-    // requests on its own timer while serve handles passes and exchanges.
-    let _flush_thread = {
-        let clock_clone = Arc::clone(&clock);
-        thread::spawn(move || run_flush_thread(clock_clone, flush_tx))
-    };
-
-    // Run the main serve loop. The flush thread runs concurrently,
-    // sending flush requests through the channel.
     serve(
         &config,
         &mut cell,
@@ -713,7 +693,6 @@ fn run() -> Result<()> {
         started,
         metrics,
         mesh_series,
-        flush_rx,
     )
 }
 
@@ -823,26 +802,20 @@ fn missing_production_requirements(
     missing
 }
 
-/// Channel message sent by the flush thread to signal the serve loop.
-struct FlushRequest {
-    now: qip_core::Timestamp,
-}
-
-/// Runs the dedicated flush thread that signals the serve loop on a timer.
+/// Serve the health surface until the listener fails, draining the journal as
+/// it goes.
 ///
-/// REFLEX-051: This thread runs independently from the serve loop with its own
-/// schedule, decoupled from health probes. It sends flush requests through a
-/// channel that the serve loop processes. This ensures the flush scheduler is
-/// separate from the decision scheduler.
-fn run_flush_thread(clock: Arc<dyn Clock>, tx: mpsc::Sender<FlushRequest>) {
-    loop {
-        thread::sleep(FLUSH_INTERVAL);
-        let now = clock.now();
-        // Send flush request. If the channel is closed, we're shutting down.
-        let _ = tx.send(FlushRequest { now });
-    }
-}
-
+/// Deliberately tiny and deliberately not the platform's HTTP server: a node
+/// whose liveness probe depends on the API crate has coupled the two, and the
+/// probe is what tells an orchestrator whether the cell is alive at all.
+///
+/// The journal is flushed on each accepted connection because this node has no
+/// scheduler and the liveness probe is the only periodic event it has. That is
+/// a compromise and worth naming: it ties the record's durability to how often
+/// something asks whether the cell is alive, so a node nobody probes keeps its
+/// decisions in memory. A production cell drains on a timer instead. The flush
+/// happens before the answer is written so the numbers reported are the ones
+/// already shipped, rather than a count the next crash would take back.
 /// What the pass loop runs with, present only on a node that runs passes.
 ///
 /// The feed prices the pass; the requoter, when a policy was declared,
@@ -868,7 +841,6 @@ fn serve(
     started: qip_core::Timestamp,
     metrics: &Arc<Metrics>,
     mut mesh_series: MeshSeries,
-    flush_rx: mpsc::Receiver<FlushRequest>,
 ) -> Result<()> {
     let address = format!("0.0.0.0:{}", config.health_port);
     let listener = TcpListener::bind(&address)
@@ -896,24 +868,9 @@ fn serve(
     // The four golden signals with the pass as the unit of work, saturation
     // measured against the allowance this loop gives one request (OBS-018).
     let pass_meter = PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?;
-    loop {
-        // REFLEX-051: Process any pending flush requests from the dedicated
-        // flush thread. These arrive on their own schedule, independent of
-        // health probes. We process them before handling the next connection
-        // so the flush is not delayed by I/O.
-        while let Ok(flush_req) = flush_rx.try_recv() {
-            if let Err(error) = cell.flush(mirror, flush_req.now) {
-                eprintln!(
-                    "qip-edge-node: the journal could not be shipped: {}",
-                    error.message()
-                );
-            }
-        }
-
-        // Handle the next incoming connection with a timeout so we don't block
-        // forever if there are no probes.
-        match listener.accept() {
-            Ok((stream, _)) => {
+    for incoming in listener.incoming() {
+        match incoming {
+            Ok(stream) => {
                 let now = clock.now();
                 // The second halt wire, polled first so that the halt it
                 // applies is in the journal the flush below ships and in the
@@ -950,6 +907,16 @@ fn serve(
                         eprintln!("qip-edge-node: region availability: {}", reading.describe());
                     }
                     last_outlook = Some(reading);
+                }
+                // A journal that cannot be shipped is reported and the node
+                // keeps serving: the entries are still held locally and still
+                // chained, so the next flush ships them. Exiting here would
+                // turn a storage outage into a trading outage.
+                if let Err(error) = cell.flush(mirror, now) {
+                    eprintln!(
+                        "qip-edge-node: the journal could not be shipped: {}",
+                        error.message()
+                    );
                 }
                 // One exchange with the central plane per probe, for the same
                 // reason and with the same caveat as the flush above: this node
