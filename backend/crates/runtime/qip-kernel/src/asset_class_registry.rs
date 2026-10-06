@@ -552,6 +552,27 @@ impl AssetClassRegistry {
                 .collect(),
         )?);
 
+        // Commodity — §16.1: term structure "Unlocks: Commodity futures,
+        // swaps, and spot trading". Commodities are exchange-traded where
+        // futures exist, and term-structure pricing is standard. They hedge
+        // physical products and real assets.
+        add(AssetClassRecord::new(
+            AssetClass::Commodity,
+            ValuationEngine::TermStructure,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            listed_grid,
+            TradingCalendar::ExchangeSession,
+            MarginRegime::Portfolio,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [F::Carry, F::Arbitrage, F::MomentumAndTrend]
+                .into_iter()
+                .collect(),
+            [AssetClass::RealAsset, AssetClass::PhysicalProduct]
+                .into_iter()
+                .collect(),
+        )?);
+
         // Fund — §16.1: cashflow and commitments "Unlocks: Private funds".
         // A fund reports; it does not settle on a venue cycle.
         add(AssetClassRecord::new(
@@ -595,6 +616,24 @@ impl AssetClassRegistry {
             TaxTreatment::RealProperty,
             [F::Carry].into_iter().collect(),
             BTreeSet::new(),
+        )?);
+
+        // Physical product — commerce plane (§20) "Unlocks: SKU-level commerce,
+        // auctions, collectibles, wholesale/retail arbitrage, inventory". Uses
+        // illiquid valuation, as physical goods cannot be priced continuously.
+        // Settlement is periodic: purchase, logistics, resale and settlement
+        // complete over time. Tax treatment as RealProperty for physical goods.
+        add(AssetClassRecord::new(
+            AssetClass::PhysicalProduct,
+            ValuationEngine::IlliquidValuation,
+            ClassSettlement::PeriodicStatement,
+            GridRule::Negotiated,
+            TradingCalendar::Negotiated,
+            MarginRegime::Isolated,
+            false,
+            TaxTreatment::RealProperty,
+            [F::Carry].into_iter().collect(),
+            [AssetClass::Commodity].into_iter().collect(),
         )?);
 
         let registry = Self { records };
@@ -699,13 +738,12 @@ mod tests {
         assert_eq!(AssetClass::ALL.len(), 13);
         let registry = AssetClassRegistry::shipped()?;
         assert_eq!(registry.len(), 9);
-        // Named rather than counted: a count would pass if the four swapped
-        // for four others, and which four are unsupported is the finding.
+        // Named rather than counted: a count would pass if the three swapped
+        // for three others, and which three are unsupported is the finding.
         assert_eq!(
             registry.unregistered(),
             vec![
                 AssetClass::ForeignExchange,
-                AssetClass::Commodity,
                 AssetClass::DigitalAsset,
                 AssetClass::Cash,
             ]

@@ -24,10 +24,11 @@ pub enum AssetClass {
     RealAsset,
     Cash,
     StructuredProduct,
+    PhysicalProduct,
 }
 
 impl AssetClass {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Equity,
         Self::FixedIncome,
         Self::Credit,
@@ -41,6 +42,7 @@ impl AssetClass {
         Self::RealAsset,
         Self::Cash,
         Self::StructuredProduct,
+        Self::PhysicalProduct,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -58,6 +60,7 @@ impl AssetClass {
             Self::RealAsset => "real_asset",
             Self::Cash => "cash",
             Self::StructuredProduct => "structured_product",
+            Self::PhysicalProduct => "physical_product",
         }
     }
 
@@ -65,6 +68,7 @@ impl AssetClass {
     ///
     /// Drives the liquidity limits and the horizon a risk scenario is run over;
     /// a private-market position cannot be stopped out of at any price.
+    /// Physical products require time for purchase, logistics, and resale.
     pub fn is_typically_liquid(&self) -> bool {
         matches!(
             self,
