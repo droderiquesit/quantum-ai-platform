@@ -42,6 +42,7 @@ pub mod providers;
 pub mod redteam;
 pub mod rules;
 pub mod temporal;
+pub mod trust_score;
 
 pub use bayes::{BaseRate, BeliefUpdate, EvidenceStrength};
 pub use belief::BeliefState;
@@ -53,3 +54,4 @@ pub use hypothesis::{
 };
 pub use providers::{HuggingFaceConfig, HuggingFaceModel, HuggingFaceToken};
 pub use redteam::{Challenge, ChallengeKind, RedTeam, ReviewOutcome, ReviewPolicy, Severity};
+pub use trust_score::{SourceTrust, TrustOutcome, TrustRegistry, TrustUpdate};
