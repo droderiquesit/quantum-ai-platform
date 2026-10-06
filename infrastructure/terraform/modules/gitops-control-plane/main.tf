@@ -301,6 +301,12 @@ resource "google_container_cluster" "control_plane" {
     }
   }
 
+  cluster_autoscaling {
+    auto_provisioning_defaults {
+      service_account = google_service_account.nodes.email
+    }
+  }
+
   resource_labels = var.labels
 
   lifecycle {
@@ -496,6 +502,36 @@ resource "google_dns_record_set" "registry_wildcard" {
   type         = "A"
   ttl          = 300
   rrdatas      = local.restricted_vip
+}
+
+# --- the node identity -------------------------------------------------------
+#
+# Autopilot manages the node pool directly, so there is no node pool block to
+# configure a service account. Instead, `cluster_autoscaling` names the one the
+# auto-provisioned nodes will use. The GKE metadata server withholds the node's
+# own credential from every Pod, so pods reach GCP through Workload Identity
+# alone — the identity above — and the nodes' own identity is limited to
+# logging and monitoring. Without a configured account nodes default to the
+# project's unnarrowed Compute Engine service account (roles/editor by default
+# in a project with no organization policy).
+
+resource "google_service_account" "nodes" {
+  project      = var.project_id
+  account_id   = "${local.prefix}-control-plane-nodes"
+  display_name = "qip Control Plane Nodes (${var.environment})"
+  description  = "Node-wide identity for the GKE Autopilot control plane cluster. Limited to logging and monitoring; Pod workloads use Workload Identity instead."
+}
+
+resource "google_project_iam_member" "nodes_log_writer" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.nodes.email}"
+}
+
+resource "google_project_iam_member" "nodes_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.nodes.email}"
 }
 
 # --- the three identities -----------------------------------------------------
