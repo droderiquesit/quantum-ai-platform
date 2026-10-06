@@ -105,6 +105,11 @@ qip-storage.workspace = true
 qip-capital.workspace = true
 qip-twin.workspace = true
 
+# ARCH-033's phase-gate test verifies the transfer gate infrastructure:
+# capital locations, FX conversion detection, and stated purposes (deviation reduction).
+# These types live in the capital-fabric service.
+qip-capital-fabric.workspace = true
+
 # The region-share suite issues grants through `CentralPlane::issue`, the
 # door a deployment uses, and that door refuses a strategy below pilot;
 # walking one there needs the lifecycle's family and evidence types, which
