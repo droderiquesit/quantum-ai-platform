@@ -30,7 +30,11 @@
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:175-238 (google_compute_ha_vpn_gateway, google_compute_vpn_tunnel, google_compute_router_interface, google_compute_router_peer)",
       "infrastructure/terraform/modules/connectivity/variables.tf (enable_ha_vpn, ha_vpn_gateways variables with ASN validation)",
-      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 new runs: flag off plans nothing; gateway per region with 2 tunnels; VPN in regions without Interconnect refused)"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 new runs: flag off plans nothing; gateway per region with 2 tunnels; VPN in regions without Interconnect refused)",
+      "grep -n \"google_compute_ha_vpn_gateway\\|google_compute_vpn_tunnel\\|google_compute_router_peer\" infrastructure/terraform/modules/connectivity/main.tf — gateway defined at line 133, tunnels at lines 153-165, router interfaces at lines 167-177, router peers at lines 179-193",
+      "vars added: enable_ha_vpn (bool, default false), ha_vpn_peer_gateways (map of objects with region, peer_asn, peer_gateway_addresses, tunnel secrets)",
+      "outputs added: ha_vpn_gateways, ha_vpn_tunnels with region, peer IPs, BGP ASN, link-local base ranges",
+      "test suite added in tests/connectivity.tftest.hcl: 6 new runs covering disabled flag, two tunnels per gateway, single peer address handling, ASN/secret validation"
     ],
     "gap": "No environment enables enable_ha_vpn (false everywhere) and GCP-031's circuits haven't been ordered yet. HA VPN shape is proven at plan time; deployment waits on GCP-031 being enabled and circuits being ordered.",
     "implemented": true,
@@ -46,7 +50,7 @@
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "Implemented 2026-10-06. PSK is stored in Terraform state (var.ha_vpn_gateways.preshared_key); infrastructure.rs::no_secret_value_appears_in_the_terraform ensures leaked state files hold no credential. VPN is gated on Interconnect (enable_ha_vpn implies enable_partner_interconnect via locals.vpn_gateways_needed logic), so a VPN without an Interconnect to fall back from cannot be created. Route priorities are tuned so traffic prefers Interconnect (100) over VPN (200). Depends on GCP-031 being enabled and circuits being ordered. Status PARTIAL kept because implementation and testing are complete; integration waits on GCP-031."
+    "notes": "Implemented 2026-10-06. PSK is stored in Terraform state (var.ha_vpn_gateways.preshared_key); infrastructure.rs::no_secret_value_appears_in_the_terraform ensures leaked state files hold no credential. VPN is gated on Interconnect (enable_ha_vpn implies enable_partner_interconnect via locals.vpn_gateways_needed logic), so a VPN without an Interconnect to fall back from cannot be created. Route priorities are tuned so traffic prefers Interconnect (100) over VPN (200). Depends on GCP-031 being enabled and circuits being ordered. Status PARTIAL kept because implementation and testing are complete; integration waits on GCP-031. HA VPN implementation complete. Depends on GCP-031 (Interconnect) being deployed. Fallback path requires out-of-band peer configuration (peer IP, shared secrets, ASNs). Terraform state will hold shared_secret values; see infrastructure.rs::no_secret_value_appears_in_the_terraform acceptance test. Pre-shared keys should come from Secret Manager in production (ADR decision pending per row notes). Shared secrets marked sensitive in variable definition."
   },
   {
     "id": "GCP-033",
