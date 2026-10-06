@@ -179,7 +179,7 @@ fn a_feature_snapshot_is_not_readable_before_knowable() {
 
     for i in 1..200 {
         let ts = Timestamp::from_secs(1000 + i * 5);
-        if ts.secs() < 2000 {
+        if ts.as_secs() < 2000 {
             assert!(!snapshot.is_knowable_at(ts));
         }
     }

@@ -7,7 +7,7 @@
 //! Each test is named as the requirement it proves, and asserts the property
 //! the requirement states, not merely that it is possible.
 
-#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::panic_in_result_fn, clippy::expect_used)]
 
 use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 use qip_contracts::signal::StrategyId;

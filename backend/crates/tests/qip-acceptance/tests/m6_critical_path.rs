@@ -465,7 +465,7 @@ fn policy_gate_routing_deterministic_path() -> Result<()> {
     let context = DecisionContext {
         determinism: Determinism::Required,
         conditions: Conditions::default(),
-        conviction: Conviction::High,
+        conviction: Conviction::new(0.85, 100),
         value_at_stake: dec!("50000"),
     };
 
@@ -499,7 +499,7 @@ fn policy_gate_routing_opportunistic_path() -> Result<()> {
     let context = DecisionContext {
         determinism: Determinism::Optional,
         conditions: Conditions::default(),
-        conviction: Conviction::Medium,
+        conviction: Conviction::new(0.50, 100),
         value_at_stake: dec!("50000"),
     };
 
@@ -534,9 +534,9 @@ fn policy_gate_routing_scaling_with_context_variability() -> Result<()> {
             determinism: Determinism::Optional,
             conditions: Conditions::default(),
             conviction: if i % 2 == 0 {
-                Conviction::High
+                Conviction::new(0.85, 100)
             } else {
-                Conviction::Low
+                Conviction::new(0.25, 100)
             },
             value_at_stake: dec!("1000"),
         };
@@ -548,10 +548,10 @@ fn policy_gate_routing_scaling_with_context_variability() -> Result<()> {
     let started = Instant::now();
     for i in 0..1000 {
         let conviction = match i % 4 {
-            0 => Conviction::High,
-            1 => Conviction::Medium,
-            2 => Conviction::Low,
-            _ => Conviction::VeryHigh,
+            0 => Conviction::new(0.85, 100),
+            1 => Conviction::new(0.50, 100),
+            2 => Conviction::new(0.25, 100),
+            _ => Conviction::new(0.95, 100),
         };
         let value = match i % 3 {
             0 => dec!("100"),
