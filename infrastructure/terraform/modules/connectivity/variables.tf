@@ -159,3 +159,51 @@ variable "private_service_connect_target" {
     error_message = "The target is vpc-sc (restricted) or all-apis (everything Google publishes)."
   }
 }
+
+# --- HA VPN fallback --------------------------------------------------------
+
+variable "enable_ha_vpn" {
+  description = <<-EOT
+    Whether to create HA VPN gateways as fallback for Interconnect paths.
+
+    Default false. HA VPN is the encrypted internet fallback when a partner
+    Interconnect is unavailable. The tunnel's pre-shared key is stored in
+    Terraform state; see infrastructure.rs::no_secret_value_appears_in_the_terraform
+    for the proof that it does not leak.
+
+    Meaningful only when enable_partner_interconnect is true; a VPN without an
+    Interconnect to fall back from is not what this requirement names.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "ha_vpn_gateways" {
+  description = <<-EOT
+    HA VPN gateways for each Interconnect attachment region.
+
+    Keyed by region name (e.g., "us-central1"). Each entry defines one HA VPN
+    gateway in that region, paired with the Interconnect attachments already
+    in that region. The gateway will have two tunnels and BGP sessions on the
+    same Cloud Router as the Interconnect attachments, with lower route
+    priority so traffic prefers the direct circuit.
+
+      * `peer_asn` is the VPN peer's BGP ASN (e.g., 65001).
+      * `preshared_key` is the tunnel pre-shared key.
+  EOT
+
+  type = map(object({
+    peer_asn        = number
+    preshared_key   = string
+  }))
+
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for region, gw in var.ha_vpn_gateways :
+      (gw.peer_asn >= 1 && gw.peer_asn <= 65534) || (gw.peer_asn >= 4200000000 && gw.peer_asn <= 4294967294)
+    ])
+    error_message = "Each peer ASN must be private: 1-65534, or 4200000000-4294967294 for a 32-bit one."
+  }
+}
