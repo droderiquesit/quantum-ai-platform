@@ -12885,6 +12885,10 @@ impl Platform {
             // Deliberately below a coin flip: most anomalies are noise, and a
             // prior chosen to suit the conclusion is not a prior.
             prior: 0.25,
+            // Anomaly detection reasoning is epistemic: uncertainty about whether
+            // the pattern is real or noise, which could be resolved by more
+            // observation, rather than inherent randomness (aleatoric).
+            uncertainty_type: qip_reasoning_engine::UncertaintyType::Epistemic,
             falsifiers: vec![format!(
                 "{} reverts inside one standard deviation within the horizon",
                 anomaly.subject

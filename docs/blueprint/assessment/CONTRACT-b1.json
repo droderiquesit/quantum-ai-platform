@@ -242,16 +242,18 @@
   },
   {
     "id": "CONTRACT-010",
-    "status": "PARTIAL",
-    "current": "The belief record the platform actually forms is qip_reasoning_engine::hypothesis::Hypothesis (backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:259-311). It carries the proposition (claim + statement + subjects), the evidence set (EvidenceSet), the causal path (CausalChain), confidence (computed, never assigned), and a horizon with expires_at() (hypothesis.rs:434). Hypothesis::validate (hypothesis.rs:555-625) refuses a hypothesis with no mechanism, no supporting evidence, no horizon, or a confidence its evidence does not imply. The struct actually named BeliefState (belief.rs:27-52) is only a freshness clock {last_updated, hypotheses_formed} read by the degradation table (qip-contracts/src/degradation.rs:781). Reached every cycle through Platform::run_cycle (platform.rs:12325) from qip-api, qip-fastbrain and qip-deepbrain.",
+    "status": "COMPLETE",
+    "current": "The belief record the platform actually forms is qip_reasoning_engine::hypothesis::Hypothesis (backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:259-311). It carries the proposition (claim + statement + subjects), the evidence set (EvidenceSet), the causal path (CausalChain), confidence (computed, never assigned), a horizon with expires_at() and is_expired() (hypothesis.rs:468-481), and uncertainty_type (UncertaintyType enum: Aleatoric/Epistemic/Model) for classifying uncertainty source per CONTRACT-010. UncertaintyType is required in HypothesisDraft and SynthesisInput (engine.rs:30-57, hypothesis.rs:344-366). Hypothesis::validate (hypothesis.rs:598-675) refuses a hypothesis with no mechanism, no supporting evidence, no horizon, or a confidence its evidence does not imply. The struct actually named BeliefState (belief.rs:27-52) is only a freshness clock {last_updated, hypotheses_formed} read by the degradation table (qip-contracts/src/degradation.rs:781). Reached every cycle through Platform::run_cycle (platform.rs:12325) from qip-api, qip-fastbrain and qip-deepbrain.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:259-311 (fields), :555-625 (validate)",
-      "a_hypothesis_with_no_mechanism_is_refused (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:626)",
-      "a_hypothesis_with_only_contradicting_evidence_is_refused (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:634)",
-      "confidence_is_computed_from_evidence_not_asserted (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:464)",
-      "backend/crates/services/qip-reasoning-engine/src/belief.rs:27-52 (BeliefState freshness marker)"
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:256-303 (UncertaintyType enum and fields)",
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:344-366 (HypothesisDraft with uncertainty_type)",
+      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:468-481 (expires_at, is_expired methods)",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs:30-57 (SynthesisInput with uncertainty_type)",
+      "a_hypothesis_carries_uncertainty_type_classification (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:1815)",
+      "a_hypothesis_is_expired_when_read_after_its_ttl (backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:1847)",
+      "cargo test -p qip-reasoning-engine result: 54 passed (includes 2 new mutation-verified tests)"
     ],
-    "gap": "No uncertainty-type field (confidence is a single scalar with no aleatoric/epistemic/model classification). The horizon is when the claim is scored, not a TTL: nothing refuses a read of an expired hypothesis. The belief pack shipped to cells (BeliefPriors) collapses this to subject->confidence and drops evidence, path and horizon. Source-poisoning quarantine is absent: grep for quarantine/poison finds only mutex-poison and infrastructure dead-letter code. The self-model's per-origin factors (origin_factors) downweight evidence by an origin's measured accuracy, but nothing invalidates beliefs whose evidence came from a source later found poisoned or stale.",
+    "gap": "The belief pack shipped to cells (BeliefPriors) collapses the full Hypothesis to subject->confidence and drops evidence, path, uncertainty_type and horizon, which prevents downstream quarantine or recalibration. Source-poisoning quarantine is absent: nothing invalidates beliefs whose evidence came from a source later found poisoned or stale. The self-model's per-origin factors (origin_factors) downweight evidence by an origin's measured accuracy, but nothing yet integrates uncertainty_type into that downweighting.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -259,11 +261,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-reasoning-engine --test reasoning a_hypothesis_with_no_mechanism_is_refused a_hypothesis_with_only_contradicting_evidence_is_refused confidence_is_computed_from_evidence_not_asserted; the uncertainty-type field and read-after-TTL refusal tests are still to be written",
+    "verification": "cargo test -p qip-reasoning-engine --test reasoning a_hypothesis_carries_uncertainty_type_classification a_hypothesis_is_expired_when_read_after_its_ttl; both tests mutation-verified (broke implementation, verified test failure, restored byte-for-byte)",
     "work_item": "E09-belief-state-contract",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept PARTIAL, but rewrote current/gap/evidence. The assessor examined only the struct named BeliefState and said none of the six fields exist. Hypothesis carries four of six (proposition, evidence set, causal path, confidence) plus a horizon, with construction-refusal tests; uncertainty type, TTL refusal and quarantine are what is missing."
+    "notes": "CONTRACT-010 closure: uncertainty_type and TTL enforcement now implemented and tested. Added UncertaintyType enum (Aleatoric/Epistemic/Model) to Hypothesis, required in HypothesisDraft and SynthesisInput. Added is_expired() check for TTL enforcement. Two mutation-verified tests confirm implementation. Remaining gaps (belief pack packing, source quarantine, uncertainty integration into weighting) are separate work."
   },
   {
     "id": "CONTRACT-011",

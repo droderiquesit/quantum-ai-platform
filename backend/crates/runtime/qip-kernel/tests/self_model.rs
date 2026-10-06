@@ -32,7 +32,9 @@ use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
 use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim, HypothesisDraft};
-use qip_reasoning_engine::{Hypothesis, ReasoningEngine, ReviewPolicy, SynthesisInput};
+use qip_reasoning_engine::{
+    Hypothesis, ReasoningEngine, ReviewPolicy, SynthesisInput, UncertaintyType,
+};
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
 use qip_world_model::causal::Mechanism;
 use std::collections::BTreeMap;
@@ -329,6 +331,7 @@ fn draft(evidence: EvidenceSet) -> HypothesisDraft {
         chain: sound_chain(),
         evidence,
         prior: 0.25,
+        uncertainty_type: UncertaintyType::Epistemic,
         falsifiers: vec!["the next report shows flat gross margin".to_string()],
         leading_alternative: "the market has priced the margin path".to_string(),
         horizon: Duration::from_days(60),
@@ -480,6 +483,7 @@ fn the_reasoning_engine_forms_with_the_factors_it_was_handed_and_with_none_until
         findings: Vec::new(),
         direct_evidence: two_origins(),
         prior: 0.25,
+        uncertainty_type: UncertaintyType::Epistemic,
         falsifiers: vec!["the next report shows flat gross margin".to_string()],
         leading_alternative: "the market has priced the margin path".to_string(),
         horizon: Duration::from_days(60),

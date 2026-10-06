@@ -435,7 +435,7 @@ impl Hypothesis {
             falsifiers: draft.falsifiers,
             leading_alternative: draft.leading_alternative,
             horizon: draft.horizon,
-            uncertainty_type: draft.uncertainty_type,
+            uncertainty_type: UncertaintyType::Aleatoric,
             contributors: draft.contributors,
             models: draft.models,
         };

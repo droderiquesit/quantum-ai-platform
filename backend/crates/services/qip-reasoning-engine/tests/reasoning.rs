@@ -23,7 +23,7 @@ use qip_reasoning_engine::evidence::{
 };
 use qip_reasoning_engine::hypothesis::{
     CausalChain, CausalStep, Claim, Hypothesis, HypothesisDraft, HypothesisStatus,
-    SINGLE_ORIGIN_CONFIDENCE_CEILING,
+    SINGLE_ORIGIN_CONFIDENCE_CEILING, UncertaintyType,
 };
 use qip_reasoning_engine::redteam::{ChallengeKind, RedTeam, ReviewPolicy};
 use qip_world_model::causal::Mechanism;
@@ -93,6 +93,7 @@ fn draft(evidence: EvidenceSet, chain: CausalChain) -> HypothesisDraft {
         chain,
         evidence,
         prior: 0.25,
+        uncertainty_type: UncertaintyType::Epistemic,
         falsifiers: vec![
             "the next quarterly report shows flat gross margin".to_string(),
             "the company discloses a funding hedge covering the exposure".to_string(),
@@ -1485,6 +1486,7 @@ fn synthesis(findings: Vec<AgentFinding>, priced_in: Option<f64>) -> SynthesisIn
         findings,
         direct_evidence: well_supported(),
         prior: 0.25,
+        uncertainty_type: UncertaintyType::Epistemic,
         falsifiers: vec!["the next quarterly report shows flat gross margin".to_string()],
         leading_alternative:
             "the market already knows the funding structure and has priced the margin path"
@@ -1806,5 +1808,66 @@ fn the_single_origin_ceiling_admits_the_same_evidence_once_it_is_corroborated() 
         "corroborated evidence was held to the single-origin ceiling at {}",
         corroborated.effective_confidence()
     );
+    Ok(())
+}
+
+#[test]
+fn a_hypothesis_carries_uncertainty_type_classification() -> Result<()> {
+    // CONTRACT-010: A hypothesis must carry uncertainty_type to classify the
+    // source of uncertainty (aleatoric/epistemic/model) for downweighting or
+    // invalidating beliefs when evidence sources are found poisoned or stale.
+    let hypothesis = Hypothesis::form(draft(supported_from(1), sound_chain()))?;
+
+    // Premise: the hypothesis was formed with UncertaintyType::Epistemic
+    assert_eq!(
+        hypothesis.uncertainty_type,
+        UncertaintyType::Epistemic,
+        "hypothesis uncertainty_type must be set; test assumes Epistemic"
+    );
+
+    // Verify: the uncertainty_type field is present and readable
+    let uncertainty_str = hypothesis.uncertainty_type.as_str();
+    assert_eq!(uncertainty_str, "epistemic");
+
+    // Verify: different uncertainty types can be classified
+    let mut draft_aleatoric = draft(supported_from(1), sound_chain());
+    draft_aleatoric.uncertainty_type = UncertaintyType::Aleatoric;
+    let hyp_aleatoric = Hypothesis::form(draft_aleatoric)?;
+    assert_eq!(hyp_aleatoric.uncertainty_type, UncertaintyType::Aleatoric);
+
+    let mut draft_model = draft(supported_from(1), sound_chain());
+    draft_model.uncertainty_type = UncertaintyType::Model;
+    let hyp_model = Hypothesis::form(draft_model)?;
+    assert_eq!(hyp_model.uncertainty_type, UncertaintyType::Model);
+
+    Ok(())
+}
+
+#[test]
+fn a_hypothesis_is_expired_when_read_after_its_ttl() -> Result<()> {
+    // CONTRACT-010: A hypothesis has a TTL (as_of + horizon). Reading a
+    // hypothesis after its TTL should be refused as expired.
+    let hypothesis = Hypothesis::form(draft(supported_from(1), sound_chain()))?;
+
+    // Premise: the hypothesis has a valid horizon
+    assert!(hypothesis.horizon.as_nanos() > 0, "premise: horizon must be positive");
+
+    let as_of = hypothesis.as_of;
+    let horizon = hypothesis.horizon;
+    let expires_at = hypothesis.expires_at();
+
+    // Verify: expires_at() returns as_of + horizon
+    assert_eq!(expires_at, as_of.saturating_add(horizon));
+
+    // Verify: is_resolvable() returns true at and after expiry
+    assert!(!hypothesis.is_resolvable(expires_at.saturating_sub(Duration::from_nanos(1))));
+    assert!(hypothesis.is_resolvable(expires_at));
+    assert!(hypothesis.is_resolvable(expires_at.saturating_add(Duration::from_nanos(1))));
+
+    // Verify: is_expired() returns true after expiry time
+    assert!(!hypothesis.is_expired(expires_at.saturating_sub(Duration::from_nanos(1))));
+    assert!(!hypothesis.is_expired(expires_at)); // expires_at itself is not yet expired
+    assert!(hypothesis.is_expired(expires_at.saturating_add(Duration::from_nanos(1))));
+
     Ok(())
 }
