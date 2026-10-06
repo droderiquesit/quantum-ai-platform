@@ -110,6 +110,7 @@ fn release(series: MacroSeries, value: f64) -> SensedRecord {
         is_revision: false,
         provenance: Provenance::new("statistics-office", reference, start()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }))
 }
 
@@ -127,6 +128,7 @@ fn reading(dataset: &str, metric: &str, value: f64) -> SensedRecord {
         proxies_for: Some(names::REVENUE.to_string()),
         provenance: Provenance::new("alt-vendor", observed, start()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }))
 }
 

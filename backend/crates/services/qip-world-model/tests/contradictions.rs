@@ -142,6 +142,7 @@ fn story(feed: &str, confidence: f64, ingested: Timestamp) -> NewsItem {
         topics: Vec::new(),
         provenance: Provenance::new(feed, days_ago(2), ingested),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 

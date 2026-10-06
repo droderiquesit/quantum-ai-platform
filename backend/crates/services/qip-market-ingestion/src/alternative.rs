@@ -751,6 +751,7 @@ impl AlternativeFeedAdapter {
             proxies_for: wire.proxies_for,
             provenance,
             quality,
+            evidence_unretrievable: false,
         };
         let knowable = wire
             .published_at

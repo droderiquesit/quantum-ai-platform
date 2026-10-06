@@ -448,6 +448,7 @@ fn a_news_item_stamped_before_publication_is_clamped_to_publication() {
         // A mis-stamped feed claiming ingestion before publication.
         provenance: Provenance::new("wire", published, published.saturating_sub(days(2))),
         quality: DataQuality::default(),
+        evidence_unretrievable: false,
     };
 
     let events = MarketEvent::from_news(&item);

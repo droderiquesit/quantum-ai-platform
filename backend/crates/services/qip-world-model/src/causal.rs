@@ -255,6 +255,12 @@ pub struct CausalEdge {
     /// graph it did not have.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired: Option<Retirement>,
+    /// Whether the evidence supporting this edge has become unretrievable
+    /// (source withdrawn, access denied, or source unavailable). An edge
+    /// with unretrievable evidence should be treated as stale and
+    /// subject to immediate re-estimation or retirement.
+    #[serde(default)]
+    pub evidence_unretrievable: bool,
 }
 
 /// The consecutive condition failures an edge is currently accumulating in
@@ -405,6 +411,7 @@ impl CausalEdge {
             fails_in: BTreeSet::new(),
             failure_run: None,
             retired: None,
+            evidence_unretrievable: false,
         })
     }
 

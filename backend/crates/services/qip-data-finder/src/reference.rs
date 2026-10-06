@@ -180,11 +180,19 @@ pub enum RevisionCheck {
     /// after this reference was made — §22.3's own reason the content hash
     /// is "the single most important field".
     Revised { was: String, now: String },
+    /// The source no longer serves this extent: it was withdrawn (404), the
+    /// source denied access, or the source became unavailable. Any knowledge
+    /// derived from this reference must be marked as based on unretrievable evidence.
+    Unretrievable,
 }
 
 impl RevisionCheck {
     pub fn is_revised(&self) -> bool {
         matches!(self, Self::Revised { .. })
+    }
+
+    pub fn is_unretrievable(&self) -> bool {
+        matches!(self, Self::Unretrievable)
     }
 
     pub fn describe(&self) -> String {
@@ -194,6 +202,9 @@ impl RevisionCheck {
                 "revised: the reference recorded {was} and a re-fetch now hashes {now}; the \
                  source changed what it serves for this extent after it was used"
             ),
+            Self::Unretrievable => "unretrievable: the source no longer serves this extent; the \
+                 extent was withdrawn, access was denied, or the source became unavailable"
+                .into(),
         }
     }
 }
@@ -1165,6 +1176,7 @@ mod tests {
                 );
             }
             RevisionCheck::Unchanged => panic!("a changed extent reported unchanged"),
+            RevisionCheck::Unretrievable => panic!("a changed extent reported unretrievable"),
         }
 
         // The ledger's form of the same question: a later reference to the
