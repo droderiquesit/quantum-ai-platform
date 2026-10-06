@@ -270,6 +270,61 @@ pub struct ModelManifest {
     pub models: BTreeMap<String, String>,
 }
 
+/// A complete model pack carrying signed artifacts, calibration, and deployment constraints.
+/// Carries signed model artifacts; the features they consume; calibration; the universes
+/// they are allowed to be applied to; a resource budget; an expiry; and the rollback parent
+/// it replaces (CONTRACT-011).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelPack {
+    /// Artifact digest of the signed model, hex-encoded SHA-256.
+    pub artifact_digest: String,
+    /// Signature over the digest, HMAC-SHA256 keyed with the region key.
+    pub signature: String,
+    /// Feature names this model consumes, in canonical order.
+    pub features: Vec<String>,
+    /// Calibration confidence (0.0 to 1.0) of the model on the training set.
+    pub calibration: f64,
+    /// Allowed universes (instruments) this model can be applied to.
+    pub allowed_universes: BTreeSet<String>,
+    /// Resource budget for execution: worst-case microseconds.
+    pub budget_microseconds: u64,
+    /// Expiry timestamp in seconds since epoch.
+    pub expires_at: u64,
+    /// Digest of the model pack this one replaces, empty string if no rollback parent.
+    pub rollback_parent: String,
+}
+
+impl ModelPack {
+    /// Refuse a pack with any empty required field, out-of-range calibration, or empty universe list.
+    pub fn validate(&self) -> Result<()> {
+        if self.artifact_digest.is_empty() {
+            return Err(Error::invalid("model_pack: artifact_digest is empty"));
+        }
+        if self.signature.is_empty() {
+            return Err(Error::invalid("model_pack: signature is empty"));
+        }
+        if self.features.is_empty() {
+            return Err(Error::invalid("model_pack: features is empty"));
+        }
+        if !(0.0..=1.0).contains(&self.calibration) {
+            return Err(Error::invalid(
+                "model_pack: calibration is out of range [0.0, 1.0]",
+            ));
+        }
+        if self.allowed_universes.is_empty() {
+            return Err(Error::invalid("model_pack: allowed_universes is empty"));
+        }
+        if self.budget_microseconds == 0 {
+            return Err(Error::invalid("model_pack: budget_microseconds is zero"));
+        }
+        if self.expires_at == 0 {
+            return Err(Error::invalid("model_pack: expires_at is zero"));
+        }
+        Ok(())
+    }
+}
+
 /// The compiled plan, by digest and size. The plan itself ships elsewhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

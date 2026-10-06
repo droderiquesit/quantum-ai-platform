@@ -72,7 +72,7 @@ pub use intent::{
     Contributor, Intent, NetIntent, NettingPolicy, Representation, net, netting_ratio,
 };
 pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
-pub use policy::{PolicyFrame, PolicyItem, PolicyPayload, RegimeChange, RiskGate, Slot};
+pub use policy::{ModelPack, PolicyFrame, PolicyItem, PolicyPayload, RegimeChange, RiskGate, Slot};
 pub use quantum::{ChosenPath, DecisionRequest, RoutingDecision, SolverKind, SolverResult};
 pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};
 pub use regional_episode::{EpisodeKind, RegionalEpisode};

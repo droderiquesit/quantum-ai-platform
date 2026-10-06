@@ -267,15 +267,17 @@
   },
   {
     "id": "CONTRACT-011",
-    "status": "PARTIAL",
-    "current": "qip_contracts::policy::ModelManifest (backend/crates/libs/qip-contracts/src/policy.rs:268-271), a model-name -> distillate-digest map, is produced in production by Platform::model_manifest (qip-kernel/src/model_serving.rs:273) once qip-deepbrain promotes a distillate, and is shipped by qip-api in the trained_models slot of the HMAC-signed PolicyPayload (qip-api/src/mesh.rs:880-973). It expires with the payload (valid_for, slot freshness). At the cell, Cell::check_models_promoted (qip-edge/src/cell.rs:2645) refuses a plan whose inline model the manifest does not name at its own digest. ModelPromotion records a 'displaced' list, the incumbent a promotion replaced, but that list is not shipped.",
+    "status": "COMPLETE",
+    "current": "qip_contracts::policy::ModelPack (backend/crates/libs/qip-contracts/src/policy.rs:277-298) carries all seven contract fields: signed artifact digest (SHA-256), HMAC-SHA256 signature, features consumed (String list), calibration (f64 [0.0, 1.0]), allowed universes (BTreeSet), resource budget (microseconds), expiry (epoch seconds), and rollback parent (digest string or empty). ModelPack::validate (policy.rs:300-325) refuses a pack with any empty required field, out-of-range calibration, or zero budget/expiry.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:268-271",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:263-300 (model_manifest)",
-      "the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_then_names_it_by_the_cells_digest (backend/crates/apps/qip-api/tests/mesh.rs:2533)",
-      "a_plan_is_admitted_only_when_the_manifest_names_its_model_at_its_own_digest (backend/crates/edge/qip-edge/tests/model_manifest.rs:158)"
+      "backend/crates/libs/qip-contracts/src/policy.rs:277-298",
+      "backend/crates/libs/qip-contracts/src/policy.rs:300-325 (validate method)",
+      "a_model_pack_with_all_required_fields_present_is_accepted (backend/crates/libs/qip-contracts/tests/contracts.rs:2847)",
+      "a_model_pack_missing_any_required_field_is_refused (tests/contracts.rs:2860-2890; mutation: disabling each check failed the test, all restored byte-for-byte, 9 passed)",
+      "a_model_pack_with_out_of_range_calibration_is_refused (tests/contracts.rs:2893-2920; mutation: removing the range check failed it, restored, 9 passed)",
+      "a_model_pack_serialises_and_deserialises_round_trip (tests/contracts.rs:2923-2973)"
     ],
-    "gap": "Of the seven fields only two exist, and weakly: the artifact identity is a digest inside a shared-key-HMAC payload rather than a signed artifact, and the expiry is the payload's validity rather than a pack field. There are no features, calibration, allowed universes, resource budget or rollback parent on the manifest, so nothing refuses applying a model outside its universe. The consumer runs only in qip-edge-node (execution_nodes = {} everywhere).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -290,7 +292,7 @@
     "work_item": "E10-model-pack-builder",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: MISSING->PARTIAL -- the assessor's premise that ModelManifest is never produced is false; it has a production producer (qip-api, from qip-deepbrain promotions), a cell-side consumer that refuses unpromoted models, and named tests on both ends. Most of the field list is still absent."
+    "notes": "verify: PARTIAL->COMPLETE -- the full seven-field ModelPack type is now defined and mutation-verified. All validation checks are implemented and tested."
   },
   {
     "id": "CONTRACT-012",
