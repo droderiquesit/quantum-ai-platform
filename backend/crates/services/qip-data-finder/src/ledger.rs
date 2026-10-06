@@ -299,7 +299,7 @@ impl RevisionRecord {
 }
 
 /// The marker a failed re-fetch leaves against an extent (DATA-008).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unretrievable {
     reason: String,
     since: Timestamp,
@@ -325,6 +325,11 @@ pub enum LedgerOutcome {
     /// The extent was already referenced and hashes differently: the source
     /// revised it after this platform used it.
     Revised(RevisionRecord),
+    /// A re-fetch of an extent this platform had referenced failed: the source
+    /// no longer serves it (withdrawn, embargoed, gone), so derived knowledge
+    /// is marked non-re-fetchable. Prevents silent survival of knowledge whose
+    /// evidence can no longer be verified.
+    NonRetrievable(Unretrievable),
 }
 
 impl LedgerOutcome {
@@ -333,11 +338,16 @@ impl LedgerOutcome {
             Self::First => "first",
             Self::Unchanged => "unchanged",
             Self::Revised(_) => "revised",
+            Self::NonRetrievable(_) => "non_retrievable",
         }
     }
 
     pub const fn is_revised(&self) -> bool {
         matches!(self, Self::Revised(_))
+    }
+
+    pub const fn is_non_retrievable(&self) -> bool {
+        matches!(self, Self::NonRetrievable(_))
     }
 }
 
@@ -474,6 +484,30 @@ impl ReferenceLedger {
         }
         self.restore_reference(reference);
         outcome
+    }
+
+    /// Record that a re-fetch of an extent this ledger holds a reference to
+    /// failed outright — withdrawn, embargoed, gone — and return the outcome.
+    ///
+    /// The extent and its reference are both kept: the requirement is that
+    /// knowledge outlives its source. What changes is that the marker prevents
+    /// silent survival of derived facts whose source evidence can no longer
+    /// be verified. A caller seeing [`LedgerOutcome::NonRetrievable`] knows
+    /// that nothing built on this extent can be re-checked, and marks it
+    /// accordingly.
+    pub fn record_fetch_failure(
+        &mut self,
+        source_id: &str,
+        locator: &str,
+        period: DataPeriod,
+        reason: &str,
+        at: Timestamp,
+    ) -> Result<LedgerOutcome> {
+        self.mark_unretrievable(source_id, locator, period, reason, at)?;
+        Ok(LedgerOutcome::NonRetrievable(Unretrievable {
+            reason: reason.to_string(),
+            since: at,
+        }))
     }
 
     /// Put `reference` in the ledger as the latest reference to its extent,
@@ -977,6 +1011,163 @@ mod tests {
         ledger.record(build("committed-tape", b"three", later)?, later);
         assert_eq!(ledger.sources_backing("AAA").len(), 2);
         assert!(ledger.sources_backing("BBB").is_empty());
+        Ok(())
+    }
+
+    /// A re-fetch that fails returns NonRetrievable with the failure reason
+    /// and timestamp, preventing silent survival of knowledge whose source
+    /// can no longer be checked. The reference itself survives.
+    ///
+    /// Mutated by deleting the return of `LedgerOutcome::NonRetrievable` in
+    /// `record_fetch_failure` — confirmed the outcome assertion then fails,
+    /// then restored; and by deleting the `self.mark_unretrievable` call
+    /// — confirmed the marker assertion then fails.
+    #[test]
+    fn a_re_fetch_failure_returns_non_retrievable_with_timestamp_and_reason() -> Result<()> {
+        let mut ledger = ReferenceLedger::bounded();
+        let held = reference("synthetic-exchange", "bars://AAA", now(), b"one")?;
+        ledger.record(held.clone(), now());
+
+        let gone_at = now().saturating_add(Duration::from_secs(600));
+        let period = DataPeriod::instant(now());
+
+        let outcome = ledger.record_fetch_failure(
+            "synthetic-exchange",
+            "bars://AAA",
+            period,
+            "404: not found",
+            gone_at,
+        )?;
+
+        let LedgerOutcome::NonRetrievable(ref marker) = outcome else {
+            panic!("a fetch failure was recorded as {outcome:?}");
+        };
+        assert_eq!(marker.reason(), "404: not found");
+        assert_eq!(marker.since(), gone_at);
+        assert!(
+            outcome.is_non_retrievable(),
+            "is_non_retrievable must identify the outcome"
+        );
+        assert_eq!(outcome.as_str(), "non_retrievable");
+
+        // The reference survives; knowledge outlives its source.
+        assert_eq!(
+            ledger
+                .get("synthetic-exchange", "bars://AAA", period)
+                .map(DataReference::content_hash),
+            Some(held.content_hash())
+        );
+
+        // The marker persists in the ledger's unretrievable map.
+        assert_eq!(
+            ledger.unretrievable(&held).map(Unretrievable::reason),
+            Some("404: not found")
+        );
+        Ok(())
+    }
+
+    /// The as_str method returns the correct discriminator for all outcomes
+    /// including the new NonRetrievable variant.
+    ///
+    /// Mutated by replacing the `Self::NonRetrievable(_) => "non_retrievable"`
+    /// arm with `=> "revised"` — confirmed the non_retrievable assertion then
+    /// fails, then restored.
+    #[test]
+    fn outcome_as_str_discriminates_all_variants_including_non_retrievable() -> Result<()> {
+        let mut ledger = ReferenceLedger::bounded();
+        let held = reference("synthetic-exchange", "bars://AAA", now(), b"one")?;
+
+        // First
+        let first_outcome = ledger.record(held.clone(), now());
+        assert_eq!(first_outcome.as_str(), "first");
+
+        // Unchanged
+        let later = now().saturating_add(Duration::from_secs(60));
+        let same = DataReference::of_generated(
+            &descriptor("synthetic-exchange"),
+            "bars://AAA",
+            ["AAA".to_string()],
+            DataPeriod::instant(now()),
+            SourceSchema::from_fields([("close".to_string(), FieldType::Number)]),
+            b"one",
+            later,
+        )?;
+        let unchanged = ledger.record(same, later);
+        assert_eq!(unchanged.as_str(), "unchanged");
+
+        // Revised
+        let latest = later.saturating_add(Duration::from_secs(60));
+        let revised = DataReference::of_generated(
+            &descriptor("synthetic-exchange"),
+            "bars://AAA",
+            ["AAA".to_string()],
+            DataPeriod::instant(now()),
+            SourceSchema::from_fields([("close".to_string(), FieldType::Number)]),
+            b"two",
+            latest,
+        )?;
+        let revised_outcome = ledger.record(revised, latest);
+        assert_eq!(revised_outcome.as_str(), "revised");
+        assert!(revised_outcome.is_revised());
+
+        // NonRetrievable
+        let gone_at = latest.saturating_add(Duration::from_secs(600));
+        let period = DataPeriod::instant(now());
+        let non_retrievable = ledger.record_fetch_failure(
+            "synthetic-exchange",
+            "bars://AAA",
+            period,
+            "source offline",
+            gone_at,
+        )?;
+        assert_eq!(non_retrievable.as_str(), "non_retrievable");
+        assert!(
+            !non_retrievable.is_revised(),
+            "non_retrievable is not revised"
+        );
+        assert!(non_retrievable.is_non_retrievable());
+        Ok(())
+    }
+
+    /// record_fetch_failure refuses an extent with no reference in the ledger,
+    /// because there is no derived knowledge to mark, and refuses an empty
+    /// reason because a marker nobody can act on is useless.
+    ///
+    /// Mutated by deleting the `self.mark_unretrievable` call inside
+    /// `record_fetch_failure` — confirmed the error assertions then fail, then
+    /// restored.
+    #[test]
+    fn record_fetch_failure_refuses_unknown_extents_and_empty_reasons() -> Result<()> {
+        let mut ledger = ReferenceLedger::bounded();
+        let period = DataPeriod::instant(now());
+        let gone_at = now().saturating_add(Duration::from_secs(600));
+
+        // Unknown extent
+        assert!(
+            ledger
+                .record_fetch_failure(
+                    "synthetic-exchange",
+                    "bars://UNKNOWN",
+                    period,
+                    "404",
+                    gone_at
+                )
+                .is_err(),
+            "a failure for an unknown extent must be refused"
+        );
+
+        // Now record an extent so we can test the empty reason case
+        let held = reference("synthetic-exchange", "bars://AAA", now(), b"one")?;
+        ledger.record(held, now());
+
+        // Empty reason
+        assert!(
+            ledger
+                .record_fetch_failure("synthetic-exchange", "bars://AAA", period, "  ", gone_at)
+                .is_err(),
+            "a failure with no reason must be refused"
+        );
+
         Ok(())
     }
 }
