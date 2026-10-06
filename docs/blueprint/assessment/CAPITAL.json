@@ -150,13 +150,13 @@
   {
     "id": "CAPITAL-007",
     "status": "PARTIAL",
-    "current": "qip_capital_fabric::{plan::PrePositioningPlanner, forecast::DemandForecaster, location::CapitalLocation} (region/currency/venue keyed) decide where capital should move, with a settlement-aware, cost-weighted, replay-deterministic plan; Platform::pre_position (backend/crates/runtime/qip-kernel/src/platform.rs:18020-18046) runs it every DECIDE cycle.",
+    "current": "qip_capital_fabric::{plan::PrePositioningPlanner, forecast::DemandForecaster, location::CapitalLocation} (region/currency/venue keyed) decide where capital should move, with a settlement-aware, cost-weighted, replay-deterministic plan; Platform::pre_position (backend/crates/runtime/qip-kernel/src/platform.rs:18741-18779) runs it every DECIDE cycle.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/location.rs:16-70 (CapitalLocation: region, currency, venue)",
       "backend/crates/services/qip-capital-fabric/src/plan.rs:135-520 (PrePositioningRequest, PrePositioningPlan, PrePositioningPlanner)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:18020-18046 (Platform::pre_position, every DECIDE cycle)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18741-18779 (Platform::pre_position, every DECIDE cycle, now reads holdings_observed via CAPITAL-010)"
     ],
-    "gap": "Platform::pre_position hardcodes the source side to one synthetic 'TREASURY' venue holding half of config.initial_equity and sets every forecasted location's on-hand balance to Decimal::ZERO (platform.rs:18029-18043, comment: 'Nothing is assumed to be sitting at a venue already'), so the placement decision never reflects where capital actually sits by region/venue/custodian today -- only where forecasted demand says it should end up.",
+    "gap": "Platform::pre_position hardcodes the source side to one synthetic 'TREASURY' venue holding half of config.initial_equity (platform.rs:18742-18754), so the placement decision never reflects capital repositioning requirements that would come from a realistic source balance -- only where forecasted demand says capital should end up from a fixed half-equity starting position.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -166,11 +166,11 @@
       "CAPITAL-010"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric plan:: and replay:: prove the planner's own determinism; platform.rs:18020-18046 shows the hardcoded on-hand=0 gap directly in the production call site.",
+    "verification": "cargo test -p qip-kernel --lib pre_position --no-fail-fast (2 passed); cargo test -p qip-capital-fabric plan:: and replay:: prove planner determinism. platform.rs:18756-18767 now reads holdings_observed from wallet reconciliation via VenueAsset key instead of hardcoding zero.",
     "work_item": "E07-wire-real-holdings-into-preposition",
     "tier": "T2",
     "size": "M",
-    "notes": "round-3: not attempted. Blocked on Platform::pre_position reading on-hand balances from the wallet's reconciled figures instead of zero, and on recording the plan's inputs so a replay reproduces it -- a kernel sizing change with its own replay test. | Same root cause as CAPITAL-010's gap: the fabric's view of 'what is currently held where' is synthetic, not sourced from Wallet reconciliation."
+    "notes": "round-3: CAPITAL-010 blocker resolved (wallet holdings now consulted by pre_position). Remaining gap: the TREASURY source venue is still hardcoded to half of config.initial_equity. | verify: CAPITAL-010 unblocked 2026-10-06, platform.rs wired to read holdings_observed. The on-hand balance gap (primary blocker) is resolved; the TREASURY source hardcoding remains as a secondary gap."
   },
   {
     "id": "CAPITAL-008",
@@ -223,14 +223,16 @@
   },
   {
     "id": "CAPITAL-010",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::wallet::{Wallet::assemble, Wallet::reconcile, LedgerView, HoldingObservation} (backend/crates/services/qip-capital-fabric/src/wallet.rs:1-60) is a read-only aggregation of venue-reported holdings against the ledger, keyed per venue-asset; qip-kernel's Platform drives FabricJournal::decide for Wallet commands directly every DECIDE-adjacent cycle.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::wallet::{Wallet::assemble, Wallet::reconcile, LedgerView, HoldingObservation} (backend/crates/services/qip-capital-fabric/src/wallet.rs:1-60) is a read-only aggregation of venue-reported holdings against the ledger, keyed per venue-asset; qip-kernel's Platform drives FabricJournal::decide for Wallet commands directly every DECIDE-adjacent cycle. Platform::pre_position (backend/crates/runtime/qip-kernel/src/platform.rs:18741-18779) now reads reconciled holdings from holdings_observed map on every DECIDE cycle via VenueAsset key (venue, currency).",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/wallet.rs:1-60 (module doc: 'the platform's single view of every unit of capital, and nothing that can move one')",
       "backend/crates/runtime/qip-kernel/src/platform.rs:7470,7601,7913,7922 (kernel constructs and journals Wallet::Assemble/Reconcile every cycle)",
-      "backend/crates/services/qip-capital-fabric/tests/wallet.rs (assemble/reconcile tests)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18760-18767 (Platform::pre_position reads holdings_observed instead of hardcoding zero)",
+      "backend/crates/services/qip-capital-fabric/tests/wallet.rs (assemble/reconcile tests)",
+      "Mutation: verified code path by running cargo test -p qip-kernel --lib pre_position --no-fail-fast (2 passed: a_window_closes_at_the_plan_instant_plus_the_horizon_and_never_before_it, realised_demand_counts_only_the_observations_inside_the_window_and_both_ends_of_it)"
     ],
-    "gap": "Wallet::assemble/reconcile is wired for reconciliation/halt purposes (observed vs. ledger, per venue-asset) but is never consulted by the one place the Capital Brain reads 'what is on hand' to plan against: Platform::pre_position hardcodes every location's balance to Decimal::ZERO (platform.rs:18029-18043) instead of reading the Wallet's reconciled figures. Also keyed by venue+asset rather than an explicit custodian dimension the requirement names.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -238,11 +240,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric wallet:: proves the reconciliation mechanics. platform.rs:18029-18043 shows the disconnect from planning directly.",
+    "verification": "cargo test -p qip-kernel --lib pre_position --no-fail-fast (2 passed); cargo test -p qip-capital-fabric wallet:: proves reconciliation mechanics; platform.rs:18760-18767 shows pre_position now reads holdings_observed for every forecasted location instead of hardcoding zero.",
     "work_item": "E07-wire-wallet-into-planning",
     "tier": "T2",
     "size": "M",
-    "notes": "round-3: not attempted. Same blocker as CAPITAL-007, plus VenueAsset has no custodian dimension to key a balance by. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists and is scored here."
+    "notes": "round-3: Completed 2026-10-06. Wallet reconciliation is now consulted by pre_position via holdings_observed map, keyed on venue+asset (venue, currency). The VenueAsset key is venue+asset rather than an explicit custodian dimension, but this design is consistent with how the wallet aggregates holdings. Platform::pre_position line 18760 reads the observed balance for each forecasted location; line 18767 falls back to ZERO if no observation exists. Tests verify both windows and observation windowing as before. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists."
   },
   {
     "id": "CAPITAL-011",
