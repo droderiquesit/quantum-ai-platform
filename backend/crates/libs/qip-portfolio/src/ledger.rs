@@ -366,6 +366,153 @@ pub fn post(fill: &PaperFill) -> Result<LedgerEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qip_contracts::message::BookSide;
+    use qip_contracts::reflex::{ChainVersion, Decision, JournalEntry};
+    use qip_core::Timestamp;
+
+    fn make_outcome_record(simulated: bool, quantity: &str, price: &str) -> OutcomeRecord {
+        let entry = JournalEntry {
+            sequence: 1,
+            at: Timestamp::from_secs(1_000_000),
+            decision: Decision::Filled {
+                order_id: "test-order".to_string(),
+                venue: "test-venue".to_string(),
+                object: "TEST".to_string(),
+                quantity: quantity.to_string(),
+                price: price.to_string(),
+                simulated,
+                shares: vec![("strategy-1".to_string(), quantity.to_string())],
+                side: Some(BookSide::Ask),
+                quote_unit: Some("USD".to_string()),
+                fee: None,
+            },
+            digest: "test-digest".to_string(),
+            version: ChainVersion::V2,
+        };
+        OutcomeRecord {
+            cell: "test-cell".to_string(),
+            session: 1,
+            journal_sequence: entry.sequence,
+            journal_digest: entry.digest.clone(),
+            entry,
+        }
+    }
+
+    #[test]
+    fn a_simulated_paper_fill_can_be_posted_as_one_balanced_event() {
+        // Premise: a valid outcome record with all required fields is provided.
+        let outcome = make_outcome_record(true, "100.5", "50.25");
+
+        // PaperFill::try_from should succeed for a valid simulated fill.
+        let fill =
+            PaperFill::try_from(&outcome).expect("premise: a valid simulated fill is accepted");
+
+        // post() should succeed and return a balanced ledger event.
+        let event = post(&fill).expect("a valid fill posts");
+
+        // Verify the event is marked as simulated settlement.
+        assert_eq!(event.settlement(), Settlement::Simulated);
+
+        // Verify postings are present and balanced in the quote unit.
+        let postings = event.postings();
+        assert!(!postings.is_empty(), "an event has postings");
+
+        let mut debits = Decimal::ZERO;
+        let mut credits = Decimal::ZERO;
+        for p in postings {
+            if p.unit == "USD" {
+                match p.direction {
+                    Direction::Debit => debits += p.amount,
+                    Direction::Credit => credits += p.amount,
+                }
+            }
+        }
+        assert!(debits.is_positive(), "debits exist in quote unit");
+        assert_eq!(debits, credits, "debits equal credits in quote unit");
+    }
+
+    #[test]
+    fn a_live_fill_is_refused_and_not_posted() {
+        // Premise: the same fill marked simulated is accepted.
+        let outcome_simulated = make_outcome_record(true, "50", "100");
+        let fill_simulated =
+            PaperFill::try_from(&outcome_simulated).expect("premise: a simulated fill is accepted");
+        assert!(
+            post(&fill_simulated).is_ok(),
+            "premise: simulated fill posts"
+        );
+
+        // A live fill (simulated=false) should be refused at construction.
+        let outcome_live = make_outcome_record(false, "50", "100");
+        let result = PaperFill::try_from(&outcome_live);
+
+        assert!(result.is_err(), "live fill is refused");
+        if let Err(e) = result {
+            assert!(
+                e.to_string().contains("not marked simulated"),
+                "refusal names the paper-trading boundary: {}",
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn a_fill_with_no_side_is_refused() {
+        // Premise: a fill with a side is accepted.
+        let outcome_with_side = make_outcome_record(true, "50", "100");
+        assert!(
+            PaperFill::try_from(&outcome_with_side).is_ok(),
+            "premise: a fill with side is accepted"
+        );
+
+        // A fill with no side should be refused.
+        let entry = JournalEntry {
+            sequence: 1,
+            at: Timestamp::from_secs(1_000_000),
+            decision: Decision::Filled {
+                order_id: "test".to_string(),
+                venue: "test".to_string(),
+                object: "TEST".to_string(),
+                quantity: "50".to_string(),
+                price: "100".to_string(),
+                simulated: true,
+                shares: vec![("s1".to_string(), "50".to_string())],
+                side: None,
+                quote_unit: Some("USD".to_string()),
+                fee: None,
+            },
+            digest: "d".to_string(),
+            version: ChainVersion::V2,
+        };
+        let outcome_no_side = OutcomeRecord {
+            cell: "c".to_string(),
+            session: 1,
+            journal_sequence: 1,
+            journal_digest: "d".to_string(),
+            entry,
+        };
+
+        let result = PaperFill::try_from(&outcome_no_side);
+        assert!(result.is_err(), "fill with no side is refused");
+    }
+
+    #[test]
+    fn a_paper_fill_posting_is_pure_and_deterministic() {
+        // Premise: a valid fill is created.
+        let outcome = make_outcome_record(true, "10.5", "25.5");
+        let fill = PaperFill::try_from(&outcome).expect("premise: fill is created");
+
+        // post() should produce identical results on replay.
+        let event1 = post(&fill).expect("first post succeeds");
+        let event2 = post(&fill).expect("replay succeeds");
+
+        // Both events should be equal (same postings in same order).
+        assert_eq!(
+            event1.postings(),
+            event2.postings(),
+            "replaying the same fill produces identical postings"
+        );
+    }
 
     #[test]
     fn a_figure_that_would_need_rounding_is_refused_rather_than_rounded() {
