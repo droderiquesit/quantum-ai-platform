@@ -176,6 +176,7 @@ fn two_batches() -> [Vec<Decision>; 2] {
                 simulated: true,
                 release_at: None,
                 equalised: false,
+                grant_identifier: None,
             },
             refused(),
             Decision::HaltChanged {

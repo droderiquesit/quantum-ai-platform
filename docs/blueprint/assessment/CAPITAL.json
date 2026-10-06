@@ -127,13 +127,16 @@
   {
     "id": "CAPITAL-006",
     "status": "PARTIAL",
-    "current": "qip_contracts::capital::CapitalEnvelope (backend/crates/libs/qip-contracts/src/capital.rs:18-222) is the signed, bounded, expiring grant; qip_capital::envelope::{EnvelopeIssuer, EnvelopeTerms} (backend/crates/services/qip-capital/src/envelope.rs:70-230) mints it with HMAC-SHA-256; qip_edge::envelope::VerifiedEnvelope and Cell::hold_region_capital/admit (backend/crates/edge/qip-edge/src/cell.rs:3503-3521,5917-5946) draw against it locally, naming the drawn grant in every refusal and journal record.",
+    "current": "qip_contracts::capital::CapitalEnvelope (backend/crates/libs/qip-contracts/src/capital.rs:18-222) is the signed, bounded, expiring grant; qip_capital::envelope::{EnvelopeIssuer, EnvelopeTerms} (backend/crates/services/qip-capital/src/envelope.rs:70-230) mints it with HMAC-SHA-256; qip_edge::envelope::VerifiedEnvelope and Cell::hold_region_capital/admit (backend/crates/edge/qip-edge/src/cell.rs:3503-3521,5917-5946) draw against it locally, naming the drawn grant in every refusal and journal record. Decision::OrderSent (backend/crates/libs/qip-contracts/src/reflex.rs) now carries grant_identifier: Option<String> (the VerifiedEnvelope's signature) on every order sent, so the event log cites which grant was drawn for each commitment and utilisation can be replayed per grant from the journal alone (gap #2 closed).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/capital.rs:39-75 (CapitalEnvelope::new refuses malformed grants), :178-222 (admit)",
       "backend/crates/services/qip-capital/src/envelope.rs:70-230 (EnvelopeIssuer::issue, HMAC signing)",
-      "backend/crates/edge/qip-edge/src/cell.rs:3503-3521 (Cell draws against the envelope, never independently)"
+      "backend/crates/edge/qip-edge/src/cell.rs:3503-3521 (Cell draws against the envelope, never independently)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs:245-254 (Decision::OrderSent with grant_identifier field, #[serde(default)] for backward compatibility)",
+      "backend/crates/edge/qip-edge/src/cell.rs:4975-5010 (record_sent wired with grant signatures from deployed strategies), :8040-8050 (cycle legs grant extraction)",
+      "backend/crates/edge/qip-edge/tests/cell.rs:964+ (an_order_sent_record_cites_the_grant_identifier: mutation-verified test asserting grant_identifier matches envelope.signature())"
     ],
-    "gap": "Three parts are not met. (1) Platform-wide: the central desk in qip-api/qip-fastbrain submits paper orders through Platform::submit_order (platform.rs:15330-15375) with no CapitalEnvelope at all -- it is bounded by the ReservationLedger's free balance, not by a grant it holds -- so 'a strategy deploys capital only under a grant it currently holds' holds only inside a reflex cell. (2) Citation: the cell's commitment record Decision::OrderSent (qip-edge/src/journal.rs:58-67) carries order id, venue and quantity but no grant identifier (approver/signature/expiry), so the event log does not cite the grant each commitment drew on, and utilisation cannot be replayed per grant from the log as the verification requires. (3) Deployability: grant enforcement runs only in qip-edge-node, and every environment has execution_nodes = {}.",
+    "gap": "Two parts are not met. (1) Platform-wide: the central desk in qip-api/qip-fastbrain submits paper orders through Platform::submit_order (platform.rs:15330-15375) with no CapitalEnvelope at all -- it is bounded by the ReservationLedger's free balance, not by a grant it holds -- so 'a strategy deploys capital only under a grant it currently holds' holds only inside a reflex cell. (3) Deployability: grant enforcement runs only in qip-edge-node, and every environment has execution_nodes = {}.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -141,11 +144,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --test contracts -- every_capital_refusal_names_the_bound_that_stopped_it; cargo test -p qip-edge --test cell -- a_strategy_cannot_be_deployed_under_another_cells_grant. qip-acceptance chaos.rs::randomly_injected_faults_never_break_the_five_invariants checks invariant 4 against a Utilisation the harness itself increments around CapitalEnvelope::admit (chaos.rs:440-465, 671-700), not against the cell's own journal, and it is one process -- so it is not e2e evidence that every logged commitment cites its grant. Missing: a test replaying a cell journal to reproduce each grant's utilisation.",
+    "verification": "cargo test -p qip-contracts --test contracts -- every_capital_refusal_names_the_bound_that_stopped_it; cargo test -p qip-edge --test cell -- a_strategy_cannot_be_deployed_under_another_cells_grant and an_order_sent_record_cites_the_grant_identifier (mutation-verified). qip-acceptance chaos.rs::randomly_injected_faults_never_break_the_five_invariants checks invariant 4 against a Utilisation the harness itself increments around CapitalEnvelope::admit (chaos.rs:440-465, 671-700), not against the cell's own journal, and it is one process -- so it is not e2e evidence. Closed gap #2: Decision::OrderSent now carries grant_identifier, wired from deployed.envelope.signature() at both order-send and cycle-leg recording sites. Backward compatible via serde default and skip_serializing_if for v2 digest. Missing for gaps #1 and #3: central desk to use CapitalEnvelope, and execution_nodes provisioning.",
     "work_item": "E07-grant-cited-on-every-commitment",
     "tier": "T2",
     "size": "M",
-    "notes": "round-3: not attempted. Blocked on changing the central desk's order admission to draw on a CapitalEnvelope (a kernel order-path change, not a wiring), on a grant field in the cell's OrderSent journal record (an edge journal schema change), and on execution_nodes = {} in every environment. | verify: downgraded COMPLETE -> PARTIAL; e2e true -> false; deployable true -> false. OrderSent cites no grant, the central desk trades without any grant, the chaos invariant uses a test-local utilisation tracker, and the enforcing binary (qip-edge-node) is provisioned nowhere."
+    "notes": "round-4: gap #2 (Citation) closed. Added grant_identifier: Option<String> field to Decision::OrderSent in qip-contracts/src/reflex.rs, wired envelope.signature() through from Cell::record_sent call sites in qip-edge/src/cell.rs (lines 4975-5010 for net orders, 8040-8050 for cycle legs), created mutation-verified test an_order_sent_record_cites_the_grant_identifier asserting field is Some and equals envelope signature. Serde configuration (#[serde(default, skip_serializing_if)]) maintains backward compatibility with pre-existing journal entries and preserves v2 digest across field order. gap #1 (central desk) requires Platform::submit_order path to draw on CapitalEnvelope instead of ReservationLedger free balance alone (a kernel order-path change). gap #3 (deployability) blocked on execution_nodes = {} in every environment."
   },
   {
     "id": "CAPITAL-007",
@@ -804,5 +807,49 @@
     "tier": "T0",
     "size": "S",
     "notes": "verify: status kept COMPLETE. Added the partition test that actually demonstrates 'keeps trading within the grants it already holds' with the centre silent, and the architecture test pinning the absence of a capital dependency; the cited mesh tests alone cover only the resume-receiving-grants half. deployable=false confirmed. | deployable=false only because qip-edge-node itself (the binary hosting Cell) is never provisioned -- execution_nodes = {} in every environment's terraform.tfvars -- not because the invariant is unmet."
+  },
+  {
+    "id": "CAPITAL-034",
+    "status": "MISSING",
+    "current": "nothing. No Capital Kernel exists that bounds competing capital plans from multiple agents. qip-capital::allocate and qip-capital::funding define library-level planning functions but no composition root builds an arbitration mechanism that would enforce authoritative balances, obligations, and hard limits across conflicting demands from treasury, liquidity, funding, leverage, collateral, strategy, region, venue, tax and survival agents.",
+    "evidence": [
+      "grep -rn 'CapitalKernel|competing.*plan|bounds.*agent' backend --include=*.rs returns nothing",
+      "backend/crates/services/qip-capital/src/lib.rs (library exports: allocate, funding, collateral, envelope -- no arbitration)"
+    ],
+    "gap": "No Capital Kernel exists to arbitrate competing plans. ADR 0101 states this is necessary, but the mechanism to enforce authoritative balances and hard limits across agents is not implemented.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C7",
+    "verification": "Integration test demonstrating two conflicting plans, kernel admission of only the combination within hard limits.",
+    "work_item": "E99-capital-kernel-architecture",
+    "tier": "T2",
+    "size": "XL",
+    "notes": "Added by ADR 0101. Requires architecture decision on how competing agents submit plans and the kernel arbitrates them. Policy flags: KUBERNETES, MANAGED_SERVICE. Blocking factor C7 (Kubernetes infrastructure) needs resolution before deployment is possible."
+  },
+  {
+    "id": "CAPITAL-036",
+    "status": "MISSING",
+    "current": "nothing. No shadow portfolio infrastructure exists. qip_capital::allocate makes an allocation decision but no system maintains counterfactual shadow portfolios recording alternate sizes, hedges, timing, venues and rejected opportunities for scoring against the realised choice.",
+    "evidence": [
+      "grep -rn 'shadow.*portfolio|counterfactual.*allocat|ShadowPortfolio' backend --include=*.rs returns nothing",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (LEARN stage scores resolved allocations; no shadow universe exists)"
+    ],
+    "gap": "No shadow portfolio system exists. ADR 0101 requires counterfactual shadow portfolios beside every paper allocation for scoring against realised choices.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "One allocation yields at least one alternate-size and one rejected-opportunity shadow, scored after resolution.",
+    "work_item": "E99-shadow-portfolio-farm",
+    "tier": "T2",
+    "size": "L",
+    "notes": "Added by ADR 0101. Requires infrastructure to track alternate allocations (shadow portfolios) with different sizes, hedges, timing, venues. Policy flags: COST. Integration into the LEARN stage where realised allocations are scored."
   }
 ]

@@ -126,6 +126,11 @@ pub enum Decision {
     /// old journal would fail to verify. A reader treats an absent
     /// `release_at` as "released at the entry's own instant, unequalised",
     /// which is what such an order was, and never as zero.
+    ///
+    /// `grant_identifier` (CAPITAL-006) is the signature of the CapitalEnvelope
+    /// that was drawn on to commit this order. Absent on entries sealed before
+    /// the field existed; its presence lets a reader replay utilisation per
+    /// grant from the journal alone.
     OrderSent {
         order_id: String,
         venue: String,
@@ -135,6 +140,8 @@ pub enum Decision {
         release_at: Option<Timestamp>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         equalised: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        grant_identifier: Option<String>,
     },
     /// The venue reported part or all of an order traded, and the cell
     /// booked it.

@@ -562,11 +562,14 @@ fn forecast_lattice_disagreement_is_median_spread() -> Result<()> {
     let lattice = ForecastLattice::new(key, t(100), vec![dist1, dist2])?;
 
     // Disagreement is 105 - 95 = 10
-    assert_eq!(
-        lattice.disagreement_width(),
-        10.0,
-        "disagreement width does not match median spread"
-    );
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(
+            lattice.disagreement_width(),
+            10.0,
+            "disagreement width does not match median spread"
+        );
+    }
 
     Ok(())
 }
@@ -636,7 +639,7 @@ fn quantum_routing_requires_complete_feature_vectors() -> Result<()> {
     // The distinction determines routing behavior
     // A complete vector may enter quantum; an incomplete one must not.
     assert_eq!(complete.undefined().len(), 0);
-    assert!(incomplete.undefined().len() > 0);
+    assert!(!incomplete.undefined().is_empty());
 
     Ok(())
 }
@@ -883,7 +886,10 @@ fn forecast_lattice_aggregates_model_disagreement() -> Result<()> {
     let lattice = ForecastLattice::new(key, t(100), vec![model_a, model_b, model_c])?;
 
     // Disagreement should be max(105) - min(100) = 5
-    assert_eq!(lattice.disagreement_width(), 5.0);
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(lattice.disagreement_width(), 5.0);
+    }
 
     // With three independent forecasts, disagreement is present
     assert!(lattice.disagreement_width() > 0.0);
@@ -945,7 +951,7 @@ fn point_in_time_reads_use_knowable_instant_not_true_instant() -> Result<()> {
 /// staleness detection will not work.
 #[test]
 fn feature_revision_staleness_is_detected() -> Result<()> {
-    let key = FeatureKey::new("volatility", obj("ACME"));
+    let _key = FeatureKey::new("volatility", obj("ACME"));
 
     // A strategy sees this feature at revision 1
     let _cached_at_rev_1 = Revision::new(1);

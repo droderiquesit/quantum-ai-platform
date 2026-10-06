@@ -18753,14 +18753,32 @@ impl Platform {
             FxRates::new(Currency::USD),
         )?;
         for forecast in self.forecast_capital_demand(now, horizon) {
-            // Nothing is assumed to be sitting at a venue already. Claiming a
-            // balance the platform has not been told about is how a plan
-            // declines the transfer that turns out to have been needed.
+            // Read the actual on-hand balance from the reconciled wallet instead
+            // of assuming zero. An asset on hand at the venue is available for
+            // pre-positioning without an inbound transfer.
+            let balance = self
+                .fabric
+                .state()
+                .wallet()
+                .and_then(|wallet| {
+                    let asset =
+                        qip_capital_fabric::wallet::Asset::new(forecast.location.currency.as_str())
+                            .ok();
+                    asset.and_then(|a| {
+                        wallet
+                            .observation(&qip_capital_fabric::wallet::VenueAsset {
+                                venue: forecast.location.venue.clone(),
+                                asset: a,
+                            })
+                            .map(|obs| obs.observed)
+                    })
+                })
+                .unwrap_or(Decimal::ZERO);
             request = request
                 .with_balance(LocationBalance::new(
                     forecast.location.clone(),
                     forecast.kind,
-                    Decimal::ZERO,
+                    balance,
                 )?)
                 .with_forecast(forecast);
         }
