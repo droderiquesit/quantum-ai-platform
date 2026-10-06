@@ -18,7 +18,7 @@ use qip_contracts::feature::{
 use qip_contracts::gate::GateStage;
 use qip_contracts::governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
 use qip_contracts::message::{BookSide, TradeCondition};
-use qip_contracts::policy::FeasibilityConstraints;
+use qip_contracts::policy::{DistilledModelContract, FeasibilityConstraints};
 use qip_contracts::signal::{Conviction, StrategyId};
 use qip_contracts::time::{Stamped, Watermark};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
@@ -2831,5 +2831,109 @@ fn a_disposition_is_on_the_wire_and_under_the_signature_once_there_is_one() -> R
         signing,
         "a disposition altered by one unit still signs the same"
     );
+    Ok(())
+}
+
+#[test]
+fn a_distilled_model_contract_with_all_required_fields_is_accepted() -> Result<()> {
+    let model = DistilledModelContract {
+        name: "decision_tree_v2".to_string(),
+        memory_bytes: 4096,
+        latency_micros: 500,
+        reflex_compatible: true,
+        worst_case_cost: 256,
+    };
+    model.validate()?;
+    Ok(())
+}
+
+#[test]
+fn a_distilled_model_contract_with_empty_name_is_refused() -> Result<()> {
+    let model = DistilledModelContract {
+        name: String::new(),
+        memory_bytes: 4096,
+        latency_micros: 500,
+        reflex_compatible: true,
+        worst_case_cost: 256,
+    };
+    assert!(model.validate().is_err());
+    Ok(())
+}
+
+#[test]
+fn a_distilled_model_contract_with_zero_memory_bytes_is_refused() -> Result<()> {
+    let model = DistilledModelContract {
+        name: "model_v1".to_string(),
+        memory_bytes: 0,
+        latency_micros: 500,
+        reflex_compatible: false,
+        worst_case_cost: 256,
+    };
+    assert!(model.validate().is_err());
+    Ok(())
+}
+
+#[test]
+fn a_distilled_model_contract_with_zero_latency_micros_is_refused() -> Result<()> {
+    let model = DistilledModelContract {
+        name: "model_v1".to_string(),
+        memory_bytes: 4096,
+        latency_micros: 0,
+        reflex_compatible: false,
+        worst_case_cost: 256,
+    };
+    assert!(model.validate().is_err());
+    Ok(())
+}
+
+#[test]
+fn a_distilled_model_contract_with_zero_worst_case_cost_is_refused() -> Result<()> {
+    let model = DistilledModelContract {
+        name: "model_v1".to_string(),
+        memory_bytes: 4096,
+        latency_micros: 500,
+        reflex_compatible: true,
+        worst_case_cost: 0,
+    };
+    assert!(model.validate().is_err());
+    Ok(())
+}
+
+#[test]
+fn a_distilled_model_with_latency_bound_less_than_worst_case_cost_is_refused() -> Result<()> {
+    let model = DistilledModelContract {
+        name: "model_v1".to_string(),
+        memory_bytes: 4096,
+        latency_micros: 100,
+        reflex_compatible: false,
+        worst_case_cost: 256,
+    };
+    assert!(model.validate().is_err());
+    Ok(())
+}
+
+#[test]
+fn contract_008_distilled_models_serialize_and_deserialize_round_trip() -> Result<()> {
+    let original = DistilledModelContract {
+        name: "linear_classifier_v3".to_string(),
+        memory_bytes: 8192,
+        latency_micros: 1000,
+        reflex_compatible: true,
+        worst_case_cost: 512,
+    };
+
+    // Serialize to JSON
+    let json = serde_json::to_string(&original)?;
+
+    // Deserialize back
+    let restored: DistilledModelContract = serde_json::from_str(&json)?;
+
+    // Verify round-trip preserves all fields
+    assert_eq!(restored.name, original.name);
+    assert_eq!(restored.memory_bytes, original.memory_bytes);
+    assert_eq!(restored.latency_micros, original.latency_micros);
+    assert_eq!(restored.reflex_compatible, original.reflex_compatible);
+    assert_eq!(restored.worst_case_cost, original.worst_case_cost);
+
     Ok(())
 }

@@ -1205,6 +1205,64 @@ impl RegimeChange {
     }
 }
 
+/// A distilled model contract specifies bounds on an ML model's runtime
+/// resource consumption and latency requirements.
+///
+/// Distilled models are small, fixed-size functions embedded in the hot path.
+/// This contract enforces upper bounds on memory, worst-case latency, and
+/// specifies whether the model is compatible with reflex lanes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DistilledModelContract {
+    /// Name of the model, non-empty.
+    pub name: String,
+    /// Maximum memory in bytes the model uses.
+    pub memory_bytes: u64,
+    /// Maximum latency in microseconds.
+    pub latency_micros: u64,
+    /// Whether this model is compatible with reflex decision lanes.
+    pub reflex_compatible: bool,
+    /// Worst-case evaluation steps charged against a strategy's budget.
+    pub worst_case_cost: u64,
+}
+
+impl DistilledModelContract {
+    /// Validate that all bounds are sensible and consistent.
+    ///
+    /// Checks:
+    /// - `name` is non-empty.
+    /// - `memory_bytes`, `latency_micros`, and `worst_case_cost` are all
+    ///   non-zero.
+    /// - `latency_micros` >= `worst_case_cost` (latency must accommodate cost).
+    pub fn validate(&self) -> Result<()> {
+        if self.name.is_empty() {
+            return Err(Error::invalid("distilled model name must be non-empty"));
+        }
+        if self.memory_bytes == 0 {
+            return Err(Error::invalid(
+                "distilled model memory_bytes must be non-zero",
+            ));
+        }
+        if self.latency_micros == 0 {
+            return Err(Error::invalid(
+                "distilled model latency_micros must be non-zero",
+            ));
+        }
+        if self.worst_case_cost == 0 {
+            return Err(Error::invalid(
+                "distilled model worst_case_cost must be non-zero",
+            ));
+        }
+        if self.latency_micros < self.worst_case_cost {
+            return Err(Error::invalid(format!(
+                "distilled model latency_micros ({}) must be >= worst_case_cost ({})",
+                self.latency_micros, self.worst_case_cost
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::panic_in_result_fn)] // the assertion is the deliverable in a test
 mod policy_frame_tests {
