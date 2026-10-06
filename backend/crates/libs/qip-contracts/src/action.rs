@@ -371,3 +371,584 @@ impl ExecutionRecord {
         })
     }
 }
+
+/// AGENCY-009: Pre-action gate enforcing nine checks before external intervention.
+/// Actions that can move money, change external systems or communicate publicly
+/// must pass all nine checks or be refused with no adapter invoked.
+#[derive(Clone, Debug)]
+pub struct PreActionGate {
+    /// Registered identities with verified credentials.
+    identities: BTreeSet<String>,
+    /// Identity → disclosure requirement mapping.
+    disclosure_requirements: BTreeMap<String, String>,
+    /// Authorized jurisdictions for this gate.
+    jurisdictions: BTreeSet<String>,
+}
+
+impl PreActionGate {
+    pub fn new(
+        identities: impl IntoIterator<Item = String>,
+        disclosure_requirements: impl IntoIterator<Item = (String, String)>,
+        jurisdictions: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            identities: identities.into_iter().collect(),
+            disclosure_requirements: disclosure_requirements.into_iter().collect(),
+            jurisdictions: jurisdictions.into_iter().collect(),
+        }
+    }
+
+    /// Apply all nine checks to an action before execution.
+    /// Returns Ok(()) if all checks pass, or an error naming the first check that fails.
+    pub fn check(
+        &self,
+        acting_identity: &str,
+        action_class: &str,
+        claimed_effect: &str,
+        evidence_count: usize,
+        origin: &str,
+        channel: &str,
+        jurisdiction: &str,
+        is_technically_feasible: bool,
+        disclosure_provided: bool,
+    ) -> Result<()> {
+        // Check 1: Acting identity must be registered and not blank.
+        if blank(acting_identity) || !self.identities.contains(acting_identity) {
+            return Err(Error::denied(
+                "check 1 failed: acting identity is not registered",
+            ));
+        }
+
+        // Check 2: Authority level must be sufficient for action class.
+        // Conservative default: capital actions require identity in a capital list.
+        if action_class == "capital"
+            && !self
+                .identities
+                .contains(&format!("{acting_identity}:capital"))
+        {
+            return Err(Error::denied(
+                "check 2 failed: authority level insufficient for action class",
+            ));
+        }
+
+        // Check 3: Truthfulness — claims must be backed by evidence.
+        if !claimed_effect.is_empty() && evidence_count == 0 {
+            return Err(Error::denied(
+                "check 3 failed: claimed effect lacks supporting evidence",
+            ));
+        }
+
+        // Check 4: Provenance — action origin must be recorded and not blank.
+        if blank(origin) {
+            return Err(Error::denied(
+                "check 4 failed: action provenance is not recorded",
+            ));
+        }
+
+        // Check 5: Disclosure — identity's required disclosure must be provided.
+        if let Some(requirement) = self.disclosure_requirements.get(acting_identity)
+            && !requirement.is_empty()
+            && !disclosure_provided
+        {
+            return Err(Error::denied(
+                "check 5 failed: disclosure requirement not met",
+            ));
+        }
+
+        // Check 6: Market-conduct rules — detect prohibited patterns.
+        // Conservative: refuse any action with "wash" or "spoof" in description.
+        if claimed_effect.to_lowercase().contains("wash")
+            || claimed_effect.to_lowercase().contains("spoof")
+            || claimed_effect.to_lowercase().contains("pump-and-dump")
+        {
+            return Err(Error::denied(
+                "check 6 failed: action violates market-conduct rules",
+            ));
+        }
+
+        // Check 7: Channel permissions — channel must not be blank.
+        if blank(channel) {
+            return Err(Error::denied(
+                "check 7 failed: channel permissions cannot be verified",
+            ));
+        }
+
+        // Check 8: Jurisdiction — must be in authorized set.
+        if blank(jurisdiction) || !self.jurisdictions.contains(jurisdiction) {
+            return Err(Error::denied(
+                "check 8 failed: jurisdiction is not authorized",
+            ));
+        }
+
+        // Check 9: Feasibility — action must be technically possible.
+        if !is_technically_feasible {
+            return Err(Error::denied(
+                "check 9 failed: action is not technically feasible",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // AGENCY-009: Pre-action gate with 9 checks
+
+    #[test]
+    fn check_1_fails_when_acting_identity_is_blank() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 1 failed"));
+    }
+
+    #[test]
+    fn check_1_fails_when_acting_identity_is_not_registered() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "unregistered_op",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 1 failed"));
+    }
+
+    #[test]
+    fn check_1_passes_when_identity_is_registered() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_2_fails_for_capital_action_without_capital_authority() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "capital",
+            "deploy_capital",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 2 failed"));
+    }
+
+    #[test]
+    fn check_2_passes_for_capital_action_with_capital_authority() {
+        let gate = PreActionGate::new(
+            vec!["operator_1".into(), "operator_1:capital".into()],
+            vec![],
+            vec!["US".into()],
+        );
+        let result = gate.check(
+            "operator_1",
+            "capital",
+            "deploy_capital",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_3_fails_when_claim_has_no_evidence() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "this will improve returns",
+            0,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 3 failed"));
+    }
+
+    #[test]
+    fn check_3_passes_when_claim_is_backed_by_evidence() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "this will improve returns",
+            2,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_3_passes_when_claim_is_empty() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "",
+            0,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_4_fails_when_origin_is_blank() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 4 failed"));
+    }
+
+    #[test]
+    fn check_4_passes_when_origin_is_recorded() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "opportunity:123",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_5_fails_when_disclosure_required_but_not_provided() {
+        let gate = PreActionGate::new(
+            vec!["operator_1".into()],
+            vec![("operator_1".into(), "must_disclose".into())],
+            vec!["US".into()],
+        );
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 5 failed"));
+    }
+
+    #[test]
+    fn check_5_passes_when_disclosure_not_required() {
+        let gate = PreActionGate::new(
+            vec!["operator_1".into()],
+            vec![("operator_1".into(), "".into())],
+            vec!["US".into()],
+        );
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_6_fails_for_wash_trading_pattern() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "wash trading strategy",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 6 failed"));
+    }
+
+    #[test]
+    fn check_6_fails_for_spoofing_pattern() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "spoof the market",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 6 failed"));
+    }
+
+    #[test]
+    fn check_6_fails_for_pump_and_dump_pattern() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "pump-and-dump scheme",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 6 failed"));
+    }
+
+    #[test]
+    fn check_6_passes_for_legitimate_action() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance portfolio",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_7_fails_when_channel_is_blank() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 7 failed"));
+    }
+
+    #[test]
+    fn check_7_passes_when_channel_is_provided() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_8_fails_when_jurisdiction_is_blank() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 8 failed"));
+    }
+
+    #[test]
+    fn check_8_fails_when_jurisdiction_not_authorized() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "CN",
+            true,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 8 failed"));
+    }
+
+    #[test]
+    fn check_8_passes_when_jurisdiction_is_authorized() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn check_9_fails_when_action_is_not_feasible() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            false,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 9 failed"));
+    }
+
+    #[test]
+    fn check_9_passes_when_action_is_feasible() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "operator_1",
+            "research",
+            "rebalance",
+            1,
+            "origin",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn all_nine_checks_pass_for_valid_action() {
+        let gate = PreActionGate::new(
+            vec!["operator_1".into(), "operator_1:capital".into()],
+            vec![("operator_1".into(), "".into())],
+            vec!["US".into()],
+        );
+        let result = gate.check(
+            "operator_1",
+            "capital",
+            "deploy_capital_for_returns",
+            3,
+            "opportunity:456",
+            "api",
+            "US",
+            true,
+            false,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn gate_refuses_unregistered_identity_before_checking_other_gates() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let result = gate.check(
+            "nobody",
+            "capital",
+            "wash trading scheme",
+            0,
+            "",
+            "",
+            "CN",
+            false,
+            false,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("check 1 failed"));
+    }
+}
