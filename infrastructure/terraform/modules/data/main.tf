@@ -135,10 +135,11 @@ resource "google_storage_bucket" "archive" {
 
   # The event log is hash-chained and its value is that it is complete. A
   # retention policy that permitted deletion would let the one record an
-  # investigation needs be the one that aged out.
+  # investigation needs be the one that aged out. The lock prevents any future
+  # modification to this policy (FINOPS-013).
   retention_policy {
     retention_period = var.archive_retention_days * 24 * 60 * 60
-    is_locked        = false
+    is_locked        = true
   }
 
   lifecycle_rule {

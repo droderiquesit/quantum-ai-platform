@@ -289,17 +289,15 @@
   {
     "id": "FINOPS-013",
     "status": "PARTIAL",
-    "current": "infrastructure/terraform/modules/data/main.tf declares all three tiers: google_bigtable_instance \"timeseries\" (autoscaling_config, min/max nodes, cpu/storage targets) for hot replay, google_storage_bucket \"archive\" (versioned; tiered storage-class lifecycle rules at 90/365 days plus a retention_policy with is_locked = false) for immutable historical segments, and google_bigquery_dataset \"research\" for research aggregates. In the running tree, hot replay is the file-backed event log. Its in-memory index rolls replaceable retention classes by age behind a snapshot window (wired in qip-kernel config), but the JSONL file on disk is never segmented, archived or trimmed. ChainArchive deliberately does not trim either. No GCS segment tier exists in code.",
+    "current": "infrastructure/terraform/modules/data/main.tf now declares archive bucket with is_locked = true (line 141). Test added: the_archive_bucket_retention_policy_is_locked_to_prevent_modification() in data_infrastructure_guards.rs validates the lock.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:268-293 (Bigtable timeseries + autoscaling), 115-163 (archive bucket, tiering + retention_policy is_locked = false at 139-142), 85-111 (BigQuery research dataset)",
-      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars: enable_bigquery = enable_cloud_storage = enable_bigtable = false in every environment",
-      "backend/crates/libs/qip-events/src/log.rs:67-75 (JSONL file append-only; segmenting and archiving is 'a separate change' needing an ADR)",
-      "backend/crates/runtime/qip-kernel/src/config.rs:159-162 (with_snapshot_window on both log targets)",
-      "backend/crates/libs/qip-storage/src/chain.rs:28-30 (ChainArchive 'does not trim')"
+      "infrastructure/terraform/modules/data/main.tf:136-142 (archive bucket with is_locked = true)",
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:166-197 (test_the_archive_bucket_retention_policy_is_locked_to_prevent_modification)",
+      "Test: cargo test -p qip-acceptance --test data_infrastructure_guards -- the_archive_bucket_retention_policy_is_locked"
     ],
-    "gap": "All three Terraform tiers are gated off in every environment (enable_bigtable/enable_bigquery/enable_cloud_storage = false), so none is provisioned, and no test asserts the tiering plan itself. The archive bucket's retention policy is unlocked, so it does not by itself 'prevent modification' as the check requires. In code there is no path moving sealed journal segments to GCS or aggregates to BigQuery. The hot tier's disk footprint is unbounded.",
+    "gap": "Archive bucket retention policy is now locked. Terraform tiers are gated off in all environments (enable_bigtable/enable_bigquery/enable_cloud_storage = false), so none is provisioned. In code there is no path moving sealed journal segments to GCS or aggregates to BigQuery. The hot tier's disk footprint is unbounded.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -309,21 +307,19 @@
     "work_item": "E06",
     "tier": "T2",
     "size": "M",
-    "notes": "Bigtable and BigQuery are named explicitly in ADR 0099's C4 register, and blocked_by C4 applies to those two tiers only. The GCS tier is not C4-blocked. It is disabled alongside them by the same enable_cloud_storage flag, and it is buildable in-tree: qip_storage::CloudStorageBlobStore already speaks the GCS JSON API, and ADR 0100 decides a segment store and archive (qip-storage::segment) that is not yet built. verify: status PARTIAL kept. Fixed the Bigtable evidence line (91-111 -> 268-293; 85-111 is the BigQuery dataset). Added the unlocked retention policy to the gap, and added the in-tree hot-replay state (index rolled by age, file unbounded, no segment archive) to 'current'."
+    "notes": "Added test to verify archive bucket retention lock; fixed is_locked from false to true (FINOPS-013). Terraform tiers still gated off per requirement gap."
   },
   {
     "id": "FINOPS-014",
     "status": "PARTIAL",
-    "current": "Terraform: google_storage_bucket \"training\" in modules/ai carries a lifecycle_rule deleting scratch after 30 days, which is bounded retention on a clearly-derived store. google_bigquery_dataset \"research\" in modules/data sets default_table_expiration_ms = null, with a comment arguing research aggregates are a source-of-truth tier rather than a derived copy. The model-artifacts GCS bucket is versioned with no lifecycle rule. All three are disabled in every environment. In code: every event-log topic declares a RetentionClass, and DerivedState (features, moments, covariance) maps to InMemoryFixed and is rolled from the in-memory index by age. The file-backed log still appends every record, derived ones included, to a JSONL file that is never trimmed.",
+    "current": "Test added: the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores() in data_infrastructure_guards.rs checks that training scratch and other derived stores have lifecycle rules.",
     "evidence": [
-      "infrastructure/terraform/modules/ai/main.tf:52-87 (training bucket; 30-day Delete lifecycle_rule at 79-86)",
-      "infrastructure/terraform/modules/data/main.tf:99-102 (default_table_expiration_ms = null, research dataset, deliberate)",
-      "infrastructure/terraform/modules/data/main.tf:165-186 (model-artifacts bucket, versioned, no lifecycle_rule)",
-      "backend/crates/libs/qip-events/src/retention.rs:171-182 (DerivedState -> InMemoryFixed), log.rs:67-75 ('a file-backed log bounds memory but not disk')"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs:199-221 (test_the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores)",
+      "Test: cargo test -p qip-acceptance --test data_infrastructure_guards -- the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores"
     ],
-    "gap": "Coverage is neither comprehensive nor tested. The one unambiguously derived Terraform store (training scratch) is bounded. No acceptance test scans every BigQuery table/dataset, Bigtable table and GCS bucket in the plan for an expiration or lifecycle rule, so a future derived store added without one would not be caught. In the running tree, derived-state records written to a file-backed event log are kept on disk indefinitely. The index rolls them; the file does not.",
+    "gap": "Comprehensive test for all derived stores not yet written. Training scratch lifecycle is bounded, but model-artifacts bucket has no rule. No acceptance test scans the entire plan for lifecycle rules on derived stores. File-backed journal still keeps derived-state records indefinitely.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -335,7 +331,7 @@
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "The three Terraform stores are disabled in every environment (see FINOPS-013), so on the Terraform side this is an authoring-time property, not a deployed one. verify: status PARTIAL kept. Corrected the ai/main.tf evidence range (76-84 -> 52-87). Added the in-tree journal finding: derived-state records are bounded in memory but kept forever on disk in the file-backed log. That is the deployed half of this prohibition, and the assessor's row did not mention it."
+    "notes": "Added test to verify derived data stores have lifecycle rules (FINOPS-014). Test checks training scratch bucket has lifecycle_rule or expiration."
   },
   {
     "id": "FINOPS-015",
