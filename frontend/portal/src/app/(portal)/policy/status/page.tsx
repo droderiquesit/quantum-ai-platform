@@ -81,8 +81,8 @@ export default function PolicyStatusPage() {
             <span className="chip mr-2" data-tone="ok" data-testid="policy-paper-label">
               PAPER TRADING
             </span>
-            The platform's governance, autonomy, and risk control posture. Every figure comes from
-            the platform's own state; none are inferred or computed here. No control on this page
+            The platform&apos;s governance, autonomy, and risk control posture. Every figure comes from
+            the platform&apos;s own state; none are inferred or computed here. No control on this page
             modifies policy — configuration changes require operator credentials and come through
             dedicated endpoints.
           </p>
@@ -124,9 +124,9 @@ export default function PolicyStatusPage() {
                         <p className="text-[10.5px] text-[color:var(--color-ink-faint)]">
                           {formatTimestamp(new Date(data.history[0].at * 1000).toISOString())}
                         </p>
-                        {data.history[0].reason && (
+                        {data.history[0]?.reason && (
                           <p className="text-[10.5px] italic text-[color:var(--color-ink-dim)]">
-                            "{data.history[0].reason}"
+                            &quot;{data.history[0]?.reason}&quot;
                           </p>
                         )}
                       </div>
