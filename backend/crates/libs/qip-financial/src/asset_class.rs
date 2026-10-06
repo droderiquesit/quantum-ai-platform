@@ -18,6 +18,7 @@ pub enum AssetClass {
     ForeignExchange,
     Commodity,
     Derivative,
+    Prediction,
     DigitalAsset,
     Fund,
     PrivateMarket,
@@ -27,7 +28,7 @@ pub enum AssetClass {
 }
 
 impl AssetClass {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Equity,
         Self::FixedIncome,
         Self::Credit,
@@ -35,6 +36,7 @@ impl AssetClass {
         Self::ForeignExchange,
         Self::Commodity,
         Self::Derivative,
+        Self::Prediction,
         Self::DigitalAsset,
         Self::Fund,
         Self::PrivateMarket,
@@ -52,6 +54,7 @@ impl AssetClass {
             Self::ForeignExchange => "foreign_exchange",
             Self::Commodity => "commodity",
             Self::Derivative => "derivative",
+            Self::Prediction => "prediction",
             Self::DigitalAsset => "digital_asset",
             Self::Fund => "fund",
             Self::PrivateMarket => "private_market",
@@ -72,6 +75,7 @@ impl AssetClass {
                 | Self::Rates
                 | Self::ForeignExchange
                 | Self::Derivative
+                | Self::Prediction
                 | Self::DigitalAsset
                 | Self::Cash
                 | Self::Commodity
