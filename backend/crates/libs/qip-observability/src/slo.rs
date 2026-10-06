@@ -255,6 +255,42 @@ pub fn default_slos() -> Vec<Slo> {
             0.95,
             SloWindow::Week,
         ),
+        // OBS-031: Reflex SLOs — decision latency at p99 — under 10 ms.
+        Slo::latency(
+            "decision-latency-p99",
+            "reflex",
+            0.99,
+            10.0,
+            SloWindow::Hour,
+        ),
+        // OBS-031: Reflex SLOs — decision latency at p99.9 — under 20 ms.
+        Slo::latency(
+            "decision-latency-p99.9",
+            "reflex",
+            0.999,
+            20.0,
+            SloWindow::Hour,
+        ),
+        // OBS-031: Reflex SLOs — venue round-trip time — under 50 ms p99.
+        Slo::latency(
+            "venue-round-trip-time-p99",
+            "reflex",
+            0.99,
+            50.0,
+            SloWindow::Hour,
+        ),
+        // OBS-031: Reflex SLOs — stale-book age — under 5 s before refusal.
+        Slo::latency("stale-book-age-max", "reflex", 1.0, 5000.0, SloWindow::Hour),
+        // OBS-031: Reflex SLOs — risk-gate latency — under 1 ms p99.
+        Slo::latency(
+            "risk-gate-latency-p99",
+            "reflex",
+            0.99,
+            1.0,
+            SloWindow::Hour,
+        ),
+        // OBS-031: Reflex SLOs — dropped feed messages — zero tolerance.
+        Slo::availability("dropped-feed-messages-zero", "reflex", 1.0, SloWindow::Day),
     ]
 }
 
