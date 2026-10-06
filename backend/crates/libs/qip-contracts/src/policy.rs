@@ -325,6 +325,82 @@ impl ModelPack {
     }
 }
 
+/// The type of uncertainty held by a belief: aleatoric (inherent randomness),
+/// epistemic (knowledge gap), or model (model limitation).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UncertaintyType {
+    /// Inherent randomness in the phenomenon.
+    Aleatoric,
+    /// Knowledge gap that could be reduced with more information.
+    Epistemic,
+    /// Model limitation or approximation error.
+    Model,
+}
+
+impl UncertaintyType {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Aleatoric => "aleatoric",
+            Self::Epistemic => "epistemic",
+            Self::Model => "model",
+        }
+    }
+}
+
+/// A belief state carrying compressed knowledge (CONTRACT-010).
+/// Carries the proposition believed; supporting evidence; the causal path
+/// deriving it; confidence; the type of uncertainty; and a TTL.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeliefState {
+    /// The proposition or distribution believed.
+    pub proposition: String,
+    /// Evidence references supporting this belief, non-empty.
+    pub evidence_set: Vec<String>,
+    /// The causal path deriving this belief.
+    pub causal_path: Vec<String>,
+    /// Confidence level (0.0 to 1.0).
+    pub confidence: f64,
+    /// The type of uncertainty held.
+    pub uncertainty_type: UncertaintyType,
+    /// Expiry timestamp in seconds since epoch; belief is refused after this.
+    pub expires_at: u64,
+}
+
+impl BeliefState {
+    /// Refuse a belief with any empty required field, out-of-range confidence,
+    /// empty evidence set, or expiry in the past (at construction).
+    pub fn validate(&self, now: u64) -> Result<()> {
+        if self.proposition.is_empty() {
+            return Err(Error::invalid("belief_state: proposition is empty"));
+        }
+        if self.evidence_set.is_empty() {
+            return Err(Error::invalid("belief_state: evidence_set is empty"));
+        }
+        if self.causal_path.is_empty() {
+            return Err(Error::invalid("belief_state: causal_path is empty"));
+        }
+        if !(0.0..=1.0).contains(&self.confidence) {
+            return Err(Error::invalid(
+                "belief_state: confidence is out of range [0.0, 1.0]",
+            ));
+        }
+        if self.expires_at <= now {
+            return Err(Error::invalid("belief_state: expires_at is in the past"));
+        }
+        Ok(())
+    }
+
+    /// Refuse reading this belief if it has expired.
+    pub fn check_expired(&self, now: u64) -> Result<()> {
+        if self.expires_at <= now {
+            return Err(Error::invalid("belief_state: belief has expired"));
+        }
+        Ok(())
+    }
+}
+
 /// The compiled plan, by digest and size. The plan itself ships elsewhere.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
