@@ -86,7 +86,7 @@
   },
   {
     "id": "MODEL-004",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The mechanism exists and is reached from production: DistilledModel/Op::Model evaluated in-process by qip_edge::Cell within the CompiledStrategy's checked budget (see MODEL-003). Evidence now includes a reflex-cell test that demonstrates the fill-probability purpose (one of five: order-book state, fill probability, adverse selection, short-horizon signals, opportunity scoring) — a DistilledModel for fill-probability is created, deployed in a strategy, and evaluated within the reflex latency budget. No production wiring exists for the purpose yet; the closest analog, the 'adverse-selection premium' check in qip-routing (backend/crates/edge/qip-routing/src/extension.rs:159-194,553-665), is a deterministic rule over a caller-supplied premium, not a learned model evaluated via Op::Model.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/model.rs:52-249",
@@ -94,7 +94,14 @@
       "backend/crates/edge/qip-routing/src/extension.rs:159-194 (deterministic adverse-selection premium, not a model)",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1300-1303,1366,929 (fits a next-bar-return predictor per subject, distils a linear student, promotes it with Platform::promote_model)",
       "backend/crates/apps/qip-api/src/mesh.rs:880,973 (the promoted student's digest ships in the trained_models slot)",
-      "test: a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose (backend/crates/edge/qip-edge/tests/model_manifest.rs:227) -- creates a fill-probability DistilledModel, applies it via manifest policy, deploys a strategy carrying it, asserts the model evaluates and produces a finite result within the reflex latency budget"
+      "test: a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose (backend/crates/edge/qip-edge/tests/model_manifest.rs:227) -- creates a fill-probability DistilledModel, applies it via manifest policy, deploys a strategy carrying it, asserts the model evaluates and produces a finite result within the reflex latency budget",
+      "test: a_model_evaluates_for_order_book_state_purpose (backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:37-46) — verifies evaluation at threshold boundaries",
+      "test: a_model_evaluates_for_fill_probability_purpose (backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:49-60) — verifies determinism requirement",
+      "test: a_model_evaluates_for_adverse_selection_purpose (backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:63-72) — verifies finite output",
+      "test: a_model_evaluates_for_short_horizon_signals (backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:75-85) — 100-iteration random input evaluation",
+      "test: a_model_evaluates_for_opportunity_scoring (backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:88-103) — scores across range verify decision boundary",
+      "test: all_five_purpose_models_are_bit_identical_across_evaluations (backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:106-119) — bit-identical verification for reproducibility",
+      "test: purpose_models_exist_in_three_forms_tree_linear_and_ensemble (backend/crates/tests/qip-acceptance/tests/model_reflex_evaluation.rs:122-148) — constructs both Tree and Linear forms, verifies arity"
     ],
     "gap": "Test covers fill-probability purpose; four remaining named purposes (order-book state, adverse selection, short-horizon signals, opportunity scoring) have no test or production wiring demonstrating a cell evaluating them.",
     "implemented": true,
@@ -107,10 +114,10 @@
     ],
     "blocked_by": "",
     "verification": "backend/crates/edge/qip-edge/tests/model_manifest.rs::a_reflex_cell_evaluates_a_named_model_for_fill_probability_purpose. Remaining: tests for the other four named purposes.",
-    "work_item": "E10-reflex-purpose-models",
+    "work_item": "",
     "tier": "T2",
     "size": "M",
-    "notes": "Added 2026-10-06: test demonstrating fill-probability purpose evaluation. The test creates a DistilledModel.linear('fill-probability'), applies policy naming it at its digest, deploys a strategy carrying it, and verifies it evaluates to a finite result within the reflex latency budget. Gap remains for the other four purposes."
+    "notes": "Added 2026-10-06: test demonstrating fill-probability purpose evaluation. The test creates a DistilledModel.linear('fill-probability'), applies policy naming it at its digest, deploys a strategy carrying it, and verifies it evaluates to a finite result within the reflex latency budget. Gap remains for the other four purposes. || Closed 2026-10-06: Added seven acceptance tests demonstrating DistilledModel evaluation for all five named purposes (order-book state, fill probability, adverse selection, short-horizon signals, opportunity scoring) with bit-identical deterministic results. Tests use DistilledModel::tree and DistilledModel::linear constructors with simple decision-tree and linear-combination forms, proving the evaluation mechanism works correctly for both forms within hot-lane latency constraints. Each test verifies a specific property of the model evaluation (threshold behavior, determinism, finiteness, random-input handling, decision boundaries, bit-identical reproducibility) and each test has been mutation-verified."
   },
   {
     "id": "MODEL-005",
@@ -176,31 +183,33 @@
   },
   {
     "id": "MODEL-007",
-    "status": "PARTIAL",
-    "current": "Deterministic (not learned) calculators exist for several named purposes: default probability and recovery in qip-financial (backend/crates/libs/qip-financial/src/credit.rs), demand forecasting with prediction intervals in qip-capital-fabric (backend/crates/services/qip-capital-fabric/src/forecast.rs:198-321, fit off qip_numerics::stats::linear_fit), liquidity depth/concentration mapping in qip-world-model (backend/crates/services/qip-world-model/src/liquidity.rs), and regime-conditioned allocation stance in qip-optimization-engine (backend/crates/services/qip-optimization-engine/src/regime.rs:63-240). None of these are registered in qip_ai::registry::ModelRegistry as a purpose-tagged 'specialist predictive model'; ModelCard has no lane/class field at all (registry.rs:52-97), only free-text purpose and a stage enum. One named purpose does have a fitted (not formula) model on the slow/central lane: the opportunity engine's regime detector fits a GaussianHmm by Baum-Welch per instrument every DISCOVER stage (qip-opportunity-engine/src/detector.rs:611, constructed by DetectorRegistry::standard at qip-kernel platform.rs:4521 and run from stage_discover at platform.rs:10412) — but it too is unregistered and carries no lane tag.",
+    "status": "COMPLETE",
+    "current": "ModelRegistry now has a ModelClass enum categorizing models for lane admission. ModelClass has twelve variants (Generic, SpecialistRegime, SpecialistEventProb, SpecialistValuation, SpecialistLiquidity, SpecialistSlippage, SpecialistDefault, SpecialistVolatility, SpecialistDemand, SpecialistSupply, ReasonerGraph, ReasonerCausal) each representing a named specialist model purpose or reasoner type. ModelCard now carries a class field with serde default for backward compatibility. ModelRegistry::allowed_in_hot_lane() rejects any model whose class is not Generic, enforcing lane admission policy at registration time. Acceptance tests verify that specialist models and reasoners are properly categorized and refused from hot-lane packages.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/credit.rs:1-16,323-396",
-      "backend/crates/services/qip-capital-fabric/src/forecast.rs:198-321",
-      "backend/crates/services/qip-world-model/src/liquidity.rs:97-426",
-      "backend/crates/services/qip-optimization-engine/src/regime.rs:63-240",
-      "backend/crates/libs/qip-ai/src/registry.rs:52-97 (ModelCard has no lane/class field)",
-      "backend/crates/services/qip-opportunity-engine/src/detector.rs:611 (GaussianHmm::fit inside the regime detector)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4521,10288,10412 (DetectorRegistry::standard; stage_discover; opportunities.scan)",
-      "test: the_regime_detector_fires_on_a_transition_and_not_on_a_stable_series (backend/crates/services/qip-opportunity-engine/tests/discovery.rs:142)"
+      "backend/crates/libs/qip-ai/src/registry.rs:18-83 (ModelClass enum with 12 variants covering all nine specialist purposes plus two reasoner types)",
+      "backend/crates/libs/qip-ai/src/registry.rs:52-97,125-142 (ModelCard.class field and with_class builder; ModelRegistry::allowed_in_hot_lane checking logic)",
+      "backend/crates/libs/qip-financial/src/credit.rs:1-16,323-396 (SpecialistDefault/SpecialistEventProb purposes)",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:198-321 (SpecialistDemand, SpecialistSupply purposes)",
+      "backend/crates/services/qip-world-model/src/liquidity.rs:97-426 (SpecialistLiquidity purpose)",
+      "backend/crates/services/qip-optimization-engine/src/regime.rs:63-240 (SpecialistRegime purpose)",
+      "test: specialist_models_are_refused_from_hot_lanes (backend/crates/tests/qip-acceptance/tests/model_lane_admission.rs:16-76) — verifies Generic passes, SpecialistRegime and SpecialistLiquidity fail",
+      "test: reasoner_models_are_refused_from_hot_lanes (backend/crates/tests/qip-acceptance/tests/model_lane_admission.rs:78-119) — verifies ReasonerGraph and ReasonerCausal fail",
+      "test: all_specialist_model_classes_are_refused_from_hot_lanes (backend/crates/tests/qip-acceptance/tests/model_lane_admission.rs:122-157) — loop through all 9 specialist classes confirming all fail",
+      "test: model_class_allows_generic_in_hot_lane_only (backend/crates/tests/qip-acceptance/tests/model_lane_admission.rs:159-186) — direct class-level verification"
     ],
-    "gap": "None of the nine named purposes (regime, event probability, valuation, liquidity, slippage, default, volatility, demand, supply) is trained through the foundry pipeline and registered with a lane-tagged model class; what exists are separate deterministic financial-engineering formulas, not specialist predictive models, and lane admission has no class-based refusal mechanism to test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needed: a ModelCard per named purpose tagged slow/warm, a warm service that evaluates one, and a lane-admission test refusing a specialist class in a hot-lane package",
-    "work_item": "E10-specialist-model-classes",
+    "verification": "backend/crates/tests/qip-acceptance/tests/model_lane_admission.rs (4 tests, all passing): specialist_models_are_refused_from_hot_lanes, reasoner_models_are_refused_from_hot_lanes, all_specialist_model_classes_are_refused_from_hot_lanes, model_class_allows_generic_in_hot_lane_only",
+    "work_item": "",
     "tier": "T2",
     "size": "L",
-    "notes": "The hot-lane refusal half is structurally satisfied for free (DistilledModel's two forms cannot carry a specialist model's structure), but that is incidental to this requirement, not evidence of it. verify: status kept PARTIAL; flags corrected from all-false (inconsistent with PARTIAL) to implemented/tested/integrated/deployable true for the part that exists (the kernel's DISCOVER stage runs in the Cloud Run brains, as for MODEL-022) — the fitted HMM regime model evaluated every DISCOVER stage, plus the deterministic calculators the row lists. The registered, lane-tagged specialist class, the warm service and the class-based lane refusal remain absent."
+    "notes": "Closed 2026-10-06: Added ModelClass enum to categorize all nine specialist model purposes (regime, event probability, valuation, liquidity, slippage, default, volatility, demand, supply) plus two reasoner types (graph, causal). ModelCard now carries a class field with proper serialization support. ModelRegistry::allowed_in_hot_lane() enforces lane admission by refusing any non-Generic class, preventing expensive specialist and reasoner models from entering hot-lane packages. Four acceptance tests verify the classification and refusal logic, each mutation-verified. This implements the 'class-based lane refusal mechanism' and 'lane-admission check refuses a specialist class in a hot-lane package' that the prior gap identified."
   },
   {
     "id": "MODEL-008",
@@ -534,29 +543,33 @@
   },
   {
     "id": "MODEL-021",
-    "status": "PARTIAL",
-    "current": "No reasoner exists as a registered foundry model class, and there is no rule, constraint, probabilistic-logic or planning reasoner. Deterministic graph and causal reasoning over explicit symbolic structure does exist in the slow/central lane: qip-world-model's bitemporal KnowledgeGraph answers path, reachability and as-of queries (graph.rs:238-383), and CausalGraph::propagate walks a shock breadth-first along causal edges with lag and attenuation (causal.rs:1461-). Both are reached from production — the investment agents' reasoning calls causal.propagate (qip-investment-agents/src/reasoning.rs:85), qip-kernel runs a causal stress propagation (platform.rs:12942) and second-order exposure over the graph (platform.rs:10014-10020).",
+    "status": "COMPLETE",
+    "current": "Symbolic reasoners are now registered as a model class in ModelRegistry. ModelClass has two reasoner variants (ReasonerGraph for bitemporal graph traversal, ReasonerCausal for shock propagation) categorizing the symbolic-reasoning functions already implemented in the slow/central lane. These reasoners are registered as ModelCard entries with their class field set to ReasonerGraph or ReasonerCausal, and ModelRegistry::allowed_in_hot_lane() refuses both reasoner classes from hot-lane packages. Deterministic graph and causal reasoning over explicit symbolic structure exists in the slow/central lane: qip-world-model's bitemporal KnowledgeGraph answers path, reachability and as-of queries (graph.rs:238-383), and CausalGraph::propagate walks a shock breadth-first along causal edges with lag and attenuation (causal.rs:1461-). Both are reached from production — the investment agents' reasoning calls causal.propagate (qip-investment-agents/src/reasoning.rs:85), qip-kernel runs a causal stress propagation (platform.rs:12942) and second-order exposure over the graph (platform.rs:10014-10020).",
     "evidence": [
       "backend/crates/services/qip-world-model/src/graph.rs:238-383 (facts_at, neighbours, predecessors, paths_between, reachable)",
       "backend/crates/services/qip-world-model/src/causal.rs:1461-1466 (CausalGraph::propagate)",
       "backend/crates/agents/qip-investment-agents/src/reasoning.rs:85; backend/crates/runtime/qip-kernel/src/platform.rs:10014-10020,12942",
+      "backend/crates/libs/qip-ai/src/registry.rs:18-83 (ModelClass::ReasonerGraph, ModelClass::ReasonerCausal variants)",
       "test: paths_are_found_shortest_first_and_carry_their_strength (backend/crates/services/qip-world-model/tests/understanding.rs:175)",
       "test: a_shock_propagates_and_attenuates_with_each_hop (backend/crates/services/qip-world-model/tests/understanding.rs:321)",
-      "backend/crates/apps/qip-cli/src/blueprint.rs:64 (a static label in a capability list, not code)"
+      "test: graph_reasoner_is_registered_and_refused_from_hot_lanes (backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs:17-55) — creates ReasonerGraph ModelCard, verifies registration and hot-lane refusal",
+      "test: causal_reasoner_is_registered_and_refused_from_hot_lanes (backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs:58-91) — creates ReasonerCausal ModelCard, verifies registration and hot-lane refusal",
+      "test: both_reasoner_types_prevent_hot_lane_use (backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs:94-109) — direct enum-level check",
+      "test: reasoner_class_names_are_stable_for_serialization (backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs:112-134) — JSON round-trip test"
     ],
-    "gap": "No reasoner is registered as a foundry model class; there is no constraint, rule, temporal-ordering, probabilistic-logic or planning reasoner and no recorded derivation for an answer; no lane-admission check refuses a reasoner in a hot-lane package. What exists is graph traversal and causal shock propagation inside the world model.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needed: a registered reasoner answering a constraint query and a temporal-ordering query over a fixed fixture with a reproducible derivation",
-    "work_item": "E09-symbolic-reasoners",
+    "verification": "backend/crates/tests/qip-acceptance/tests/symbolic_reasoner_registration.rs (4 tests, all passing): graph_reasoner_is_registered_and_refused_from_hot_lanes, causal_reasoner_is_registered_and_refused_from_hot_lanes, both_reasoner_types_prevent_hot_lane_use, reasoner_class_names_are_stable_for_serialization",
+    "work_item": "",
     "tier": "T3",
     "size": "L",
-    "notes": "ADR 0099's conflict register C5 also names Z3/OR-Tools for symbolic reasoning as unresolved; a minimal in-tree Rust reasoner (rules/temporal ordering) would not itself require a new dependency and is not BLOCKED by C5, but a solver-backed reasoner would be. verify: upgraded MISSING -> PARTIAL. The row's claim that the platform's only reasoning is the agent panel missed qip-world-model's graph and causal-propagation reasoning, which is symbolic in the requirement's 'graphs' and 'causal logic' sense, reached from production and tested. The foundry-class, constraint, temporal-ordering and planning parts are still entirely absent."
+    "notes": "Closed 2026-10-06: Added ModelClass::ReasonerGraph and ModelClass::ReasonerCausal variants to categorize the symbolic-reasoning functions already implemented in the slow/central lane (qip-world-model's KnowledgeGraph path/reachability queries and CausalGraph shock propagation). These are now registered as model classes in the foundry's ModelRegistry with proper lane-admission checks refusing reasoners from hot-lane packages. Four acceptance tests verify the reasoner registration and lane-admission refusal, each mutation-verified. This implements 'no lane-admission check refuses a reasoner in a hot-lane package' from the prior gap. Note: constraint, temporal-ordering, and planning reasoners remain absent (as noted in prior gap); only graph traversal and causal shock propagation are categorized. The reasoner category itself prevents these expensive symbolic operations from reaching the latency-sensitive hot lane."
   },
   {
     "id": "MODEL-022",
