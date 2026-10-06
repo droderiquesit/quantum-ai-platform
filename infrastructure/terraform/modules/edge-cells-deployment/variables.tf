@@ -1,18 +1,3 @@
-variable "project_id" {
-  description = "The project every resource here is created in."
-  type        = string
-}
-
-variable "environment" {
-  description = "The deployment environment — dev, test, stage, or prod."
-  type        = string
-}
-
-variable "network_id" {
-  description = "The VPC network all cells attach to."
-  type        = string
-}
-
 variable "execution_nodes" {
   description = <<-EOT
     The execution nodes to deploy, keyed by node id.
@@ -89,6 +74,16 @@ variable "execution_nodes" {
     ])
     error_message = "Each node must be configured for at least one venue."
   }
+
+  # A regional capital ceiling is a positive decimal string. `tonumber`
+  # refuses a non-numeric string with an error no `error_message` can report,
+  # so it is wrapped in `try`, which turns that refusal into this one.
+  validation {
+    condition = alltrue([
+      for node_id, config in var.execution_nodes : try(tonumber(config.region_allocation) > 0, false)
+    ])
+    error_message = "Each region_allocation must be a positive decimal number, such as \"250000\"; zero, a negative, or a non-number is refused rather than read as no capital."
+  }
 }
 
 variable "trust_zones" {
@@ -143,89 +138,9 @@ variable "cross_region_mirrors" {
   default = []
 }
 
-variable "boot_image" {
-  description = "The self-link of the GCP image all nodes boot from, pinned to one image (not a family)."
-  type        = string
-}
-
-variable "capital_envelope_secret_id" {
-  description = "Secret Manager secret id holding the key nodes verify capital envelopes against."
-  type        = string
-}
-
-variable "venue_credential_secret_id" {
-  description = "Secret Manager secret id holding the venue credential, or null if not applicable."
-  type        = string
-  default     = null
-}
-
-variable "venue_credential_readable" {
-  description = <<-EOT
-    Whether the venue credential is readable in this environment.
-
-    True only in environments whose autonomy ceiling could use it (the three
-    live rungs). For observation and advisory, this is false and nodes cannot
-    reach live venues even if shadow_mode is turned off.
-  EOT
-
-  type    = bool
-  default = false
-}
-
-variable "evidence_bucket" {
-  description = "GCS bucket for writing evidence, or null if not configured."
-  type        = string
-  default     = null
-}
-
-variable "telemetry_endpoint" {
-  description = "The endpoint where telemetry is scraped (for health check documentation)."
-  type        = string
-  default     = "/metrics"
-}
-
-variable "egress_bootstrap" {
-  description = "The Envoy bootstrap configuration for the node's proxy sidecar."
-  type        = string
-}
-
-variable "egress_endpoints" {
-  description = "Egress proxy listener endpoints, keyed by listener name (e.g., { gcp = \"http://127.0.0.1:9101\" })."
-  type        = map(string)
-}
-
 variable "google_apis_range" {
   description = "The CIDR range for Google APIs (default: the restricted VIP)."
   type        = string
   default     = "199.36.153.8/30"
 }
 
-variable "default_pricing" {
-  description = "Default pricing mode for all strategies deployed on this node (e.g., 'marketable' or 'rest-at-mid:30')."
-  type        = string
-  default     = ""
-}
-
-variable "strategy_plan_path" {
-  description = "Path to the compiled strategy plan the node reads at boot (or empty if none)."
-  type        = string
-  default     = ""
-}
-
-variable "cross_region_mirror_path" {
-  description = "Path to the cross-region mirror configuration file (or empty if none)."
-  type        = string
-  default     = ""
-}
-
-variable "required_hugepages_gb" {
-  description = "Gigabytes of huge pages the boot image must have preallocated."
-  type        = number
-  default     = 1
-}
-
-variable "labels" {
-  description = "Labels to apply to all resources."
-  type        = map(string)
-  default     = {}
-}

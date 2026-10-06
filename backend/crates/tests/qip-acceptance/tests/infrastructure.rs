@@ -2134,6 +2134,67 @@ fn no_service_account_key_exists_anywhere_in_the_terraform() {
 }
 
 #[test]
+fn organization_policy_disables_service_account_key_creation() {
+    // GOV-028: Enforce Workload Identity Federation by disabling long-lived
+    // service-account key creation and upload at the project level. This
+    // structural refusal prevents circumvention of WIF-only authentication.
+    //
+    // Each constraint is checked inside its own resource body. The earlier
+    // form asked whether the file contained the resource name anywhere and
+    // `enforce = true` anywhere, so a creation policy flipped to
+    // `enforce = false` still passed on the strength of the upload policy's
+    // `enforce = true` -- a check that could not fire on the one value it
+    // existed to hold.
+    let root_no_comments = without_comments(&read("infrastructure/terraform/main.tf"));
+    let policies = terraform_resources(&root_no_comments, "google_org_policy_policy");
+    assert!(
+        !policies.is_empty(),
+        "infrastructure/terraform/main.tf declares no google_org_policy_policy at all"
+    );
+    for (resource, constraint) in [
+        (
+            "disable_service_account_key_creation",
+            "constraints/iam.disableServiceAccountKeyCreation",
+        ),
+        (
+            "disable_service_account_key_upload",
+            "constraints/iam.disableServiceAccountKeyUpload",
+        ),
+    ] {
+        let bodies: Vec<&String> = policies
+            .iter()
+            .filter(|(name, _)| name == resource)
+            .map(|(_, body)| body)
+            .collect();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "main.tf must declare exactly one google_org_policy_policy \"{resource}\""
+        );
+        let lines: Vec<&str> = bodies[0].lines().map(str::trim).collect();
+        assert!(
+            lines.iter().any(|l| l.starts_with("name")
+                && l.ends_with(&format!("/policies/{constraint}\""))),
+            "{resource} must name {constraint} as its policy"
+        );
+        assert!(
+            lines.iter().any(|l| l.starts_with("parent")),
+            "{resource} must state the parent it is enforced on"
+        );
+        assert!(
+            lines.contains(&"enforce = true"),
+            "{resource} must carry rules {{ enforce = true }} in its own body"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("enforce") && l != &"enforce = true"),
+            "{resource} carries an enforce value other than true"
+        );
+    }
+}
+
+#[test]
 fn every_service_account_terraform_creates_runs_something_or_signs_something() {
     // Two identities existed with nothing attached to them once. An unused
     // service account is not merely tidy-up: it is a set of permissions
@@ -2183,6 +2244,10 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         // bucket — because whatever it carries is what an image with a bug in
         // its provisioning script carries too.
         ("image-bake".to_string(), "builder".to_string()),
+        // The autonomous agent identity — a distinct service account that agents
+        // use to prove they hold no authority over capital envelopes or custodial
+        // resources (GOV-026). It has no roles on capital or custody resources.
+        ("terraform".to_string(), "agent_identity".to_string()),
     ];
     expected.sort();
     assert_eq!(
@@ -5069,12 +5134,17 @@ fn the_retired_backup_plan_is_forgotten_rather_than_deleted_with_its_backups() {
         // `terraform fmt` aligns the `=` of a block's arguments, so the
         // literal spacing here is whatever its neighbours make it. This scan
         // lost a mutation to exactly that before it was written this way.
+        // The leading space makes `force` a delimited token: GOV-028's
+        // `enforce = true` on the key-creation org policies contains
+        // `force = true` as a substring, and the undelimited scan failed on
+        // it from the commit that added those policies.
         let text = without_comments(&std::fs::read_to_string(&path).expect("readable"))
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        let text = format!(" {text}");
         assert!(
-            !text.contains("force = true"),
+            !text.contains(" force = true"),
             "{} sets force = true, which is how a backup plan is deleted \
              together with the backups under it",
             path.display()
@@ -10353,5 +10423,50 @@ fn a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the
     assert!(
         priority(body) < priority(deny),
         "the IAP allow ranks below the catch-all deny, so it can never fire"
+    );
+}
+
+#[test]
+fn the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resources() {
+    // GOV-026: agents use a distinct service account to prove they hold no
+    // authority over capital envelopes or custodial resources. The identity
+    // exists structurally in Terraform, and this test verifies it has no IAM
+    // bindings on resources that control capital or custody.
+    let root_module = without_comments(&read("infrastructure/terraform/main.tf"));
+    let agent_accounts = terraform_resources(&root_module, "google_service_account")
+        .iter()
+        .filter(|(name, _)| name == "agent_identity")
+        .count();
+    assert_eq!(
+        agent_accounts, 1,
+        "the autonomous agent service account (agent_identity) does not exist or exists more than once"
+    );
+
+    // Verify no IAM roles are granted to the agent service account on capital
+    // or custody resources. The agent account is defined but deliberately
+    // holds no grants, enforcing that agents cannot mint capital or assume
+    // custodial authority.
+    let all_tf = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .map(|p| {
+            let content = std::fs::read_to_string(&p).expect("readable");
+            without_comments(&content)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // The account must not have any grants on qip-capital or qip-lifecycle
+    // service accounts or resources. Parse IAM bindings and verify the agent
+    // account does not appear in any of them.
+    let has_iam_binding_for_agent =
+        terraform_resources(&all_tf, "google_service_account_iam_member")
+            .iter()
+            .any(|(_name, content)| {
+                content.contains("agent_identity") || content.contains("qip-agent-identity")
+            });
+
+    assert!(
+        !has_iam_binding_for_agent,
+        "the agent_identity account must not have any IAM bindings that grant roles"
     );
 }
