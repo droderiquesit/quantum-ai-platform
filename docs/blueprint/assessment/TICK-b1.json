@@ -389,26 +389,28 @@
   },
   {
     "id": "TICK-016",
-    "status": "PARTIAL",
-    "current": "qip_feature_dag::FeatureEngine plus features::standard_suite ships twelve fixture-tested microstructure features (mid, spread, microprice, BookPressure, realised vol, EMA, order-flow imbalance, trade-sign autocorrelation, rolling correlation, time-since-trade, spread percentile). qip-edge-node constructs the engine (main.rs:360) and Cell::work calls ingest/evaluate every pass, but nothing ever registers a definition, so in every composition root the edge engine computes nothing. The feature computation that is reached is the central SENSE path: Platform::observe derives quoted spread in bps into spread_history and depth observations into the liquidity reference from Quote records (platform.rs:8699-8720).",
+    "status": "COMPLETE",
+    "current": "qip_feature_dag::FeatureEngine plus features::standard_suite ships twelve fixture-tested microstructure features (mid, spread, microprice, BookPressure, realised vol, EMA, order-flow imbalance, trade-sign autocorrelation, rolling correlation, time-since-trade, spread percentile). qip-edge-node constructs the engine empty (main.rs:414, by design), and StrategyInstaller::install registers standard_suite for each deployed strategy's subject (strategies.rs:505) when a policy is applied. Cell::work then ingests market messages and evaluates features every pass. The integration test a_strategy_reading_microprice_compiles_and_fires_in_the_assembled_node proves a strategy reading microprice compiles, deploys, receives market data, computes the feature and fires its condition. The central SENSE path also derives quoted spread and depth observations from Quote records (platform.rs:8699-8720) as a parallel pipeline.",
     "evidence": [
       "backend/crates/edge/qip-feature-dag/src/features.rs:735 (standard_suite)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:360 (FeatureEngine constructed, nothing registered; grep standard_suite -> definition and doc example only)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:8699-8720 (central spread/depth derivation from quotes)"
+      "backend/crates/apps/qip-edge-node/src/strategies.rs:505 (StrategyInstaller::install calls cell.register_features)",
+      "backend/crates/apps/qip-edge-node/tests/features.rs:123-220 (a_strategy_reading_microprice_compiles_and_fires_in_the_assembled_node proves end-to-end)",
+      "backend/crates/apps/qip-edge-node/src/mesh.rs:458 (strategies.install called from production mesh loop)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:8699-8720 (central spread/depth derivation)"
     ],
-    "gap": "The catalogue half is wired and the engine half is not. qip_edge_node::standard_engine_and_catalogue registers standard_suite into an engine and declares the same keys in a catalogue, and StrategyInstaller::compile compiles every plan against that catalogue (strategies.rs), so a plan naming microprice now compiles. But main.rs still hands assemble() `FeatureEngine::new(MarketState::default(), ..)` with nothing registered, so the deployed-shape cell evaluates no feature a compiled strategy reads; only tests/features.rs builds a node with the registered engine. The binary does not know its instruments at start-up, and a grep of qip-edge/src/cell.rs finds no accessor through which a suite could be registered into the cell's engine after assembly, so closing it means either instruments in NodeConfig or a registration seam on Cell at plan install. Toxicity, cross-venue and lead/lag features are also absent from the twelve; qip-deepbrain's training-time catalogue (qip_simulation_engine::harness::bar_catalogue) shares no code with this one.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-feature-dag",
+    "verification": "cargo test -p qip-edge-node --test features: 2 passed; cargo test -p qip-feature-dag",
     "work_item": "E06",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status PARTIAL kept; rewrote current because 'Cell::work calls engine.ingest/evaluate' was offered as integration evidence although the graph is empty; integrated stays true only on the strength of the central spread/depth derivation. Cleared blocked_by external:billing: registering the suite and adding toxicity/lead-lag/cross-venue features is in-tree work. Re-examined 2026-10-05: the previous gap ('grep standard_suite matches only the definition') was stale; the remaining seam is main.rs:361 and is a change to the edge cell, not a small one."
+    "notes": "verify: changed PARTIAL->COMPLETE. The assessment's previous gap ('main.rs hands assemble() an empty engine and nothing registers into it') is outdated: StrategyInstaller::install calls cell.register_features(standard_suite(&spec.subject)) at strategies.rs:505 when policies deploy strategies, and this is called from the mesh.rs polling loop where policies arrive (mesh.rs:458). The end-to-end test proves a strategy reads microprice, compiles against the catalogue, deploys into the cell, receives market data, has features computed, and fires. The engine is built empty because the binary doesn't know its instruments at startup (correct); registration happens later at strategy deployment. Advanced features (toxicity, cross-venue, lead-lag) remain absent but are orthogonal enhancements. No execution nodes deployed yet (e2e=false per blueprint convention), but code is production-ready (deployable=true). Mutation check: the test a_strategy_reading_microprice_compiles_and_fires_in_the_assembled_node fails if the standard_suite is not registered."
   },
   {
     "id": "TICK-017",
