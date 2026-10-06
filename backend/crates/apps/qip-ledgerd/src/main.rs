@@ -38,7 +38,7 @@ fn run() -> Result<()> {
     let config = LedgerConfig::from_env()?;
 
     // Step 2: Create the durable store at the configured archive path
-    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let engine_config = EngineConfig::new(clock);
     let metrics = Arc::new(Metrics::new("qip-ledgerd"));
     let telemetry = LedgerTelemetry::new(metrics.clone());
@@ -59,10 +59,8 @@ fn run() -> Result<()> {
     // Step 5: Start consuming from the event fabric
     // The fabric consumer will yield P1 outcomes that the store applies.
     // For now, this is a placeholder that cannot run without a fabric broker.
-    let _consumer = FabricConsumer::new(
-        "127.0.0.1:9090".parse().expect("valid socket"),
-        &config.fabric_consumer_group,
-    );
+    let broker_addr = "127.0.0.1:9090".parse().expect("valid socket address");
+    let _consumer = FabricConsumer::new(broker_addr, &config.fabric_consumer_group);
 
     // Step 6: Serve the read API
     // In the full implementation, this would enter the main loop,

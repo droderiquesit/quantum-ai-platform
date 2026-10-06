@@ -4,10 +4,8 @@
 //! outcomes. The journal is the record of what the cell decided, what it
 //! knew when, and what the consequences were.
 
-use qip_core::error::Result;
 use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// The reason a decision was made (or declined)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,7 +236,7 @@ mod tests {
             source_model: "ml_v1".to_string(),
             model_confidence: 0.8,
             outcome: DecisionOutcome::Executed,
-            pnl: Some(Decimal::from_basis_points(100)),
+            pnl: Some(Decimal::from(100)),
             outcome_at: Some(Timestamp::from_secs(60)),
         };
         assert!(decision.was_beneficial());
@@ -267,7 +265,7 @@ mod tests {
                     DecisionOutcome::RefusedByControl
                 },
                 pnl: if i % 2 == 0 {
-                    Some(Decimal::from_basis_points(100))
+                    Some(Decimal::from(100))
                 } else {
                     None
                 },
