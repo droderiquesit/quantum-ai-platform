@@ -145,7 +145,7 @@ fn a_feature_snapshot_clamps_late_knowledge() {
 #[test]
 fn a_feature_snapshot_immediate_stamps_both_times() {
     let key = FeatureKey::new("price", ObjectId::from_string("instr-003".to_string()));
-    let value = FeatureValue::Exact(dec!(150, 2));
+    let value = FeatureValue::Exact(dec!("1.50"));
     let at = Timestamp::from_secs(5000);
 
     let snapshot = FeatureSnapshot::immediate(key, value, at);
@@ -291,7 +291,7 @@ fn a_forecast_lattice_consensus_includes_means() {
 
 #[test]
 fn a_feature_snapshot_holds_exact_decimal() {
-    let value = FeatureValue::Exact(dec!(1_000_000, 2));
+    let value = FeatureValue::Exact(dec!("10000.00"));
     let snapshot = FeatureSnapshot::immediate(
         FeatureKey::new("notional", ObjectId::from_string("instr-013".to_string())),
         value,
@@ -299,7 +299,7 @@ fn a_feature_snapshot_holds_exact_decimal() {
     );
 
     assert_eq!(snapshot.value(), value);
-    assert_eq!(snapshot.value().as_exact(), Some(dec!(1_000_000, 2)));
+    assert_eq!(snapshot.value().as_exact(), Some(dec!("10000.00")));
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn backtesting_filters_by_knowable_not_instant_true() {
 fn a_feature_snapshot_serializes_to_json() {
     let snapshot = FeatureSnapshot::immediate(
         FeatureKey::new("price", ObjectId::from_string("instr-021".to_string())),
-        FeatureValue::Exact(dec!(150, 2)),
+        FeatureValue::Exact(dec!("1.50")),
         Timestamp::from_secs(1000),
     );
 
@@ -664,7 +664,7 @@ fn complete_bitemporal_workflow_maintains_invariants() {
 
     let snapshot = FeatureSnapshot::new(
         feature_key,
-        FeatureValue::Exact(dec!(151, 2)),
+        FeatureValue::Exact(dec!("1.51")),
         time_market_true,
         time_known_early,
     );
