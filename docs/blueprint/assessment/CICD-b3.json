@@ -10,7 +10,7 @@
       "a_payload_from_a_newer_schema_is_refused_rather_than_partially_read (backend/crates/libs/qip-events/tests/backbone.rs:157)",
       "two_body_types_cannot_claim_the_same_topic (backend/crates/libs/qip-events/tests/backbone.rs)"
     ],
-    "gap": "SchemaRegistry is constructed only inside qip-events' own tests — no composition root (qip-kernel, qip-api, qip-fastbrain, qip-deepbrain, qip-edge-node) ever builds one at start-up, so no producer or consumer is actually checked against a registered version at runtime; grep of backend/crates/runtime and backend/crates/apps for SchemaRegistry returns nothing.",
+    "gap": "SchemaRegistry is constructed only inside qip-events' own tests \u2014 no composition root (qip-kernel, qip-api, qip-fastbrain, qip-deepbrain, qip-edge-node) ever builds one at start-up, so no producer or consumer is actually checked against a registered version at runtime; grep of backend/crates/runtime and backend/crates/apps for SchemaRegistry returns nothing.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -27,7 +27,7 @@
   {
     "id": "CICD-070",
     "status": "COMPLETE",
-    "current": "`qip event-fabric schema-gate --base <lock> --head <lock>` (backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs) judges the head's schemas.lock.json against the base's, topic by topic, with qip_events::event_fabric::schema_id::check_compatible - the rule the broker and the registry already use. Exit 3 when a field was removed, renamed or retyped at the same version (nested fields included), when a version rolled back, or when a locked topic's row was deleted; exit 0 when fields were only added or the version was bumped (ADR 0100 §5); exit 1 when a lock cannot be read, parsed, or carries a shape that does not hash to its id. schemas.lock.json now commits each bound body's full recursive shape beside its id (the nine ids are unchanged), and the lock suite asserts the committed shape is the one the Rust type has. ci.yml's test job runs the gate on every pull request against the lock at the pull request's base commit, fetched by id. Before this the lock compared the tree with itself: a row regenerated in place after a field was removed passed CI at the version every consumer already trusted.",
+    "current": "`qip event-fabric schema-gate --base <lock> --head <lock>` (backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs) judges the head's schemas.lock.json against the base's, topic by topic, with qip_events::event_fabric::schema_id::check_compatible - the rule the broker and the registry already use. Exit 3 when a field was removed, renamed or retyped at the same version (nested fields included), when a version rolled back, or when a locked topic's row was deleted; exit 0 when fields were only added or the version was bumped (ADR 0100 \u00a75); exit 1 when a lock cannot be read, parsed, or carries a shape that does not hash to its id. schemas.lock.json now commits each bound body's full recursive shape beside its id (the nine ids are unchanged), and the lock suite asserts the committed shape is the one the Rust type has. ci.yml's test job runs the gate on every pull request against the lock at the pull request's base commit, fetched by id. Before this the lock compared the tree with itself: a row regenerated in place after a field was removed passed CI at the version every consumer already trusted.",
     "evidence": [
       "backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs (parse, judge, run; COMPATIBLE=0, INCOMPATIBLE=3)",
       "backend/crates/apps/qip-cli/src/event_fabric/mod.rs (SUBCOMMANDS and dispatch route `schema-gate`)",
@@ -35,7 +35,7 @@
       ".github/workflows/ci.yml test job, step 'schema compatibility against the base' (pull_request only)",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_schema_lock.rs (the committed lock through the real gate, and the CI step pinned line by line)",
       "backend/crates/apps/qip-cli/tests/event_fabric_schema_gate.rs (five tests through the family dispatcher)",
-      "local run of the CI step's command against the pre-change lock: 'schema gate: COMPATIBLE — 9 base topic(s) compared, 0 changed and still readable', exit 0 (2026-10-04)"
+      "local run of the CI step's command against the pre-change lock: 'schema gate: COMPATIBLE \u2014 9 base topic(s) compared, 0 changed and still readable', exit 0 (2026-10-04)"
     ],
     "gap": "None against the row's check. Limits: (1) the gate covers the nine fabric-bound bodies the lock holds (six reflex topics, three P0 control frames), not every EventBody in the workspace (CICD-069); (2) it runs on pull requests only, so a direct push to main is not judged, and main has no branch protection (CICD-045), so a red gate flags a pull request and cannot stop its merge; (3) the step has not yet run on GitHub, because this branch is unpushed - the tests drive the same command.",
     "implemented": true,
@@ -107,7 +107,7 @@
   {
     "id": "CICD-073",
     "status": "NEEDS-VALIDATION",
-    "current": "ADR 0036's split is structural: a Cloud Run service (infrastructure/terraform/modules/cloudrun) is reconciled by the GKE Autopilot control-plane cluster (modules/gitops-control-plane) via Argo CD/Config Connector, but once a RunService revision is routed, Cloud Run serves it independently of the cluster — the cluster only produces new desired state, it does not sit on the request path.",
+    "current": "ADR 0036's split is structural: a Cloud Run service (infrastructure/terraform/modules/cloudrun) is reconciled by the GKE Autopilot control-plane cluster (modules/gitops-control-plane) via Argo CD/Config Connector, but once a RunService revision is routed, Cloud Run serves it independently of the cluster \u2014 the cluster only produces new desired state, it does not sit on the request path.",
     "evidence": [
       "infrastructure/terraform/modules/cloudrun/main.tf header ('no longer creates the google_cloud_run_v2_service resource itself')",
       "docs/adr/0093-the-dev-control-planes-cluster-is-suspended-while-no-argo-cd-release-passes-the-scan-gate.md (the chain from apply to served request passes through Argo CD; the cluster is suspended and 0 services currently serve traffic)",
@@ -137,7 +137,7 @@
       ".github/workflows/infra.yml action=up",
       "docs/adr/0093-the-dev-control-planes-cluster-is-suspended-while-no-argo-cd-release-passes-the-scan-gate.md"
     ],
-    "gap": "No standby/failover management cluster exists or is declared anywhere in the module graph — only the 'recreate from Git' half is real, and even that has never completed a full bootstrap because Argo CD's own image fails vendor.yml's CRITICAL scan gate (CVE-2025-68121, no fixed upstream release).",
+    "gap": "No standby/failover management cluster exists or is declared anywhere in the module graph \u2014 only the 'recreate from Git' half is real, and even that has never completed a full bootstrap because Argo CD's own image fails vendor.yml's CRITICAL scan gate (CVE-2025-68121, no fixed upstream release).",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -158,7 +158,7 @@
     "evidence": [
       "infrastructure/terraform/modules/registry/main.tf:19-91"
     ],
-    "gap": "No chaos test simulates the registry region being unreachable, and no second region exists in this repository's infra to demonstrate the 'running nodes keep serving, new rollout pauses' distinction — the running-revision half rests on GCP's own Cloud Run behaviour, not on anything built here.",
+    "gap": "No chaos test simulates the registry region being unreachable, and no second region exists in this repository's infra to demonstrate the 'running nodes keep serving, new rollout pauses' distinction \u2014 the running-revision half rests on GCP's own Cloud Run behaviour, not on anything built here.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -175,7 +175,7 @@
   {
     "id": "CICD-076",
     "status": "MISSING",
-    "current": "nothing — modules/registry provisions exactly one Artifact Registry repository per environment, with no replication and no secondary repository; deploy.yml pushes to that single repository only.",
+    "current": "nothing \u2014 modules/registry provisions exactly one Artifact Registry repository per environment, with no replication and no secondary repository; deploy.yml pushes to that single repository only.",
     "evidence": [
       "infrastructure/terraform/modules/registry/main.tf:19-91",
       ".github/workflows/deploy.yml images job (single push target)"
@@ -202,7 +202,7 @@
       ".github/workflows/ci.yml, deploy.yml, infra.yml, vendor.yml (no agent/model-provider calls)",
       "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md"
     ],
-    "gap": "No chaos/game-day test actually stops 'all agent infrastructure' and observes production SLOs — there is nothing deployed to GCP to stop in the first place, so the invariant holds by absence rather than by a demonstrated isolation boundary.",
+    "gap": "No chaos/game-day test actually stops 'all agent infrastructure' and observes production SLOs \u2014 there is nothing deployed to GCP to stop in the first place, so the invariant holds by absence rather than by a demonstrated isolation boundary.",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -241,7 +241,7 @@
   {
     "id": "CICD-079",
     "status": "MISSING",
-    "current": "Nothing — no Cloud Build private pool and no deployed agent-worker fleet exist anywhere in infrastructure/terraform. ADR 0098 explicitly defers the GCP worker fabric and runs every agent worker locally on the owner's desktop, measured by scripts/worker-capacity.sh (binding constraint: 12 CPU cores, ceiling of 10 concurrent workers); every build in ci.yml/deploy.yml runs on ordinary GitHub-hosted runners, not a private pool.",
+    "current": "Nothing \u2014 no Cloud Build private pool and no deployed agent-worker fleet exist anywhere in infrastructure/terraform. ADR 0098 explicitly defers the GCP worker fabric and runs every agent worker locally on the owner's desktop, measured by scripts/worker-capacity.sh (binding constraint: 12 CPU cores, ceiling of 10 concurrent workers); every build in ci.yml/deploy.yml runs on ordinary GitHub-hosted runners, not a private pool.",
     "evidence": [
       "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md (decision 1)",
       "scripts/worker-capacity.sh",
@@ -309,7 +309,7 @@
   {
     "id": "CICD-082",
     "status": "MISSING",
-    "current": "Nothing — no Reflex Package Controller exists anywhere in the codebase. The only execution-node rollout mechanism today is deploy.yml's 'replace every execution node under its group's rolling policy' step, which replaces the whole boot image on a managed instance group — a structurally different mechanism from a package-pin controller reading the environment repository — and it is unexercised because execution_nodes={} in every environment and image.yml has never been dispatched.",
+    "current": "Nothing \u2014 no Reflex Package Controller exists anywhere in the codebase. The only execution-node rollout mechanism today is deploy.yml's 'replace every execution node under its group's rolling policy' step, which replaces the whole boot image on a managed instance group \u2014 a structurally different mechanism from a package-pin controller reading the environment repository \u2014 and it is unexercised because execution_nodes={} in every environment and image.yml has never been dispatched.",
     "evidence": [
       ".github/workflows/deploy.yml:743-765 (rolling instance-group replace step)",
       "infrastructure/images/execution-node/README.md ('Not run: the bake itself')",
@@ -332,7 +332,7 @@
   {
     "id": "CICD-083",
     "status": "PARTIAL",
-    "current": "environments/dev/terraform.tfvars is the one real, applied environment (project algorik-dev), sized well below a production topology (4 trust zones, one small GKE Autopilot control-plane cluster only — no workload cluster since ADR 0024). The platform can structurally reach only simulated venues everywhere: the fastbrain's catalogue secret_mounts omits the venue credential entirely, and the simulated broker/provider sandboxes are the only permitted execution targets platform-wide.",
+    "current": "environments/dev/terraform.tfvars is the one real, applied environment (project algorik-dev), sized well below a production topology (4 trust zones, one small GKE Autopilot control-plane cluster only \u2014 no workload cluster since ADR 0024). The platform can structurally reach only simulated venues everywhere: the fastbrain's catalogue secret_mounts omits the venue credential entirely, and the simulated broker/provider sandboxes are the only permitted execution targets platform-wide.",
     "evidence": [
       "infrastructure/environments/dev/terraform.tfvars:1-692",
       "infrastructure/terraform/catalogue.tf:465-483 (no venue credential mount for fastbrain)",
@@ -392,7 +392,7 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "INFRA",
     "verification": "cargo test -p qip-acceptance --test acceptance a_market_observation_travels_the_whole_loop; cargo test -p qip-acceptance --test e2e",
     "work_item": "E14",
     "tier": "T3",
@@ -413,14 +413,14 @@
       "backend/crates/libs/qip-events/src/log.rs:384 (EventLog::inspect)",
       "a_clean_journal_replays_into_three_identical_registries_and_the_run_exits_zero (backend/crates/apps/qip-cli/tests/replay.rs:232, spawns the binary)"
     ],
-    "gap": "No provisioned 'replay environment' exists with governed, read-only, curated production-derived data — there is no production data to derive from (nothing has ever run in production), and no Terraform environment is named 'replay'.",
+    "gap": "No provisioned 'replay environment' exists with governed, read-only, curated production-derived data \u2014 there is no production data to derive from (nothing has ever run in production), and no Terraform environment is named 'replay'.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "INFRA",
     "verification": "cargo test -p qip-capital-fabric --test journal replay_is_deterministic_across_two_runs_and_two_journals",
     "work_item": "E14",
     "tier": "T3",
@@ -449,7 +449,7 @@
     "depends_on": [
       "CICD-086"
     ],
-    "blocked_by": "",
+    "blocked_by": "CICD-086",
     "verification": "cargo test -p qip-acceptance --test egress the_proxy_offers_no_route_to_a_venue_and_cannot_carry_an_order; cargo test -p qip-acceptance --test paper_boundary a_configured_live_ceiling_stops_the_deployment_instead_of_being_lowered_to_paper (platform-wide only; no replay-environment check exists)",
     "work_item": "E14",
     "tier": "T2",
@@ -472,7 +472,7 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "C8",
     "verification": "none exists",
     "work_item": "E14",
     "tier": "T3",
@@ -500,7 +500,7 @@
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "INFRA",
     "verification": "cargo test -p qip-acceptance --test infrastructure the_venue_credential_is_unreadable_where_live_trading_is_impossible",
     "work_item": "E13",
     "tier": "T2",
@@ -544,7 +544,7 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "C8",
     "verification": "cargo test -p qip-acceptance --test infrastructure every_environment_names_a_project_of_its_own",
     "work_item": "E14",
     "tier": "T2",
@@ -631,7 +631,7 @@
   {
     "id": "CICD-095",
     "status": "BLOCKED",
-    "current": "nothing — no google_compute_reservation or capacity-commitment resource exists anywhere in infrastructure/terraform; execution_nodes={} in every environment, so there is no execution machine type to reserve capacity for yet.",
+    "current": "nothing \u2014 no google_compute_reservation or capacity-commitment resource exists anywhere in infrastructure/terraform; execution_nodes={} in every environment, so there is no execution machine type to reserve capacity for yet.",
     "evidence": [
       "grep -rni 'reservation|commitment' infrastructure/terraform/**/*.tf finds no capacity-reservation resource",
       "infrastructure/terraform/modules/execution-node/main.tf (0 nodes anywhere, execution_nodes={})"
@@ -653,7 +653,7 @@
   {
     "id": "CICD-096",
     "status": "PARTIAL",
-    "current": "The same-digest, config-only-difference half is real: one Docker image per binary (infrastructure/docker/Dockerfile, selected by the BINARY build arg) is built once, and the catalogue/tfvars per environment vary only environment variables and Secret-Manager-mounted files (terraform-catalogue, modules/cloudrun) — never a rebuild for a different environment.",
+    "current": "The same-digest, config-only-difference half is real: one Docker image per binary (infrastructure/docker/Dockerfile, selected by the BINARY build arg) is built once, and the catalogue/tfvars per environment vary only environment variables and Secret-Manager-mounted files (terraform-catalogue, modules/cloudrun) \u2014 never a rebuild for a different environment.",
     "evidence": [
       "infrastructure/docker/Dockerfile:1-40 (one image, BINARY arg selects the binary)",
       "infrastructure/terraform/catalogue.tf (per-workload env/secret/config mounts)",
@@ -666,7 +666,7 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "INFRA",
     "verification": "none exists for the signed-configuration half; the single-image-per-binary half is inspectable in infrastructure/docker/Dockerfile",
     "work_item": "E14",
     "tier": "T3",
@@ -703,7 +703,7 @@
   {
     "id": "CICD-098",
     "status": "BLOCKED",
-    "current": "nothing is deployed — modules/execution-node is fully built and heavily tested but execution_nodes={} in every environment's tfvars, and image.yml (the boot-image bake) has never been dispatched; no Reflex cell exists in any region to receive a package. Permitted form (one shadow node, one region): image.yml bakes the boot image only from attested artefacts, `crane export` of qip-edge-node@<digest> and vendor/envoy@<digest>, refusing a digest the environment's attestor has not signed, and the node's startup script verifies the boot image on every boot. The node has no container runtime and no route to the internet, so it cannot fetch a binary from anywhere else.",
+    "current": "nothing is deployed \u2014 modules/execution-node is fully built and heavily tested but execution_nodes={} in every environment's tfvars, and image.yml (the boot-image bake) has never been dispatched; no Reflex cell exists in any region to receive a package. Permitted form (one shadow node, one region): image.yml bakes the boot image only from attested artefacts, `crane export` of qip-edge-node@<digest> and vendor/envoy@<digest>, refusing a digest the environment's attestor has not signed, and the node's startup script verifies the boot image on every boot. The node has no container runtime and no route to the internet, so it cannot fetch a binary from anywhere else.",
     "evidence": [
       "infrastructure/terraform/modules/execution-node/main.tf:1-30,122-434",
       "infrastructure/images/execution-node/README.md ('Not run: the bake itself. No image has been created')",
@@ -755,12 +755,12 @@
   {
     "id": "CICD-100",
     "status": "PARTIAL",
-    "current": "Binary Authorization's policy (modules/binaryauthorization) is entirely produced by the reviewed Terraform configuration applied through infra.yml, which requires the same PR-review gate as any other change in this monorepo — a form of reviewed desired state — and every catalogue Cloud Run service evaluates this project policy.",
+    "current": "Binary Authorization's policy (modules/binaryauthorization) is entirely produced by the reviewed Terraform configuration applied through infra.yml, which requires the same PR-review gate as any other change in this monorepo \u2014 a form of reviewed desired state \u2014 and every catalogue Cloud Run service evaluates this project policy.",
     "evidence": [
       "infrastructure/terraform/modules/binaryauthorization/main.tf:54-199",
       "every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy (backend/crates/tests/qip-acceptance/tests/infrastructure.rs)"
     ],
-    "gap": "No test or control proves 'a policy change made outside [the reviewed repo] is reverted or refused' — Terraform would only surface drift on its next plan, not actively revert it; and the policy is fed by Terraform's own review process, not by the Argo-CD-managed 'GitOps desired state' path (infrastructure/gitops/envs/) the blueprint diagram specifically names.",
+    "gap": "No test or control proves 'a policy change made outside [the reviewed repo] is reverted or refused' \u2014 Terraform would only surface drift on its next plan, not actively revert it; and the policy is fed by Terraform's own review process, not by the Argo-CD-managed 'GitOps desired state' path (infrastructure/gitops/envs/) the blueprint diagram specifically names.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -777,13 +777,13 @@
   {
     "id": "CICD-101",
     "status": "INCORRECT",
-    "current": "The repository's own adopted orchestration policy defines 'disjoint paths, shared tree' as the *default* isolation mode for concurrent workers, reserving an isolated worktree only for overlapping paths, a destructive command, or a different build state — and even then the measured desktop supports only one isolated worktree at a time. .claude/rules/00-enterprise-governance.md's own Scope section says parallel agents share one checkout.",
+    "current": "The repository's own adopted orchestration policy defines 'disjoint paths, shared tree' as the *default* isolation mode for concurrent workers, reserving an isolated worktree only for overlapping paths, a destructive command, or a different build state \u2014 and even then the measured desktop supports only one isolated worktree at a time. .claude/rules/00-enterprise-governance.md's own Scope section says parallel agents share one checkout.",
     "evidence": [
-      "docs/plan/algorik-orchestration-policy.md:212-217 (§6: 'Disjoint paths, shared tree — the default'; isolated worktree only when paths could overlap)",
+      "docs/plan/algorik-orchestration-policy.md:212-217 (\u00a76: 'Disjoint paths, shared tree \u2014 the default'; isolated worktree only when paths could overlap)",
       ".claude/rules/00-enterprise-governance.md Scope ('Parallel agents share this checkout; a file you did not open may be half-written by someone else')",
       "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md:52-65 (desktop: 'isolated worktrees 169'; 'Disk, which bound the old container to one worktree, is no longer a constraint')"
     ],
-    "gap": "The adopted orchestration policy (§6) and the governance rule both codify a shared working tree as the normal mode for concurrent agents, which the requirement forbids ('never in a working tree shared with another agent'). This is a policy choice, not a capacity limit: on the owner's desktop worker-capacity.sh measures 169 isolated worktrees against a 10-worker CPU ceiling (ADR 0098), so isolation-by-default is feasible. What is missing is the policy change, and a check that no two concurrent tasks share a tree.",
+    "gap": "The adopted orchestration policy (\u00a76) and the governance rule both codify a shared working tree as the normal mode for concurrent agents, which the requirement forbids ('never in a working tree shared with another agent'). This is a policy choice, not a capacity limit: on the owner's desktop worker-capacity.sh measures 169 isolated worktrees against a 10-worker CPU ceiling (ADR 0098), so isolation-by-default is feasible. What is missing is the policy change, and a check that no two concurrent tasks share a tree.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -795,25 +795,25 @@
     "work_item": "E00",
     "tier": "T3",
     "size": "M",
-    "notes": "Requirement text itself anticipates this: 'Meeting this row would change that assumption.' verify: status unchanged (INCORRECT). Corrected a factual error: the row said isolation is 'infeasible on the measured desktop (disk supports only one isolated worktree)'. That '1' is the old container's 2026-08-30 measurement; ADR 0098's desktop measurement is 169 and says disk 'is no longer a constraint'. So the contradiction is purely policy (§6 default) and is cheap to resolve."
+    "notes": "Requirement text itself anticipates this: 'Meeting this row would change that assumption.' verify: status unchanged (INCORRECT). Corrected a factual error: the row said isolation is 'infeasible on the measured desktop (disk supports only one isolated worktree)'. That '1' is the old container's 2026-08-30 measurement; ADR 0098's desktop measurement is 169 and says disk 'is no longer a constraint'. So the contradiction is purely policy (\u00a76 default) and is cheap to resolve."
   },
   {
     "id": "CICD-102",
     "status": "PARTIAL",
-    "current": "The promotion path (Kargo's Warehouse + promotiontask.yaml) only promotes digests deploy.yml built, scanned, signed and attested, and Argo CD's post-sync hook (envs/<env>/prove-serving.yaml) fails the sync unless the routed revision serves those digests — but the write to the environment repository itself is not gated on attestation.",
+    "current": "The promotion path (Kargo's Warehouse + promotiontask.yaml) only promotes digests deploy.yml built, scanned, signed and attested, and Argo CD's post-sync hook (envs/<env>/prove-serving.yaml) fails the sync unless the routed revision serves those digests \u2014 but the write to the environment repository itself is not gated on attestation.",
     "evidence": [
       "infrastructure/gitops/kargo/base/promotiontask.yaml:16-19 ('A digest the attestor never signed is not refused here. The commit lands, Argo CD syncs it, Cloud Run's admission refuses the revision')",
       "infrastructure/gitops/kargo/README.md:16 ('An unattested digest | Cloud Run's admission, not Kargo')",
       "infrastructure/gitops/kargo/base/warehouse.yaml (freight selection is NewestBuild by tag, not attestation verification)"
     ],
-    "gap": "No required check on the environment repository itself refuses an unattested-digest commit before it lands — the verification method's own acceptance test ('fails the repository's required check') has no such check; the invariant is enforced only downstream, at Cloud Run admission, three steps later than the write to desired state.",
+    "gap": "No required check on the environment repository itself refuses an unattested-digest commit before it lands \u2014 the verification method's own acceptance test ('fails the repository's required check') has no such check; the invariant is enforced only downstream, at Cloud Run admission, three steps later than the write to desired state.",
     "implemented": true,
     "tested": false,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "INFRA",
     "verification": "none exists at the repository-write seam; downstream enforcement is prove-serving.yaml, unexercised because no bootstrap has ever completed (ADR 0093)",
     "work_item": "E14",
     "tier": "T3",
