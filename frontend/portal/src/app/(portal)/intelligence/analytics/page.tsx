@@ -203,7 +203,7 @@ export default function AnalyticsPage() {
           />
           <PanelBody>
             <ResourceView resource={opportunities} loadingRows={3}>
-              {(data) => (
+              {(_data) => (
                 <div className="flex flex-col gap-3">
                   <KpiRow>
                     <Kpi
@@ -255,7 +255,7 @@ export default function AnalyticsPage() {
           />
           <PanelBody>
             <ResourceView resource={proposals} loadingRows={3}>
-              {(data) => (
+              {(_data) => (
                 <div className="flex flex-col gap-3">
                   <KpiRow>
                     <Kpi
@@ -326,7 +326,7 @@ export default function AnalyticsPage() {
         <PanelBody>
           <div className="space-y-3 max-w-[86ch]">
             <p className="text-[12px] leading-relaxed text-[color:var(--color-ink-dim)]">
-              The analytics above reflect the DECIDE stage's complete output. Every opportunity
+              The analytics above reflect the DECIDE stage&apos;s complete output. Every opportunity
               detected, every proposal sized, and every control decision is recorded in the event
               log and read here as the platform served it.
             </p>
