@@ -3047,3 +3047,100 @@ fn each_halt_wire_stopping_the_next_pass_costs_what_the_execution_measurements_s
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
+
+#[test]
+fn tick_to_order_p99_latency_on_the_reflex_cell() -> Result<()> {
+    // Measure Cell::work latency, the core of tick-to-order time on the cell.
+    // Cell::work evaluates all strategies, sizes positions, and constructs orders
+    // for venue submission. This test measures the composed latency across many
+    // passes, isolating cell work time from I/O, network, and venue response.
+    //
+    // The distribution is built from the cell running with live signals: a simple
+    // "alpha" strategy that will place orders when its condition is met.
+    // The latency includes feature evaluation, strategy evaluation, sizing,
+    // and order construction—everything that happens inside cell.work().
+
+    const PASSES: usize = 1_000;
+    const CEILING_MICROS: f64 = 10_000.0; // 10ms in microseconds
+
+    let mut cell = edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?;
+    let mut gateway = PaperVenue {
+        fills: true, // fill orders immediately so the cell can place new ones
+        ..PaperVenue::default()
+    };
+
+    // Warm up the cell with a few passes to stabilize JIT and caches
+    let mut now = start();
+    for _ in 0..10 {
+        cell.work(now, &mut gateway)?;
+        now = now.saturating_add(Duration::from_secs(1));
+    }
+
+    // Measure latency distribution across many passes
+    let mut latencies = Vec::new();
+    for _pass in 0..PASSES {
+        let began = Instant::now();
+        let report = cell.work(now, &mut gateway)?;
+        let elapsed = began.elapsed();
+
+        // Record latency only when orders were actually placed (signal condition met)
+        if !report.orders.is_empty() {
+            latencies.push(elapsed);
+        }
+
+        now = now.saturating_add(Duration::from_secs(1));
+    }
+
+    if latencies.is_empty() {
+        return Err(Error::invalid(
+            "no orders were placed in all passes; strategy may not fire",
+        ));
+    }
+
+    // Compute percentiles from the distribution
+    let mut sorted = latencies.clone();
+    sorted.sort();
+    let p50_idx = sorted.len() / 2;
+    let p99_idx = (sorted.len() * 99) / 100;
+
+    let p50 = sorted[p50_idx];
+    let p99 = sorted[p99_idx];
+    let max = sorted[sorted.len() - 1];
+
+    println!(
+        "\n=== CELL::WORK LATENCY DISTRIBUTION ===\n\
+         Total passes: {}\n\
+         Passes with orders: {}\n\
+         p50: {:?}\n\
+         p99: {:?}\n\
+         max: {:?}\n\
+         ==========================================\n",
+        PASSES,
+        latencies.len(),
+        p50,
+        p99,
+        max
+    );
+
+    // Verify the p99 is reasonable (should be well under 10ms per ARCH-014 spec)
+    assert!(
+        p99.as_micros() < (CEILING_MICROS as u128),
+        "p99 cell::work latency {}us exceeds {}us threshold",
+        p99.as_micros(),
+        CEILING_MICROS as u128
+    );
+
+    // Verify distribution integrity
+    assert!(p99 >= p50, "p99 must be >= p50 (distribution integrity)");
+    assert!(max >= p99, "max must be >= p99 (distribution integrity)");
+
+    let total_time: WallDuration = latencies.iter().sum();
+    report(
+        "cell::work latency (p99)",
+        latencies.len(),
+        total_time,
+        CEILING_MICROS,
+    );
+
+    Ok(())
+}
