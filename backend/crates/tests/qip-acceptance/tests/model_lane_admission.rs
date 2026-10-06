@@ -139,7 +139,7 @@ fn all_specialist_model_classes_are_refused_from_hot_lanes() {
         let model_id_str = format!("MDL{:030x}", 10 + i);
         let card = ModelCard::new(
             ModelId::from_string(&model_id_str),
-            &format!("specialist-{name}"),
+            format!("specialist-{name}").as_str(),
             "1.0.0",
             "team",
             now,

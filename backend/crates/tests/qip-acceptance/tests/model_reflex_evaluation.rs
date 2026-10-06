@@ -10,6 +10,7 @@
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::float_cmp)]
 
 use qip_core::Xoshiro256;
 use qip_strategy::{DistilledModel, TreeNode};
