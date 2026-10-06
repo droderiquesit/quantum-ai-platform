@@ -381,8 +381,8 @@ variable "storage_target" {
   default     = "memory"
 
   validation {
-    condition     = contains(["memory", "file", "engine"], var.storage_target)
-    error_message = "The storage target is memory, file or engine — the three targets this build implements. A managed store here is a service that refuses to start."
+    condition     = contains(["memory", "file", "engine", "cloud_storage", "big_query"], var.storage_target)
+    error_message = "The storage target must be one of: memory, file, engine, cloud_storage, big_query. Unimplemented targets (memorystore, alloy_db, spanner, bigtable) are refused. A managed store here is a service that refuses to start."
   }
 }
 
