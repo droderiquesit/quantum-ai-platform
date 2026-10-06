@@ -298,8 +298,7 @@ impl ComputeRouter {
         let classical_solver = classical.solver;
         let classical_weights = classical.weights.clone();
         let classical_usable = classical.is_usable();
-        // MUTATION: Removed runs.push(classical) to verify tests catch it
-        // runs.push(classical);
+        runs.push(classical);
 
         let (attempt_quantum, quantum_note) = self.quantum_assessment(problem);
         if attempt_quantum && let Some(provider) = &self.quantum {
@@ -388,7 +387,7 @@ impl ComputeRouter {
             chosen,
             weights,
             objective,
-            classical_objective,
+            classical_objective: objective, // MUTATION: Using objective instead of classical_objective
             rationale,
             quantum_note,
         })

@@ -76,7 +76,10 @@ fn objective_recomputation_from_assignment_matches_expected() {
     // Objective: 1.0 (constant) + 2.0*1*1 (i=0,j=0) + (-1.0)*1*0 (i=0,j=1) +
     //            3.0*0*0 (i=1,j=1) = 3.0
     let obj = SolverResult::recompute_objective(&assignment, &qubo, constant);
-    assert_eq!(obj, 3.0, "recomputation must match hand calculation");
+    #[allow(clippy::float_cmp)]
+    {
+        assert_eq!(obj, 3.0, "recomputation must match hand calculation");
+    }
 }
 
 // --- SLICE-49-7: Classical baseline always runs first ---
