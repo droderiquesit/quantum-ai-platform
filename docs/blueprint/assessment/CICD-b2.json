@@ -376,13 +376,16 @@
   {
     "id": "CICD-050",
     "status": "PARTIAL",
-    "current": "Terraform validation runs in ci.yml's infrastructure job (fmt/validate/plan-the-gates); secret scanning runs via ./scripts/check-secrets.sh (ci.yml:393-399) and gitleaks via trunk-action; SCA/vulnerability scanning runs via `trivy fs --severity CRITICAL,HIGH --exit-code 1` over the whole tree (ci.yml:244-249) and `trivy image` before push in deploy.yml (deploy.yml:462-490); architecture rule tests run as part of `cargo test --workspace` (architecture.rs, blueprint_rules.rs).",
+    "current": "Terraform validation runs in ci.yml's infrastructure job (fmt/validate/plan-the-gates); secret scanning runs via ./scripts/check-secrets.sh (ci.yml:393-399) and gitleaks via trunk-action; SCA/vulnerability scanning runs via `trivy fs --severity CRITICAL,HIGH --exit-code 1` over the whole tree (ci.yml:244-249) and `trivy image` before push in deploy.yml (deploy.yml:462-490); architecture rule tests run as part of `cargo test --workspace` (architecture.rs, blueprint_rules.rs). SAST scanning via CodeQL is now configured (.github/workflows/codeql-analysis.yml) for Rust and TypeScript, running on every push to main/claude/** and on pull requests, with security-and-quality query suite.",
     "evidence": [
-      "ci.yml:244-249 (trivy fs)",
-      "ci.yml:393-399 (check-secrets.sh)",
-      "deploy.yml:462-490 (trivy image, pre-push)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs",
-      "backend/crates/tests/qip-acceptance/tests/blueprint_rules.rs"
+      "ci.yml:40-52 (clippy)",
+      "ci.yml:55-73 (test)",
+      "ci.yml:109-120 (security-audit)",
+      "ci.yml:132-142 (cargo-deny)",
+      "backend/crates/edge/qip-orderbook/tests/replay.rs",
+      "backend/crates/tests/qip-acceptance/tests/performance.rs:527 (book_apply_costs_what_the_budget_says)",
+      ".github/workflows/codeql-analysis.yml (CodeQL workflow for Rust and TypeScript SAST scanning)",
+      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs (codeql_analysis_is_configured_for_security_scanning)"
     ],
     "gap": "No Kubernetes admission-policy engine (OPA/Gatekeeper/Kyverno/Policy Controller) is deployed or configured anywhere in infrastructure/. No dedicated SAST tool runs (clippy is a lint, not SAST; trunk-action's actionlint/shellcheck/hadolint cover workflow/shell/Dockerfile shape, not application logic) — no CodeQL or Semgrep workflow exists.",
     "implemented": true,
@@ -396,7 +399,7 @@
     "work_item": "E13-k8s-policy-engine-and-sast",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Lane L016-b-CICD-050: Added CodeQL static analysis workflow. CodeQL runs on main, claude/**, and PR branches, analyzing Rust and TypeScript code for security vulnerabilities. Structural test verifies workflow exists and is properly configured. Gap remains: No Kubernetes admission-policy engine (OPA/Gatekeeper/Kyverno/Policy Controller) is deployed; the control-plane cluster is suspended per ADR 0093."
   },
   {
     "id": "CICD-051",
