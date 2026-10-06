@@ -13,7 +13,7 @@ use qip_contracts::expansion::{
     CapabilityEntry, CapabilityVerb, OntologyTypeFamily, OntologyTypeSpec,
 };
 use qip_core::error::{Error, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Ontology Registry: versioned definitions of entity, event, relationship,
 /// market, asset, product, causal-driver, and lifecycle types.
@@ -32,21 +32,36 @@ impl OntologyRegistry {
         }
     }
 
-    /// Register a type. Rejects if the exact same (family, name, version)
-    /// already exists. Accepts new versions of existing names.
+    /// Register a type. Refuses a spec that fails its own validation (a
+    /// version of zero would be a stored type carrying no version, which is
+    /// the ambiguity the registry exists to remove), refuses the exact same
+    /// (family, name, version) twice, and refuses a version not above the
+    /// latest already held for that name. The last refusal matters: without
+    /// it, registering v1 after v2 silently moved `get_latest` back to v1, so
+    /// a late-arriving old definition replaced the current one.
     pub fn register(&mut self, spec: OntologyTypeSpec) -> Result<()> {
+        spec.validate()?;
         let key = (spec.family, spec.name.clone(), spec.version);
 
         if self.types.contains_key(&key) {
             return Err(Error::invalid(format!(
-                "OntologyTypeSpec {}.{} version {} already registered",
-                format!("{:?}", spec.family),
-                spec.name,
-                spec.version
+                "OntologyTypeSpec {:?}.{} version {} already registered; register a higher version",
+                spec.family, spec.name, spec.version
             )));
         }
 
         let name_key = (spec.family, spec.name.clone());
+        if let Some(&latest) = self.latest_version_per_name.get(&name_key)
+            && spec.version <= latest
+        {
+            return Err(Error::invalid(format!(
+                "OntologyTypeSpec {:?}.{} version {} is not above the latest registered version {latest}; register version {} or higher",
+                spec.family,
+                spec.name,
+                spec.version,
+                latest.saturating_add(1)
+            )));
+        }
         self.latest_version_per_name.insert(name_key, spec.version);
         self.types.insert(key, spec);
         Ok(())
@@ -135,8 +150,12 @@ impl CapabilityRegistry {
         self.capabilities.get(&verb).cloned()
     }
 
-    /// Add or update a capability and bump the version.
+    /// Add or update a capability and bump the version. Refuses an entry that
+    /// fails its own validation — an empty implementation list or a
+    /// confidence outside [0, 1] would otherwise be recorded as a capability
+    /// the platform has.
     pub fn add_capability(&mut self, entry: CapabilityEntry) -> Result<()> {
+        entry.validate()?;
         self.version_history
             .insert(self.version, self.capabilities.clone());
         self.capabilities.insert(entry.verb, entry);
@@ -183,6 +202,7 @@ impl Default for CapabilityRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn an_ontology_type_can_be_registered_and_retrieved() {
@@ -239,14 +259,51 @@ mod tests {
         reg.register(spec_v2).unwrap();
 
         assert_eq!(reg.type_count(), 2);
+        // Reading at the old version must return the old definition, not
+        // merely something: a registry that overwrote v1 with v2 under both
+        // keys would pass an `is_some` check.
+        let v1 = reg.get_type(OntologyTypeFamily::Relationship, "Owns", 1);
+        assert_eq!(v1.map(|s| s.schema), Some(r#"{"v": 1}"#.to_string()));
+        let v2 = reg.get_type(OntologyTypeFamily::Relationship, "Owns", 2);
+        assert_eq!(v2.map(|s| s.schema), Some(r#"{"v": 2}"#.to_string()));
+    }
+
+    #[test]
+    fn ontology_refuses_a_type_with_version_zero() {
+        let mut reg = OntologyRegistry::new();
+        let spec = OntologyTypeSpec {
+            family: OntologyTypeFamily::Asset,
+            name: "Bond".to_string(),
+            version: 0,
+            schema: "{}".to_string(),
+            description: "unversioned".to_string(),
+        };
+        let err = reg.register(spec);
         assert!(
-            reg.get_type(OntologyTypeFamily::Relationship, "Owns", 1)
-                .is_some()
+            matches!(&err, Err(e) if e.to_string().contains("version must be at least 1")),
+            "a stored type must carry a version: {err:?}"
         );
+        assert_eq!(reg.type_count(), 0);
+    }
+
+    #[test]
+    fn ontology_refuses_an_older_version_after_a_newer_one_and_latest_stays_put() {
+        let mut reg = OntologyRegistry::new();
+        let make = |version: u32| OntologyTypeSpec {
+            family: OntologyTypeFamily::Product,
+            name: "Swap".to_string(),
+            version,
+            schema: format!("{{\"v\": {version}}}"),
+            description: "swap".to_string(),
+        };
+        reg.register(make(2)).unwrap();
+        let err = reg.register(make(1));
         assert!(
-            reg.get_type(OntologyTypeFamily::Relationship, "Owns", 2)
-                .is_some()
+            matches!(&err, Err(e) if e.to_string().contains("not above the latest registered version 2")),
+            "a late older version must be refused: {err:?}"
         );
+        let latest = reg.get_latest(OntologyTypeFamily::Product, "Swap");
+        assert_eq!(latest.map(|s| s.version), Some(2));
     }
 
     #[test]
@@ -317,7 +374,7 @@ mod tests {
     #[test]
     fn ontology_all_eight_families_can_be_registered() {
         let mut reg = OntologyRegistry::new();
-        let families = vec![
+        let families = [
             OntologyTypeFamily::Entity,
             OntologyTypeFamily::Event,
             OntologyTypeFamily::Relationship,
@@ -390,6 +447,24 @@ mod tests {
     }
 
     #[test]
+    fn capability_refuses_an_entry_with_no_implementations_and_keeps_its_version() {
+        let mut reg = CapabilityRegistry::new();
+        let cap = CapabilityEntry {
+            verb: CapabilityVerb::Transfer,
+            implementations: vec![],
+            confidence_level: 0.5,
+            eligibility: "test".to_string(),
+        };
+        let err = reg.add_capability(cap);
+        assert!(
+            matches!(&err, Err(e) if e.to_string().contains("implementations")),
+            "a capability with no implementation is not a capability: {err:?}"
+        );
+        assert_eq!(reg.current_version(), 1);
+        assert_eq!(reg.get_capability(CapabilityVerb::Transfer), None);
+    }
+
+    #[test]
     fn capability_remove_nonexistent_returns_error() {
         let mut reg = CapabilityRegistry::new();
         let err = reg.remove_capability(CapabilityVerb::Trade);
@@ -428,7 +503,7 @@ mod tests {
     #[test]
     fn capability_all_ten_verbs_can_be_registered() {
         let mut reg = CapabilityRegistry::new();
-        let verbs = vec![
+        let verbs = [
             CapabilityVerb::Sense,
             CapabilityVerb::Reason,
             CapabilityVerb::Simulate,

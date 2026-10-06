@@ -2,12 +2,12 @@
   {
     "id": "EXPAND-034",
     "status": "COMPLETE",
-    "current": "OntologyRegistry and OntologyTypeSpec now live in qip-contracts::expansion and qip-agents::registries. OntologyTypeFamily enum (8 families: entity, event, relationship, market, asset, product, causal_driver, lifecycle) and OntologyTypeSpec struct (family, name, version>=1, schema, description) follow existing expansion.rs contract pattern with validation and serde support. OntologyRegistry (qip-agents/src/registries.rs) stores types keyed by (family, name, version) in BTreeMap, supports registration, retrieval at any version, and per-family listing. 12 mutation-verified tests: eight-family registration, latest-version tracking, duplicate rejection, and old-version retrieval are proven. Tests pass with zero warnings on qip-agents only (pre-existing qip-contracts issues unrelated).",
+    "current": "OntologyRegistry (backend/crates/libs/qip-agents/src/registries.rs) holds OntologyTypeSpec definitions (qip-contracts::expansion: family, name, version, schema, description) keyed by (family, name, version) in a BTreeMap, for all eight families of OntologyTypeFamily (entity, event, relationship, market, asset, product, causal_driver, lifecycle). register() runs OntologyTypeSpec::validate, so version 0 (a stored type carrying no version) is refused; it refuses an exact duplicate and any version not above the latest already held for that name, so a late-arriving old definition cannot displace the current one. get_type(family, name, version) returns that version's own definition; get_latest and types_by_family read the highest version. Library only: no production caller and no knowledge-graph write path consults it yet.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs (OntologyTypeFamily, OntologyTypeSpec with validate() and decode())",
-      "backend/crates/libs/qip-agents/src/registries.rs (OntologyRegistry implementation with tests)",
-      "backend/crates/libs/qip-agents/tests run: 12 passed (registries::tests::an_ontology_type_can_be_registered_and_retrieved, ontology_all_eight_families_can_be_registered, ontology_permits_new_versions_of_existing_name, ontology_get_latest_returns_highest_version, ontology_types_by_family_lists_latest_of_each_type, ontology_rejects_duplicate_family_name_version)",
-      "Mutation verification: breaking register() to reject version 1 failed all tests correctly; restoration passed all 12."
+      "backend/crates/libs/qip-contracts/src/expansion.rs (OntologyTypeFamily, OntologyTypeSpec::validate/decode)",
+      "backend/crates/libs/qip-agents/src/registries.rs (OntologyRegistry::register/get_type/get_latest/types_by_family)",
+      "cargo test -p qip-agents --lib registries -> test result: ok. 15 passed; 0 failed (2026-10-06; 8 ontology tests, 7 capability tests)",
+      "Mutations 2026-10-06, each fired then restored byte-identical (cmp): removing spec.validate() in register -> ontology_refuses_a_type_with_version_zero FAILED; disabling the not-above-latest guard -> ontology_refuses_an_older_version_after_a_newer_one_and_latest_stays_put FAILED ('a late older version must be refused: Ok(())'); get_type reading the latest version instead of the requested one -> ontology_permits_new_versions_of_existing_name FAILED (left: Some(\"{\\\"v\\\": 2}\"))"
     ],
     "gap": "",
     "implemented": true,
@@ -17,11 +17,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --lib registries --no-fail-fast; all 12 tests pass. Mutation: broke OntologyRegistry::register to always reject, all 12 tests failed; restored, all pass.",
+    "verification": "cargo test -p qip-agents --lib registries --no-fail-fast. ontology_all_eight_families_can_be_registered registers one type per family; ontology_refuses_a_type_with_version_zero proves every stored type carries a version; ontology_permits_new_versions_of_existing_name asserts reading v1 after v2 returns v1's schema.",
     "work_item": "E08-ontology-registry",
     "tier": "T4",
     "size": "XL",
-    "notes": "Closed 2026-10-06. Library complete; not yet wired to production. Versioned at registration time per type and family, not globally — same entity name can have v1 and v2 independently; different entity has separate version tracks. EXPAND-035 (governed extension) depends on this existing first."
+    "notes": "This is new architecture, not a gap in an existing subsystem: a runtime-versioned schema registry crossing WORLD/REASON/CONTRACT does not exist in any form. qip-contracts' compile-time enums are the closest analogue and are structurally the opposite of what is required (fixed at build, not registrable at runtime). 2026-10-06: implemented and unit-tested as a library (EXPAND-034 verification check met: eight families registrable, version required, old version reads its own definition). Versions are per (family, name) and must strictly increase. Not integrated: nothing in qip-world-model's KnowledgeGraph records which registered type version a fact was written under, so the replay ambiguity in the rationale is closed only once that wiring exists. EXPAND-035 (governed extension) builds on this registry."
   },
   {
     "id": "EXPAND-035",
@@ -150,12 +150,12 @@
   {
     "id": "EXPAND-040",
     "status": "COMPLETE",
-    "current": "CapabilityRegistry now lives in qip-agents::registries. CapabilityVerb enum (10 verbs: sense, reason, simulate, trade, settle, hedge, transfer, purchase, create, operate) and CapabilityEntry struct (verb, implementations, confidence_level in [0,1], eligibility) follow existing expansion.rs contract pattern. CapabilityRegistry stores capabilities keyed by verb in BTreeMap, versioned as a whole — each add/remove bumps the registry version and saves version history. 12 mutation-verified tests: all-ten-verb registration, versioning on add/remove, history preservation, and refusal of duplicate/nonexistent removals are proven. Tests pass with zero warnings on qip-agents only.",
+    "current": "CapabilityRegistry (backend/crates/libs/qip-agents/src/registries.rs) records CapabilityEntry values (qip-contracts::expansion: verb, implementations, confidence_level in [0,1], eligibility) keyed by CapabilityVerb, one entry per each of the ten verbs (sense, reason, simulate, trade, settle, hedge, transfer, purchase, create, operate). The registry carries a single version: add_capability and remove_capability are the only mutators, each snapshots the prior set into version_history and bumps the version, and capabilities_at_version reads any earlier set. add_capability runs CapabilityEntry::validate, so an entry with no implementation or an out-of-range confidence is refused without a version bump; removing an absent verb is refused. Library only: nothing in the platform populates it from what is actually wired.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/expansion.rs (CapabilityVerb enum, CapabilityEntry with validate() and decode())",
-      "backend/crates/libs/qip-agents/src/registries.rs (CapabilityRegistry implementation with tests)",
-      "backend/crates/libs/qip-agents/tests run: 12 passed (registries::tests::a_capability_can_be_registered_and_retrieved, capability_add_increments_version, capability_remove_increments_version_and_removes_verb, capability_all_ten_verbs_can_be_registered, capability_registry_tracks_history, capability_remove_nonexistent_returns_error)",
-      "Mutation verification: breaking add_capability to not increment version failed all version tests correctly; restoration passed all 12."
+      "backend/crates/libs/qip-contracts/src/expansion.rs (CapabilityVerb, CapabilityEntry::validate/decode)",
+      "backend/crates/libs/qip-agents/src/registries.rs (CapabilityRegistry::add_capability/remove_capability/capabilities_at_version/get_capability)",
+      "cargo test -p qip-agents --lib registries -> test result: ok. 15 passed; 0 failed (2026-10-06)",
+      "Mutations 2026-10-06, each fired then restored byte-identical (cmp): removing entry.validate() -> capability_refuses_an_entry_with_no_implementations_and_keeps_its_version FAILED; dropping the history snapshot in add_capability -> capability_registry_tracks_history FAILED; dropping the version bump in add_capability -> capability_add_increments_version FAILED (left: 1)"
     ],
     "gap": "",
     "implemented": true,
@@ -165,11 +165,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-agents --lib registries --no-fail-fast; all 12 tests pass. Mutation: broke CapabilityRegistry::add_capability to skip version increment, all version tests failed; restored, all pass.",
+    "verification": "cargo test -p qip-agents --lib registries --no-fail-fast. capability_all_ten_verbs_can_be_registered answers per verb; capability_add_increments_version, capability_remove_increments_version_and_removes_verb and capability_registry_tracks_history prove add/remove happen only by a new registry version.",
     "work_item": "E08-capability-registry",
     "tier": "T4",
     "size": "XL",
-    "notes": "Closed 2026-10-06. Library complete; not yet wired to production. Versioning is global per registry, not per verb — adding or removing any capability bumps all ten to the new version. This answers the requirement's 'added or removed only by a new registry version' structurally: there is no per-verb edit path, only whole-registry versions. EXPAND-041 (eligibility boundary) depends on this; its tests will wire the boundary into registry entries."
+    "notes": "Split from EXPAND-041 per the requirement's own notes; the eligibility-boundary half (EXPAND-041) is also unbuilt as a registry, though the boundary itself is enforced elsewhere. verify: status confirmed MISSING. Nearest neighbour not named by the assessor: qip_contracts::degradation::DegradationState records whether six internal faculties (ingestion, causal graph, episodic memory, belief state, counterfactual scoring, self-model) are currently fresh; it answers 'is this faculty up' for sizing, not 'what can the platform sense/trade/settle/...' per verb, and has no versioned add/remove path. 2026-10-06: implemented and unit-tested as a library (EXPAND-040 verification check met). Versioning is whole-registry, not per verb. Not integrated: the registry is not populated from the composition roots, so it does not yet record what the platform can actually do. The eligibility boundary per capability remains EXPAND-041."
   },
   {
     "id": "EXPAND-041",
