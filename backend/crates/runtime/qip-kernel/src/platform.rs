@@ -18764,7 +18764,11 @@ impl Platform {
                 )?)
                 .with_forecast(forecast);
         }
-        let live = self.pre_positioner.allocator().allocate(&[], 0.0, now)?;
+        // The live allocation is built from the actual strategy proposals and
+        // the current drawdown, not from an idle allocation with no proposals
+        // and zero drawdown. This ensures the plan is checked against the
+        // envelope that governs the resource, not a static total.
+        let live = self.central.allocate(self.drawdown(), now)?;
         self.pre_positioner.plan(&request, &live, now)
     }
 
