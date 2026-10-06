@@ -519,7 +519,8 @@
       "backend/crates/agents/qip-investment-agents/src/analysts.rs:85,95,241,253,379,546,701,712,831,1009 (out_of_scope call sites)",
       "backend/crates/agents/qip-investment-agents/src/chief.rs:370 (an agent that does not accept the brief is recorded as deferred)",
       "backend/crates/services/qip-reasoning-engine/src/engine.rs:188 (Deferred findings excluded from evidence)",
-      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon (asserts Deferred and zero effective conviction)"
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon (asserts Deferred and zero effective conviction)",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs an_analyst_abstains_on_every_desk_instrument_outside_its_asset_class_remit (EquityAnalyst on WTI and EURUSD, CommoditiesAnalyst on ACME and EURUSD: Deferred, remit reason, zero conviction) and the_credit_analyst_abstains_on_a_brief_about_no_instrument"
     ],
     "gap": "Abstention is hard-coded per analyst against an implicit scope, not enforced against a declared, registered competency boundary (EXPAND-053 is MISSING and AgentManifest.competencies is never read). Only named cases are tested - no property test over generated out-of-boundary queries across the roster.",
     "implemented": true,
@@ -531,11 +532,11 @@
       "EXPAND-053"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation the_macro_analyst_defers_on_an_intraday_horizon. No property test across generated out-of-boundary queries.",
+    "verification": "cargo test -p qip-investment-agents --test organisation the_macro_analyst_defers_on_an_intraday_horizon. and an_analyst_abstains_on_every_desk_instrument_outside_its_asset_class_remit, the_credit_analyst_abstains_on_a_brief_about_no_instrument (cargo test -p qip-investment-agents --no-fail-fast -> organisation: test result: ok. 43 passed; 0 failed, 2026-10-06). No property test across generated out-of-boundary queries.",
     "work_item": "E08-brain-registry",
     "tier": "T2",
     "size": "M",
-    "notes": "Applies however a specialist is invoked per the requirement's notes, including an ambient wake (EXPAND-024) — that wake path was not verified in this pass. verify: status PARTIAL unchanged; test citation corrected. The cited vocabulary.rs:255 test asserts FindingStatus::NoView via the no_data path (the subject has no geography), which is 'looked and found nothing', not abstention. Replaced with organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon, which asserts Deferred, and added the dispatch-level deferral (chief.rs:370) and the reasoning engine's exclusion (engine.rs:188). 2026-10-05: not closed. AgentManifest.competencies is free prose, so abstention cannot be enforced against it; that needs a machine-readable boundary declared for every manifest, which is a design decision."
+    "notes": "Applies however a specialist is invoked per the requirement's notes, including an ambient wake (EXPAND-024) — that wake path was not verified in this pass. verify: status PARTIAL unchanged; test citation corrected. The cited vocabulary.rs:255 test asserts FindingStatus::NoView via the no_data path (the subject has no geography), which is 'looked and found nothing', not abstention. Replaced with organisation.rs:907 the_macro_analyst_defers_on_an_intraday_horizon, which asserts Deferred, and added the dispatch-level deferral (chief.rs:370) and the reasoning engine's exclusion (engine.rs:188). 2026-10-05: not closed. AgentManifest.competencies is free prose, so abstention cannot be enforced against it; that needs a machine-readable boundary declared for every manifest, which is a design decision. 2026-10-06: still PARTIAL. Lane L040 added remit-abstention tests for the equity and commodities analysts over every off-remit instrument the test desk holds, mutation-verified (inverting either asset-class check makes the analyst return NoView instead of Deferred). The credit analyst has no asset-class remit check; its only abstention is a brief with no instrument. A first draft of these tests passed for the wrong reason (briefs carried no instrument, so every analyst deferred on 'needs an instrument' whatever the question said) and claimed COMPLETE with e2e true; both reverted. Closing still needs a machine-readable competency boundary per manifest (EXPAND-053) and a generated-query property test."
   },
   {
     "id": "EXPAND-055",

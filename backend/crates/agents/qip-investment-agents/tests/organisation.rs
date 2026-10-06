@@ -2074,3 +2074,108 @@ fn the_causal_analyst_says_whether_a_target_it_could_not_reach_is_downstream_at_
     );
     Ok(())
 }
+
+/// The finding a run produced, refused as an error rather than unwrapped.
+fn finding_of(
+    record: qip_agents::runtime::AgentRunRecord,
+) -> Result<qip_agents::finding::AgentFinding> {
+    record.finding.ok_or_else(|| {
+        qip_core::error::Error::invalid("the run produced no finding; read its status")
+    })
+}
+
+#[test]
+fn an_analyst_abstains_on_every_desk_instrument_outside_its_asset_class_remit() -> Result<()> {
+    use qip_agents::runtime::Agent;
+    use qip_investment_agents::analysts::{CommoditiesAnalyst, EquityAnalyst};
+
+    // EXPAND-054. The question text is not what an analyst reads -- it reads
+    // the brief's objects -- so a brief about nothing defers for the wrong
+    // reason ("needs an instrument") whatever its prose says. This test
+    // therefore names a real instrument of the wrong class, walks every such
+    // instrument the desk holds, and asserts the remit reason, so it fails if
+    // the asset-class check goes and the analyst answers instead.
+    let desk = populated_desk();
+    let equity: Box<dyn Agent> = Box::new(EquityAnalyst::new(
+        manifests::equity_analyst(now()),
+        desk.clone(),
+    ));
+    let commodities: Box<dyn Agent> = Box::new(CommoditiesAnalyst::new(
+        manifests::commodities_analyst(now()),
+        desk,
+    ));
+    let cases: [(&dyn Agent, &[&str], &str); 2] = [
+        (
+            equity.as_ref(),
+            &["WTI", "EURUSD"],
+            "outside the equity remit",
+        ),
+        (
+            commodities.as_ref(),
+            &["ACME", "EURUSD"],
+            "outside the commodity remit",
+        ),
+    ];
+    let mut checked = 0;
+    for (n, (agent, outside, reason)) in cases.into_iter().enumerate() {
+        for symbol in outside {
+            let brief = AgentBrief::new("what is the view", now(), Duration::from_hours(24))
+                .about_objects(vec![object(symbol)]);
+            let finding = finding_of(AgentHost::new(10 + n as u64).run(
+                agent,
+                &brief,
+                now(),
+                lineage(),
+                AgentRunId::from_string(format!("run-remit-{n}-{symbol}")),
+            ))?;
+            assert_eq!(
+                finding.status,
+                FindingStatus::Deferred,
+                "{} answered on {symbol}: {}",
+                finding.agent_id,
+                finding.claim
+            );
+            assert!(
+                finding.claim.ends_with(&format!(" {reason}")),
+                "{} deferred on {symbol} for a reason other than its remit: {}",
+                finding.agent_id,
+                finding.claim
+            );
+            assert!(is_exactly_zero(finding.effective_conviction()));
+            checked += 1;
+        }
+    }
+    // The premise: the walk visited every off-remit instrument named above.
+    assert_eq!(checked, 4);
+    Ok(())
+}
+
+#[test]
+fn the_credit_analyst_abstains_on_a_brief_about_no_instrument() -> Result<()> {
+    use qip_investment_agents::analysts::CreditAnalyst;
+
+    // The credit analyst's only declared abstention is a brief with no
+    // instrument; it has no asset-class remit check (an equity issuer's
+    // spread is a legitimate credit question), so this is the whole of its
+    // boundary today and the test claims no more than that.
+    let agent = CreditAnalyst::new(manifests::credit_analyst(now()), populated_desk());
+    let brief = AgentBrief::new(
+        "if spreads widen by 50bps, what happens",
+        now(),
+        Duration::from_hours(24),
+    );
+    let finding = finding_of(AgentHost::new(3).run(
+        &agent,
+        &brief,
+        now(),
+        lineage(),
+        AgentRunId::from_string("run-credit-nothing"),
+    ))?;
+    assert_eq!(finding.status, FindingStatus::Deferred, "{}", finding.claim);
+    assert_eq!(
+        finding.claim,
+        "a credit view needs an instrument to be about"
+    );
+    assert!(is_exactly_zero(finding.effective_conviction()));
+    Ok(())
+}
