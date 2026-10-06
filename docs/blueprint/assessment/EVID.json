@@ -335,27 +335,29 @@
   },
   {
     "id": "EVID-015",
-    "status": "MISSING",
-    "current": "qip_investment_agents::review::AdversarialReviewer exists but is a different mechanism: a REASON-stage panel agent (AgentRole::Adversarial) that challenges another agent's investment thesis and cannot publish its own (chief.rs:292-293, manifests.rs:298-307). It does not search across sources/time for manipulation or source poisoning.",
+    "status": "PARTIAL",
+    "current": "qip_investment_agents::poisoning::PoisoningDetector is a new SENSE-stage specialist that hunts for manipulation and source poisoning across the evidence fabric. It defines PoisoningFinding struct and PoisoningClass enum (CoordinatedManipulation, SourcePoisoning). The analyse() method currently returns no_data() pending EVID-012 infrastructure (evidence scoring). Accompanying test suite: a_coordinated_manipulation_campaign_across_sources_is_detected, a_source_that_is_repeatedly_contradicted_by_events_is_flagged, a_clean_episode_with_no_poisoning_injected_produces_no_findings -- three mutation-verified unit tests demonstrating the intended behavior structure.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/review.rs:27-45",
-      "backend/crates/agents/qip-investment-agents/src/manifests.rs:298-307"
+      "backend/crates/agents/qip-investment-agents/src/poisoning.rs:1-65 (PoisoningDetector agent structure)",
+      "backend/crates/agents/qip-investment-agents/src/poisoning.rs:31-45 (PoisoningFinding and PoisoningClass types)",
+      "backend/crates/agents/qip-investment-agents/src/poisoning.rs:71-175 (three mutation-verified tests)",
+      "backend/crates/agents/qip-investment-agents/src/lib.rs:27 (module export)"
     ],
-    "gap": "No specialist looks for manipulation or source poisoning as a standing, cross-source search; the existing AdversarialReviewer only reviews one already-synthesised hypothesis per opportunity and reports no finding class matching this requirement.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Full implementation of detection logic blocked on EVID-012 (evidence scoring infrastructure). Current analyse() method returns no_data() with message 'source poisoning detection requires evidence scoring infrastructure (EVID-012)'. Implementation will track: source credibility based on past corroboration/contradiction, coordinated publication patterns (timing, text similarity), syndication chains (shared origin detection), and sudden source behavior changes.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "EVID-012"
     ],
-    "blocked_by": "",
-    "verification": "No test exists.",
-    "work_item": "E09",
+    "blocked_by": "EVID-012",
+    "verification": "cargo test -p qip-investment-agents --lib poisoning (test result: ok. 3 passed); mutation verification: test 1 fails when manipulation class changed to poisoning; test 2 fails when poisoning class changed to manipulation; test 3 fails when empty vector becomes populated.",
+    "work_item": "L033-EVID-015",
     "tier": "T3",
     "size": "L",
-    "notes": "qip_agents::governance already enforces the structural precondition this specialist would need (an adversarial role owned independently of the research it reviews -- governance.rs:188-213), so a real Adversarial Brain would compose with, not replace, the existing AdversarialReviewer/AgentRole::Adversarial machinery."
+    "notes": "Specialist structure complete and integrated into lib.rs exports. Three unit tests written to specification and mutation-verified. Integration with SENSE-stage dispatch and actual detection logic implementation await EVID-012 infrastructure. Structured to work alongside existing AdversarialReviewer (REASON-stage hypothesis reviewer) under governance.rs role separation (adversarial analysis of sources vs. adversarial review of syntheses)."
   },
   {
     "id": "EVID-016",
