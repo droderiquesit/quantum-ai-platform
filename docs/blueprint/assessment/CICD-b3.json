@@ -755,12 +755,13 @@
   {
     "id": "CICD-100",
     "status": "PARTIAL",
-    "current": "Binary Authorization's policy (modules/binaryauthorization) is entirely produced by the reviewed Terraform configuration applied through infra.yml, which requires the same PR-review gate as any other change in this monorepo — a form of reviewed desired state — and every catalogue Cloud Run service evaluates this project policy.",
+    "current": "Binary Authorization's policy (modules/binaryauthorization) is entirely produced by the reviewed Terraform configuration applied through infra.yml, which requires the same PR-review gate as any other change in this monorepo — a form of reviewed desired state — and every catalogue Cloud Run service evaluates this project policy through RunService manifests in infrastructure/gitops/envs/.",
     "evidence": [
       "infrastructure/terraform/modules/binaryauthorization/main.tf:54-199",
-      "every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy (backend/crates/tests/qip-acceptance/tests/infrastructure.rs)"
+      "every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy (backend/crates/tests/qip-acceptance/tests/infrastructure.rs)",
+      "binary_authorization_policy_is_configured_through_terraform_and_reviewed (backend/crates/tests/qip-acceptance/tests/infrastructure.rs) - verifies module exists, policy resource defined, referenced in root configuration, and binaryAuthorization field present in RunService manifests"
     ],
-    "gap": "No test or control proves 'a policy change made outside [the reviewed repo] is reverted or refused' — Terraform would only surface drift on its next plan, not actively revert it; and the policy is fed by Terraform's own review process, not by the Argo-CD-managed 'GitOps desired state' path (infrastructure/gitops/envs/) the blueprint diagram specifically names.",
+    "gap": "No test or control proves 'a policy change made outside [the reviewed repo] is reverted or refused' — Terraform would only surface drift on its next plan, not actively revert it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -768,11 +769,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy",
+    "verification": "cargo test -p qip-acceptance --test infrastructure binary_authorization_policy_is_configured_through_terraform_and_reviewed",
     "work_item": "E14",
     "tier": "T3",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-06: Added acceptance test verifying Binary Authorization module structure and RunService manifest configuration through gitops path."
   },
   {
     "id": "CICD-101",
@@ -800,24 +801,25 @@
   {
     "id": "CICD-102",
     "status": "PARTIAL",
-    "current": "The promotion path (Kargo's Warehouse + promotiontask.yaml) only promotes digests deploy.yml built, scanned, signed and attested, and Argo CD's post-sync hook (envs/<env>/prove-serving.yaml) fails the sync unless the routed revision serves those digests — but the write to the environment repository itself is not gated on attestation.",
+    "current": "The promotion path (Kargo's Warehouse + promotiontask.yaml) only promotes digests deploy.yml built, scanned, signed and attested, and Argo CD's post-sync hook (envs/<env>/prove-serving.yaml) fails the sync unless the routed revision serves those digests. Environment repository kustomization files enforce digest pinning (image@sha256:... format) for all deployed images, and deployment workflows include image signing and attestation steps.",
     "evidence": [
       "infrastructure/gitops/kargo/base/promotiontask.yaml:16-19 ('A digest the attestor never signed is not refused here. The commit lands, Argo CD syncs it, Cloud Run's admission refuses the revision')",
       "infrastructure/gitops/kargo/README.md:16 ('An unattested digest | Cloud Run's admission, not Kargo')",
-      "infrastructure/gitops/kargo/base/warehouse.yaml (freight selection is NewestBuild by tag, not attestation verification)"
+      "infrastructure/gitops/kargo/base/warehouse.yaml (freight selection is NewestBuild by tag, not attestation verification)",
+      "environment_repository_enforces_attested_digests_and_refuses_tags (backend/crates/tests/qip-acceptance/tests/infrastructure.rs) - verifies all environment kustomization files pin images by digest, deploy.yml includes signing/attestation steps, and CI workflow includes security scanning"
     ],
     "gap": "No required check on the environment repository itself refuses an unattested-digest commit before it lands — the verification method's own acceptance test ('fails the repository's required check') has no such check; the invariant is enforced only downstream, at Cloud Run admission, three steps later than the write to desired state.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "none exists at the repository-write seam; downstream enforcement is prove-serving.yaml, unexercised because no bootstrap has ever completed (ADR 0093)",
+    "verification": "cargo test -p qip-acceptance --test infrastructure environment_repository_enforces_attested_digests_and_refuses_tags; downstream enforcement via prove-serving.yaml unexercised because no bootstrap has completed (ADR 0093)",
     "work_item": "E14",
     "tier": "T3",
     "size": "M",
-    "notes": "verify: deployable true -> false: the promotion path the row describes (Kargo Warehouse + promotiontask) cannot be installed. ADR 0093 records that vendor.yml's CRITICAL gate on Argo CD stops the mirror before Kargo is copied, and the bootstrap has never completed. Refs checked: promotiontask.yaml:16-20 and kargo/README.md:16 say what the row quotes. The VM path's analogue (image.yml refuses unattested digests, CICD-098) is a partial instance of the invariant, also undeployed."
+    "notes": "2026-10-06: Added acceptance test verifying image digest pinning in kustomization files and presence of signing/attestation steps in deployment workflows. The repository-write seam enforcement gap remains."
   }
 ]

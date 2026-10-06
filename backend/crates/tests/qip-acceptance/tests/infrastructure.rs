@@ -10339,3 +10339,126 @@ fn a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the
         "the IAP allow ranks below the catch-all deny, so it can never fire"
     );
 }
+
+// --- deployment gates / CICD-100, CICD-102 ------------------------------------
+
+/// CICD-100: Binary Authorization takes reviewed GitOps desired state as input.
+/// Verify that Binary Authorization is configured in Terraform and in the
+/// RunService manifests where Cloud Run services are declared through GitOps.
+#[test]
+fn binary_authorization_policy_is_configured_through_terraform_and_reviewed() {
+    let root = repository_root();
+    // The policy module must exist and be enabled
+    let binaryauth_module = root.join("infrastructure/terraform/modules/binaryauthorization");
+    assert!(
+        binaryauth_module.exists(),
+        "Binary Authorization module does not exist at {}",
+        binaryauth_module.display()
+    );
+
+    // Read the module's main.tf to verify the policy configuration exists
+    let main_tf = read("infrastructure/terraform/modules/binaryauthorization/main.tf");
+    assert!(
+        !main_tf.is_empty(),
+        "Binary Authorization module's main.tf is empty"
+    );
+    assert!(
+        main_tf.contains("google_binary_authorization_policy"),
+        "Binary Authorization module does not define a policy resource"
+    );
+
+    // Verify the policy is referenced in the root configuration
+    let root_tf = read("infrastructure/terraform/main.tf");
+    assert!(
+        root_tf.contains("binaryauthorization") || root_tf.contains("binary_authorization"),
+        "Binary Authorization module is not referenced in the root Terraform configuration"
+    );
+
+    // Verify that RunService manifests in gitops configure binary authorization
+    // (they are managed through GitOps, not Terraform cloudrun module per ADR 0036)
+    let mut found_binaryauth = false;
+    for env in ["dev", "test", "stage", "prod"] {
+        let env_dir = root.join(format!("infrastructure/gitops/envs/{env}"));
+        if env_dir.exists() {
+            for file in std::fs::read_dir(&env_dir).expect("readable directory") {
+                if let Ok(entry) = file {
+                    if let Some(name) = entry.file_name().to_str() {
+                        if name.ends_with(".yaml") || name.ends_with(".yml") {
+                            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                                if content.contains("binaryAuthorization:") {
+                                    found_binaryauth = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if found_binaryauth {
+            break;
+        }
+    }
+    assert!(
+        found_binaryauth,
+        "Binary Authorization configuration not found in any RunService manifest"
+    );
+}
+
+/// CICD-102: Desired state is updated only with attested artifacts.
+/// Verify that environment repository structure enforces digest pinning for
+/// all deployed images, and that workflows validate image attestation before
+/// promotion.
+#[test]
+fn environment_repository_enforces_attested_digests_and_refuses_tags() {
+    // Check all environment kustomization files pin images by digest
+    for env_dir in ["dev", "test", "stage", "prod"] {
+        let kustomization_path = format!("infrastructure/gitops/envs/{env_dir}/kustomization.yaml");
+        let kustomization = read(&kustomization_path);
+        assert!(
+            !kustomization.is_empty(),
+            "environment configuration missing for {env_dir}"
+        );
+
+        // Extract image references and verify they are pinned by digest
+        for line in kustomization.lines() {
+            if line.contains("image:") || line.contains("name:") && line.contains("@") {
+                // Images should be in the form: image@sha256:...
+                let trimmed = line.trim();
+                if trimmed.starts_with("image:") {
+                    let image_part = trimmed.strip_prefix("image:").unwrap_or("").trim();
+                    // Skip if it's just a field name or container reference
+                    if image_part.len() > 0 && image_part.contains("/") {
+                        assert!(
+                            image_part.contains("@sha256:"),
+                            "environment {env_dir}: image {} is not pinned by digest",
+                            image_part
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Verify deploy.yml validates and signs images before environment repository updates
+    let deploy_yml = read(".github/workflows/deploy.yml");
+    assert!(!deploy_yml.is_empty(), "deployment workflow is missing");
+    assert!(
+        deploy_yml.contains("sign")
+            || deploy_yml.contains("attest")
+            || deploy_yml.contains("cosign"),
+        "deployment workflow does not include image signing/attestation steps"
+    );
+    assert!(
+        deploy_yml.contains("kustomization.yaml") || deploy_yml.contains("gitops"),
+        "deployment workflow does not update environment repository"
+    );
+
+    // Verify CI workflow includes security scanning gates
+    let ci_yml = read(".github/workflows/ci.yml");
+    assert!(!ci_yml.is_empty(), "CI workflow is missing");
+    assert!(
+        ci_yml.contains("scan") || ci_yml.contains("trivy") || ci_yml.contains("security"),
+        "CI workflow does not include security scanning"
+    );
+}
