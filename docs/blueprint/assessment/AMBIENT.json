@@ -306,7 +306,7 @@
     "work_item": "E06-journal-counterfactual-outcomes",
     "tier": "T1",
     "size": "S",
-    "notes": "Closed 2026-10-06. The journal now carries individual DeclinedScore and FillScore records, making counterfactual evaluations reproducible from the event log. Records are bounded by the 256-entry history limit, and serialization maintains backward compatibility with #[serde(default)] on the new fields."
+    "notes": "Closed 2026-10-06. The journal now carries individual DeclinedScore and FillScore records, making counterfactual evaluations reproducible from the event log. Records are bounded by the 256-entry history limit, and serialization maintains backward compatibility with #[serde(default)] on the new fields. || Runs automatically every cycle from stage_learn with no per-evaluation caller request, satisfying the 'continuous' framing even though the enclosing cycle itself is tick-driven. verify: downgraded COMPLETE -> PARTIAL and e2e -> false. (a) The 'retained ... reproducible from the log' half fails: DeclinedScore lives in a 256-entry in-memory Vec and only counts reach the journal (platform.rs:2608, :9398, :16413-16429). (b) Not every declined alternative is priced (:15530-15546). (c) The cited e2e test calls CounterfactualEngine directly (e2e.rs:846-870), so it does not demonstrate the automatic path. Also corrected: score_declined is called directly from stage_learn (:13962), not via calibrate_resolved.\n[Session lane/backtest-engine-simulation: Work commenced 2026-10-06. Analyzing requirements and dependencies.]"
   },
   {
     "id": "AMBIENT-013",
