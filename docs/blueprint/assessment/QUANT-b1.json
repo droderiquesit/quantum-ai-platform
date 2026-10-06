@@ -233,13 +233,15 @@
     "status": "MISSING",
     "current": "nothing — qip-world-model has no quantum reference at all (rg -il quantum backend/crates/services/qip-world-model/src: empty) and no branch-selection mechanism, quantum or classical, exists to choose which counterfactual branches receive expensive simulation.",
     "evidence": [],
-    "gap": "No scenario/ensemble search selects high-information branches or intervention/no-intervention branches for simulation or experiment design; the World Model has no such selector to extend with a quantum-assisted path.",
+    "gap": "No scenario/ensemble search selects high-information branches or intervention/no-intervention branches for simulation or experiment design; the World Model has no such selector to extend with a quantum-assisted path. Blocked by QUANT-010 (Agency engine, also missing) which provides intervention/no-intervention branch definitions.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [],
+    "depends_on": [
+      "QUANT-010"
+    ],
     "blocked_by": "",
     "verification": "no test; would compare, for a fixed simulation budget, the branch set a selector picks against a classical diversity/information selector's choice from the same candidate pool",
     "work_item": "E10",
