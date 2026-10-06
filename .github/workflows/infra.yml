@@ -813,18 +813,35 @@ jobs:
             exit 1
           fi
 
-      - name: download plan artifact
+      # The apply applies exactly the plan printed above it, never a fresh
+      # -auto-approve that could differ from what anybody read (CICD-067).
+      # The plan is written here rather than downloaded from an earlier
+      # `plan` dispatch: an artifact is only visible to the run that made it,
+      # and the reclaim step above changes state, so a plan from another run
+      # would be refused as stale. It is uploaded so the applied plan is kept.
+      - name: plan for up
         if: inputs.action == 'up'
-        uses: actions/download-artifact@v4
+        env:
+          VAR_FILES: ${{ steps.vars.outputs.files }}
+        run: |
+          terraform -chdir=infrastructure/terraform plan -input=false \
+            -out=tfplan \
+            ${VAR_FILES}
+          terraform -chdir=infrastructure/terraform show -no-color tfplan
+
+      - name: keep the applied plan
+        if: inputs.action == 'up'
+        uses: actions/upload-artifact@v4
         with:
-          name: terraform-plan-${{ inputs.environment }}
-          path: infrastructure/terraform
+          name: terraform-applied-plan-${{ inputs.environment }}
+          path: infrastructure/terraform/tfplan
+          retention-days: 7
 
       - name: up
         if: inputs.action == 'up'
         run: |
           if [ ! -f infrastructure/terraform/tfplan ]; then
-            echo "Plan artifact not found. Run 'plan' action first to generate and review the plan." >&2
+            echo "Plan file not found; refusing to apply anything that was not planned and shown." >&2
             exit 1
           fi
           terraform -chdir=infrastructure/terraform apply -input=false tfplan
@@ -1968,10 +1985,10 @@ jobs:
           # The address is targeted rather than the module, so the etcd key,
           # the three controller identities and the registry DNS zones stay in
           # state and come back with the cluster.
-          terraform -chdir=infrastructure/terraform plan -input=false -out=tfplan-destroy \
+          terraform -chdir=infrastructure/terraform plan -destroy -input=false -out=tfplan-destroy \
             -target='module.gitops_control_plane[0].google_container_cluster.control_plane' \
             ${VAR_FILES}
-          terraform -chdir=infrastructure/terraform destroy -input=false tfplan-destroy
+          terraform -chdir=infrastructure/terraform apply -input=false tfplan-destroy
           echo "the ${ENVIRONMENT} control-plane cluster is gone; everything else in its module stands."
 
       - name: down
@@ -1997,10 +2014,10 @@ jobs:
           # because an environment may declare nodes tomorrow; it is not a
           # cost control today, and reading it as one is how the estate went
           # on billing for a cluster nobody had looked at.
-          terraform -chdir=infrastructure/terraform plan -input=false -out=tfplan-destroy \
+          terraform -chdir=infrastructure/terraform plan -destroy -input=false -out=tfplan-destroy \
             -target=module.execution_node \
             ${VAR_FILES}
-          terraform -chdir=infrastructure/terraform destroy -input=false tfplan-destroy
+          terraform -chdir=infrastructure/terraform apply -input=false tfplan-destroy
 
       - name: teardown
         if: inputs.action == 'teardown'
@@ -2088,7 +2105,7 @@ jobs:
           #    module.cicd. A refusal (a non-empty bucket with force_destroy
           #    false) stops Terraform's scheduling but not this step; what is
           #    left is printed by `what exists now` below.
-          tf plan -input=false -out=tfplan-destroy \
+          tf plan -destroy -input=false -out=tfplan-destroy \
             -target=module.execution_node \
             -target=module.gitops_control_plane \
             -target=module.cloud_run \
@@ -2109,7 +2126,7 @@ jobs:
             -target=module.scc \
             -target=module.identity \
             ${VAR_FILES}
-          tf destroy -input=false tfplan-destroy \
+          tf apply -input=false tfplan-destroy \
             || echo "the destroy stopped before the end; the remainder is listed below and the refusal is in the log above." >&2
           echo "teardown finished; module.services and module.cicd were left standing by design."
 

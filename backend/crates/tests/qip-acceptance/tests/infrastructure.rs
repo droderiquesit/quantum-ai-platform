@@ -3289,7 +3289,7 @@ fn a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it() {
             .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
     };
     let seed = position("name: seed any credential that has no version");
-    let apply = position("apply -input=false -auto-approve");
+    let apply = position("apply -input=false tfplan");
 
     assert!(
         seed < apply,

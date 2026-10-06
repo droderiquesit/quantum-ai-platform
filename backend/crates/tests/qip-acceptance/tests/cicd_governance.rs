@@ -69,13 +69,17 @@ fn terraform_apply_and_destroy_consume_saved_plans_not_auto_approve() {
         .nth(1)
         .expect("infra.yml must have a '- name: up' step");
 
-    // Check that the workflow has the download-artifact step for the up action.
-    let has_download = workflow.contains("name: download plan artifact")
-        && workflow.contains("if: inputs.action == 'up'")
-        && workflow.contains("download-artifact");
+    // The plan the up step applies is written and shown in the same run: an
+    // artifact from an earlier dispatch is invisible to this run and would be
+    // stale after the reclaim step's imports.
+    let plan_section = workflow
+        .split("- name: plan for up\n")
+        .nth(1)
+        .expect("infra.yml must have a '- name: plan for up' step (CICD-067)");
+    let plan_section = plan_section.split("- name: up\n").next().unwrap_or_default();
     assert!(
-        has_download,
-        "workflow must have a download-artifact step for the up action (CICD-067)"
+        plan_section.contains("-out=tfplan") && plan_section.contains("show -no-color tfplan"),
+        "the up action must write its plan to tfplan and show it before applying"
     );
 
     // Check that the up step applies a saved plan.
@@ -97,12 +101,12 @@ fn terraform_apply_and_destroy_consume_saved_plans_not_auto_approve() {
             action
         );
         assert!(
-            section.contains("-out=tfplan-destroy"),
-            "{} step must generate a destroy plan with -out=tfplan-destroy",
+            section.contains("plan -destroy") && section.contains("-out=tfplan-destroy"),
+            "{} step must generate a destroy plan with plan -destroy -out=tfplan-destroy",
             action
         );
         assert!(
-            section.contains("destroy -input=false tfplan-destroy"),
+            section.contains("apply -input=false tfplan-destroy"),
             "{} step must consume the saved tfplan-destroy",
             action
         );
