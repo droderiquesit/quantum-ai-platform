@@ -12,6 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 qip-core.workspace = true
 qip-ai.workspace = true
+qip-contracts.workspace = true
 
 [lints]
 workspace = true

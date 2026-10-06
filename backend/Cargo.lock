@@ -91,6 +91,7 @@ name = "qip-agents"
 version = "0.1.0"
 dependencies = [
  "qip-ai",
+ "qip-contracts",
  "qip-core",
  "serde",
  "serde_json",
