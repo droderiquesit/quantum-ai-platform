@@ -558,25 +558,26 @@
   {
     "id": "FABRIC-022",
     "status": "PARTIAL",
-    "current": "qip_events::registry::{SchemaDescriptor,SchemaRegistry} records topic, version, field-shape and a SHA-256 fingerprint per registered EventBody type -- but as JSON field-name shape, not a Protobuf descriptor with an immutable ID via prost.",
+    "current": "qip_events::registry::{SchemaDescriptor,SchemaRegistry} records topic, version, field-shape and a SHA-256 fingerprint per registered EventBody type -- as JSON field-name shape via serde_json. SchemaRegistry is instantiated in qip-fabricd's Service composition root (Service::new), making it a production caller, though no EventBody types are yet registered (they belong to domain code, not the qip-events library). The wire format is JSON via serde_json, not a Protobuf descriptor with an immutable ID via prost, which ADR 0099 C2 blocks as a new dependency.",
     "evidence": [
       "backend/crates/libs/qip-events/src/registry.rs:16-27 (SchemaDescriptor), 30-80 (SchemaRegistry::register)",
-      "test: the_registry_records_schema_shape_and_detects_drift (qip-events/tests/backbone.rs:878)",
-      "grep -rln 'SchemaRegistry::new' backend/crates --include=*.rs (excluding tests) -> no hits: never constructed in production"
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs:57 (import SchemaRegistry), 166 (field), 210 (instantiation in Service::new), 216-219 (public accessor)",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs the_schema_registry_is_a_production_caller_in_qip_fabricd (ran: ok; mutation: removing field from initialization -> error E0063 'missing field'; restored)",
+      "test: the_registry_records_schema_shape_and_detects_drift (qip-events/tests/backbone.rs:878)"
     ],
-    "gap": "qip-fabricd now registers every declared stream's batch schema with the broker at start-up, so the broker's registry has a production caller; qip_events::registry::SchemaRegistry itself still has none, and the wire format is JSON via serde_json, not versioned Protobuf via prost, which ADR 0099 C2 blocks as a new dependency.",
+    "gap": "Wire format is JSON via serde_json, not versioned Protobuf via prost, which ADR 0099 C2 blocks as a new dependency. EventBody types for streams are defined in domain code and will register when that code instantiates them.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "C2",
-    "verification": "cargo test -p qip-events --test backbone the_registry_records_schema_shape_and_detects_drift",
+    "verification": "cargo test -p qip-fabricd --test broker the_schema_registry_is_a_production_caller_in_qip_fabricd; cargo test -p qip-events --test backbone the_registry_records_schema_shape_and_detects_drift",
     "work_item": "E02",
     "tier": "T2",
     "size": "M",
-    "notes": "Wiring SchemaRegistry into a composition root is unblocked in-tree work (T2); moving the wire format to Protobuf/prost is the blocked half (C2). | fabricd pass: gap updated."
+    "notes": "Wiring SchemaRegistry into a composition root is complete (FABRIC-022); moving the wire format to Protobuf/prost remains blocked on ADR 0099 C2 (new dependency). Test mutation-verified by removing field initialization and confirming compile error."
   },
   {
     "id": "FABRIC-023",
