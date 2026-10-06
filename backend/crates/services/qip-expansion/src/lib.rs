@@ -16,5 +16,6 @@
 //! would mean inventing those numbers, so the register rows this closes carry
 //! `integrated = false`.
 
+pub mod campaigns;
 pub mod curriculum;
 pub mod gap;
