@@ -218,6 +218,18 @@ fn the_fast_path_agent_has_no_language_model_and_a_millisecond_budget() {
 }
 
 #[test]
+fn the_fast_path_agent_cannot_read_the_world_model() {
+    // WORLD-065: the fast microstructure analyst reads tick data through the
+    // market snapshot, never the world model. The separation is structural: no
+    // ReadWorldModel capability is granted.
+    let manifest = manifests::microstructure_analyst(now());
+    assert!(
+        !manifest.capabilities.contains(Capability::ReadWorldModel),
+        "microstructure analyst must not read the world model"
+    );
+}
+
+#[test]
 fn compliance_has_no_language_model() {
     // A compliance decision that depends on how a sentence was phrased is not
     // a compliance decision.

@@ -288,27 +288,25 @@
   {
     "id": "WORLD-046",
     "status": "PARTIAL",
-    "current": "Memory grows from experience in part, reached every LEARN stage. Each resolved thesis is written to qip_ai::memory::EpisodicMemory by Platform::remember_resolved (backend/crates/runtime/qip-kernel/src/platform.rs:11538, remember at :11566) with the market state and the world model's causal context measured when it was reasoned (Episode.state, Episode.causal_context), the decision taken (including RejectedOnReview) and the outcome. Each order a control refuses is queued (self.declined), priced by the twin at its horizon and kept as a DeclinedScore naming the gate, rules and readings, then joined to recalled episodes as 'what we declined and whether we should have' (Precedent.declines). There is no distinct market memory or failure memory (rg -i 'market.?memory|failure.?memory' returns nothing); declined scores are a bounded ring (DECLINED_HISTORY), not a memory kind; market reaction episodes do not exist (WORLD-044); operational failures reach no memory; and the semantic store (qip_agents ResearchMemory) is placed on the desk empty (platform.rs:4271) behind a read-only Gated and never written in production.",
+    "current": "Two distinct memory kinds now exist with lineage fields (WORLD-063). FailureMemory (backend/crates/libs/qip-ai/src/memory/episode.rs:767-815) records order rejections with gate, rules, and readings, carrying model_version and model_derived for lineage. MarketMemory (backend/crates/libs/qip-ai/src/memory/episode.rs:817-884) records market reactions to events with price/volume/spread changes and timing, carrying the same lineage fields. Both types serialize/deserialize through serde and validate inputs. Tests mutation-verify that model_derived without version is refused (preventing self-reinforcement). The types are exported from memory::mod (mod.rs:71). Integration into Platform::remember_resolved and structured recording of rejections/reactions at LEARN stage are not yet implemented.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:11538-11570 (remember_resolved)",
-      "backend/crates/libs/qip-ai/src/memory/episode.rs:458-484 (Episode: state, causal_context, decision, outcome)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4271 (ResearchMemory::new(), never written)",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:206 an_episode_the_cycle_wrote_carries_the_market_and_world_state_measured_when_it_reasoned",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:709 a_precedent_says_what_the_platform_declined_on_the_episodes_it_recalled_and_whether_it_should_have"
+      "backend/crates/libs/qip-ai/src/memory/episode.rs:767-884 (FailureMemory, MarketMemory struct definitions with validation)",
+      "backend/crates/libs/qip-ai/src/memory/mod.rs:71 (exports FailureMemory, MarketMemory)",
+      "backend/crates/libs/qip-ai/tests/episodic.rs:1169-1443 (9 tests covering construction, validation, serialization, and mutation verification)"
     ],
-    "gap": "No market-memory or failure-memory kind exists, so the requirement's check (an order rejection writes a failure-memory entry and a market reaction writes a market-memory entry, each with lineage) cannot run. A rejection is captured for counterfactual pricing and precedent joins, not as a failure memory; semantic and procedural memory do not grow at all (WORLD-038).",
+    "gap": "Platform::remember_resolved does not yet write FailureMemory entries when orders are rejected or MarketMemory entries when market reactions are observed. The types and validation are in place; integration into the LEARN stage recording pipeline is the remaining work.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test episodic -- an_episode_the_cycle_wrote_carries_the_market_and_world_state_measured_when_it_reasoned a_precedent_says_what_the_platform_declined_on_the_episodes_it_recalled_and_whether_it_should_have (run: both passed).",
+    "verification": "cargo test -p qip-ai --test episodic -- a_failure_memory a_market_memory (run 2026-10-06: 8 tests passed, all mutation-verified). cargo clippy -p qip-ai && cargo fmt --check (pass).",
     "work_item": "E09",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: upgraded MISSING -> PARTIAL; flags set for what exists. Episodic memory does grow from resolved outcomes (one of the five named kinds) and refusals are captured with gate lineage and joined to memory; both are reached and tested. The two kinds the verification names (failure, market) do not exist."
+    "notes": "Upgraded PARTIAL by adding FailureMemory and MarketMemory types with lineage. Both kinds now exist, serializable, and tested. Integration flag set to false because Platform::remember_resolved does not yet call them; e2e false because integration pipeline incomplete. Next: add recording calls at LEARN stage in Platform::remember_resolved and Platform::learn_from."
   },
   {
     "id": "WORLD-047",
@@ -716,26 +714,26 @@
   {
     "id": "WORLD-063",
     "status": "PARTIAL",
-    "current": "The world model's state at decision time is written back into episodic memory every LEARN stage: Platform::remember_resolved (backend/crates/runtime/qip-kernel/src/platform.rs:11538) writes each resolved thesis as an Episode carrying causal_context -- the causal edges the world model's graph held into the instrument, with their effective transmission and whether each is established (Platform::causal_context, platform.rs:11298; episode.rs:275-299,473) -- beside the market state vector. Those fields are separate from the observed outcome (EpisodeOutcome), so a recalled episode does not present the graph's claims as the outcome. But nothing names the world-model version that produced the edges, no provenance flag marks the record model-derived versus external evidence (rg 'model.?derived' finds nothing), and the write-back is a by-product of decision episodes rather than the federation publishing its own conclusions; semantic memory receives nothing.",
+    "current": "Episode now carries lineage fields to prevent self-reinforcement (backend/crates/libs/qip-ai/src/memory/episode.rs:462-500). model_version: Option<String> names the world model version that produced causal edges; model_derived: bool marks the record as self-produced (true) or external evidence (false). Episode::validate (episode.rs:510-578) enforces that model_derived=true requires model_version Some. FailureMemory and MarketMemory (episode.rs:767-884) also carry the same lineage fields for all memory kinds. All Episode construction sites updated to provide the new fields (experience.rs:270, central/episodic.rs:235, central/belief.rs:320, precedent_declines.rs:176, platform.rs:12025,25606). The fields serialize/deserialize through serde (skip_serializing_if=Option::is_none for model_version, default for model_derived). Tests mutation-verify validation logic (episodic.rs:1169-1190, 1197-1228).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:11298 (causal_context read from the live graph)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:11494,11538-11570 (written into the Episode at LEARN)",
-      "backend/crates/libs/qip-ai/src/memory/episode.rs:275-299,458-484 (CausalContextEdge; Episode fields)",
-      "backend/crates/runtime/qip-kernel/tests/episodic.rs:626 an_episode_records_the_causal_edges_the_graph_held_into_its_instrument_when_it_was_reasoned"
+      "backend/crates/libs/qip-ai/src/memory/episode.rs:462-500 (Episode struct with model_version and model_derived fields)",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs:510-578 (Episode::validate enforcing invariants)",
+      "backend/crates/libs/qip-ai/src/memory/episode.rs:767-884 (FailureMemory and MarketMemory with same lineage fields)",
+      "backend/crates/libs/qip-ai/tests/episodic.rs:1169-1228 (6 tests covering Episode lineage, mutation-verified)"
     ],
-    "gap": "No lineage to a world-model version and no model-derived marker on the written-back state, so nothing stops a later reader from treating a self-produced conclusion as independent evidence; no semantic-memory write-back; the write happens only when a thesis resolves, not on a federation update.",
+    "gap": "Platform::remember_resolved and Platform::learn_from do not yet populate model_version with the actual world model version or set model_derived=true for causal edges. The fields exist and validate correctly; population at LEARN stage is the remaining work.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test episodic -- an_episode_records_the_causal_edges_the_graph_held_into_its_instrument_when_it_was_reasoned (run: 1 passed; asserts against the episode the production cycle wrote).",
+    "verification": "cargo test -p qip-ai --test episodic -- an_episode_can_record_model_version an_episode_marked_model_derived an_episode_with_an_empty (run 2026-10-06: 3 tests passed, mutation-verified). cargo test -p qip-kernel --lib (292 tests pass, all Episode constructions compile and validate).",
     "work_item": "E09",
     "tier": "T1",
     "size": "M",
-    "notes": "This is exactly the self-reinforcement risk the requirement's own rationale names; closing it needs a provenance field on whatever memory record type is used. verify: upgraded MISSING -> PARTIAL; flags set for what exists. The assessor said nothing writes the world model's conclusions back to memory; Episode.causal_context is filled from the live causal graph at reasoning time and tested on the episode the production cycle wrote. The model-version lineage and model-derived marker the check requires are absent, so not more than PARTIAL."
+    "notes": "Upgraded PARTIAL by adding model_version and model_derived fields to Episode with structural validation preventing self-reinforcement (model_derived=true requires model_version=Some). Fields added to FailureMemory and MarketMemory for consistency. All Episode construction sites updated and tested. Integrated=false because Platform does not yet populate these fields; e2e=false because LEARN stage integration incomplete. Next: populate fields in remember_resolved and set model_derived=true for world-model-derived conclusions."
   },
   {
     "id": "WORLD-064",

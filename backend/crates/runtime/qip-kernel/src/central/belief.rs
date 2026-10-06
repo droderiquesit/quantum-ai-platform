@@ -347,6 +347,8 @@ mod tests {
             // longer open and no longer this module's business.
             at: formed,
             known_at: formed,
+            model_version: None,
+            model_derived: false,
         }
     }
 

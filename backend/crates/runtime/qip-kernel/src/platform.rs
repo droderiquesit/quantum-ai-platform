@@ -12051,6 +12051,10 @@ impl Platform {
             // reads a pending episode before then.
             at: now,
             known_at: now,
+            // WORLD-063: model version and derived flag assigned at LEARN stage
+            // if causal edges were produced by the world model federation.
+            model_version: None,
+            model_derived: false,
         };
         draft.validate()?;
         self.pending_episodes.push(draft);
@@ -25631,6 +25635,8 @@ mod episodic_slot_tests {
             }),
             at: known_at.saturating_sub(Duration::from_hours(24)),
             known_at,
+            model_version: None,
+            model_derived: false,
         }
     }
 
