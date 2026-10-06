@@ -22,6 +22,73 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use qip_core::{Error, Result, Timestamp, sha256_hex};
 
+/// Action classes, each with distinct blast radius and authority requirements.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ActionClass {
+    Capital,
+    Communication,
+    Product,
+    Operational,
+    Research,
+}
+
+impl ActionClass {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ActionClass::Capital => "capital",
+            ActionClass::Communication => "communication",
+            ActionClass::Product => "product",
+            ActionClass::Operational => "operational",
+            ActionClass::Research => "research",
+        }
+    }
+}
+
+/// Authority levels, each granting permission to execute actions of up to that class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AuthorityLevel {
+    Shadow,
+    Research,
+    Operational,
+    Product,
+    Communication,
+    Capital,
+}
+
+impl AuthorityLevel {
+    pub fn permits(&self, action_class: ActionClass) -> bool {
+        match (self, action_class) {
+            (AuthorityLevel::Shadow, _) => false,
+            (AuthorityLevel::Research, ActionClass::Research) => true,
+            (AuthorityLevel::Operational, ActionClass::Research | ActionClass::Operational) => true,
+            (
+                AuthorityLevel::Product,
+                ActionClass::Research | ActionClass::Operational | ActionClass::Product,
+            ) => true,
+            (
+                AuthorityLevel::Communication,
+                ActionClass::Research
+                | ActionClass::Operational
+                | ActionClass::Product
+                | ActionClass::Communication,
+            ) => true,
+            (AuthorityLevel::Capital, _) => true,
+            _ => false,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuthorityLevel::Shadow => "shadow",
+            AuthorityLevel::Research => "research",
+            AuthorityLevel::Operational => "operational",
+            AuthorityLevel::Product => "product",
+            AuthorityLevel::Communication => "communication",
+            AuthorityLevel::Capital => "capital",
+        }
+    }
+}
+
 /// What an executable opportunity becomes. Fields are private and the only
 /// constructor is [`ExecutableScope::route`], so an intent cannot be built for
 /// an instrument the scope does not name.
@@ -29,6 +96,7 @@ use qip_core::{Error, Result, Timestamp, sha256_hex};
 pub struct ActionIntent {
     opportunity: String,
     instrument: String,
+    action_class: ActionClass,
 }
 
 impl ActionIntent {
@@ -37,6 +105,9 @@ impl ActionIntent {
     }
     pub fn instrument(&self) -> &str {
         &self.instrument
+    }
+    pub fn action_class(&self) -> ActionClass {
+        self.action_class
     }
 }
 
@@ -81,11 +152,22 @@ impl ExecutableScope {
     /// Fail closed: an empty scope makes everything shadow. The score is not a
     /// parameter, because a re-score must never be able to promote.
     pub fn route(&self, opportunity: &str, instrument: &str) -> Routed {
+        self.route_with_class(opportunity, instrument, ActionClass::Capital)
+    }
+
+    /// Route with an explicit action class.
+    pub fn route_with_class(
+        &self,
+        opportunity: &str,
+        instrument: &str,
+        action_class: ActionClass,
+    ) -> Routed {
         let (opportunity, instrument) = (opportunity.to_string(), instrument.to_string());
         if self.instruments.contains(&instrument) {
             Routed::Executable(ActionIntent {
                 opportunity,
                 instrument,
+                action_class,
             })
         } else {
             Routed::Shadow(ShadowRecord {
@@ -93,6 +175,26 @@ impl ExecutableScope {
                 instrument,
             })
         }
+    }
+}
+
+/// Check that an action intent can execute with the given authority level.
+pub fn check_authority(intent: &ActionIntent, authority: AuthorityLevel) -> Result<()> {
+    if authority.permits(intent.action_class) {
+        Ok(())
+    } else {
+        Err(Error::denied(format!(
+            "action class {} requires authority level {} or higher, but only {} is available",
+            intent.action_class.as_str(),
+            match intent.action_class {
+                ActionClass::Capital => "capital",
+                ActionClass::Communication => "communication",
+                ActionClass::Product => "product",
+                ActionClass::Operational => "operational",
+                ActionClass::Research => "research",
+            },
+            authority.as_str()
+        )))
     }
 }
 
@@ -369,5 +471,66 @@ impl ExecutionRecord {
             subject: subject.into(),
             plan: plan.id.clone(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_action_intent_of_a_class_requiring_capital_authority_is_refused_when_only_lower_authority_is_present()
+     {
+        let scope = ExecutableScope::new(vec!["instrument_a".into()]);
+        let intent =
+            match scope.route_with_class("opportunity", "instrument_a", ActionClass::Capital) {
+                Routed::Executable(i) => i,
+                Routed::Shadow(_) => panic!("should be executable"),
+            };
+
+        let result = check_authority(&intent, AuthorityLevel::Operational);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .message()
+                .contains("authority level capital")
+        );
+    }
+
+    #[test]
+    fn an_action_intent_of_a_class_requiring_capital_authority_is_admitted_once_the_signed_authority_is_supplied()
+     {
+        let scope = ExecutableScope::new(vec!["instrument_a".into()]);
+        let intent =
+            match scope.route_with_class("opportunity", "instrument_a", ActionClass::Capital) {
+                Routed::Executable(i) => i,
+                Routed::Shadow(_) => panic!("should be executable"),
+            };
+
+        let result = check_authority(&intent, AuthorityLevel::Capital);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn authority_level_permits_checks_class_hierarchy() {
+        assert!(AuthorityLevel::Capital.permits(ActionClass::Capital));
+        assert!(AuthorityLevel::Capital.permits(ActionClass::Communication));
+        assert!(!AuthorityLevel::Communication.permits(ActionClass::Capital));
+        assert!(AuthorityLevel::Operational.permits(ActionClass::Operational));
+        assert!(!AuthorityLevel::Research.permits(ActionClass::Operational));
+    }
+
+    #[test]
+    fn action_class_capital_requires_capital_authority() {
+        let scope = ExecutableScope::new(vec!["payment".into()]);
+        let capital_intent =
+            match scope.route_with_class("pay_vendor", "payment", ActionClass::Capital) {
+                Routed::Executable(i) => i,
+                Routed::Shadow(_) => panic!("should be executable"),
+            };
+
+        assert!(check_authority(&capital_intent, AuthorityLevel::Shadow).is_err());
+        assert!(check_authority(&capital_intent, AuthorityLevel::Capital).is_ok());
     }
 }
