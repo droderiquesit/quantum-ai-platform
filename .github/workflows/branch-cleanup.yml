@@ -8,8 +8,10 @@
 # main and nothing is lost. Unmerged branches are listed and left alone.
 #
 # Manual dispatch only, and `dry_run` defaults to true: a run without
-# `dry_run: false` prints what it would delete and deletes nothing. main and
-# the integration branch are never candidates, whatever their state.
+# `dry_run: false` prints what it would delete and deletes nothing. main is
+# never a candidate. With archive_unmerged=true, a branch whose work is not in
+# main is tagged archive/<name> at its tip, the tag pushed, and only then the
+# branch deleted, so the owner's "only main" leaves every commit recoverable.
 name: branch-cleanup
 
 on:
@@ -23,6 +25,14 @@ on:
         options:
           - "true"
           - "false"
+      archive_unmerged:
+        description: "true also removes branches whose work is not in main, after tagging each as archive/<name> at its tip"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 permissions:
   contents: write
@@ -42,13 +52,16 @@ jobs:
       - name: delete branches already merged into main
         env:
           DRY_RUN: ${{ inputs.dry_run }}
+          ARCHIVE_UNMERGED: ${{ inputs.archive_unmerged }}
         run: |
           set -eu
-          git fetch --prune origin
-          deleted=0; kept=0
+          git fetch --prune --tags origin
+          git config user.name "branch-cleanup"
+          git config user.email "branch-cleanup@users.noreply.github.com"
+          deleted=0; kept=0; archived=0
           for ref in $(git for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin); do
             case "$ref" in
-              HEAD|main|ccr-0c1bacf8-kla0dd) continue ;;
+              HEAD|main) continue ;;
             esac
             if git merge-base --is-ancestor "refs/remotes/origin/$ref" refs/remotes/origin/main; then
               if [ "$DRY_RUN" = "false" ]; then
@@ -58,9 +71,27 @@ jobs:
                 echo "would delete  $ref"
               fi
               deleted=$((deleted + 1))
+            elif [ "$ARCHIVE_UNMERGED" = "true" ]; then
+              # Not in main: keep its commits as a tag, then remove the branch.
+              # Restore with: git push origin archive/<name>:refs/heads/<name>
+              tag="archive/$(echo "$ref" | tr '/' '-')"
+              tip=$(git rev-parse "refs/remotes/origin/$ref")
+              if [ "$DRY_RUN" = "false" ]; then
+                if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+                  [ "$(git rev-parse "refs/tags/$tag^{commit}")" = "$tip" ] || { echo "SKIP $ref: $tag exists at another commit"; kept=$((kept + 1)); continue; }
+                else
+                  git tag -a "$tag" "$tip" -m "Archived by branch-cleanup: branch $ref, not merged into main"
+                  git push origin "refs/tags/$tag"
+                fi
+                git push origin --delete "$ref"
+                echo "archived+deleted  $ref -> $tag"
+              else
+                echo "would archive+delete  $ref -> $tag"
+              fi
+              archived=$((archived + 1))
             else
               echo "kept (not in main)  $ref"
               kept=$((kept + 1))
             fi
           done
-          echo "merged into main: $deleted; kept: $kept; dry_run: $DRY_RUN"
+          echo "merged into main: $deleted; archived and removed: $archived; kept: $kept; dry_run: $DRY_RUN"
