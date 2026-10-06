@@ -67,7 +67,7 @@
       "backend/crates/runtime/qip-kernel/src/quote_loop.rs:22-70 (module doc: one venue-agnostic proxy set)",
       "grep -n 'MicrostructureMetrics::compute' backend/crates/runtime backend/crates/apps backend/crates/edge --type rust: no matches outside the definition and a doc comment"
     ],
-    "gap": "No model or parameter set varies by venue anywhere in the pricing path; MicrostructureMetrics is defined and unit-tested in isolation but never called from production code, and the only production pricing loop (quote_loop.rs) applies one QuotePolicy uniformly regardless of venue.",
+    "gap": "No model or parameter set varies by venue anywhere in the pricing path; MicrostructureMetrics is defined and unit-tested in isolation but never called from production code, and the only production pricing loop (quote_loop.rs) applies one QuotePolicy uniformly regardless of venue. Implementation requires: (1) add venue parameter to MicrostructureMetrics or create venue-specific model subtype; (2) wire MicrostructureMetrics::compute into quote_loop or create specialized queue-value/fill-probability estimators; (3) create a replay fixture that runs identical order flow against venues with different microstructure parameters and scores each venue's model against that venue's fills.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -77,11 +77,11 @@
       "EXEC-002"
     ],
     "blocked_by": "",
-    "verification": "Test needed: replay the same order flow against two simulated venues with different microstructure parameters and assert each venue gets its own queue-value/fill-probability estimate, scored against that venue's own replayed fills. No such fixture exists today.",
+    "verification": "Test needed: replay the same order flow against two simulated venues with different microstructure parameters and assert each venue gets its own queue-value/fill-probability estimate, scored against that venue's own replayed fills. No such fixture exists today. Implementation work should be sized after architecture design on model structure (per-venue types vs. parametric dispatch).",
     "work_item": "E11",
     "tier": "T2",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-06: Assessed work needed. No code changes attempted; size L requires coordinated design on MicrostructureMetrics integration and replay fixture architecture."
   },
   {
     "id": "EXEC-023",
