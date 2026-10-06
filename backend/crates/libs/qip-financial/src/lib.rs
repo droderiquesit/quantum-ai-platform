@@ -57,8 +57,7 @@ pub use credit::{Covenant, CovenantKind, CovenantState, CreditProfile, DefaultPr
 pub use extensions::Extension;
 pub use identifiers::{IdentifierKind, Identifiers};
 pub use intelligence::{
-    AlternativeDataPoint, EntityKind, EntityMention, FundamentalUpdate, MacroObservation, NewsItem,
-    Sentiment,
+    AlternativeDataPoint, EntityMention, FundamentalUpdate, MacroObservation, NewsItem, Sentiment,
 };
 pub use inventory::{GoodsCondition, GoodsLocation, InventoryLedger, InventoryRecord, Reservation};
 pub use ladder::{
