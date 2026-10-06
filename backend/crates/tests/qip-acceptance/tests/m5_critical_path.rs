@@ -315,7 +315,7 @@ fn order_placement_succeeds_at_chosen_venue() -> Result<()> {
 
     // Verify the cell recorded it as sent
     assert!(
-        report.orders.len() > 0,
+        !report.orders.is_empty(),
         "gateway accepted order but cell did not record it"
     );
 
@@ -512,7 +512,7 @@ fn end_to_end_flow_from_tick_to_balance_update() -> Result<()> {
     // ===== Stage 5: Order entry flow (drop copy / acceptance) =====
     // The gateway's execution_reports are consumed during cell.work()
     // Verify the cell recorded the order event
-    assert!(work.orders.len() > 0, "Stage 5: No order events recorded");
+    assert!(!work.orders.is_empty(), "Stage 5: No order events recorded");
 
     // ===== Stage 6: Fill is converted to ledger posting =====
     let entry = JournalEntry {

@@ -566,7 +566,7 @@ fn end_to_end_critical_path_latency() -> Result<()> {
     let messages = level_stream(CYCLES, 0xDEAD_BEEF);
 
     let started = Instant::now();
-    for (index, msg) in messages.iter().enumerate() {
+    for (index, _msg) in messages.iter().enumerate() {
         // Stage 1: Market tick ingestion
         let _cell_clone = &cell; // Simulate feature engine ingest
 
