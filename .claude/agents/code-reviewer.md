@@ -1,5 +1,6 @@
 ---
 name: code-reviewer
+model: claude-opus-5-5
 description: Independently review a diff for correctness, clarity and house standards. Must not review code it wrote.
 tools: Read, Grep, Glob, Bash
 ---
