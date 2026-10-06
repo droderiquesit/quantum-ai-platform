@@ -8191,6 +8191,97 @@ fn the_control_plane_nodes_may_reach_their_endpoint_and_the_cluster_waits_for_th
     );
 }
 
+#[test]
+fn the_control_plane_nodes_run_as_a_dedicated_service_account_limited_to_logging_and_monitoring() {
+    // SEC-041: GKE Autopilot nodes default to the project's Compute Engine
+    // service account (roles/editor by default when no organization policy
+    // constrains it). Nodes' identity must be narrowed to the permissions
+    // they actually need: logging and monitoring. A dedicated node service
+    // account solves this; in Autopilot the account is specified via
+    // `cluster_autoscaling.auto_provisioning_defaults.service_account`.
+    let module = without_comments(&read(CONTROL_PLANE_MODULE));
+
+    // The node service account resource exists and is named correctly.
+    let service_accounts = terraform_resources(&module, "google_service_account");
+    let (_, _nodes_account) = service_accounts
+        .iter()
+        .find(|(name, _)| name.contains("nodes"))
+        .unwrap_or_else(|| {
+            panic!(
+                "{CONTROL_PLANE_MODULE} declares no node service account resource; \
+                 it must be named with 'nodes' in the account_id; found accounts: {:?}",
+                service_accounts
+                    .iter()
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    // The cluster_autoscaling block references the node account email.
+    let cluster = module
+        .split("resource \"google_container_cluster\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("the module declares a cluster");
+
+    assert!(
+        cluster.contains("cluster_autoscaling {"),
+        "the cluster does not declare a cluster_autoscaling block"
+    );
+
+    assert!(
+        cluster.contains("auto_provisioning_defaults {"),
+        "the cluster_autoscaling block does not declare auto_provisioning_defaults"
+    );
+
+    assert!(
+        cluster.contains("service_account = google_service_account.nodes.email"),
+        "the auto_provisioning_defaults block does not specify the node service account; \
+         Autopilot nodes will default to the compute service account"
+    );
+
+    // The node service account has exactly the two roles it needs.
+    let iam_members = terraform_resources(&module, "google_project_iam_member");
+    let nodes_roles: Vec<&(String, String)> = iam_members
+        .iter()
+        .filter(|(name, body)| {
+            name.contains("nodes") && body.contains("google_service_account.nodes.email")
+        })
+        .collect();
+
+    assert_eq!(
+        nodes_roles.len(),
+        2,
+        "the node service account should have exactly 2 IAM member resources (logging and \
+         monitoring), found {}; members: {:?}",
+        nodes_roles.len(),
+        nodes_roles.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+
+    let mut has_logging = false;
+    let mut has_monitoring = false;
+    for (_, body) in &nodes_roles {
+        if body.contains("roles/logging.logWriter") {
+            has_logging = true;
+        }
+        if body.contains("roles/monitoring.metricWriter") {
+            has_monitoring = true;
+        }
+    }
+
+    assert!(
+        has_logging,
+        "the node service account is not granted roles/logging.logWriter; \
+         nodes cannot emit logs to Cloud Logging"
+    );
+
+    assert!(
+        has_monitoring,
+        "the node service account is not granted roles/monitoring.metricWriter; \
+         nodes cannot emit metrics to Cloud Monitoring"
+    );
+}
+
 // --- the safety property that outranks all of this --------------------------
 
 // --- OpenObserve's access posture (ADR 0033) --------------------------------

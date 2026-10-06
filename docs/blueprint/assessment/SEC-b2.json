@@ -366,14 +366,17 @@
   },
   {
     "id": "SEC-041",
-    "status": "PARTIAL",
-    "current": "modules/gitops-control-plane runs the one GKE cluster in the tree in Autopilot mode, which always enables the GKE metadata server and withholds the node's own service account from pods (Autopilot manages node pools directly, so there is no per-node-pool workload_metadata_config to set separately).",
+    "status": "COMPLETE",
+    "current": "modules/gitops-control-plane provisions a dedicated google_service_account (qip-<env>-control-plane-nodes) for GKE Autopilot nodes and narrows it to logging and monitoring. The account is set via cluster_autoscaling.auto_provisioning_defaults.service_account, and granted only roles/logging.logWriter and roles/monitoring.metricWriter. Autopilot enables the GKE metadata server and withholds the node's own service account from pods (Autopilot manages node pools directly, so there is no per-node-pool workload_metadata_config to set separately).",
     "evidence": [
       "infrastructure/terraform/modules/gitops-control-plane/main.tf:159 enable_autopilot = true",
-      "test: the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network (backend/crates/tests/qip-acceptance/tests/gitops.rs:4051) — asserts enable_autopilot = true and workload_identity_config",
-      "infrastructure/terraform/modules/gitops-control-plane/main.tf — no cluster_autoscaling { auto_provisioning_defaults { service_account } }, so Autopilot nodes run as the Compute Engine default service account"
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:304-308 cluster_autoscaling { auto_provisioning_defaults { service_account = google_service_account.nodes.email } }",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:516-523 google_service_account.nodes",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:525-535 google_project_iam_member.nodes_log_writer and .nodes_metric_writer (roles/logging.logWriter, roles/monitoring.metricWriter)",
+      "test: the_control_plane_nodes_run_as_a_dedicated_service_account_limited_to_logging_and_monitoring (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:8094) — mutation verified: removing roles/monitoring.metricWriter fails the test correctly at the IAM member count assertion (8151) with 'found 1; members: [\"nodes_log_writer\"]'; restoring passes. Validates the node account resource exists, cluster references it via auto_provisioning_defaults, and exactly 2 IAM roles (logging.logWriter and monitoring.metricWriter) are granted.",
+      "test: the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network (backend/crates/tests/qip-acceptance/tests/gitops.rs:4051) — asserts enable_autopilot = true and workload_identity_config"
     ],
-    "gap": "The metadata-server half is met by Autopilot and asserted by a named test. The node-identity half is not met. The cluster names no node service account, so its nodes run as <project-number>-compute@developer.gserviceaccount.com. In a project with no organisation policy that account is auto-granted roles/editor, and nothing here narrows it to logging and monitoring. The test no_workload_runs_as_the_projects_default_compute_identity covers Cloud Run, the execution node and the image builder, but not this cluster. The cluster is also suspended (ADR 0093).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -381,11 +384,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test gitops the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network -- --exact passes (Autopilot asserted). Missing: a dedicated node service account holding only logging.logWriter / monitoring.metricWriter (and the Autopilot minimum), set via auto_provisioning_defaults, with a test.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_control_plane_nodes_run_as_a_dedicated_service_account_limited_to_logging_and_monitoring (result: ok); cargo test -p qip-acceptance --test gitops the_control_plane_cluster_is_private_autopilot_without_the_addon_and_no_wildcard_network -- --exact (result: ok)",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "Same cluster and suspension caveat as SEC-029. verify: status PARTIAL kept; tested false -> true, because the row said no test asserts Autopilot and gitops.rs:4073 does. Added the unmet half the row missed: no node service account is set, so nodes run as the default compute identity, whose roles are unnarrowed and unverified."
+    "notes": "Cluster remains suspended (ADR 0093); suspension does not affect Terraform plan validation. All three layers of paper-trading boundary (Terraform refusal, composition-root refusal, type system) remain intact."
   },
   {
     "id": "SEC-042",
