@@ -115,6 +115,14 @@ pub struct RegulatoryConstraints {
 }
 
 impl RegulatoryConstraints {
+    /// No jurisdictions, no restrictions and no approved venues.
+    ///
+    /// "Unrestricted" describes the restriction list only: since venue
+    /// approval became fail-closed, a value built here **refuses every venue**
+    /// in [`Self::permits_venue`] until [`Self::with_approved_venue`] names
+    /// one. The name is kept because callers across the workspace build on
+    /// it; the behaviour changed because an instrument nobody approved for any
+    /// venue was being read as approved for all of them.
     pub fn unrestricted() -> Self {
         Self::default()
     }
