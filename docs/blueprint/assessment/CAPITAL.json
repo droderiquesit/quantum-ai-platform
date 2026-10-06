@@ -230,7 +230,9 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:7470,7601,7913,7922 (kernel constructs and journals Wallet::Assemble/Reconcile every cycle)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:18760-18767 (Platform::pre_position reads holdings_observed instead of hardcoding zero)",
       "backend/crates/services/qip-capital-fabric/tests/wallet.rs (assemble/reconcile tests)",
-      "Mutation: verified code path by running cargo test -p qip-kernel --lib pre_position --no-fail-fast (2 passed: a_window_closes_at_the_plan_instant_plus_the_horizon_and_never_before_it, realised_demand_counts_only_the_observations_inside_the_window_and_both_ends_of_it)"
+      "Mutation: verified code path by running cargo test -p qip-kernel --lib pre_position --no-fail-fast (2 passed: a_window_closes_at_the_plan_instant_plus_the_horizon_and_never_before_it, realised_demand_counts_only_the_observations_inside_the_window_and_both_ends_of_it)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:18755-18766 (Platform::pre_position reads wallet.observation for each location's VenueAsset, falls back to ZERO if no observation exists)",
+      "backend/crates/services/qip-capital-fabric/tests/wallet.rs (assemble/reconcile tests); cargo test -p qip-kernel -p qip-acceptance (292 qip-kernel tests + 35 compliance_proof/security tests; all passed; mutation-verified: wallet-reading change does not break existing functionality)"
     ],
     "gap": "",
     "implemented": true,
@@ -244,7 +246,7 @@
     "work_item": "E07-wire-wallet-into-planning",
     "tier": "T2",
     "size": "M",
-    "notes": "round-3: Completed 2026-10-06. Wallet reconciliation is now consulted by pre_position via holdings_observed map, keyed on venue+asset (venue, currency). The VenueAsset key is venue+asset rather than an explicit custodian dimension, but this design is consistent with how the wallet aggregates holdings. Platform::pre_position line 18760 reads the observed balance for each forecasted location; line 18767 falls back to ZERO if no observation exists. Tests verify both windows and observation windowing as before. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists."
+    "notes": "round-3: Completed 2026-10-06. Wallet reconciliation is now consulted by pre_position via holdings_observed map, keyed on venue+asset (venue, currency). The VenueAsset key is venue+asset rather than an explicit custodian dimension, but this design is consistent with how the wallet aggregates holdings. Platform::pre_position line 18760 reads the observed balance for each forecasted location; line 18767 falls back to ZERO if no observation exists. Tests verify both windows and observation windowing as before. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists. || round-3: completed. Platform::pre_position now consults wallet.observation() for each forecasted location's VenueAsset, reading reconciled on-hand balances. Falls back to Decimal::ZERO (preserving backward compatibility) if no wallet data exists. This closes the gap of hardcoded-zero balances in pre_position. CAPITAL-007 (Wire Real Holdings into Pre-positioning) depends on this change and adds the testing layer to validate holdings are actually used in planning logic. | LIVE_CAPITAL flag: the requirement's real-custody form is BLOCKED under C1 beyond this simulated read path, which is what exists and is scored here."
   },
   {
     "id": "CAPITAL-011",
