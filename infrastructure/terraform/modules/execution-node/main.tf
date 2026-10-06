@@ -720,3 +720,391 @@ resource "google_compute_firewall" "deny_ingress" {
     metadata = "INCLUDE_ALL_METADATA"
   }
 }
+
+# --- Standby node (GCP-043) -------------------------------------------------------
+#
+# A standby Reflex node in a different zone monitors the primary's liveness via
+# a fencing token. When the primary fails (zone outage or health check timeout),
+# the standby is promoted to hold the cell. The two nodes form a pair: they
+# share one service account, one set of IAM bindings, one capital envelope key.
+# Promotion is orchestrated in qip-edge through fencing; Terraform only creates
+# the standby infrastructure when var.standby_enabled = true.
+
+locals {
+  standby_node_tag = "qip-exec-${var.node_id}-standby"
+  standby_name     = "qip-${var.environment}-exec-${var.node_id}-standby"
+}
+
+resource "google_compute_subnetwork" "standby" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = local.standby_name
+  region  = var.region
+  network = var.network_id
+
+  ip_cidr_range = var.standby_subnet_cidr
+
+  private_ip_google_access = true
+
+  log_config {
+    aggregation_interval = "INTERVAL_5_SEC"
+    flow_sampling        = 0.5
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_compute_resource_policy" "standby_placement" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-placement"
+  region  = var.region
+
+  group_placement_policy {
+    collocation = "COLLOCATED"
+  }
+}
+
+resource "google_compute_health_check" "standby" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-health"
+
+  check_interval_sec  = 10
+  timeout_sec         = 5
+  healthy_threshold   = 2
+  unhealthy_threshold = 3
+
+  http_health_check {
+    port         = var.health_port
+    request_path = "/health"
+  }
+
+  log_config {
+    enable = true
+  }
+}
+
+resource "google_compute_reservation" "standby" {
+  count = var.standby_enabled && var.node_count > 0 ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-capacity"
+  zone    = var.standby_zone
+
+  specific_reservation_required = true
+
+  specific_reservation {
+    count = var.node_count
+
+    instance_properties {
+      machine_type = var.machine_type
+    }
+  }
+}
+
+resource "google_compute_instance_template" "standby" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+
+  name_prefix = "${local.standby_name}-"
+
+  machine_type = var.machine_type
+  labels       = var.labels
+  tags         = [local.standby_node_tag]
+
+  dynamic "reservation_affinity" {
+    for_each = google_compute_reservation.standby
+    content {
+      type = "SPECIFIC_RESERVATION"
+      specific_reservation {
+        key    = "compute.googleapis.com/reservation-name"
+        values = [reservation_affinity.value.name]
+      }
+    }
+  }
+
+  lifecycle {
+    create_before_destroy = true
+
+    precondition {
+      condition     = local.vcpus >= 8
+      error_message = "Standby machine type must have at least 8 vCPUs"
+    }
+  }
+
+  disk {
+    source_image = var.boot_image
+    auto_delete  = true
+    boot         = true
+    disk_type    = "pd-balanced"
+    disk_size_gb = 100
+
+    labels = merge(var.labels, { qip_journal = "true" })
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.standby[0].id
+    nic_type   = "GVNIC"
+  }
+
+  network_performance_config {
+    total_egress_bandwidth_tier = "TIER_1"
+  }
+
+  service_account {
+    email  = google_service_account.node.email
+    scopes = ["cloud-platform"]
+  }
+
+  resource_policies = [google_compute_resource_policy.standby_placement[0].id]
+
+  scheduling {
+    on_host_maintenance = "TERMINATE"
+    automatic_restart   = true
+    preemptible         = false
+  }
+
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
+  }
+
+  metadata = {
+    enable-oslogin         = "TRUE"
+    block-project-ssh-keys = "TRUE"
+    serial-port-enable     = "FALSE"
+
+    startup-script = templatefile("${path.module}/templates/startup.sh.tftpl", {
+      project_id                 = var.project_id
+      node_id                    = var.node_id
+      region                     = var.region
+      venue_ids                  = local.venue_ids
+      health_port                = var.health_port
+      egress_endpoint            = var.egress_endpoints["gcp"]
+      egress_bootstrap           = var.egress_bootstrap
+      shadow_mode                = var.shadow_mode
+      default_pricing            = var.default_pricing
+      strategy_plan_path         = var.strategy_plan_path
+      cross_region_mirror_path   = var.cross_region_mirror_path
+      region_allocation          = var.region_allocation
+      isolated_cpus              = local.isolated_cpus
+      first_isolated_cpu         = local.first_isolated_cpu
+      required_hugepages_gb      = var.required_hugepages_gb
+      watchdog_seconds           = var.watchdog_seconds
+      capital_envelope_secret_id = var.capital_envelope_secret_id
+      venue_credential_secret_id = local.venue_credential_bound ? var.venue_credential_secret_id : ""
+    })
+  }
+}
+
+resource "google_compute_instance_group_manager" "standby" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = local.standby_name
+  zone    = var.standby_zone
+
+  base_instance_name = local.standby_name
+  target_size        = var.node_count
+
+  version {
+    instance_template = google_compute_instance_template.standby[0].id
+  }
+
+  named_port {
+    name = "health"
+    port = var.health_port
+  }
+
+  update_policy {
+    type                           = "PROACTIVE"
+    minimal_action                 = "REPLACE"
+    most_disruptive_allowed_action = "REPLACE"
+    max_surge_fixed                = 1
+    max_unavailable_fixed          = 0
+    replacement_method             = "SUBSTITUTE"
+  }
+
+  auto_healing_policies {
+    health_check = google_compute_health_check.standby[0].id
+    initial_delay_sec = 300
+  }
+
+  lifecycle {
+    ignore_changes = [target_size]
+  }
+}
+
+# Standby firewall rules (deny-all egress, Google APIs, health checks)
+resource "google_compute_firewall" "standby_deny_egress" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-deny-egress"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 65000
+
+  deny {
+    protocol = "all"
+  }
+
+  destination_ranges = ["0.0.0.0/0"]
+  target_tags        = [local.standby_node_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_compute_firewall" "standby_google_apis" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-google-apis"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443"]
+  }
+
+  destination_ranges = [var.google_apis_range]
+  target_tags        = [local.standby_node_tag]
+}
+
+resource "google_compute_firewall" "standby_central_plane" {
+  count = var.standby_enabled && length(var.central_plane_ranges) > 0 ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-central-plane"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["443", "8080"]
+  }
+
+  destination_ranges = var.central_plane_ranges
+  target_tags        = [local.standby_node_tag]
+}
+
+resource "google_compute_firewall" "standby_venues" {
+  for_each = var.standby_enabled && !var.shadow_mode ? var.venues : {}
+
+  project = var.project_id
+  name    = "${local.standby_name}-venue-${lower(each.key)}"
+  network = var.network_id
+
+  direction = "EGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = [tostring(each.value.port)]
+  }
+
+  destination_ranges = [each.value.cidr]
+  target_tags        = [local.standby_node_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+resource "google_compute_firewall" "standby_health_checks" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-health-checks"
+  network = var.network_id
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = [tostring(var.health_port)]
+  }
+
+  source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
+  target_tags   = [local.standby_node_tag]
+}
+
+resource "google_compute_firewall" "standby_iap_ssh" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-iap-ssh"
+  network = var.network_id
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["35.235.240.0/20"]
+  target_tags   = [local.standby_node_tag]
+}
+
+resource "google_compute_firewall" "standby_deny_ingress" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.standby_name}-deny-ingress"
+  network = var.network_id
+
+  direction = "INGRESS"
+  priority  = 65100
+
+  deny {
+    protocol = "all"
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = [local.standby_node_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
+
+# Fencing rule: primary to standby liveness check on port 9443
+resource "google_compute_firewall" "fencing" {
+  count = var.standby_enabled ? 1 : 0
+
+  project = var.project_id
+  name    = "qip-${var.environment}-exec-fencing"
+  network = var.network_id
+
+  direction = "INGRESS"
+  priority  = 900
+
+  allow {
+    protocol = "tcp"
+    ports    = ["9443"]
+  }
+
+  destination_ranges = [var.standby_subnet_cidr]
+  source_ranges      = [var.subnet_cidr]
+  target_tags        = [local.standby_node_tag]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
+}
