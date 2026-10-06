@@ -14,7 +14,7 @@
 //!   except through [`promote`], and nothing in this module touches an order.
 
 use qip_core::error::{Error, Result};
-use qip_core::{Duration, Timestamp};
+use qip_core::{Decimal, Duration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -70,12 +70,59 @@ pub struct AmbientSignal {
     severity_bp: u32,
     trigger: Trigger,
     detected_at: Timestamp,
+    observed_deviation: Decimal,
+    expected_baseline: Decimal,
+    horizon: Duration,
+    novelty_bp: u32,
+    affected_entities: Vec<String>,
+    urgency_bp: u32,
+    wake_targets: Vec<Pathway>,
+    evidence_ids: Vec<String>,
+    expiry: Timestamp,
+}
+
+/// The CONTRACT-025 fields a detector states about what it saw, beyond the
+/// identity [`AmbientSignal::new`] already takes positionally.
+///
+/// Named fields rather than nine more positional arguments: novelty and
+/// urgency are both `u32` basis points and the entity and evidence lists are
+/// both `Vec<String>`, so a positional call that transposed either pair would
+/// compile and record the wrong fact. The deviation and baseline are
+/// [`Decimal`] rather than `f64` so the record keeps `Eq` and replays exactly,
+/// for the same reason severity is an integer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Detection {
+    pub observed_deviation: Decimal,
+    pub expected_baseline: Decimal,
+    /// How far ahead the deviation matters. Zero is a statement (it matters
+    /// now); negative is a detector bug.
+    pub horizon: Duration,
+    /// Novelty/surprise, in basis points up to [`MAX_SEVERITY_BP`].
+    pub novelty_bp: u32,
+    /// The entities and assets affected; at least one, none empty.
+    pub affected_entities: Vec<String>,
+    /// Urgency, in basis points up to [`MAX_SEVERITY_BP`].
+    pub urgency_bp: u32,
+    /// The pathways the detector suggests waking. Typed as [`Pathway`] so a
+    /// suggestion names something the router can actually wake; at least one.
+    pub wake_targets: Vec<Pathway>,
+    /// Evidence lineage; at least one id, none empty.
+    pub evidence_ids: Vec<String>,
+    /// After this instant the signal wakes nothing (see [`AttentionRouter::route`]).
+    pub expiry: Timestamp,
 }
 
 impl AmbientSignal {
     /// Refuses an empty id, subject or trigger name, and a severity above
     /// [`MAX_SEVERITY_BP`] — it is not clamped, because a clamped severity is
     /// a detector bug that then survives.
+    ///
+    /// Refuses, too, a [`Detection`] missing any CONTRACT-025 field: no
+    /// affected entity, no wake target, no evidence id, an empty entity or
+    /// evidence id, a novelty or urgency above [`MAX_SEVERITY_BP`], a negative
+    /// horizon, or an expiry before detection. A signal with no evidence
+    /// lineage is a discovery nobody can replay; one with no expiry would wake
+    /// a specialist about a deviation that stopped mattering hours ago.
     pub fn new(
         id: impl Into<String>,
         class: SignalClass,
@@ -83,6 +130,7 @@ impl AmbientSignal {
         severity_bp: u32,
         trigger: Trigger,
         detected_at: Timestamp,
+        detection: Detection,
     ) -> Result<Self> {
         let (id, subject) = (id.into(), subject.into());
         let trigger_name = match &trigger {
@@ -98,6 +146,52 @@ impl AmbientSignal {
                 "severity {severity_bp} bp exceeds {MAX_SEVERITY_BP}; scale the detector, it is not clamped"
             )));
         }
+        let Detection {
+            observed_deviation,
+            expected_baseline,
+            horizon,
+            novelty_bp,
+            affected_entities,
+            urgency_bp,
+            wake_targets,
+            evidence_ids,
+            expiry,
+        } = detection;
+        if novelty_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(format!(
+                "novelty {novelty_bp} bp exceeds {MAX_SEVERITY_BP}; scale the detector, it is not clamped"
+            )));
+        }
+        if urgency_bp > MAX_SEVERITY_BP {
+            return Err(Error::invalid(format!(
+                "urgency {urgency_bp} bp exceeds {MAX_SEVERITY_BP}; scale the detector, it is not clamped"
+            )));
+        }
+        if horizon < Duration::ZERO {
+            return Err(Error::invalid(
+                "a negative horizon is not a horizon; state how far ahead the deviation matters, zero for now",
+            ));
+        }
+        if expiry < detected_at {
+            return Err(Error::invalid(
+                "an expiry before detection means the signal was dead when it was raised; state when it stops mattering",
+            ));
+        }
+        if affected_entities.is_empty() || affected_entities.iter().any(String::is_empty) {
+            return Err(Error::invalid(
+                "an ambient signal must name the entities it affects, none blank",
+            ));
+        }
+        if wake_targets.is_empty() {
+            return Err(Error::invalid(
+                "an ambient signal must suggest at least one pathway to wake",
+            ));
+        }
+        if evidence_ids.is_empty() || evidence_ids.iter().any(String::is_empty) {
+            return Err(Error::invalid(
+                "an ambient signal must carry its evidence lineage, none blank; a signal without it cannot be replayed",
+            ));
+        }
         Ok(Self {
             id,
             class,
@@ -105,6 +199,15 @@ impl AmbientSignal {
             severity_bp,
             trigger,
             detected_at,
+            observed_deviation,
+            expected_baseline,
+            horizon,
+            novelty_bp,
+            affected_entities,
+            urgency_bp,
+            wake_targets,
+            evidence_ids,
+            expiry,
         })
     }
     pub fn id(&self) -> &str {
@@ -125,6 +228,38 @@ impl AmbientSignal {
     pub fn detected_at(&self) -> Timestamp {
         self.detected_at
     }
+    pub fn observed_deviation(&self) -> Decimal {
+        self.observed_deviation
+    }
+    pub fn expected_baseline(&self) -> Decimal {
+        self.expected_baseline
+    }
+    pub fn horizon(&self) -> Duration {
+        self.horizon
+    }
+    pub fn novelty_bp(&self) -> u32 {
+        self.novelty_bp
+    }
+    pub fn affected_entities(&self) -> &[String] {
+        &self.affected_entities
+    }
+    pub fn urgency_bp(&self) -> u32 {
+        self.urgency_bp
+    }
+    pub fn wake_targets(&self) -> &[Pathway] {
+        &self.wake_targets
+    }
+    pub fn evidence_ids(&self) -> &[String] {
+        &self.evidence_ids
+    }
+    pub fn expiry(&self) -> Timestamp {
+        self.expiry
+    }
+    /// Whether the signal has stopped mattering at `now`. The expiry instant
+    /// itself is still live: a signal stated to matter until `t` matters at `t`.
+    pub fn is_expired_at(&self, now: Timestamp) -> bool {
+        now > self.expiry
+    }
 }
 
 /// What the router did with a material signal.
@@ -137,6 +272,11 @@ pub enum Disposition {
     Deferred,
     /// The budget was spent and the hold queue was full; dropped on the record.
     Shed,
+    /// The signal was past its expiry when the router reached it — on arrival
+    /// or when a new window drained it from the hold queue. It woke nothing
+    /// and charged no budget, and is dropped on the record rather than in
+    /// silence, so a storm that outlasted its own signals is visible.
+    Expired,
 }
 
 /// One routing decision, referencing the signal that caused it.
@@ -253,6 +393,9 @@ impl AttentionRouter {
     /// and then this signal's own. A signal below materiality produces none —
     /// below the bar is not an activation and not a loss.
     ///
+    /// A material signal consumed after its expiry — arriving late, or held
+    /// past it — is recorded [`Disposition::Expired`] and wakes nothing.
+    ///
     /// Refuses a `now` before the current window opened: a clock that steps
     /// back would refill a budget that was already spent.
     pub fn route(&mut self, signal: &AmbientSignal, now: Timestamp) -> Result<Vec<AttentionEvent>> {
@@ -271,6 +414,13 @@ impl AttentionRouter {
                     let Some(held) = self.deferred.pop_front() else {
                         break;
                     };
+                    // A held signal that went stale while it waited wakes
+                    // nothing and does not spend the slot a live one could.
+                    if held.is_expired_at(now) {
+                        let event = self.event(&held, Disposition::Expired, now)?;
+                        out.push(event);
+                        continue;
+                    }
                     let event = self.event(&held, Disposition::Activated, now)?;
                     self.used += 1;
                     out.push(event);
@@ -278,6 +428,11 @@ impl AttentionRouter {
             }
         }
         if signal.severity_bp < self.policy.materiality_bp {
+            return Ok(out);
+        }
+        if signal.is_expired_at(now) {
+            let event = self.event(signal, Disposition::Expired, now)?;
+            out.push(event);
             return Ok(out);
         }
         let disposition = if self.used < self.policy.budget_per_window && self.deferred.is_empty() {
