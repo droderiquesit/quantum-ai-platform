@@ -21,6 +21,7 @@ pub mod autonomy;
 pub mod comparison;
 pub mod engine;
 pub mod goal;
+pub mod knowledge;
 pub mod memory;
 pub mod plan;
 pub mod tools;
