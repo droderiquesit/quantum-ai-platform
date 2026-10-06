@@ -10,7 +10,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_core::Decimal;
-use qip_core::dec;
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use std::collections::BTreeMap;
 
@@ -185,33 +184,47 @@ fn absent_venue_exposures_do_not_trigger_limits() {
 }
 
 #[test]
-fn paper_trading_venue_has_unlimited_credit_line_in_default_set() {
-    // The shipped conservative default includes a simulated venue with no
-    // effective credit limit (1.0 = 100% of equity), because a paper trading
-    // venue has no credit line to the desk.
-    let mut venues = BTreeMap::new();
-    venues.insert("simulated".to_string(), exposure(10_000_000)); // Way over equity
-
-    let state = RiskState {
-        equity: equity(1_000_000),
-        venue_exposures: venues,
-        ..Default::default()
+fn the_default_set_admits_the_simulated_venue_up_to_equity_and_refuses_beyond() {
+    // This test was `paper_trading_venue_has_unlimited_credit_line_in_default_set`
+    // and asserted that ten times equity at the simulated venue did not breach
+    // a bound of 1.0 — arithmetic that cannot hold, in a file that had never
+    // compiled. The shipped `venue-exposure-simulated` limit is a real bound
+    // of 100% of equity, whatever its rationale string says, so this states
+    // both halves of that bound: admitted at it, refused past it.
+    let at = |notional: i64| {
+        let state = RiskState {
+            equity: equity(1_000_000),
+            venue_exposures: BTreeMap::from([("simulated".to_string(), exposure(notional))]),
+            ..Default::default()
+        };
+        // Other defaults (the cash floor, for one) bind on this sparse
+        // state; only the venue limit is under test here.
+        LimitSet::conservative_default()
+            .check(&state)
+            .blocking()
+            .into_iter()
+            .filter(|b| b.limit_name == "venue-exposure-simulated")
+            .cloned()
+            .collect::<Vec<_>>()
     };
 
-    let limits = LimitSet::conservative_default();
-    let check = limits.check(&state);
+    // Premise: past the bound the default limit fires, so the admit half
+    // below is a statement about the bound and not about a limit that is
+    // absent or never reads the map.
+    let refused = at(1_500_000);
+    assert_eq!(
+        refused.len(),
+        1,
+        "the default venue limit did not fire at 1.5x equity"
+    );
+    assert_eq!(refused[0].subject.as_deref(), Some("simulated"));
+    assert!((refused[0].observed - 1.5).abs() < 1e-9);
+    assert!((refused[0].bound - 1.0).abs() < 1e-9);
 
-    // The simulated venue should have an exposure limit of 1.0 (100% of
-    // equity), so even massive exposure doesn't breach in paper trading
-    let venue_limit = check
-        .breaches
-        .iter()
-        .find(|b| b.subject.as_deref() == Some("simulated"));
-    // Simulated venue can have up to 100% of equity
+    // At exactly equity the venue is admitted.
     assert!(
-        venue_limit.is_none()
-            || venue_limit.as_ref().map(|b| b.limit_name.as_str())
-                != Some("venue-exposure-simulated")
+        at(1_000_000).is_empty(),
+        "the simulated venue was refused at 100% of equity"
     );
 }
 
@@ -229,7 +242,7 @@ fn venue_exposure_limit_is_recalibrable_through_bound_change() {
     // The venue name is preserved
     if let LimitKind::MaxVenueExposure { venue, limit } = limit2 {
         assert_eq!(venue, "XLON");
-        assert_eq!(limit, 0.15);
+        assert_eq!(limit.to_bits(), 0.15_f64.to_bits());
     } else {
         panic!("with_bound changed the limit kind");
     }

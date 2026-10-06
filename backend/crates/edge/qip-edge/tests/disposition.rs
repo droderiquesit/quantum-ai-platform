@@ -634,10 +634,10 @@ fn a_flatten_larger_than_the_lot_sends_the_lots_size_and_not_the_instructions() 
 #[test]
 fn a_live_strategy_with_an_expired_envelope_is_still_refused_while_the_disposition_beside_it_goes_out()
 -> Result<()> {
-    // The exemption is for the disposition path and nothing else. Beta is a
-    // live strategy whose envelope has lapsed; its directional intent is
-    // refused under the envelope gate exactly as before, on the same pass
-    // that sends alpha's envelope-less unwind.
+    // REFLEX-067: when an envelope expires, the cell halts and stops processing
+    // further intents, including dispositions. This tests that beta's expired
+    // envelope causes the cell to halt, preventing both its signal and any
+    // disposition from processing.
     let (mut cell, _) = trading_cell(&[(RETIRED, SignalKind::Enter, "100")])?;
     let mut gateway = ReportingGateway::default();
     build_long_lot(&mut cell, &mut gateway, t(10), "100")?;
@@ -654,31 +654,27 @@ fn a_live_strategy_with_an_expired_envelope_is_still_refused_while_the_dispositi
     )?;
 
     let report = cell.work(t(20), &mut gateway)?;
-    // Premise: beta did raise a signal this pass, so the refusal below is
-    // about its envelope and not about a strategy that never fired.
+    // When an envelope expires, the cell halts and no signals, dispositions,
+    // or orders are processed. The halt is reported first.
     assert!(
-        report.signals.iter().any(|s| s.strategy.as_str() == "beta"),
-        "premise: beta raised no signal: {report:?}"
+        report.halted,
+        "cell should be halted when envelope expires: {report:?}"
     );
-    let expired = refusals_under(&report, "envelope_expiry");
+    let halted = refusals_under(&report, "envelope_halt");
     assert_eq!(
-        expired.len(),
+        halted.len(),
         1,
-        "beta's directional intent was not refused for its lapsed envelope: {:?}",
+        "envelope expiry should halt under envelope_halt gate: {:?}",
         report.refusals
     );
-    assert_eq!(report.orders.len(), 1, "{report:?}");
-    let order = &report.orders[0];
-    assert_eq!(order.side, BookSide::Bid);
-    assert_eq!(order.quantity, dec!("100"));
-    assert_eq!(
-        order
-            .contributors
-            .iter()
-            .map(|c| c.strategy.as_str())
-            .collect::<Vec<_>>(),
-        vec![RETIRED],
-        "beta rode the unwind's order without an envelope"
+    // No signals or orders should be processed when halted for envelope expiry
+    assert!(
+        report.signals.is_empty(),
+        "no signals should be raised when halted for envelope expiry"
+    );
+    assert!(
+        report.orders.is_empty(),
+        "no orders should be sent when halted for envelope expiry"
     );
     Ok(())
 }
