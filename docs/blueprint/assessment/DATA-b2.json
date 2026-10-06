@@ -456,27 +456,28 @@
   },
   {
     "id": "DATA-045",
-    "status": "INCORRECT",
-    "current": "The Terraform half matches: modules/data's google_redis_instance.cache sets persistence_mode = DISABLED (main.tf:317-319), gated on enable_memorystore=false everywhere. The Rust half does the opposite of what is required. StorageTarget::Memorystore is a selectable primary key-value target (provider.rs:358-360 builds RedisKeyValueStore for any namespace; StorageTarget::parse accepts 'memorystore'; tests/settings.rs:434 treats a memorystore deployment as valid). Every composition root builds its authoritative stores from that one setting: qip-api main.rs:105-107 puts 'event-log' through storage.key_value into ChainArchive, and trial-book, universe and mesh follow, as do qip-fastbrain main.rs:86 and qip-deepbrain. With QIP_STORAGE_TARGET=memorystore the hash-chained event log and the trial book would live only in a non-persistent Redis. Only Terraform's storage_target validation (variables.tf:380-382) prevents that. No runtime check refuses it; is_crash_safe() returning false only changes a banner.",
+    "status": "PARTIAL",
+    "current": "The INCORRECT finding is fixed in-tree (commit 74f1394, ARCH-054): qip_storage::settings::StorageSettings::require_authoritative refuses StorageTarget::Memorystore, and every composition root that resolves a storage target chains it onto from_env (qip-api, qip-fastbrain, qip-deepbrain, qip-cli, qip-edge-node), so QIP_STORAGE_TARGET=memorystore now stops the process instead of making a persistence-disabled Redis the store of record for the event log, trial book, universe and mesh. Terraform's storage_target validation remains the first layer. The Terraform half is unchanged: google_redis_instance.cache has persistence_mode = DISABLED and enable_memorystore = false everywhere. What the requirement's chaos check needs does not exist: there is no separate cache port whose values are recomputable, so nothing can be flushed mid-workload and observed rebuilding.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:295-322",
-      "infrastructure/environments/dev/terraform.tfvars:256 enable_memorystore = false",
-      "backend/crates/libs/qip-storage/src/provider.rs:62-72",
-      "infrastructure/terraform/variables.tf:376-382"
+      "backend/crates/libs/qip-storage/src/settings.rs StorageSettings::require_authoritative (grep -n 'fn require_authoritative')",
+      "backend/crates/libs/qip-storage/tests/settings.rs a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted (mutation-verified 2026-10-06: guard condition replaced by false -> test fails at settings.rs:528; restored cmp-identical -> passes)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs every_composition_root_that_resolves_a_storage_target_refuses_a_cache_as_the_store_of_record",
+      "grep -rn 'require_authoritative' backend/crates/apps -> qip-api, qip-fastbrain, qip-deepbrain, qip-cli, qip-edge-node (2026-10-06)",
+      "infrastructure/terraform/modules/data/main.tf google_redis_instance.cache persistence_mode = DISABLED"
     ],
-    "gap": "The requirement says Memorystore is never authoritative, but the in-tree storage layer would make it the store of record for the event log and the trial book whenever the target is selected. A flushed cache would lose financial state, which is exactly what the chaos check forbids. Fix in-tree, with no C4 dependency: refuse StorageTarget::Memorystore as a StorageSettings primary target at from_env/preflight, and expose Redis only through a separate cache port whose values are recomputable. The managed instance itself remains C4-blocked.",
+    "gap": "The refusal half is met. Not met: the requirement's chaos verification (flush the cache during a fixture workload; no financial or knowledge state lost; workload continues at degraded latency). No cache port exists for Redis to back, so there is nothing to flush and rebuild, and the managed instance is still C4-blocked.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "C4",
-    "verification": "To write: a qip-storage settings test asserting StorageSettings::from_env refuses QIP_STORAGE_TARGET=memorystore (or refuses it for the event-log namespace), mutation-verified; then, once C4 clears, the requirement's chaos test flushing the cache mid-workload and asserting no financial or knowledge state is lost. The existing 35 redis.rs inline tests prove the RESP client only, not non-authority.",
+    "verification": "cargo test -p qip-storage --test settings a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted; cargo test -p qip-acceptance --test architecture every_composition_root_that_resolves_a_storage_target_refuses_a_cache_as_the_store_of_record. Still to write once a cache port exists and C4 clears: the chaos test flushing the cache mid-workload and asserting no financial or knowledge state is lost.",
     "work_item": "E14-memorystore-cache-only",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: BLOCKED->INCORRECT (blocked_by C4 retained for the managed instance), tested true->false, integrated false->true. The in-tree selection path, reached from every composition root's StorageSettings, would make Memorystore authoritative for the event log. The assessor's advice to 'flip storage_target's validation and one tfvars flag' once C4 clears would do exactly what this requirement forbids, and is retracted. The redis.rs tests exercise the protocol client, not the non-authoritative property. Prior note (superseded): Cheapest once C4 clears: flip storage_target's validation and one tfvars flag; both artifacts are already built and tested."
+    "notes": "verify: BLOCKED->INCORRECT (blocked_by C4 retained for the managed instance), tested true->false, integrated false->true. The in-tree selection path, reached from every composition root's StorageSettings, would make Memorystore authoritative for the event log. The assessor's advice to 'flip storage_target's validation and one tfvars flag' once C4 clears would do exactly what this requirement forbids, and is retracted. The redis.rs tests exercise the protocol client, not the non-authoritative property. Prior note (superseded): Cheapest once C4 clears: flip storage_target's validation and one tfvars flag; both artifacts are already built and tested. 2026-10-06 (PR #40): INCORRECT -> PARTIAL, not COMPLETE. The in-tree refusal landed in 74f1394 and is mutation-verified; the chaos check this requirement is verified by has no cache port to run against and the instance is C4-blocked, so deployable stays false and blocked_by C4 is retained."
   },
   {
     "id": "DATA-046",
