@@ -576,6 +576,27 @@ impl AssetClassRegistry {
                 .collect(),
         )?);
 
+        // Commodity — §16.1: term structure "Unlocks: Commodity futures,
+        // swaps, and spot trading". Commodities are exchange-traded where
+        // futures exist, and term-structure pricing is standard. They hedge
+        // physical products and real assets.
+        add(AssetClassRecord::new(
+            AssetClass::Commodity,
+            ValuationEngine::TermStructure,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            listed_grid,
+            TradingCalendar::ExchangeSession,
+            MarginRegime::Portfolio,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [F::Carry, F::Arbitrage, F::MomentumAndTrend]
+                .into_iter()
+                .collect(),
+            [AssetClass::RealAsset, AssetClass::PhysicalProduct]
+                .into_iter()
+                .collect(),
+        )?);
+
         // Fund — §16.1: cashflow and commitments "Unlocks: Private funds".
         // A fund reports; it does not settle on a venue cycle.
         add(AssetClassRecord::new(
@@ -621,28 +642,22 @@ impl AssetClassRegistry {
             BTreeSet::new(),
         )?);
 
-        // Prediction — Event-driven opportunity detection. Markets resolve to
-        // bitemporal outcomes; pricing is mark with method and confidence.
-        // Instant settlement upon resolution, 24/7 trading, families that react
-        // to events.
+        // Physical product — commerce plane (§20) "Unlocks: SKU-level commerce,
+        // auctions, collectibles, wholesale/retail arbitrage, inventory". Uses
+        // illiquid valuation, as physical goods cannot be priced continuously.
+        // Settlement is periodic: purchase, logistics, resale and settlement
+        // complete over time. Tax treatment as RealProperty for physical goods.
         add(AssetClassRecord::new(
-            AssetClass::Prediction,
+            AssetClass::PhysicalProduct,
             ValuationEngine::IlliquidValuation,
-            ClassSettlement::Exchange(SettlementConvention::T0),
+            ClassSettlement::PeriodicStatement,
             GridRule::Negotiated,
-            TradingCalendar::Continuous,
+            TradingCalendar::Negotiated,
             MarginRegime::Isolated,
             false,
-            TaxTreatment::MarketableSecurity,
-            [
-                F::EventDriven,
-                F::StatisticalArbitrage,
-                F::Arbitrage,
-                F::ExecutionAlpha,
-            ]
-            .into_iter()
-            .collect(),
-            BTreeSet::new(),
+            TaxTreatment::RealProperty,
+            [F::Carry].into_iter().collect(),
+            [AssetClass::Commodity].into_iter().collect(),
         )?);
 
         let registry = Self { records };
@@ -740,20 +755,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shipped_registry_holds_ten_classes_and_names_the_four_it_refuses() -> Result<()> {
-        // The premise first: `AssetClass` really does have fourteen variants,
-        // so "ten registered" is a statement about coverage and not about a
+    fn the_shipped_registry_holds_twelve_classes_and_names_the_three_it_refuses() -> Result<()> {
+        // The premise first: `AssetClass` really does have fifteen variants,
+        // so "twelve registered" is a statement about coverage and not about a
         // list that happens to be the whole enum.
-        assert_eq!(AssetClass::ALL.len(), 14);
+        assert_eq!(AssetClass::ALL.len(), 15);
         let registry = AssetClassRegistry::shipped()?;
-        assert_eq!(registry.len(), 10);
-        // Named rather than counted: a count would pass if the four swapped
-        // for four others, and which four are unsupported is the finding.
+        assert_eq!(registry.len(), 12);
+        // Named rather than counted: a count would pass if the three swapped
+        // for three others, and which three are unsupported is the finding.
         assert_eq!(
             registry.unregistered(),
             vec![
                 AssetClass::ForeignExchange,
-                AssetClass::Commodity,
                 AssetClass::DigitalAsset,
                 AssetClass::Cash,
             ]

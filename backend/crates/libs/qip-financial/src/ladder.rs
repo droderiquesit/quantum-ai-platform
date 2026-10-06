@@ -252,7 +252,7 @@ impl Rung {
             | AssetClass::Credit
             | AssetClass::Fund
             | AssetClass::StructuredProduct => Self::BondsAndLessLiquidListed,
-            AssetClass::RealAsset => Self::PrivateCreditAndRealAssets,
+            AssetClass::RealAsset | AssetClass::PhysicalProduct => Self::PrivateCreditAndRealAssets,
             AssetClass::PrivateMarket => Self::PrivateEquityCommitments,
         };
         let by_liquidity = if liquidity.is_negotiated {
