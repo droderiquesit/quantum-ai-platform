@@ -59,7 +59,10 @@ pub use capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
 pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
 pub use fabric_envelope::{AuthContext, FabricEnvelope, QoSClass};
-pub use feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
+pub use feature::{
+    Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,
+    KnowableAt, Revision,
+};
 pub use gate::{GateOutcome, GateStage, Promotion};
 pub use governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
 pub use intent::{
