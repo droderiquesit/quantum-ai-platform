@@ -15,7 +15,9 @@ use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Decimal, dec};
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
-use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel, KillSwitch, OperatorIdentity};
+use qip_risk_engine::autonomy::{
+    AutonomyController, AutonomyLevel, Identification, KillSwitch, OperatorIdentity,
+};
 use qip_risk_engine::monitor::{MonitorAction, MonitorPolicy, RiskMonitor};
 use qip_risk_engine::pretrade::{PreTradeChecker, PreTradeDecision, ProposedOrder};
 use std::collections::BTreeMap;
@@ -61,7 +63,13 @@ fn a_default_deployment_cannot_reach_a_live_level_at_all() {
         AutonomyLevel::AutonomousLive,
     ] {
         let error = controller
-            .request_change(level, &two_operators(), "enabling live trading", now())
+            .request_change(
+                level,
+                &two_operators(),
+                "enabling live trading",
+                Some(Identification::Identified),
+                now(),
+            )
             .unwrap_err();
         assert!(
             error.message().contains("ceiling"),
@@ -81,6 +89,7 @@ fn one_operator_cannot_enable_live_trading_alone() {
             AutonomyLevel::SupervisedLive,
             &operator(),
             "enabling supervised live trading for the pilot",
+            Some(Identification::Identified),
             now(),
         )
         .unwrap_err();
@@ -107,6 +116,7 @@ fn two_operators_can_enable_live_trading_where_the_ceiling_permits_it() {
             AutonomyLevel::SupervisedLive,
             &two_operators(),
             "enabling supervised live trading for the pilot",
+            Some(Identification::Identified),
             now(),
         )
         .unwrap();
@@ -131,6 +141,7 @@ fn a_stale_credential_cannot_authorise_a_change() {
             AutonomyLevel::SupervisedLive,
             &stale,
             "enabling live trading after lunch",
+            Some(Identification::Identified),
             much_later,
         )
         .unwrap_err();
@@ -146,7 +157,13 @@ fn a_change_without_a_stated_reason_is_refused() {
     let mut controller = AutonomyController::new();
     assert!(
         controller
-            .request_change(AutonomyLevel::Advisory, &operator(), "why", now())
+            .request_change(
+                AutonomyLevel::Advisory,
+                &operator(),
+                "why",
+                Some(Identification::Identified),
+                now()
+            )
             .is_err(),
         "the audit trail is the point"
     );
@@ -239,6 +256,7 @@ fn autonomy_cannot_be_raised_while_the_kill_switch_is_tripped() {
             AutonomyLevel::SupervisedLive,
             &two_operators(),
             "resuming after the incident",
+            Some(Identification::Identified),
             now(),
         )
         .unwrap_err();
@@ -276,6 +294,86 @@ fn the_first_reason_for_a_halt_is_the_one_kept() {
         "drawdown limit breached"
     );
     assert_eq!(switch.history().len(), 2, "both are kept in the history");
+}
+
+// --- evidence-gated autonomy widening ----------------------------------------
+
+#[test]
+fn an_autonomy_raise_requires_identified_causal_evidence() {
+    // The platform requires structural evidence that a ceiling raise is safe,
+    // not a correlational forecast. A raise with Identification::Identified
+    // must be accepted; one without it must be refused.
+    let mut controller = AutonomyController::with_live_ceiling(AutonomyLevel::SupervisedLive);
+    let operators = two_operators();
+
+    // A raise WITH identified evidence is accepted.
+    controller
+        .request_change(
+            AutonomyLevel::SupervisedLive,
+            &operators,
+            "verified causal evidence supports this widening",
+            Some(Identification::Identified),
+            now(),
+        )
+        .expect("raise with identified evidence must be accepted");
+
+    assert!(controller.is_live());
+}
+
+#[test]
+fn an_autonomy_raise_refuses_correlational_evidence() {
+    // The platform distinguishes between identified causal evidence and
+    // correlational forecasts. A raise with Identification::NotIdentified
+    // must be refused with a message naming the distinction.
+    let mut controller = AutonomyController::with_live_ceiling(AutonomyLevel::SupervisedLive);
+    let operators = two_operators();
+
+    let error = controller
+        .request_change(
+            AutonomyLevel::SupervisedLive,
+            &operators,
+            "a correlational forecast suggests this is safe",
+            Some(Identification::NotIdentified),
+            now(),
+        )
+        .unwrap_err();
+
+    assert!(
+        error
+            .message()
+            .contains("identified causal evidence, not a correlational forecast"),
+        "the error must name the distinction: {}",
+        error.message()
+    );
+    // The level must not change on a refused raise.
+    assert_eq!(controller.level(), AutonomyLevel::PaperTrading);
+}
+
+#[test]
+fn an_autonomy_raise_refuses_no_evidence() {
+    // The platform requires explicit evidence, not an absence of evidence.
+    // A raise with None must be refused with a message naming the missing
+    // evidence.
+    let mut controller = AutonomyController::with_live_ceiling(AutonomyLevel::SupervisedLive);
+    let operators = two_operators();
+
+    let error = controller
+        .request_change(
+            AutonomyLevel::SupervisedLive,
+            &operators,
+            "no evidence provided for this widening",
+            None,
+            now(),
+        )
+        .unwrap_err();
+
+    assert!(
+        error.message().contains("identified causal evidence"),
+        "the error must name the required evidence: {}",
+        error.message()
+    );
+    // The level must not change on a refused raise.
+    assert_eq!(controller.level(), AutonomyLevel::PaperTrading);
 }
 
 // --- pre-trade checks -------------------------------------------------------
