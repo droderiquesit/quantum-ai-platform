@@ -119,10 +119,10 @@ export default function PolicyStatusPage() {
                       <span className="eyebrow text-[11px]">latest change</span>
                       <div className="mt-2 flex flex-col gap-1">
                         <p className="text-[11px] text-[color:var(--color-ink-dim)]">
-                          {data.history[0].from} → {data.history[0].to}
+                          {data.history[0]?.from} → {data.history[0]?.to}
                         </p>
                         <p className="text-[10.5px] text-[color:var(--color-ink-faint)]">
-                          {formatTimestamp(new Date(data.history[0].at * 1000).toISOString())}
+                          {formatTimestamp(new Date((data.history[0]?.at ?? 0) * 1000).toISOString())}
                         </p>
                         {data.history[0]?.reason && (
                           <p className="text-[10.5px] italic text-[color:var(--color-ink-dim)]">
@@ -311,7 +311,7 @@ export default function PolicyStatusPage() {
 
                   {data.findings.length === 0 ? (
                     <StateBlock
-                      tone="ok"
+                      tone="info"
                       label="clean"
                       headline="No governance findings."
                       compact
