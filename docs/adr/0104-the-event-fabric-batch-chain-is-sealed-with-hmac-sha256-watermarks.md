@@ -48,7 +48,7 @@ watermark = HMAC-SHA256(
 
 **Determinism for replay.** Replay of the slice (ADR 0100 §8, test 7) uses the same HMAC key, so byte-for-byte chain equality is provable: if the input is the same, the watermarks are the same. This is the property that makes the test meaningful.
 
-## Cost
+## What it costs
 
 **Computational.** HMAC-SHA256 is fast; a million-record batch adds nanoseconds of digest time, not milliseconds. The broker seals segments at a much lower rate than the drain produces batches. Not a bottleneck.
 
