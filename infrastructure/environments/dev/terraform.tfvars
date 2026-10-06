@@ -278,13 +278,7 @@ github_repository = "droderiquesit/quantum-ai-platform"
 # policy for a metric it has never ingested. While this is false the alerts
 # do not exist, which is the honest description of an environment nothing
 # has scraped: modules/observability/NOT-SCRAPED.md says what does not yet.
-#
-# M6 milestone enables this for cloud platform observability. Current count
-# as of this edit: 12 alert policies + 1 M6 dashboard = 13 resources gated on
-# this variable. Verify with:
-#   grep -c '^resource "google_monitoring_alert_policy"' infrastructure/terraform/modules/observability/main.tf
-#   grep -c 'count *=.*workload_metrics_exist' infrastructure/terraform/modules/observability/main.tf
-workload_metrics_exist = true
+# workload_metrics_exist = true
 #
 # The collector that would produce that descriptor is declared in
 # modules/cloudrun and attached to both brains by catalogue.tf, but only once

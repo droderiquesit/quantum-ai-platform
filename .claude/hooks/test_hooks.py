@@ -55,6 +55,28 @@ GUARD_CASES: list[tuple[str, int, str]] = [
         "a real command after a heredoc is still refused",
     ),
     ("", 0, "an empty command is allowed"),
+    ("git push origin main", 2, "a direct push to main is refused"),
+    (
+        "git push origin HEAD:ccr-0c1bacf8-kla0dd",
+        2,
+        "a direct push to the integration branch is refused",
+    ),
+    (
+        "git push -u origin refs/heads/main",
+        2,
+        "a fully qualified push to main is refused",
+    ),
+    (
+        "git push -u origin lane/L001-b-main-x",
+        0,
+        "a lane branch whose name contains main is allowed",
+    ),
+    ("git push origin domain", 0, "a branch merely ending in main is allowed"),
+    (
+        "git push -u origin lane/L052-b-GOV-007 && git log",
+        0,
+        "pushing a lane branch then running more commands is allowed",
+    ),
 ]
 
 
