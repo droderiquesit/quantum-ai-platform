@@ -307,6 +307,26 @@ fn the_observation_detector_finds_a_surprise() {
     assert_eq!(anomalies.len(), 1);
     assert_eq!(anomalies[0].kind, AnomalyKind::FundamentalSurprise);
     assert!(anomalies[0].z_score > 3.0);
+    // The anomaly scores are residual/expected-baseline/score triples.
+    assert!(
+        (anomalies[0].observed - 0.35).abs() < 1e-12,
+        "observed value must be the latest surprise, not {}",
+        anomalies[0].observed
+    );
+    assert!(
+        anomalies[0].expected.abs() < 0.01,
+        "expected baseline must be close to the history center, not {} (off by {})",
+        anomalies[0].expected,
+        (anomalies[0].observed - anomalies[0].expected).abs()
+    );
+    // Verify the z-score relationship holds: z ≈ (observed - expected) / scale.
+    let implied_scale =
+        (anomalies[0].observed - anomalies[0].expected).abs() / anomalies[0].z_score.abs();
+    assert!(
+        implied_scale > 1e-4,
+        "scale must be positive and well-defined, not {}",
+        implied_scale
+    );
 }
 
 #[test]

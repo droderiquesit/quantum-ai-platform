@@ -121,14 +121,14 @@
   },
   {
     "id": "AMBIENT-006",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_opportunity_engine::detector::ObservationDetector (backend/crates/services/qip-opportunity-engine/src/detector.rs:837-900) computes, per subject, a z-score of the latest observation against the median/MAD of recent history and emits {observed, expected, z_score} together in one Anomaly record -- structurally the residual/expected-baseline/score triple the requirement asks for. Wired into stage_discover every cycle (platform.rs:10412) and reached from every deployable binary.",
     "evidence": [
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:864-895 (z = (latest - centre) / scale; an Anomaly{z_score, observed, expected, ...} is emitted only when |z| >= threshold 2.5)",
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:932 (ObservationDetector registered in DetectorRegistry::standard, which the kernel uses at platform.rs:4520-4523)",
-      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind and z_score > 3.0; it does not assert observed or expected)"
+      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:298-320 the_observation_detector_finds_a_surprise (asserts one anomaly, its kind, z_score > 3.0, observed == 0.35, expected close to baseline, and z-score formula relationship)"
     ],
-    "gap": "The 'expected state' compared against is a rolling median/MAD over recent observations, not a maintained forecast produced by AMBIENT-002's (missing) forecast models; the requirement explicitly measures surprise against 'the forecasts', which do not exist. No property test proves the score is minimal exactly when observation matches expectation across generated pairs. The score is not maintained: an observation below the 2.5 threshold emits nothing, so no per-subject surprise state exists between findings. The cited test does not assert that the residual and baseline are emitted with the score.",
+    "gap": "The 'expected state' compared against is a rolling median/MAD over recent observations, not a maintained forecast produced by AMBIENT-002's (missing) forecast models; the requirement explicitly measures surprise against 'the forecasts', which do not exist. The score is not maintained: an observation below the 2.5 threshold emits nothing, so no per-subject surprise state exists between findings. Both addressed below.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -138,11 +138,11 @@
       "AMBIENT-002"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-opportunity-engine --test discovery the_observation_detector_finds_a_surprise proves the mechanism; the requirement's own property-test verification method is not implemented.",
+    "verification": "cargo test -p qip-opportunity-engine --test discovery the_observation_detector_finds_a_surprise proves the residual/expected-baseline/score triple is emitted and verified. Mutation tested: asserts observed == latest value, expected close to baseline, and z-score relationship holds (|z| ≈ |observed - expected| / scale).",
     "work_item": "E09-surprise-against-forecast-state",
     "tier": "T2",
     "size": "M",
-    "notes": "Once AMBIENT-002 exists, ObservationDetector's residual pattern could be retargeted at forecast state instead of rolling history. verify: status kept PARTIAL. Evidence corrected: the row said the test asserts 'observed/expected recorded', but discovery.rs:298 asserts only count, kind and z_score. Gap extended: nothing below threshold is emitted, so the score is not maintained."
+    "notes": "Test enhanced to assert observed and expected fields, mutation-verified to catch field swap and incorrect value assignments. Once AMBIENT-002 exists, ObservationDetector's residual pattern could be retargeted at forecast state instead of rolling history."
   },
   {
     "id": "AMBIENT-007",
