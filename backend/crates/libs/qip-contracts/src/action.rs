@@ -533,4 +533,305 @@ mod tests {
         assert!(check_authority(&capital_intent, AuthorityLevel::Shadow).is_err());
         assert!(check_authority(&capital_intent, AuthorityLevel::Capital).is_ok());
     }
+
+    // AGENCY-007: Actions execute only through registered tools
+
+    #[test]
+    fn an_unregistered_tool_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let at = Timestamp::from_nanos(1000);
+
+        let result = registry.authorise("unregistered_tool", "channel_a", 0, 100, at);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .message()
+                .contains("tool is not registered")
+        );
+    }
+
+    #[test]
+    fn a_registered_tool_with_all_six_fields_is_admitted() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into(), "ledger".into()]
+                .into_iter()
+                .collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into(), "orchestrator".into()]
+                .into_iter()
+                .collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke/payment".into(),
+        };
+        assert!(registry.register(reg).is_ok());
+
+        let at = Timestamp::from_nanos(1000);
+        let result = registry.authorise("payment", "api", 0, 100, at);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn a_tool_registration_lacking_tool_name_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("tool"));
+    }
+
+    #[test]
+    fn a_tool_registration_lacking_acting_identity_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("identity"));
+    }
+
+    #[test]
+    fn a_tool_registration_lacking_permission_scope_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec![].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("scope"));
+    }
+
+    #[test]
+    fn a_tool_registration_lacking_disclosure_policy_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("disclosure"));
+    }
+
+    #[test]
+    fn a_tool_registration_lacking_channels_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec![].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("channel"));
+    }
+
+    #[test]
+    fn a_tool_registration_with_zero_rate_limit_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 0,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("rate limit"));
+    }
+
+    #[test]
+    fn a_tool_registration_with_zero_budget_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 0,
+            revocation_path: "/policy/revoke".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("budget"));
+    }
+
+    #[test]
+    fn a_tool_registration_lacking_revocation_path_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "".into(),
+        };
+        let result = registry.register(reg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("revocation"));
+    }
+
+    #[test]
+    fn a_revoked_tool_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke/payment".into(),
+        };
+        assert!(registry.register(reg).is_ok());
+
+        assert!(registry.revoke("payment").is_ok());
+
+        let at = Timestamp::from_nanos(1000);
+        let result = registry.authorise("payment", "api", 0, 100, at);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("tool is revoked"));
+    }
+
+    #[test]
+    fn a_tool_call_on_an_unauthorized_channel_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke/payment".into(),
+        };
+        assert!(registry.register(reg).is_ok());
+
+        let at = Timestamp::from_nanos(1000);
+        let result = registry.authorise("payment", "webhook", 0, 100, at);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("webhook"));
+    }
+
+    #[test]
+    fn a_tool_call_exceeding_the_rate_limit_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 2,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke/payment".into(),
+        };
+        assert!(registry.register(reg).is_ok());
+
+        let at = Timestamp::from_nanos(1000);
+        assert!(registry.authorise("payment", "api", 0, 100, at).is_ok());
+        assert!(registry.authorise("payment", "api", 0, 100, at).is_ok());
+        let result = registry.authorise("payment", "api", 0, 100, at);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("rate limit"));
+    }
+
+    #[test]
+    fn a_tool_call_exceeding_the_budget_is_refused() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 100,
+            budget_units: 500,
+            revocation_path: "/policy/revoke/payment".into(),
+        };
+        assert!(registry.register(reg).is_ok());
+
+        let at = Timestamp::from_nanos(1000);
+        assert!(registry.authorise("payment", "api", 0, 300, at).is_ok());
+        let result = registry.authorise("payment", "api", 0, 300, at);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().message().contains("budget"));
+    }
+
+    #[test]
+    fn every_tool_authorization_is_audited() {
+        let mut registry = ToolRegistry::new();
+        let reg = ToolRegistration {
+            tool: "payment".into(),
+            acting_identity: "operator_1".into(),
+            permission_scope: vec!["accounts".into()].into_iter().collect(),
+            disclosure_policy: "must_audit".into(),
+            channels: vec!["api".into()].into_iter().collect(),
+            max_actions_per_window: 10,
+            budget_units: 1000,
+            revocation_path: "/policy/revoke/payment".into(),
+        };
+        assert!(registry.register(reg).is_ok());
+
+        let at = Timestamp::from_nanos(1000);
+        assert!(registry.authorise("payment", "api", 0, 100, at).is_ok());
+
+        let at2 = Timestamp::from_nanos(2000);
+        let _ = registry.authorise("unregistered", "api", 0, 100, at2);
+
+        let audit = registry.audit();
+        assert_eq!(audit.len(), 2);
+        assert!(audit[0].admitted);
+        assert!(!audit[1].admitted);
+    }
 }
