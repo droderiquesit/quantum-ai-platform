@@ -1287,3 +1287,51 @@ module "dns_zone" {
     },
   )
 }
+
+# Autonomous agent identity — a distinct service account with no roles on
+# capital or custody resources. Agents use this identity to prove they hold
+# no authority over capital envelopes or custodial resources, enforcing the
+# separation between agent operations and financial controls (GOV-026).
+resource "google_service_account" "agent_identity" {
+  account_id   = "qip-agent-identity"
+  display_name = "Autonomous Agent Identity"
+  project      = var.project_id
+
+  depends_on = [module.services]
+}
+
+output "agent_identity_email" {
+  description = "Agent service account email for workload federation"
+  value       = google_service_account.agent_identity.email
+}
+
+# Enforce Workload Identity Federation by disabling long-lived service-account
+# key creation at the project level (GOV-028). This prevents the creation of
+# service account keys, forcing reliance on federated credentials for all GCP
+# authentication. The policy refuses new key creation while existing keys that
+# predate this policy remain valid.
+resource "google_org_policy_policy" "disable_service_account_key_creation" {
+  parent   = "projects/${var.project_id}"
+  name     = "projects/${var.project_id}/policies/constraints/iam.disableServiceAccountKeyCreation"
+  rules {
+    enforce = true
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# Also enforce the same policy for service account key uploads to prevent
+# external keys being associated with platform-managed accounts.
+resource "google_org_policy_policy" "disable_service_account_key_upload" {
+  parent   = "projects/${var.project_id}"
+  name     = "projects/${var.project_id}/policies/constraints/iam.disableServiceAccountKeyUpload"
+  rules {
+    enforce = true
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}

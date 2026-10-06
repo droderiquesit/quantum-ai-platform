@@ -177,12 +177,20 @@ fn a_feature_snapshot_is_not_readable_before_knowable() {
         Timestamp::from_secs(2000),
     );
 
+    // Every instant from just after the fact was true up to just before it
+    // became knowable. The loop used to filter on a `Timestamp::secs()` that
+    // does not exist, so this file never compiled; the filter was also
+    // vacuous, since every instant here is below 2000 by construction.
     for i in 1..200 {
         let ts = Timestamp::from_secs(1000 + i * 5);
-        if ts.secs() < 2000 {
-            assert!(!snapshot.is_knowable_at(ts));
-        }
+        assert!(ts < Timestamp::from_secs(2000));
+        assert!(
+            !snapshot.is_knowable_at(ts),
+            "readable at {ts:?}, before knowable"
+        );
     }
+    // Without this the test passes for a snapshot that is never readable.
+    assert!(snapshot.is_knowable_at(Timestamp::from_secs(2000)));
 }
 
 // ============================================================================
@@ -217,7 +225,7 @@ fn a_forecast_lattice_computes_zero_disagreement_for_identical() {
     let lattice =
         ForecastLattice::new(key, Timestamp::from_secs(5000), vec![dist1, dist2]).unwrap();
 
-    assert_eq!(lattice.disagreement_width(), 0.0);
+    assert!(lattice.disagreement_width().abs() < 1e-12);
     assert!(lattice.is_consensus());
 }
 
@@ -479,7 +487,7 @@ fn a_single_forecast_lattice_is_consensus() {
 
     let lattice = ForecastLattice::new(key, Timestamp::from_secs(5000), vec![dist]).unwrap();
 
-    assert_eq!(lattice.disagreement_width(), 0.0);
+    assert!(lattice.disagreement_width().abs() < 1e-12);
     assert!(lattice.is_consensus());
 }
 
