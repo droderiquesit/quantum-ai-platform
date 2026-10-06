@@ -2,7 +2,7 @@
   {
     "id": "GCP-001",
     "status": "PARTIAL",
-    "current": "infrastructure/terraform/modules/execution-node deploys a dedicated Compute Engine VM per node (no GKE/Cloud Run) — correct placement family for Rule 1. But `variable \"machine_type\"` (modules/execution-node/variables.tf:118-146) permits only c3-highcpu-8, c3-highcpu-22, c3d-highcpu-8, c3d-highcpu-16 (v10.1 §41.4), not the C4D/C4 class the requirement names. `execution_nodes = {}` in every environment (dev/test/stage/prod terraform.tfvars), so nothing is provisioned.",
+    "current": "infrastructure/terraform/modules/execution-node deploys a dedicated Compute Engine VM per node (no GKE/Cloud Run) \u2014 correct placement family for Rule 1. But `variable \"machine_type\"` (modules/execution-node/variables.tf:118-146) permits only c3-highcpu-8, c3-highcpu-22, c3d-highcpu-8, c3d-highcpu-16 (v10.1 \u00a741.4), not the C4D/C4 class the requirement names. `execution_nodes = {}` in every environment (dev/test/stage/prod terraform.tfvars), so nothing is provisioned.",
     "evidence": [
       "infrastructure/terraform/modules/execution-node/variables.tf:118-146 (machine_type validation, C3/C3D only)",
       "infrastructure/terraform/modules/execution-node/main.tf:314 (machine_type = var.machine_type)",
@@ -53,7 +53,7 @@
   {
     "id": "GCP-003",
     "status": "INCORRECT",
-    "current": "ADR 0024 runs every warm binary — api, fastbrain, deepbrain, web, and any stateful/long-running service the platform has — on Cloud Run via modules/cloudrun, with no distinction between bursty/stateless and stateful/long-running workloads.",
+    "current": "ADR 0024 runs every warm binary \u2014 api, fastbrain, deepbrain, web, and any stateful/long-running service the platform has \u2014 on Cloud Run via modules/cloudrun, with no distinction between bursty/stateless and stateful/long-running workloads.",
     "evidence": [
       "infrastructure/terraform/catalogue.tf:390-415 (fastbrain on Cloud Run, min_instances = 1, always_on_justification: 'Runs the cycle on its own clock over one hash-chained log') and :492-510 (deepbrain, same shape): stateful, long-running services on Cloud Run",
       "infrastructure/gitops/envs/{dev,test,stage,prod}/{fastbrain,deepbrain}.yaml (Config Connector RunService)",
@@ -75,7 +75,7 @@
     "work_item": "E14-warm-services-gke",
     "tier": "T3",
     "size": "L",
-    "notes": "Resolving this and GCP-002 is the same C3 runtime record; v2.1 itself allows Cloud Run 'where stateless burst/serverless economics are beneficial' (v11.6 §26), so the fix is selective, not wholesale. verify: implemented/integrated/deployable true->false. The flags score the required behaviour, that Cloud Run holds only stateless burst workloads, and that behaviour does not exist. What exists and deploys is the forbidden form, which the INCORRECT status already records. GCP-009 and GCP-024 in this file score INCORRECT the same way. INCORRECT confirmed against catalogue.tf's fastbrain/deepbrain always_on_justification."
+    "notes": "Resolving this and GCP-002 is the same C3 runtime record; v2.1 itself allows Cloud Run 'where stateless burst/serverless economics are beneficial' (v11.6 \u00a726), so the fix is selective, not wholesale. verify: implemented/integrated/deployable true->false. The flags score the required behaviour, that Cloud Run holds only stateless burst workloads, and that behaviour does not exist. What exists and deploys is the forbidden form, which the INCORRECT status already records. GCP-009 and GCP-024 in this file score INCORRECT the same way. INCORRECT confirmed against catalogue.tf's fastbrain/deepbrain always_on_justification."
   },
   {
     "id": "GCP-004",
@@ -86,7 +86,7 @@
       "infrastructure/terraform/modules/data/variables.tf:116-124 (enable_spanner, default false)",
       "No `multi-region` or `enable_spanner` reference anywhere under backend/crates/tests/qip-acceptance/tests/ or infrastructure/terraform/tests/"
     ],
-    "gap": "The one Spanner resource that exists is regional, not multi-region, which is the opposite of what the requirement asks — a config value that must be corrected, not merely added; and it is behind an unenabled flag everywhere.",
+    "gap": "The one Spanner resource that exists is regional, not multi-region, which is the opposite of what the requirement asks \u2014 a config value that must be corrected, not merely added; and it is behind an unenabled flag everywhere.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -125,14 +125,14 @@
     "work_item": "E03-fabric-broker-vms",
     "tier": "T3",
     "size": "XL",
-    "notes": "Blocked first on C2 (the Fabric's own transport/consensus dependency class — Tokio/QUIC/mTLS/Raft — is refused by ADR 0002/0009 until a dependency record exists per class), and then on C8 (cost/regions) for actual VM placement. verify: blocker narrowed, status unchanged. ADR 0100 (accepted 2026-09-25) decides a single-node in-tree broker (apps/qip-fabricd) on std TCP with no new crate. That binary is not built yet; no such crate exists under backend/crates/apps. So one broker on a dedicated VM is not C2-gated. The three-zone spread needs replicated brokers, which ADR 0100 section 3 defers to C2's consensus record, and the VM cost is C8. blocked_by C2 is kept for the three-zone half. Also fixed the malformed trust-zones line range (507-260) in current."
+    "notes": "Blocked first on C2 (the Fabric's own transport/consensus dependency class \u2014 Tokio/QUIC/mTLS/Raft \u2014 is refused by ADR 0002/0009 until a dependency record exists per class), and then on C8 (cost/regions) for actual VM placement. verify: blocker narrowed, status unchanged. ADR 0100 (accepted 2026-09-25) decides a single-node in-tree broker (apps/qip-fabricd) on std TCP with no new crate. That binary is not built yet; no such crate exists under backend/crates/apps. So one broker on a dedicated VM is not C2-gated. The three-zone spread needs replicated brokers, which ADR 0100 section 3 defers to C2's consensus record, and the VM cost is C8. blocked_by C2 is kept for the three-zone half. Also fixed the malformed trust-zones line range (507-260) in current."
   },
   {
     "id": "GCP-006",
     "status": "MISSING",
     "current": "nothing. No Network Connectivity Center resource of any kind exists in the tree; modules/connectivity provides only partner Interconnect (VLAN attachments, off by default, NOT-ORDERED.md) and a Private Google Access endpoint, which is a different mechanism from an NCC latency-mesh hub with route filters.",
     "evidence": [
-      "infrastructure/terraform/modules/connectivity/main.tf:59-160 (Cloud Router, Interconnect attachment, Private Google Access endpoint — no NCC hub)",
+      "infrastructure/terraform/modules/connectivity/main.tf:59-160 (Cloud Router, Interconnect attachment, Private Google Access endpoint \u2014 no NCC hub)",
       "grep -rn 'google_network_connectivity' infrastructure/terraform returns nothing"
     ],
     "gap": "No latency NCC hub, no mirror-prefix export filters, and no Fabric broker to mirror from in the first place (GCP-005).",
@@ -160,7 +160,7 @@
     "current": "Each environment (dev/test/stage/prod) declares exactly one `region` (infrastructure/terraform/variables.tf:30-34, default europe-west2; dev overrides to us-east4). There is no execution-region map with three entries spanning Americas/Europe/APAC anywhere in committed tfvars.",
     "evidence": [
       "infrastructure/terraform/variables.tf:30-34 (single `region` variable)",
-      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars (one region field each: us-east4 or europe-west2 — no Americas+Europe+APAC set)"
+      "infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars (one region field each: us-east4 or europe-west2 \u2014 no Americas+Europe+APAC set)"
     ],
     "gap": "No production execution-region map exists at all; the environment model is one region per environment, not a multi-region execution-region list.",
     "implemented": false,
@@ -188,7 +188,7 @@
       "infrastructure/environments/prod/terraform.tfvars (edge-cell location references)",
       "docs/ops/execution-measurements.md (checked and rejected as an RTT record: in-process timings on a shared container, which say explicitly that they carry no venue latency)"
     ],
-    "gap": "No dated selection record exists for the three v2.1 execution regions specifically, and even the existing edge-cell precedent lacks RTT, residency, machine-series and counterparty-proximity findings — only distance.",
+    "gap": "No dated selection record exists for the three v2.1 execution regions specifically, and even the existing edge-cell precedent lacks RTT, residency, machine-series and counterparty-proximity findings \u2014 only distance.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -200,7 +200,7 @@
     "work_item": "E14-region-selection-record",
     "tier": "T1",
     "size": "M",
-    "notes": "This is process/documentation work, not blocked by any C1-C8 conflict — it can be written before any region is provisioned. verify: integrated true->false. A findings comment and a runbook table are not behaviour reached from a composition root, and not Terraform an environment enables. docs/ops/execution-measurements.md was checked as a possible RTT record and does not qualify. PARTIAL kept: distance and Interconnect findings exist for the edge-cell set, but not for any execution region."
+    "notes": "This is process/documentation work, not blocked by any C1-C8 conflict \u2014 it can be written before any region is provisioned. verify: integrated true->false. A findings comment and a runbook table are not behaviour reached from a composition root, and not Terraform an environment enables. docs/ops/execution-measurements.md was checked as a possible RTT record and does not qualify. PARTIAL kept: distance and Interconnect findings exist for the edge-cell set, but not for any execution region."
   },
   {
     "id": "GCP-009",
@@ -224,7 +224,7 @@
     "work_item": "E14-vpc-separation",
     "tier": "T2",
     "size": "L",
-    "notes": "Direct instance of the GCP-024 anti-pattern (no single flat VPC) — this and GCP-024 should be closed by the same network redesign. verify: blocked_by C8->''. Three VPCs in one region cost nothing and need no second region. The requirement's own notes say the separation applies from the first region onwards, and GCP-024, the same redesign, already carries no blocker. INCORRECT confirmed: modules/network/main.tf:35 is the only google_compute_network in the tree."
+    "notes": "Direct instance of the GCP-024 anti-pattern (no single flat VPC) \u2014 this and GCP-024 should be closed by the same network redesign. verify: blocked_by C8->''. Three VPCs in one region cost nothing and need no second region. The requirement's own notes say the separation applies from the first region onwards, and GCP-024, the same redesign, already carries no blocker. INCORRECT confirmed: modules/network/main.tf:35 is the only google_compute_network in the tree."
   },
   {
     "id": "GCP-010",
@@ -282,7 +282,7 @@
   {
     "id": "GCP-012",
     "status": "PARTIAL",
-    "current": "Per the observability domain rule file: the execution node's startup script declares an in-region Ops Agent Prometheus receiver (startup.sh.tftpl:209-231) scraping qip-edge-node's own health port, which is in-region by construction. No Cloud Run service has a collector (the managed-Prometheus sidecar is refused on an unfixed CVE — vendor.yml run 11, CVE-2026-56854). Nothing is deployed: execution_nodes = {} everywhere. The three central composition roots carry an OTLP/JSON drain to OpenObserve (openobserve.rs), and dev declares an OpenObserve RunService in its region. The drain is gated on QIP_OPENOBSERVE_URL, which no environment sets, so no thread starts.",
+    "current": "Per the observability domain rule file: the execution node's startup script declares an in-region Ops Agent Prometheus receiver (startup.sh.tftpl:209-231) scraping qip-edge-node's own health port, which is in-region by construction. No Cloud Run service has a collector (the managed-Prometheus sidecar is refused on an unfixed CVE \u2014 vendor.yml run 11, CVE-2026-56854). Nothing is deployed: execution_nodes = {} everywhere. The three central composition roots carry an OTLP/JSON drain to OpenObserve (openobserve.rs), and dev declares an OpenObserve RunService in its region. The drain is gated on QIP_OPENOBSERVE_URL, which no environment sets, so no thread starts.",
     "evidence": [
       "infrastructure/terraform/modules/execution-node startup.sh.tftpl:209-231 (Ops Agent Prometheus receiver)",
       ".claude/rules/domains/observability.md (Cloud Run sidecar refused on CVE-2026-56854; NOT-SCRAPED.md)",
@@ -588,11 +588,12 @@
     "current": "modules/network declares one `google_compute_network \"vpc\"` per environment (main.tf:35), and modules/trust-zones places all thirteen planes (public-edge through management, including execution and control-fabric) as subnets of that single VPC.",
     "evidence": [
       "infrastructure/terraform/modules/network/main.tf:35-46 (one VPC)",
-      "infrastructure/terraform/modules/trust-zones/main.tf:33-96 (thirteen zone subnets on that one VPC)"
+      "infrastructure/terraform/modules/trust-zones/main.tf:33-96 (thirteen zone subnets on that one VPC)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10348-10399 (all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern test)"
     ],
-    "gap": "This is the exact anti-pattern the requirement prohibits ('Using a single giant flat VPC', G p23) — an active violation, not an absence.",
+    "gap": "This is the exact anti-pattern the requirement prohibits ('Using a single giant flat VPC', G p23) \u2014 an active violation, not an absence.",
     "implemented": false,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -600,11 +601,11 @@
       "GCP-009"
     ],
     "blocked_by": "",
-    "verification": "No test exists. An infra-plan check would assert no VPC hosts subnets for more than one of Reflex/Fabric/Service/Data/Engineering and that Reflex/Fabric VPCs have distinct network administrators.",
+    "verification": "Test infrastructure.rs::all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern asserts all zone subnets reference the same var.network_id (the single VPC). The test proves the violation exists; it will fail (mutation-verified) when zones are separated into distinct VPCs per plane.",
     "work_item": "E14-vpc-separation",
     "tier": "T2",
     "size": "L",
-    "notes": "The largest network divergence in the current state, per the requirement's own consolidation notes; not blocked by a C1-C8 conflict, this is a from-scratch network redesign the repository can start on its own."
+    "notes": "The largest network divergence in the current state, per the requirement's own consolidation notes; not blocked by a C1-C8 conflict, this is a from-scratch network redesign the repository can start on its own. Test coverage: infrastructure.rs::all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern documents the violation (all zones on same VPC). Mutation-verified: test passes because all zones use var.network_id, fails if zones reference different VPCs."
   },
   {
     "id": "GCP-025",
@@ -694,11 +695,11 @@
       "GCP-010"
     ],
     "blocked_by": "C3",
-    "verification": "No test exists. Requirement's own verification is an integration test (plaintext call refused, policy-denied call refused, hung upstream cut off at timeout) in a nonprod cluster — none exists to run it in.",
+    "verification": "No test exists. Requirement's own verification is an integration test (plaintext call refused, policy-denied call refused, hung upstream cut off at timeout) in a nonprod cluster \u2014 none exists to run it in.",
     "work_item": "E14-warm-services-gke",
     "tier": "T3",
     "size": "L",
-    "notes": "C2 also applies: ADR 0009 refuses in-tree TLS, so this control can only come from managed infrastructure, which is exactly what Cloud Service Mesh would be — but it needs the C3 cluster to attach to first."
+    "notes": "C2 also applies: ADR 0009 refuses in-tree TLS, so this control can only come from managed infrastructure, which is exactly what Cloud Service Mesh would be \u2014 but it needs the C3 cluster to attach to first."
   },
   {
     "id": "GCP-029",
