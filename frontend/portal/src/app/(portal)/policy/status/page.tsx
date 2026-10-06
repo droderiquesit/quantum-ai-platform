@@ -21,17 +21,25 @@ import { useResource } from "@/lib/hooks/useResource";
  * visible to confirm the autonomy ceiling.
  */
 
+// Exact tokens, not substrings: "limited_autonomous_live".includes("autonomous_live")
+// is true, so a substring match described one level as another.
+const LIVE_LEVELS = new Set(["supervised_live", "limited_autonomous_live", "autonomous_live"]);
+const NON_LIVE_LEVELS = new Set(["observation", "advisory", "paper_trading"]);
+
 function autonomyTone(level: string): "ok" | "warn" | "bad" | "neutral" {
-  if (level.includes("live")) return "bad";
-  if (level.includes("supervised")) return "warn";
-  return "ok";
+  if (LIVE_LEVELS.has(level)) return "bad";
+  if (NON_LIVE_LEVELS.has(level)) return "ok";
+  return "warn";
 }
 
 function autonomyDetails(level: string): string {
   if (level === "paper_trading") return "Paper trading only. No live orders are possible.";
-  if (level.includes("supervised_live")) return "Supervised live trading. Orders require manual approval.";
-  if (level.includes("autonomous_live")) return "Autonomous live trading. Orders execute automatically.";
-  return "Unknown autonomy level. Check configuration.";
+  if (level === "observation") return "Observation only. The platform places no orders.";
+  if (level === "advisory") return "Advisory only. The platform recommends and places no orders.";
+  if (LIVE_LEVELS.has(level)) {
+    return "A live level is refused at start-up and should never be reported. Seeing it means a paper-trading fence failed; halt and investigate.";
+  }
+  return "Unknown autonomy level. Treat the platform as halted until this is explained.";
 }
 
 export default function PolicyStatusPage() {
@@ -78,8 +86,20 @@ export default function PolicyStatusPage() {
         />
         <PanelBody>
           <p className="text-[11.5px] leading-relaxed text-[color:var(--color-ink-dim)]">
-            <span className="chip mr-2" data-tone="ok" data-testid="policy-paper-label">
-              PAPER TRADING
+            {/* The same fact as the header chip, never a contradiction of it:
+                a static PAPER TRADING here sat beside LIVE-CAPABLE above. */}
+            <span
+              className="chip mr-2"
+              data-tone={
+                status.data === null ? "warn" : status.data.live_capable ? "bad" : "ok"
+              }
+              data-testid="policy-paper-label"
+            >
+              {status.data === null
+                ? "PAPER TRADING · UNCONFIRMED"
+                : status.data.live_capable
+                  ? "LIVE-CAPABLE · PAPER FENCE BREACHED"
+                  : "PAPER TRADING"}
             </span>
             The platform&apos;s governance, autonomy, and risk control posture. Every figure comes from
             the platform&apos;s own state; none are inferred or computed here. No control on this page
@@ -362,8 +382,10 @@ export default function PolicyStatusPage() {
           <div className="space-y-3 max-w-[86ch]">
             <p className="text-[12px] leading-relaxed text-[color:var(--color-ink-dim)]">
               <span className="font-semibold">Autonomy level:</span> The degree to which the platform can act
-              without human intervention. Paper trading is the only option until a human operator
-              changes the configuration. No code in this platform can escalate autonomy on its own.
+              without human intervention. Paper trading is the ceiling, and configuration cannot raise it:
+              live levels are refused at plan time and at start-up, so enabling live trading would
+              require an accepted ADR and code changes, not a setting. No code in this platform can
+              escalate autonomy on its own.
             </p>
             <p className="text-[12px] leading-relaxed text-[color:var(--color-ink-dim)]">
               <span className="font-semibold">Risk controls:</span> Pre-trade checks that run before an order

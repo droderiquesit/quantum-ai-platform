@@ -37,8 +37,10 @@ managed policy, where a branch cannot reach them.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
+import subprocess
 import sys
 
 # (needle(s), what was refused, what to do instead). A tuple of needles means
@@ -303,23 +305,270 @@ def refuse_push(args: list[str]) -> tuple[str, str] | None:
     return None
 
 
-def push_verdict(text: str, depth: int = 0) -> tuple[str, str] | None:
+# --- Protected destinations, resolved the way git resolves them ------------
+#
+# PROTECTED_PUSH above reads raw text, and on 2026-10-06 a security review
+# listed the pushes to main it let through: a quote beside the name
+# ("main", 'HEAD:main', ma''in), git's own -C, a push inside bash -c, a push
+# in a heredoc fed to a shell, and every push whose destination is not written
+# at all -- "HEAD", a bare "git push", "--all" -- which go to whatever branch
+# is checked out. So the destination is now resolved from the shlex tokens the
+# force/delete parser already reads, and from the repository the push would
+# actually run in. The regex is kept as a second, independent layer.
+
+PROTECTED_ADVICE = (
+    "Push your own branch and open a pull request against it; the "
+    "orchestrator reviews and merges."
+)
+# `git -c` reconfigures the command it precedes. On a push it can install a
+# forcing refspec (remote.<name>.push=+...) or a push.* default the parser
+# never sees; as alias.* it can turn any word into "push --force".
+CONFIG_REFUSED = (
+    "a git -c configuration on a push, which can force or redirect it "
+    "where the arguments do not show it",
+    "Run the push without -c; set configuration you need with an ordinary "
+    "reviewed command first.",
+)
+ALIAS_REFUSED = (
+    "a git -c alias, which can make any word run a push the guard cannot read",
+    "Run the git subcommand by its own name.",
+)
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+
+
+def git_invocation(
+    words: list[str],
+) -> tuple[dict[str, str], list[str], list[str], str | None, list[str]] | None:
+    """(env prefix, global options, -c keys, subcommand, its arguments)."""
+    for start, word in enumerate(words):
+        if word.rsplit("/", 1)[-1] != "git":
+            continue
+        env = {}
+        for prefix in words[:start]:
+            name, eq, value = prefix.partition("=")
+            if eq and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                env[name] = value
+        globals_: list[str] = []
+        config_keys: list[str] = []
+        i = start + 1
+        while i < len(words):
+            token = words[i]
+            if token in ("-c", "--config-env"):
+                if i + 1 < len(words):
+                    config_keys.append(words[i + 1].partition("=")[0].lower())
+                i += 2
+            elif token.startswith("--config-env="):
+                config_keys.append(token.split("=", 2)[1].lower())
+                i += 1
+            elif token in GIT_GLOBAL_WITH_ARG:
+                globals_ += words[i : i + 2]
+                i += 2
+            elif token.startswith("-"):
+                globals_.append(token)
+                i += 1
+            else:
+                break
+        sub = words[i] if i < len(words) else None
+        return env, globals_, config_keys, sub, words[i + 1 :]
+    return None
+
+
+def push_destinations(args: list[str]) -> tuple[list[str], str | None]:
+    """Explicit destinations, and what an absent refspec defaults to.
+
+    The second value is None when explicit refspecs decide everything,
+    "current" when git falls back to the checked-out branch, and "all" for
+    --all/--branches. Option skipping mirrors refuse_push, which has already
+    refused every force and delete spelling by the time this runs.
+    """
+    positional: list[str] = []
+    all_branches = tags = repo_option = False
+    i = 0
+    options_done = False
+    while i < len(args):
+        token = args[i]
+        i += 1
+        if options_done or token == "-" or not token.startswith("-"):
+            positional.append(token)
+            continue
+        if token == "--":
+            options_done = True
+            continue
+        if token.startswith("--"):
+            name, has_value, _ = token[2:].partition("=")
+            if len(name) >= 2 and ("all".startswith(name) or "branches".startswith(name)):
+                all_branches = True
+            elif len(name) >= 2 and "tags".startswith(name):
+                tags = True
+            elif len(name) >= 2 and any(o.startswith(name) for o in PUSH_LONG_WITH_ARG):
+                repo_option = repo_option or "repo".startswith(name)
+                if not has_value:
+                    i += 1
+            continue
+        for position, flag in enumerate(token[1:]):
+            if flag in PUSH_SHORT_WITH_ARG:
+                if position == len(token) - 2:
+                    i += 1
+                break
+
+    # With --repo, git lets a positional word override it as the repository,
+    # so the first word may be either; read it as a refspec too.
+    refspecs = positional if repo_option else positional[1:]
+    destinations: list[str] = []
+    for refspec in refspecs:
+        src, colon, dst = refspec.lstrip("+").partition(":")
+        destinations.append(dst if colon and dst else src)
+    if all_branches:
+        return destinations, "all"
+    if not refspecs and not tags:
+        return destinations, "current"
+    return destinations, None
+
+
+def branch_name(ref: str) -> str:
+    for prefix in ("refs/heads/", "heads/"):
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    return ref
+
+
+def git_lookup(cwd: str | None, env: dict[str, str], globals_: list[str],
+               args: list[str]) -> str | None:
+    """Run a read-only git query where the push would run; None on failure."""
+    if cwd is None or any("$" in g or "`" in g for g in globals_):
+        return None
+    try:
+        result = subprocess.run(
+            ["git", *globals_, *args],
+            cwd=cwd,
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def refuse_protected(words: list[str], cwd: str | None) -> tuple[str, str] | None:
+    """Refuse a git command that would update main or the integration branch."""
+    parsed = git_invocation(words)
+    if parsed is None:
+        return None
+    env, globals_, config_keys, sub, args = parsed
+    if any(key.startswith("alias.") for key in config_keys):
+        return ALIAS_REFUSED
+    if sub != "push":
+        return None
+    if config_keys:
+        return CONFIG_REFUSED
+
+    destinations, default = push_destinations(args)
+    if default is not None:
+        current = git_lookup(cwd, env, globals_, ["rev-parse", "--abbrev-ref", "HEAD"])
+        if current is None:
+            return (
+                "a push of the current branch where the current branch could "
+                "not be determined",
+                "Name the destination explicitly: git push origin <your-branch>.",
+            )
+        destinations.append(current)
+        if default == "all":
+            local = git_lookup(
+                cwd, env, globals_,
+                ["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+            )
+            if local is None:
+                return (
+                    "a push of every branch where the local branches could "
+                    "not be listed",
+                    "Name the one branch you mean to push.",
+                )
+            destinations += local.splitlines()
+        else:
+            # push.default=upstream or a remote.<name>.push refspec can send
+            # the current branch somewhere other than its own name. Best
+            # effort: a branch with no upstream yet has no @{push}.
+            upstream = git_lookup(
+                cwd, env, globals_, ["rev-parse", "--symbolic-full-name", "@{push}"]
+            )
+            if upstream and upstream.startswith("refs/remotes/"):
+                remotes = git_lookup(cwd, env, globals_, ["remote"]) or ""
+                for remote in remotes.splitlines():
+                    prefix = f"refs/remotes/{remote}/"
+                    if upstream.startswith(prefix):
+                        destinations.append(upstream[len(prefix) :])
+
+    for destination in destinations:
+        if destination in ("HEAD", "@"):
+            current = git_lookup(cwd, env, globals_, ["rev-parse", "--abbrev-ref", "HEAD"])
+            if current is None:
+                return (
+                    "a push of HEAD where the current branch could not be "
+                    "determined",
+                    "Name the destination explicitly: git push origin <your-branch>.",
+                )
+            destination = current
+        name = branch_name(destination)
+        if "*" in name:
+            return (
+                f"a wildcard push ({destination}) that can match a shared branch",
+                "Name the one branch you mean to push.",
+            )
+        if name in PROTECTED_BRANCHES:
+            return f"a direct push to the shared branch {name}", PROTECTED_ADVICE
+    return None
+
+
+def next_cwd(words: list[str], cwd: str | None) -> str | None:
+    """The directory after a ``cd``/``pushd``; None once it cannot be known."""
+    if cwd is None or len(words) != 2 or words[1] == "-":
+        return None
+    target = os.path.expanduser(words[1])
+    if "$" in target or "`" in target or target.startswith("~"):
+        return None
+    return os.path.normpath(os.path.join(cwd, target))
+
+
+def push_verdict(
+    text: str, depth: int = 0, cwd: str | None = "."
+) -> tuple[str, str] | None:
     """The first dangerous push in ``text``, looking inside quoted scripts.
 
     ``bash -c "git push ..."`` hands the whole push to the shell as one quoted
     word, which the tokeniser rightly keeps whole -- so a word that itself
     contains a push is parsed again as a command line, to a bounded depth.
+
+    ``cwd`` is where the command runs; None means a ``cd`` made it unknowable,
+    and then a push of the current branch is refused rather than guessed at.
     """
+    if cwd == ".":
+        cwd = os.getcwd()
     for words in segments(text):
+        if words and words[0] in ("cd", "pushd"):
+            cwd = next_cwd(words, cwd)
+            continue
         args = push_arguments(words)
         if args is not None:
             verdict = refuse_push(args)
             if verdict is not None:
                 return verdict
+        verdict = refuse_protected(words, cwd)
+        if verdict is not None:
+            return verdict
         if depth < 3:
+            # A shell, eval or watch runs a quoted word as a script, so every
+            # multi-word argument there is re-read. Elsewhere only a word that
+            # mentions a push is: a spelling the shell would join back
+            # together (pu''sh) only arrives through a shell.
+            runs_script = any(
+                w.rsplit("/", 1)[-1] in SHELLS | {"eval", "watch"} for w in words
+            )
             for word in words:
-                if "push" in word and any(c.isspace() for c in word):
-                    verdict = push_verdict(word, depth + 1)
+                multiword = any(c.isspace() or c in ";&|" for c in word)
+                if multiword and (runs_script or "push" in word):
+                    verdict = push_verdict(word, depth + 1, cwd)
                     if verdict is not None:
                         return verdict
     return None
@@ -331,19 +580,34 @@ def strip_heredocs(text: str) -> str:
     Anything a heredoc carries is content being written to a file. Matching it
     would refuse a document that merely quotes a dangerous command, which is
     exactly what a rules file about dangerous commands has to do.
+
+    Except when the heredoc is fed to a shell: ``bash <<EOF`` runs its body,
+    and stripping it hid a push to main from every check (2026-10-06). A
+    heredoc on a line naming a shell -- ``bash``, ``/bin/sh -s``, ``cat <<EOF
+    | sh`` -- keeps its body as commands to inspect.
     """
     while True:
         match = HEREDOC.search(text)
         if match is None:
             return text
+        line_start = text.rfind("\n", 0, match.start()) + 1
         rest = text[match.end() :]
+        line_end = rest.find("\n")
+        line = text[line_start : match.start()] + (rest if line_end < 0 else rest[:line_end])
+        runs_body = any(
+            word.rsplit("/", 1)[-1] in SHELLS for words in segments(line) for word in words
+        )
         terminator = re.search(
             r"^\s*" + re.escape(match.group(2)) + r"\s*$", rest, re.M
         )
         if terminator is None:
             # An unterminated heredoc: everything after the marker is body.
-            return text[: match.end()]
-        text = text[: match.start()] + rest[terminator.end() :]
+            return text if runs_body else text[: match.end()]
+        if runs_body:
+            # Drop the marker and the terminator; keep the body as commands.
+            text = text[: match.start()] + rest[: terminator.start()] + rest[terminator.end() :]
+        else:
+            text = text[: match.start()] + rest[terminator.end() :]
 
 
 def main() -> int:
@@ -371,7 +635,10 @@ def main() -> int:
         )
         return 2
 
-    verdict = push_verdict(inspected)
+    # The payload names the directory the command will run in; the hook's own
+    # working directory is only the fallback.
+    cwd = payload.get("cwd")
+    verdict = push_verdict(inspected, cwd=cwd if isinstance(cwd, str) and cwd else ".")
     if verdict is not None:
         refused, instead = verdict
         sys.stderr.write(

@@ -18,6 +18,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 HERE = pathlib.Path(__file__).parent
 GUARD = [sys.executable, str(HERE / "guard-dangerous-command.py")]
@@ -154,6 +155,75 @@ PUSH_CASES: list[tuple[str, int, str]] = [
     ("git log --oneline -f", 0, "a -f on a command other than push is allowed"),
 ]
 
+# The protected-branch bypasses a review found on 2026-10-06. Every one of
+# them reached main or the integration branch past PROTECTED_PUSH, the regex
+# that reads raw text: a quote beside the name, git's -C, a shell re-reading a
+# quoted script, a heredoc fed to a shell, a destination git takes from the
+# checked-out branch, and configuration that turns a push into a force.
+#
+# (command, repository the command runs in, expected, property). The
+# repository matters because "HEAD", a bare push and --all go to whatever
+# branch is checked out: "main" is a repository on main, "lane" one on lane/x
+# (with a local main beside it), "tracking" one on lane/y whose push goes to
+# origin/main, and "nogit" a directory that is no repository at all. "{main}"
+# in a command is replaced by the main repository's path.
+MAIN = "ma" + "in"
+SUB = "pu" + "sh "  # the subcommand alone, after git's own options
+INTEGRATION = "ccr-0c1bacf8-" + "kla0dd"
+PROTECTED_CASES: list[tuple[str, str, int, str]] = [
+    (PUSH + 'origin "' + MAIN + '"', "lane", 2, "a double-quoted main is refused"),
+    (PUSH + "origin 'HEAD:" + MAIN + "'", "lane", 2, "a quoted HEAD:main is refused"),
+    (PUSH + "origin ma''in", "lane", 2, "main split by empty quotes is refused"),
+    (
+        PUSH + 'origin "HEAD:refs/heads/' + INTEGRATION + '"',
+        "lane",
+        2,
+        "a quoted, qualified push to the integration branch is refused",
+    ),
+    ("git -C /tmp " + SUB + "origin " + MAIN, "lane", 2, "main behind -C is refused"),
+    ("git -C {main} " + SUB + "origin HEAD", "lane", 2, "-C into a repo on main is followed"),
+    ("cd {main} && " + PUSH, "lane", 2, "a cd into a repo on main is followed"),
+    ('bash -c "' + PUSH + "origin " + MAIN + '"', "lane", 2, "main inside bash -c is refused"),
+    ("sh -c '" + PUSH + 'origin "' + MAIN + "\"'", "lane", 2, "quoted main inside sh -c is refused"),
+    ('/bin/bash -c "git pu\'\'sh origin ' + MAIN + '"', "lane", 2, "pu''sh inside bash -c is refused"),
+    ("bash <<EOF\n" + PUSH + "origin " + MAIN + "\nEOF", "lane", 2, "a heredoc fed to bash is refused"),
+    ("/bin/sh -s <<'EOF'\n" + PUSH + "origin HEAD:" + INTEGRATION + "\nEOF", "lane", 2, "a quoted heredoc fed to /bin/sh is refused"),
+    ("cat <<EOF | zsh\n" + PUSH + "origin " + MAIN + "\nEOF", "lane", 2, "a heredoc piped to zsh is refused"),
+    ("dash <<EOF\n" + PUSH + "\nEOF", "main", 2, "a bare push in a heredoc to dash on main is refused"),
+    (PUSH + "origin HEAD", "main", 2, "pushing HEAD while on main is refused"),
+    (PUSH.strip(), "main", 2, "a bare push while on main is refused"),
+    (PUSH + "origin", "main", 2, "a push naming only the remote while on main is refused"),
+    (PUSH + "--follow-tags", "main", 2, "a bare push with --follow-tags while on main is refused"),
+    (PUSH + "--all origin", "main", 2, "--all while on main is refused"),
+    (PUSH + "--all origin", "lane", 2, "--all with a local main beside the lane is refused"),
+    (PUSH + "origin @", "main", 2, "pushing @ while on main is refused"),
+    (PUSH, "nogit", 2, "a bare push where the branch cannot be read is refused"),
+    (PUSH + "origin HEAD", "nogit", 2, "HEAD where the branch cannot be read is refused"),
+    (PUSH, "tracking", 2, "a bare push whose @{push} is origin/main is refused"),
+    (PUSH + "origin 'refs/heads/*:refs/heads/*'", "lane", 2, "a wildcard destination is refused"),
+    (
+        "git -c remote.origin.push=+refs/heads/*:refs/heads/" + MAIN + " " + SUB,
+        "lane",
+        2,
+        "a push refspec set by -c is refused",
+    ),
+    ("git -c push.default=matching " + SUB, "lane", 2, "a push.* default set by -c is refused"),
+    ("git -c alias.p='push " + FORCE + "' p", "lane", 2, "a -c alias to a forced push is refused"),
+    ("git -c alias.st=status st", "lane", 2, "any -c alias is refused outright"),
+    # Allow cases: the same machinery must still let a lane publish itself.
+    (PUSH + "-u origin lane/L001-b-x", "main", 0, "an explicit lane push is allowed even on main"),
+    (PUSH + "origin feature-f", "lane", 0, "a branch ending in -f is still allowed"),
+    (PUSH + "-u origin lane/L001-b-main-x", "lane", 0, "a lane containing main is allowed"),
+    (PUSH + "origin HEAD", "lane", 0, "pushing HEAD while on lane/x is allowed"),
+    (PUSH.strip(), "lane", 0, "a bare push while on lane/x is allowed"),
+    (PUSH + "-u origin HEAD:lane/x", "lane", 0, "HEAD to an explicit lane is allowed"),
+    (PUSH + "origin lane/x", "nogit", 0, "an explicit lane needs no branch lookup"),
+    (PUSH + "--tags origin", "main", 0, "a tags-only push touches no branch"),
+    ("git -c user.name=x commit -m y", "lane", 0, "-c on a command other than push is allowed"),
+    ("cat > d.md <<EOF\n" + PUSH + "origin " + MAIN + "\nEOF", "lane", 0, "a heredoc written to a file is allowed"),
+    ("git commit -m 'teach the guard bash and ma\"\"in'", "lane", 0, "a commit message is not re-read as a script"),
+]
+
 
 def load_guard():
     spec = importlib.util.spec_from_file_location(
@@ -164,17 +234,50 @@ def load_guard():
     return module
 
 
-def run(argv: list[str], payload: object) -> int:
+def run(argv: list[str], payload: object, cwd: str | None = None) -> int:
     return subprocess.run(
-        argv, input=json.dumps(payload), capture_output=True, text=True
+        argv, input=json.dumps(payload), capture_output=True, text=True, cwd=cwd
     ).returncode
+
+
+def make_repositories(root: pathlib.Path) -> dict[str, str]:
+    """Throwaway repositories checked out where each case needs them."""
+
+    def git(cwd: pathlib.Path, *args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+             *args],
+            cwd=cwd, check=True, capture_output=True,
+        )
+
+    repos: dict[str, str] = {}
+    for name, branch in (("main", None), ("lane", "lane/x"), ("tracking", "lane/y")):
+        path = root / name
+        path.mkdir()
+        git(path, "init", "-q", "-b", MAIN)
+        git(path, "commit", "-q", "--allow-empty", "-m", "seed")
+        if branch:
+            git(path, "checkout", "-q", "-b", branch)
+        repos[name] = str(path)
+    tracking = root / "tracking"
+    git(tracking, "remote", "add", "origin", str(root / "nowhere.git"))
+    git(tracking, "update-ref", "refs/remotes/origin/" + MAIN, "HEAD")
+    git(tracking, "branch", "-q", "--set-upstream-to=origin/" + MAIN)
+    git(tracking, "config", "push.default", "upstream")
+    (root / "nogit").mkdir()
+    repos["nogit"] = str(root / "nogit")
+    return repos
 
 
 def main() -> int:
     failures = 0
+    scratch = tempfile.TemporaryDirectory()
+    repos = make_repositories(pathlib.Path(scratch.name))
 
+    # Run from a repository on a lane so that cases pushing HEAD do not depend
+    # on which branch the person running these tests has checked out.
     for command, expected, name in GUARD_CASES + PUSH_CASES:
-        got = run(GUARD, {"tool_input": {"command": command}})
+        got = run(GUARD, {"tool_input": {"command": command}}, cwd=repos["lane"])
         if got != expected:
             failures += 1
             print(f"FAIL  {name}: expected exit {expected}, got {got}")
@@ -183,13 +286,45 @@ def main() -> int:
 
     guard = load_guard()
     for command, expected, name in PUSH_CASES:
-        verdict = guard.push_verdict(guard.strip_heredocs(command))
+        verdict = guard.push_verdict(guard.strip_heredocs(command), cwd=repos["lane"])
         got = 0 if verdict is None else 2
         if got != expected:
             failures += 1
             print(f"FAIL  push parser alone, {name}: expected {expected}, got {got}")
         else:
             print(f"ok    push parser alone: {name}")
+
+    # Each protected case runs end to end with the hook's working directory
+    # in the named repository, and again through push_verdict alone with that
+    # repository passed as cwd: the regex layer still catches a plain
+    # "origin main", so only the parser-alone run proves the new check fires.
+    for template, where, expected, name in PROTECTED_CASES:
+        command = template.replace("{main}", repos["main"])
+        got = run(GUARD, {"tool_input": {"command": command}}, cwd=repos[where])
+        if got != expected:
+            failures += 1
+            print(f"FAIL  {name} [{where}]: expected exit {expected}, got {got}")
+        else:
+            print(f"ok    {name} [{where}]")
+        verdict = guard.push_verdict(guard.strip_heredocs(command), cwd=repos[where])
+        got = 0 if verdict is None else 2
+        if got != expected:
+            failures += 1
+            print(f"FAIL  push parser alone, {name} [{where}]: expected {expected}, got {got}")
+        else:
+            print(f"ok    push parser alone: {name} [{where}]")
+
+    # The payload's cwd, not the hook process's, decides where HEAD is read.
+    got = run(
+        GUARD,
+        {"tool_input": {"command": PUSH + "origin HEAD"}, "cwd": repos["main"]},
+        cwd=repos["lane"],
+    )
+    if got != 2:
+        failures += 1
+        print(f"FAIL  the payload cwd on main was ignored (exit {got})")
+    else:
+        print("ok    the payload's cwd decides which branch HEAD is")
 
     # Malformed input must never block: the payload shape is not this hook's
     # to validate, and refusing on it would stop every call the day it changes.

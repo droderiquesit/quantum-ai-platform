@@ -8,7 +8,7 @@ This document describes the architecture and procedures for deploying regional e
 3. Venue connectivity decisions per region (see "Venue connectivity")
 4. Mesh networking plan across regions (see "Mesh networking")
 5. Order routing strategy (see "Order routing")
-6. Production venue registration (see "Venue registration")
+6. Provider-sandbox venue registration (see "Venue registration"); production venues are not registered, because the platform does not trade live (ADR 0003)
 
 ## Architecture overview
 
