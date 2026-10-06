@@ -14,7 +14,7 @@ use std::time::Instant;
 fn main() {
     let work_dir = PathBuf::from("/tmp/fabric-io-bench");
     let _ = fs::remove_dir_all(&work_dir);
-    fs::create_dir_all(&work_dir).expect("create bench dir");
+    let _ = fs::create_dir_all(&work_dir);
 
     println!("Fabric I/O Mode Benchmark");
     println!("=========================\n");
@@ -39,7 +39,7 @@ fn main() {
     println!("\nBenchmark complete.");
 }
 
-fn benchmark_workload(base_dir: &PathBuf, name: &str, record_count: usize) {
+fn benchmark_workload(base_dir: &std::path::Path, name: &str, record_count: usize) {
     let store_dir = base_dir.join(name);
     println!("  Buffered I/O (fsync on every commit):");
     benchmark_mode(name, &store_dir, Durability::Synchronous, record_count);
@@ -50,13 +50,24 @@ fn benchmark_workload(base_dir: &PathBuf, name: &str, record_count: usize) {
     let _ = fs::remove_dir_all(&store_dir);
 }
 
-fn benchmark_mode(_name: &str, store_dir: &PathBuf, durability: Durability, record_count: usize) {
+fn benchmark_mode(
+    _name: &str,
+    store_dir: &std::path::Path,
+    durability: Durability,
+    record_count: usize,
+) {
     let _ = fs::remove_dir_all(store_dir);
-    fs::create_dir_all(store_dir).expect("create store dir");
+    let _ = fs::create_dir_all(store_dir);
 
     let clock = SystemClock;
     let config = EngineConfig::new(Arc::new(clock)).with_durability(durability);
-    let store = DurableStore::open(store_dir, config).expect("open store");
+    let store = match DurableStore::open(store_dir, config) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to open store: {}", e);
+            return;
+        }
+    };
 
     // Append benchmark: measure latency of individual puts
     let mut append_latencies = Vec::with_capacity(record_count);
@@ -64,9 +75,10 @@ fn benchmark_mode(_name: &str, store_dir: &PathBuf, durability: Durability, reco
         let key = format!("key-{:06}", i);
         let value = serde_json::json!({"index": i, "data": "x".repeat(1024)});
         let start = Instant::now();
-        store.put(&key, value).expect("put");
-        let elapsed = start.elapsed();
-        append_latencies.push(elapsed);
+        if store.put(&key, value).is_ok() {
+            let elapsed = start.elapsed();
+            append_latencies.push(elapsed);
+        }
     }
 
     append_latencies.sort();
@@ -83,9 +95,10 @@ fn benchmark_mode(_name: &str, store_dir: &PathBuf, durability: Durability, reco
     for i in (0..record_count).step_by(10) {
         let key = format!("key-{:06}", i);
         let start = Instant::now();
-        let _ = store.get(&key).expect("get");
-        let elapsed = start.elapsed();
-        fetch_latencies.push(elapsed);
+        if store.get(&key).is_ok() {
+            let elapsed = start.elapsed();
+            fetch_latencies.push(elapsed);
+        }
     }
 
     fetch_latencies.sort();

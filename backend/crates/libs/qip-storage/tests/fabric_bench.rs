@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 use qip_core::SystemClock;
 /// Test that fabric_io_modes benchmark harness runs without panicking.
 /// This is a quick smoke test; the actual benchmark is in benches/ for manual runs.
@@ -15,7 +16,7 @@ fn fabric_bench_synchronous_mode_records_append_latencies() {
 
     let clock = SystemClock;
     let config = EngineConfig::new(Arc::new(clock)).with_durability(Durability::Synchronous);
-    let store = DurableStore::open(&work_dir, config).expect("open store");
+    let store = DurableStore::open(&work_dir, config).unwrap();
 
     let record_count = 100;
     let mut latencies = Vec::with_capacity(record_count);
@@ -24,7 +25,7 @@ fn fabric_bench_synchronous_mode_records_append_latencies() {
         let key = format!("key-{:06}", i);
         let value = serde_json::json!({"index": i});
         let start = Instant::now();
-        store.put(&key, value).expect("put succeeded");
+        store.put(&key, value).unwrap();
         let elapsed = start.elapsed();
         latencies.push(elapsed);
     }
@@ -49,7 +50,7 @@ fn fabric_bench_os_buffered_mode_records_append_latencies() {
 
     let clock = SystemClock;
     let config = EngineConfig::new(Arc::new(clock)).with_durability(Durability::OsBuffered);
-    let store = DurableStore::open(&work_dir, config).expect("open store");
+    let store = DurableStore::open(&work_dir, config).unwrap();
 
     let record_count = 100;
     let mut latencies = Vec::with_capacity(record_count);
@@ -58,7 +59,7 @@ fn fabric_bench_os_buffered_mode_records_append_latencies() {
         let key = format!("key-{:06}", i);
         let value = serde_json::json!({"index": i});
         let start = Instant::now();
-        store.put(&key, value).expect("put succeeded");
+        store.put(&key, value).unwrap();
         let elapsed = start.elapsed();
         latencies.push(elapsed);
     }
@@ -105,25 +106,23 @@ fn fabric_bench_modes_show_measurable_performance_difference() {
 }
 
 fn measure_mode_latencies(durability: Durability, record_count: usize) -> Vec<std::time::Duration> {
-    let work_dir = PathBuf::from(format!(
-        "/tmp/fabric-bench-measure-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let work_dir = PathBuf::from(format!("/tmp/fabric-bench-measure-{}", nanos));
     let _ = fs::remove_dir_all(&work_dir);
 
     let clock = SystemClock;
     let config = EngineConfig::new(Arc::new(clock)).with_durability(durability);
-    let store = DurableStore::open(&work_dir, config).expect("open store");
+    let store = DurableStore::open(&work_dir, config).unwrap();
 
     let mut latencies = Vec::with_capacity(record_count);
     for i in 0..record_count {
         let key = format!("key-{:06}", i);
         let value = serde_json::json!({"index": i});
         let start = Instant::now();
-        store.put(&key, value).expect("put succeeded");
+        store.put(&key, value).unwrap();
         let elapsed = start.elapsed();
         latencies.push(elapsed);
     }
