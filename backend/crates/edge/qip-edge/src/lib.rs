@@ -43,6 +43,8 @@ pub mod envelope;
 pub mod feasibility;
 pub mod journal;
 pub mod mesh;
+/// FABRIC-028 Phase 2a: Message routing validation for order topics.
+pub mod message_routing;
 pub mod mirror;
 /// §32.1's passive-first mechanism: which leg of a cycle rests, and why.
 pub mod passive;
