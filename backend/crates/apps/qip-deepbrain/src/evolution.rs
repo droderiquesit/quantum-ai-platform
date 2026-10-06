@@ -468,6 +468,13 @@ impl EvolutionEngine {
         }
     }
 
+    /// Access the discovery desk if one is attached (EXPAND-060). Allows
+    /// callers to get licensed_sources and eligible_jurisdictions for use by
+    /// ResearchQueue::admit.
+    pub fn discovery_desk(&self) -> Option<&crate::discovery::DiscoveryDesk> {
+        self.discovery.as_ref()
+    }
+
     /// Build the crank over the synthetic exchange, with the exchange's own
     /// instruments as the reference universe.
     ///
