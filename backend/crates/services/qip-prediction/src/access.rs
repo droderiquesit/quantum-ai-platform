@@ -4,9 +4,10 @@
 //! A price is not a permission. A contract the platform can value may still be
 //! unlawful for this entity, in this jurisdiction, on this venue, for this
 //! product, so every question here answers "refused" until a record says
-//! otherwise: an empty [`AccessBook`] admits nothing, which is the failure the
-//! fail-open `RegulatoryConstraints::approved_venues` ("empty means
-//! unrestricted") would have had here.
+//! otherwise: an empty [`AccessBook`] admits nothing. That is the same
+//! fail-closed rule `RegulatoryConstraints::permits_venue` now applies, where
+//! an empty `approved_venues` set refuses every venue; it used to read "empty
+//! means unrestricted", and an empty book here must not repeat that failure.
 //!
 //! The permits ([`OrderPermit`], [`CreationPermit`]) have private fields, so a
 //! caller cannot hold one without passing the gate that issues it. Regulated
