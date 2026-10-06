@@ -8,7 +8,8 @@
       "backend/crates/apps/qip-deepbrain/src/main.rs:1-10",
       "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire (cell keeps deciding from its cached grant with the centre unreachable)",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:715 no_edge_cell_can_reach_a_language_model (structural proof the reflex lane cannot call back to cognition)",
-      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (node-level: centre unreachable, cell keeps running)"
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (node-level: centre unreachable, cell keeps running)",
+      "backend/crates/tests/qip-acceptance/tests/arch_requirements.rs:13 arch_001_fast_reflex_and_slow_cognitive_systems_are_independently_deployable (acceptance test: Cell works without Platform, packages loadable without restart)"
     ],
     "gap": "The reflex and cognitive binaries are structurally separate and a unit-level test shows the cell keeps deciding when partitioned, but qip-edge-node has never been deployed in any Terraform environment (execution_nodes = {} everywhere), so no live process has ever demonstrated 'independently deployable' across two real running services; the e2e verification (a running cell, no cognitive process present, then a cognitive release with no cell restart) has never been observed.",
     "implemented": true,
@@ -32,7 +33,8 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:1-70",
       "backend/crates/apps/qip-api/src/mesh.rs:903,926,930,935,947,954,983,1025",
       "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:715 no_edge_cell_can_reach_a_language_model"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:715 no_edge_cell_can_reach_a_language_model",
+      "backend/crates/tests/qip-acceptance/tests/arch_requirements.rs:68 arch_002_reflex_system_takes_packages_not_live_calls (integration test: Cell accepts only package types, makes deterministic decisions from cached packages)"
     ],
     "gap": "Three of the twelve §41.5 slots have no producer: compiled_plan, regime_state and inventory_targets (backend/crates/apps/qip-api/tests/mesh.rs:2325,2360,2365 assert them unproduced). A cell therefore receives no compiled strategy program from the centre over this channel — its strategies come from the node's own declaration (qip-edge-node strategies.rs; compiled_plan is only produced in qip-edge-node/tests/strategies.rs:119,143). No deployed cell exists (execution_nodes = {}, C8), so the package path has never run end to end.",
     "implemented": true,
@@ -242,7 +244,8 @@
       "backend/crates/edge/qip-edge/tests/cross_region.rs:1307 a_dark_region_leaves_a_cell_whose_venues_are_all_at_home_trading_exactly_as_before",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:1485 no_crate_declares_a_third_party_dependency_beyond_the_two_permitted (no DB/mesh client possible)",
       "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns"
+      "backend/crates/apps/qip-edge-node/tests/pass.rs a_cell_whose_journal_store_and_centre_are_both_unreachable_decides_exactly_as_before_and_ships_the_held_record_when_the_store_returns",
+      "backend/crates/tests/qip-acceptance/tests/arch_requirements.rs:128 arch_010_each_region_keeps_reflex_state_local (chaos test: cell state held in-process, remote stores unreachable)"
     ],
     "gap": "",
     "implemented": true,
