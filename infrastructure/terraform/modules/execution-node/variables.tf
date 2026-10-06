@@ -142,8 +142,12 @@ variable "machine_type" {
       "c3-highcpu-22",
       "c3d-highcpu-8",
       "c3d-highcpu-16",
+      "c4-highcpu-8",
+      "c4-highcpu-22",
+      "c4d-highcpu-8",
+      "c4d-highcpu-16",
     ], var.machine_type)
-    error_message = "The machine type must be one of c3-highcpu-8, c3-highcpu-22, c3d-highcpu-8, c3d-highcpu-16 — the C3 and C3D high-CPU shapes between 8 and 22 vCPU that §41.4 permits."
+    error_message = "The machine type must be one of c3-highcpu-8, c3-highcpu-22, c3d-highcpu-8, c3d-highcpu-16, c4-highcpu-8, c4-highcpu-22, c4d-highcpu-8, c4d-highcpu-16 — the C3/C3D and C4/C4D high-CPU shapes between 8 and 22 vCPU that §41.4 permits."
   }
 }
 
