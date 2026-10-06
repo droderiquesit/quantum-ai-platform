@@ -2,7 +2,7 @@
   {
     "id": "MODEL-001",
     "status": "COMPLETE",
-    "current": "qip_strategy::model::DistilledModel (backend/crates/edge/qip-strategy/src/model.rs) is the only form in which a learned function reaches the execution path — its own module doc says so. Op::Model is evaluated in-process (program.rs eval loop) inside a CompiledStrategy whose node-count budget is checked at compile time (compile.rs StrategyCompiler::compile). qip_edge::Cell (backend/crates/edge/qip-edge/src/cell.rs) is the only evaluator of a CompiledStrategy on the hot path, reached from the qip-edge-node composition root. The workspace dependency policy (./scripts/check-dependencies.sh) admits only serde/serde_json workspace-wide, so no Python/JAX/PyTorch runtime can reach any crate, reflex or otherwise.",
+    "current": "qip_strategy::model::DistilledModel (backend/crates/edge/qip-strategy/src/model.rs) is the only form in which a learned function reaches the execution path \u2014 its own module doc says so. Op::Model is evaluated in-process (program.rs eval loop) inside a CompiledStrategy whose node-count budget is checked at compile time (compile.rs StrategyCompiler::compile). qip_edge::Cell (backend/crates/edge/qip-edge/src/cell.rs) is the only evaluator of a CompiledStrategy on the hot path, reached from the qip-edge-node composition root. The workspace dependency policy (./scripts/check-dependencies.sh) admits only serde/serde_json workspace-wide, so no Python/JAX/PyTorch runtime can reach any crate, reflex or otherwise.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/model.rs:1-13,52-249",
       "backend/crates/edge/qip-strategy/src/compile.rs:339-345",
@@ -27,18 +27,18 @@
     "work_item": "",
     "tier": "T0",
     "size": "S",
-    "notes": "Structurally rather than procedurally enforced (principle 4): the type system, not a runtime check, is what makes a non-Rust runtime unreachable from the hot path. deployable=false only because execution_nodes = {} in every environment (qip-edge-node is never provisioned), which is a deployment-config fact unrelated to this requirement's own correctness. verify: kept COMPLETE. Re-ran ./scripts/check-dependencies.sh (printed 'dependency policy: 11 third-party package(s), all permitted'); confirmed the node binary's [dependencies] cannot reach qip-ai or qip-reasoning-engine, that no backend non-test code spawns a process, and that blueprint_rules.rs fails on any Python/TypeScript/Java/Go/C++ source file under backend/crates — added as evidence. One fact the row did not state: the execution-node boot image carries python3 because /usr/local/bin/qip-fetch-secret is a python3 program the startup script runs to fetch the capital-envelope key and venue credential before the binary starts (infrastructure/images/execution-node/provision.sh:85-91; modules/execution-node/templates/startup.sh.tftpl:106,133,143). It is off every execution path and outside the node binary's dependency graph, so it does not breach this requirement, but it is a non-Rust runtime inside the Reflex node image."
+    "notes": "Structurally rather than procedurally enforced (principle 4): the type system, not a runtime check, is what makes a non-Rust runtime unreachable from the hot path. deployable=false only because execution_nodes = {} in every environment (qip-edge-node is never provisioned), which is a deployment-config fact unrelated to this requirement's own correctness. verify: kept COMPLETE. Re-ran ./scripts/check-dependencies.sh (printed 'dependency policy: 11 third-party package(s), all permitted'); confirmed the node binary's [dependencies] cannot reach qip-ai or qip-reasoning-engine, that no backend non-test code spawns a process, and that blueprint_rules.rs fails on any Python/TypeScript/Java/Go/C++ source file under backend/crates \u2014 added as evidence. One fact the row did not state: the execution-node boot image carries python3 because /usr/local/bin/qip-fetch-secret is a python3 program the startup script runs to fetch the capital-envelope key and venue credential before the binary starts (infrastructure/images/execution-node/provision.sh:85-91; modules/execution-node/templates/startup.sh.tftpl:106,133,143). It is off every execution path and outside the node binary's dependency graph, so it does not breach this requirement, but it is a non-Rust runtime inside the Reflex node image."
   },
   {
     "id": "MODEL-002",
     "status": "BLOCKED",
-    "current": "qip-training's in-tree Rust fit (backend/crates/services/qip-training/src/local.rs:39-54, ModelFamily::{Linear, BoostedStumps}, per ADR 0083) is the only training path reached from a composition root. qip-training also holds a Vertex AI port (src/vertex.rs) whose CustomJob arm submits an arbitrary training container image — the natural carrier for a Python/JAX/PyTorch job — but no composition root constructs VertexAiProvider, and Vertex is itself a C4 service. No Python, JAX or PyTorch research or training code exists in the repository; the tracked .py files are CI/tooling scripts and hooks (scripts/*.py, .claude/hooks/*.py — an unrecorded deviation pinned by qip-acceptance blueprint_rules.rs), and the execution-node image ships python3 only for its qip-fetch-secret boot helper.",
+    "current": "qip-training's in-tree Rust fit (backend/crates/services/qip-training/src/local.rs:39-54, ModelFamily::{Linear, BoostedStumps}, per ADR 0083) is the only training path reached from a composition root. qip-training also holds a Vertex AI port (src/vertex.rs) whose CustomJob arm submits an arbitrary training container image \u2014 the natural carrier for a Python/JAX/PyTorch job \u2014 but no composition root constructs VertexAiProvider, and Vertex is itself a C4 service. No Python, JAX or PyTorch research or training code exists in the repository; the tracked .py files are CI/tooling scripts and hooks (scripts/*.py, .claude/hooks/*.py \u2014 an unrecorded deviation pinned by qip-acceptance blueprint_rules.rs), and the execution-node image ships python3 only for its qip-fetch-secret boot helper.",
     "evidence": [
       "backend/crates/services/qip-training/src/local.rs:39-54",
       "docs/adr/0083-a-trained-model-is-served-in-process-by-an-in-tree-provider-for-the-forms-the-platform-trains.md (Accepted)",
-      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:128 (conflict register row C5: 'Python/JAX/PyTorch for research and training; Z3/OR-Tools for symbolic reasoning' — 'Resolved by: A research-runtime record', not yet written)",
-      "backend/crates/services/qip-training/src/vertex.rs:116-163 (custom training container: image_uri + machine_type) — not constructed by any file under backend/crates/apps or backend/crates/runtime",
-      "git ls-files '*.py': .claude/hooks/{format-rust-after-edit,guard-dangerous-command,test_hooks}.py and scripts/{audit-dead-code,audit-register,check-manifests,terraform-undeletable}.py — tooling, not training",
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:128 (conflict register row C5: 'Python/JAX/PyTorch for research and training; Z3/OR-Tools for symbolic reasoning' \u2014 'Resolved by: A research-runtime record', not yet written)",
+      "backend/crates/services/qip-training/src/vertex.rs:116-163 (custom training container: image_uri + machine_type) \u2014 not constructed by any file under backend/crates/apps or backend/crates/runtime",
+      "git ls-files '*.py': .claude/hooks/{format-rust-after-edit,guard-dangerous-command,test_hooks}.py and scripts/{audit-dead-code,audit-register,check-manifests,terraform-undeletable}.py \u2014 tooling, not training",
       "test: the_non_rust_tooling_outside_the_browser_layer_is_exactly_the_accepted_set (backend/crates/tests/qip-acceptance/tests/blueprint_rules.rs:146)"
     ],
     "gap": "No ADR admits a non-Rust research/training ecosystem anywhere in the repository; ADR 0099's own conflict register leaves row C5 explicitly unresolved.",
@@ -53,12 +53,12 @@
     "work_item": "E10-research-runtime-adr",
     "tier": "T4",
     "size": "M",
-    "notes": "This is a permission-granting requirement, not a mandate — nothing forbids Python/JAX/PyTorch structurally, but nothing has been written to admit it either, and the model families the platform actually trains today (linear, boosted-stump) are already served by ADR 0083's in-tree path, so BLOCKED here only matters for model families beyond those. verify: kept BLOCKED — C5 is genuinely the reason, since the requirement's own check is an ADR admitting a non-Rust training toolchain and ADR 0099 leaves that row unresolved. Corrected 'current' and 'verification': the row said no Python appears anywhere outside documentation and that an rg for python outside docs/ returns nothing, both false (seven tracked .py tooling/hook files, and python3 in the execution-node image for qip-fetch-secret); none is a research or training toolchain, so the status is unaffected. Also recorded the unwired Vertex AI custom-container port, which would additionally meet C4."
+    "notes": "This is a permission-granting requirement, not a mandate \u2014 nothing forbids Python/JAX/PyTorch structurally, but nothing has been written to admit it either, and the model families the platform actually trains today (linear, boosted-stump) are already served by ADR 0083's in-tree path, so BLOCKED here only matters for model families beyond those. verify: kept BLOCKED \u2014 C5 is genuinely the reason, since the requirement's own check is an ADR admitting a non-Rust training toolchain and ADR 0099 leaves that row unresolved. Corrected 'current' and 'verification': the row said no Python appears anywhere outside documentation and that an rg for python outside docs/ returns nothing, both false (seven tracked .py tooling/hook files, and python3 in the execution-node image for qip-fetch-secret); none is a research or training toolchain, so the status is unaffected. Also recorded the unwired Vertex AI custom-container port, which would additionally meet C4."
   },
   {
     "id": "MODEL-003",
     "status": "COMPLETE",
-    "current": "qip_strategy::model::DistilledModel has exactly two forms (Linear, Tree); its constructors refuse non-finite coefficients and any tree node that could descend backwards, and cost() is a property of the value (model.rs:59-155). Op::cost charges a model node its model.cost() (program.rs:125-130) and StrategyCompiler::compile refuses a strategy whose reachable cost exceeds CompilerLimits::max_nodes (compile.rs:339-345). qip_edge::Cell::check_models_promoted (cell.rs:2645-2681) refuses to deploy a plan carrying an inline model the cell's signed policy manifest (the trained_models slot) does not name at the model's own digest — and that manifest now has a producer: Platform::promote_model journals a ModelPromotion (qip-kernel/src/model_serving.rs:210) and qip-api's mesh ships Platform::model_manifest in every cell's payload (qip-api/src/mesh.rs:880,973). On the foundry side, distil refuses a student whose cost exceeds FidelityPolicy::maximum_student_cost, and InTreeProvider::serve rebuilds a deserialised payload through the form's constructor so an unbounded tree is refused at serve.",
+    "current": "qip_strategy::model::DistilledModel has exactly two forms (Linear, Tree); its constructors refuse non-finite coefficients and any tree node that could descend backwards, and cost() is a property of the value (model.rs:59-155). Op::cost charges a model node its model.cost() (program.rs:125-130) and StrategyCompiler::compile refuses a strategy whose reachable cost exceeds CompilerLimits::max_nodes (compile.rs:339-345). qip_edge::Cell::check_models_promoted (cell.rs:2645-2681) refuses to deploy a plan carrying an inline model the cell's signed policy manifest (the trained_models slot) does not name at the model's own digest \u2014 and that manifest now has a producer: Platform::promote_model journals a ModelPromotion (qip-kernel/src/model_serving.rs:210) and qip-api's mesh ships Platform::model_manifest in every cell's payload (qip-api/src/mesh.rs:880,973). On the foundry side, distil refuses a student whose cost exceeds FidelityPolicy::maximum_student_cost, and InTreeProvider::serve rebuilds a deserialised payload through the form's constructor so an unbounded tree is refused at serve.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/model.rs (DistilledModel::validate, called by both constructors and by the compiler; evaluate_counted)",
       "backend/crates/edge/qip-strategy/src/compile.rs (Expr::Model lowering calls model.validate(); measure and Op::cost charge model.cost())",
@@ -87,10 +87,10 @@
   {
     "id": "MODEL-004",
     "status": "PARTIAL",
-    "current": "The mechanism exists and is reached from production: DistilledModel/Op::Model evaluated in-process by qip_edge::Cell within the CompiledStrategy's checked budget (see MODEL-003). No evidence, however, of a registered/deployed model for any of the five named purposes (order-book state, fill probability, adverse selection, short-horizon signals, opportunity scoring) — the closest analog, the 'adverse-selection premium' check in qip-routing (backend/crates/edge/qip-routing/src/extension.rs:159-194,553-665), is a deterministic rule over a caller-supplied premium, not a learned model evaluated via Op::Model.",
+    "current": "The mechanism exists and is reached from production: DistilledModel/Op::Model evaluated in-process by qip_edge::Cell within the CompiledStrategy's checked budget (see MODEL-003). No evidence, however, of a registered/deployed model for any of the five named purposes (order-book state, fill probability, adverse selection, short-horizon signals, opportunity scoring) \u2014 the closest analog, the 'adverse-selection premium' check in qip-routing (backend/crates/edge/qip-routing/src/extension.rs:159-194,553-665), is a deterministic rule over a caller-supplied premium, not a learned model evaluated via Op::Model.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/model.rs:52-249",
-      "backend/crates/edge/qip-edge/src/cell.rs:2645-2681 (check_models_promoted — no manifest producer exists yet, see MODEL-003)",
+      "backend/crates/edge/qip-edge/src/cell.rs:2645-2681 (check_models_promoted \u2014 no manifest producer exists yet, see MODEL-003)",
       "backend/crates/edge/qip-routing/src/extension.rs:159-194 (deterministic adverse-selection premium, not a model)",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1300-1303,1366,929 (fits a next-bar-return predictor per subject, distils a linear student, promotes it with Platform::promote_model)",
       "backend/crates/apps/qip-api/src/mesh.rs:880,973 (the promoted student's digest ships in the trained_models slot)",
@@ -110,12 +110,12 @@
     "work_item": "E10-reflex-purpose-models",
     "tier": "T2",
     "size": "M",
-    "notes": "The large-model third of the completeness target this was merged from is MODEL-005 (P2); the specialist third is MODEL-007 (P1). verify: status and flags kept. Corrected the evidence note that no manifest producer exists — one does (qip-api mesh.rs:880,973). Added the closest production instance: qip-deepbrain distils a next-bar-return predictor (a short-horizon signal, one of the five purposes) and promotes its student into the manifest, but nothing in production writes a strategy plan carrying it, so no cell ever evaluates it and the gap stands."
+    "notes": "The large-model third of the completeness target this was merged from is MODEL-005 (P2); the specialist third is MODEL-007 (P1). verify: status and flags kept. Corrected the evidence note that no manifest producer exists \u2014 one does (qip-api mesh.rs:880,973). Added the closest production instance: qip-deepbrain distils a next-bar-return predictor (a short-horizon signal, one of the five purposes) and promotes its student into the manifest, but nothing in production writes a strategy plan carrying it, so no cell ever evaluates it and the gap stands."
   },
   {
     "id": "MODEL-005",
     "status": "COMPLETE",
-    "current": "qip_ai::language::NumericGuard (backend/crates/libs/qip-ai/src/language.rs:284-353) refuses any language-model output that contains a number flowing into a calculation. qip_reasoning_engine::providers::huggingface::HuggingFaceModel is the one hosted-LLM adapter in the platform, constructed only in qip-deepbrain (backend/crates/apps/qip-deepbrain/src/language.rs:180-225) — the slow/cognitive-plane composition root — and only when an endpoint+token precondition is met; qip-fastbrain (the hot/warm brain) never constructs a language-model client, only checks a Capability::CallLanguageModel flag (backend/crates/apps/qip-fastbrain/src/roster.rs:100,168).",
+    "current": "qip_ai::language::NumericGuard (backend/crates/libs/qip-ai/src/language.rs:284-353) refuses any language-model output that contains a number flowing into a calculation. qip_reasoning_engine::providers::huggingface::HuggingFaceModel is the one hosted-LLM adapter in the platform, constructed only in qip-deepbrain (backend/crates/apps/qip-deepbrain/src/language.rs:180-225) \u2014 the slow/cognitive-plane composition root \u2014 and only when an endpoint+token precondition is met; qip-fastbrain (the hot/warm brain) never constructs a language-model client, only checks a Capability::CallLanguageModel flag (backend/crates/apps/qip-fastbrain/src/roster.rs:100,168).",
     "evidence": [
       "backend/crates/libs/qip-ai/src/language.rs:284-353",
       "backend/crates/apps/qip-deepbrain/src/language.rs:180-225",
@@ -124,12 +124,12 @@
       "docs/adr/0037-hugging-face-is-the-first-hosted-language-model-provider.md",
       "test: structured_completion_enforces_both_schema_and_numeric_guard (backend/crates/libs/qip-ai/tests/model_infrastructure.rs:344)",
       "test: the_numeric_guard_finds_numbers_anywhere_in_the_output (backend/crates/libs/qip-ai/tests/model_infrastructure.rs:260)",
-      "test: an_agent_that_may_call_a_language_model_is_refused_rather_than_hosted (backend/crates/apps/qip-fastbrain/src/roster.rs:160) — warm-lane admission, reached from qip-fastbrain main.rs:79 via roster::clear",
+      "test: an_agent_that_may_call_a_language_model_is_refused_rather_than_hosted (backend/crates/apps/qip-fastbrain/src/roster.rs:160) \u2014 warm-lane admission, reached from qip-fastbrain main.rs:79 via roster::clear",
       "test: a_pinned_provider_an_attestation_naming_it_and_a_credential_install_the_hosted_model (backend/crates/apps/qip-deepbrain/src/language.rs:378)",
       "test: a_canned_router_answer_becomes_a_completion_with_the_router_s_token_counts_and_model (backend/crates/services/qip-reasoning-engine/tests/huggingface.rs:360)",
       "backend/crates/libs/qip-agents/src/runtime.rs:353-374 (AgentContext::complete authorises, charges and records every language-model call)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:3948-3962 (Platform::new, used by qip-fastbrain, installs DeterministicModel only)",
-      "test: the_compiled_form_has_no_reachable_path_to_a_language_model (backend/crates/edge/qip-strategy/tests/strategy.rs:1353) — hot-lane packages cannot name qip-ai"
+      "test: the_compiled_form_has_no_reachable_path_to_a_language_model (backend/crates/edge/qip-strategy/tests/strategy.rs:1353) \u2014 hot-lane packages cannot name qip-ai"
     ],
     "gap": "",
     "implemented": true,
@@ -143,7 +143,7 @@
     "work_item": "",
     "tier": "T0",
     "size": "S",
-    "notes": "ADR 0037 states the HuggingFace adapter is 'accepted for the development lane and proposed for the platform lane' — no environment currently sets the credential/endpoint variables, so the code path is complete and correctly placed but operationally dormant in every deployment today; deployable=false reflects that no environment activates it. verify: kept COMPLETE, with evidence replaced toward the placement property. The two NumericGuard tests cited prove that no number is taken from a model, which is a different property; the placement is proven by the fast-brain roster refusal (reached from main, tested), the strategy crate's structural inability to reach qip-ai (tested), HuggingFaceModel being constructed only in qip-deepbrain (qip-fastbrain has no direct qip-reasoning-engine or qip-ai dependency to name it), and the adapter-level successful-call test plus the agent runtime's per-call record. Not demonstrated end-to-end with a real endpoint (no environment sets the credential), which is what deployable=false already says."
+    "notes": "ADR 0037 states the HuggingFace adapter is 'accepted for the development lane and proposed for the platform lane' \u2014 no environment currently sets the credential/endpoint variables, so the code path is complete and correctly placed but operationally dormant in every deployment today; deployable=false reflects that no environment activates it. verify: kept COMPLETE, with evidence replaced toward the placement property. The two NumericGuard tests cited prove that no number is taken from a model, which is a different property; the placement is proven by the fast-brain roster refusal (reached from main, tested), the strategy crate's structural inability to reach qip-ai (tested), HuggingFaceModel being constructed only in qip-deepbrain (qip-fastbrain has no direct qip-reasoning-engine or qip-ai dependency to name it), and the adapter-level successful-call test plus the agent runtime's per-call record. Not demonstrated end-to-end with a real endpoint (no environment sets the credential), which is what deployable=false already says."
   },
   {
     "id": "MODEL-006",
@@ -154,7 +154,7 @@
       "backend/crates/services/qip-training/src/serve.rs:221-260",
       "backend/crates/runtime/qip-kernel/src/central/models.rs:39-90",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:130-138,1347",
-      "backend/crates/libs/qip-ai/src/registry.rs:52-97 (ModelCard.artifact_digest — 'a digest and not a signature: it names the bytes... and says nothing about who produced them (ADR 0043)')"
+      "backend/crates/libs/qip-ai/src/registry.rs:52-97 (ModelCard.artifact_digest \u2014 'a digest and not a signature: it names the bytes... and says nothing about who produced them (ADR 0043)')"
     ],
     "gap": "The artifact is a JSON payload named by SHA-256 digest, not a signed bundle and not an OCI-format image; no signing mechanism exists anywhere in the workspace.",
     "implemented": true,
@@ -177,7 +177,7 @@
   {
     "id": "MODEL-007",
     "status": "PARTIAL",
-    "current": "Deterministic (not learned) calculators exist for several named purposes: default probability and recovery in qip-financial (backend/crates/libs/qip-financial/src/credit.rs), demand forecasting with prediction intervals in qip-capital-fabric (backend/crates/services/qip-capital-fabric/src/forecast.rs:198-321, fit off qip_numerics::stats::linear_fit), liquidity depth/concentration mapping in qip-world-model (backend/crates/services/qip-world-model/src/liquidity.rs), and regime-conditioned allocation stance in qip-optimization-engine (backend/crates/services/qip-optimization-engine/src/regime.rs:63-240). None of these are registered in qip_ai::registry::ModelRegistry as a purpose-tagged 'specialist predictive model'; ModelCard has no lane/class field at all (registry.rs:52-97), only free-text purpose and a stage enum. One named purpose does have a fitted (not formula) model on the slow/central lane: the opportunity engine's regime detector fits a GaussianHmm by Baum-Welch per instrument every DISCOVER stage (qip-opportunity-engine/src/detector.rs:611, constructed by DetectorRegistry::standard at qip-kernel platform.rs:4521 and run from stage_discover at platform.rs:10412) — but it too is unregistered and carries no lane tag.",
+    "current": "Deterministic (not learned) calculators exist for several named purposes: default probability and recovery in qip-financial (backend/crates/libs/qip-financial/src/credit.rs), demand forecasting with prediction intervals in qip-capital-fabric (backend/crates/services/qip-capital-fabric/src/forecast.rs:198-321, fit off qip_numerics::stats::linear_fit), liquidity depth/concentration mapping in qip-world-model (backend/crates/services/qip-world-model/src/liquidity.rs), and regime-conditioned allocation stance in qip-optimization-engine (backend/crates/services/qip-optimization-engine/src/regime.rs:63-240). None of these are registered in qip_ai::registry::ModelRegistry as a purpose-tagged 'specialist predictive model'; ModelCard has no lane/class field at all (registry.rs:52-97), only free-text purpose and a stage enum. One named purpose does have a fitted (not formula) model on the slow/central lane: the opportunity engine's regime detector fits a GaussianHmm by Baum-Welch per instrument every DISCOVER stage (qip-opportunity-engine/src/detector.rs:611, constructed by DetectorRegistry::standard at qip-kernel platform.rs:4521 and run from stage_discover at platform.rs:10412) \u2014 but it too is unregistered and carries no lane tag.",
     "evidence": [
       "backend/crates/libs/qip-financial/src/credit.rs:1-16,323-396",
       "backend/crates/services/qip-capital-fabric/src/forecast.rs:198-321",
@@ -200,12 +200,12 @@
     "work_item": "E10-specialist-model-classes",
     "tier": "T2",
     "size": "L",
-    "notes": "The hot-lane refusal half is structurally satisfied for free (DistilledModel's two forms cannot carry a specialist model's structure), but that is incidental to this requirement, not evidence of it. verify: status kept PARTIAL; flags corrected from all-false (inconsistent with PARTIAL) to implemented/tested/integrated/deployable true for the part that exists (the kernel's DISCOVER stage runs in the Cloud Run brains, as for MODEL-022) — the fitted HMM regime model evaluated every DISCOVER stage, plus the deterministic calculators the row lists. The registered, lane-tagged specialist class, the warm service and the class-based lane refusal remain absent."
+    "notes": "The hot-lane refusal half is structurally satisfied for free (DistilledModel's two forms cannot carry a specialist model's structure), but that is incidental to this requirement, not evidence of it. verify: status kept PARTIAL; flags corrected from all-false (inconsistent with PARTIAL) to implemented/tested/integrated/deployable true for the part that exists (the kernel's DISCOVER stage runs in the Cloud Run brains, as for MODEL-022) \u2014 the fitted HMM regime model evaluated every DISCOVER stage, plus the deterministic calculators the row lists. The registered, lane-tagged specialist class, the warm service and the class-based lane refusal remain absent."
   },
   {
     "id": "MODEL-008",
     "status": "PARTIAL",
-    "current": "Supervised: qip_training::local::{LocalTrainer, TrainedTeacher} fits ModelFamily::{Linear, BoostedStumps} (backend/crates/services/qip-training/src/local.rs:39-54), registered via qip_kernel::central::models::register_fit, reached from qip-deepbrain/src/learning.rs — hardened and tested (62 tests in qip-training). Unsupervised: qip_optimization_engine::families::FamilyClustering clusters strategies by correlation under a stress window (backend/crates/services/qip-optimization-engine/src/families.rs), reached from qip-kernel/src/central/structure.rs, but has no ModelRegistry record or 'paradigm' tag. Reinforcement learning: no implementation found anywhere; qip_capital::exploration (backend/crates/services/qip-capital/src/exploration.rs) implements UCB1, a multi-armed-bandit selection rule, not a trained RL policy.",
+    "current": "Supervised: qip_training::local::{LocalTrainer, TrainedTeacher} fits ModelFamily::{Linear, BoostedStumps} (backend/crates/services/qip-training/src/local.rs:39-54), registered via qip_kernel::central::models::register_fit, reached from qip-deepbrain/src/learning.rs \u2014 hardened and tested (62 tests in qip-training). Unsupervised: qip_optimization_engine::families::FamilyClustering clusters strategies by correlation under a stress window (backend/crates/services/qip-optimization-engine/src/families.rs), reached from qip-kernel/src/central/structure.rs, but has no ModelRegistry record or 'paradigm' tag. Reinforcement learning: no implementation found anywhere; qip_capital::exploration (backend/crates/services/qip-capital/src/exploration.rs) implements UCB1, a multi-armed-bandit selection rule, not a trained RL policy.",
     "evidence": [
       "backend/crates/services/qip-training/src/local.rs:39-54",
       "backend/crates/runtime/qip-kernel/src/central/models.rs:83-90",
@@ -230,7 +230,7 @@
   {
     "id": "MODEL-009",
     "status": "PARTIAL",
-    "current": "No ensemble type exists — nothing combines several models' outputs or reports a calibrated uncertainty. Two of the requirement's properties exist in a narrower form in qip-deepbrain's learning desk: every round fits two diverse model families (linear baseline, boosted-stump challenger) on the same dataset and holdout, scores each class per regime on a scoreboard, and choose_class registers whichever class the regime's own precedent prefers (qip-deepbrain/src/learning.rs:258-273,1285), reached from qip-deepbrain main via node::run -> EvolutionEngine::maybe_learn (node.rs:340). That is regime-conditioned selection over a diverse set, winner-take-all at registration time, not an ensemble's member selection at evaluation time. The boosted-stump teacher (itself an additive ensemble of stumps) reaches the hot lane only as a distilled linear or tree student whose cost is checked against FidelityPolicy::maximum_student_cost.",
+    "current": "No ensemble type exists \u2014 nothing combines several models' outputs or reports a calibrated uncertainty. Two of the requirement's properties exist in a narrower form in qip-deepbrain's learning desk: every round fits two diverse model families (linear baseline, boosted-stump challenger) on the same dataset and holdout, scores each class per regime on a scoreboard, and choose_class registers whichever class the regime's own precedent prefers (qip-deepbrain/src/learning.rs:258-273,1285), reached from qip-deepbrain main via node::run -> EvolutionEngine::maybe_learn (node.rs:340). That is regime-conditioned selection over a diverse set, winner-take-all at registration time, not an ensemble's member selection at evaluation time. The boosted-stump teacher (itself an additive ensemble of stumps) reaches the hot lane only as a distilled linear or tree student whose cost is checked against FidelityPolicy::maximum_student_cost.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/learning.rs:258-273 (choose_class: per-regime class selection), 1285 (called every round)",
       "backend/crates/apps/qip-deepbrain/src/node.rs:340 (engine.maybe_learn in the node loop, outside #[cfg(test)] at :531)",
@@ -251,12 +251,12 @@
     "work_item": "E10-ensembles",
     "tier": "T2",
     "size": "L",
-    "notes": "The closest existing analog is qip-investment-agents' 18-agent panel disagreement/coverage machinery, which is agent-level dissent (AGENCY/REASON domain), not model-ensemble uncertainty, and does not satisfy this requirement. verify: upgraded MISSING -> PARTIAL. 'Nothing' was not accurate: qip-deepbrain's per-regime class scoreboard and choose_class give model diversity and regime-conditioned selection in production, tested. The defining ensemble behaviours — combining members and reporting calibrated uncertainty — are still absent, so the work item stands at its original size."
+    "notes": "The closest existing analog is qip-investment-agents' 18-agent panel disagreement/coverage machinery, which is agent-level dissent (AGENCY/REASON domain), not model-ensemble uncertainty, and does not satisfy this requirement. verify: upgraded MISSING -> PARTIAL. 'Nothing' was not accurate: qip-deepbrain's per-regime class scoreboard and choose_class give model diversity and regime-conditioned selection in production, tested. The defining ensemble behaviours \u2014 combining members and reporting calibrated uncertainty \u2014 are still absent, so the work item stands at its original size."
   },
   {
     "id": "MODEL-010",
     "status": "MISSING",
-    "current": "qip-feature-dag (backend/crates/edge/qip-feature-dag/src/features.rs) computes individual, hand-engineered microstructure quantities (order-flow imbalance, microprice deviation, mid, spread) deterministically off qip-quant/qip-numerics primitives — a feature-engineering DAG, not a trained model that learns a compact fixed-width representation of book/flow/liquidity/venue state.",
+    "current": "qip-feature-dag (backend/crates/edge/qip-feature-dag/src/features.rs) computes individual, hand-engineered microstructure quantities (order-flow imbalance, microprice deviation, mid, spread) deterministically off qip-quant/qip-numerics primitives \u2014 a feature-engineering DAG, not a trained model that learns a compact fixed-width representation of book/flow/liquidity/venue state.",
     "evidence": [
       "backend/crates/edge/qip-feature-dag/src/features.rs:1-40 (module doc: hand-engineered quantities, no learned representation)"
     ],
@@ -277,7 +277,7 @@
   {
     "id": "MODEL-011",
     "status": "PARTIAL",
-    "current": "qip_contracts::gate::GateStage (backend/crates/libs/qip-contracts/src/gate.rs:14-56) is a ratchet — Candidate -> Holdout -> Paper -> Shadow -> Pilot -> Scaled -> Retired — enforced by qip_lifecycle::ledger::LifecycleLedger/attempt_promotion, which refuses a promotion that skips a rung. Reached from production: qip-kernel/src/central/factory.rs:245,273 constructs the LifecycleLedger inside the deployed strategy factory; qip-deepbrain/src/succession.rs and src/evolution.rs also drive it. qip_evolution::promotion::advance (backend/crates/services/qip-evolution/src/promotion.rs:39) walks a challenger through the same ledger after ChallengerTest::evaluate.",
+    "current": "qip_contracts::gate::GateStage (backend/crates/libs/qip-contracts/src/gate.rs:14-56) is a ratchet \u2014 Candidate -> Holdout -> Paper -> Shadow -> Pilot -> Scaled -> Retired \u2014 enforced by qip_lifecycle::ledger::LifecycleLedger/attempt_promotion, which refuses a promotion that skips a rung. Reached from production: qip-kernel/src/central/factory.rs:245,273 constructs the LifecycleLedger inside the deployed strategy factory; qip-deepbrain/src/succession.rs and src/evolution.rs also drive it. qip_evolution::promotion::advance (backend/crates/services/qip-evolution/src/promotion.rs:39) walks a challenger through the same ledger after ChallengerTest::evaluate.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/gate.rs:14-56,131-146",
       "backend/crates/runtime/qip-kernel/src/central/factory.rs:34,245,273,390",
@@ -285,11 +285,11 @@
       "backend/crates/apps/qip-deepbrain/src/succession.rs:68,396",
       "test: a_promotion_that_skips_a_rung_cannot_be_constructed (backend/crates/services/qip-lifecycle/tests/lifecycle.rs:385)",
       "test: a_strategy_failing_one_check_is_not_promoted_however_strong_the_rest (backend/crates/services/qip-lifecycle/tests/lifecycle.rs:445)",
-      "backend/crates/services/qip-lifecycle/src/gates.rs (every recorded check: holdout_*, deflated_sharpe_*, purging_and_embargo_applied, no_leakage, paper_evidence_present, ran_against_live_data, costs_were_modelled, realised_cost_matches_assumption, within_modelled_capacity, orders_are_fillable, shadow_*, pilot_*, capacity_headroom — none is a stress test)",
+      "backend/crates/services/qip-lifecycle/src/gates.rs (every recorded check: holdout_*, deflated_sharpe_*, purging_and_embargo_applied, no_leakage, paper_evidence_present, ran_against_live_data, costs_were_modelled, realised_cost_matches_assumption, within_modelled_capacity, orders_are_fillable, shadow_*, pilot_*, capacity_headroom \u2014 none is a stress test)",
       "rg -in 'stress|scenario' backend/crates/services/qip-lifecycle/src backend/crates/services/qip-evolution/src backend/crates/runtime/qip-kernel/src/central/factory.rs: no hits",
       "test: the_learn_stage_retires_a_strategy_whose_cells_realised_sustained_decay_and_journals_its_disposition (backend/crates/runtime/qip-kernel/tests/central.rs:2769)"
     ],
-    "gap": "Stress testing is not a lifecycle stage or a gate check. GateStage runs Candidate -> Holdout -> Paper -> Shadow -> Pilot -> Scaled -> Retired, and no gate records a stress-scenario check, so a strategy is promoted without ever having been stress-tested — the requirement names stress testing as a precondition of promotion alongside backtesting, simulation and paper trading. The order ratchet, the leakage/holdout/paper checks and decay-to-retirement are real and tested.",
+    "gap": "Stress testing is not a lifecycle stage or a gate check. GateStage runs Candidate -> Holdout -> Paper -> Shadow -> Pilot -> Scaled -> Retired, and no gate records a stress-scenario check, so a strategy is promoted without ever having been stress-tested \u2014 the requirement names stress testing as a precondition of promotion alongside backtesting, simulation and paper trading. The order ratchet, the leakage/holdout/paper checks and decay-to-retirement are real and tested.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -311,7 +311,7 @@
       "backend/crates/services/qip-optimization-engine/src/families.rs:93",
       "backend/crates/runtime/qip-kernel/src/central/structure.rs:212,266-268,614-619"
     ],
-    "gap": "The bound refuses the requirement's scale rather than serving it: central/structure.rs:266-268 refuses any realised corpus above MAX_STRATEGIES = 1,024 at the family stage, and its own comment says the pre-partition that would admit a larger desk is something 'nothing in this platform builds' — so a population of several thousand cannot pass the family stage today. No benchmark measuring cycle time or memory at any population size exists; the only test is the refusal at MAX_STRATEGIES + 1.",
+    "gap": "The bound refuses the requirement's scale rather than serving it: central/structure.rs:266-268 refuses any realised corpus above MAX_STRATEGIES = 1,024 at the family stage, and its own comment says the pre-partition that would admit a larger desk is something 'nothing in this platform builds' \u2014 so a population of several thousand cannot pass the family stage today. No benchmark measuring cycle time or memory at any population size exists; the only test is the refusal at MAX_STRATEGIES + 1.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -325,12 +325,12 @@
     "work_item": "E10-strategy-factory-scale-benchmark",
     "tier": "T2",
     "size": "M",
-    "notes": "The bounded-working-set discipline itself is real and tested; only the scale target and its benchmark are missing. verify: status kept PARTIAL; gap sharpened — the 1,024 cap is an active refusal of a 'thousands' population with no pre-partition built, not merely a bound set slightly low. tested=true refers only to the bounded-working-set refusal (structure.rs:613 and qip-optimization-engine tests/families_and_horizons.rs:636), not to scale."
+    "notes": "The bounded-working-set discipline itself is real and tested; only the scale target and its benchmark are missing. verify: status kept PARTIAL; gap sharpened \u2014 the 1,024 cap is an active refusal of a 'thousands' population with no pre-partition built, not merely a bound set slightly low. tested=true refers only to the bounded-working-set refusal (structure.rs:613 and qip-optimization-engine tests/families_and_horizons.rs:636), not to scale."
   },
   {
     "id": "MODEL-013",
     "status": "COMPLETE",
-    "current": "Every path a decision takes reaches the evaluation input — the platform's hash-chained outcome capture (qip_twin::capture::OutcomeCapture, held by Platform, counted by the LEARN stage and read by the twin's counterfactual pricing) — under a decision id of its own. A fill: Platform::capture_submission records OrderPlaced and then Filled (caused_by the placement's decision id) with the order manager's order id, quantity and price, in the seam that books the same fill into TrackedCapital. A refused order: Action::Rejected with the order id and the gate. An opportunity that lapsed in the queue before REASON took it up: Platform::capture_unworked, called from stage_discover where the queue's retain used to drop it and report only a count, records Action::ExpiredOpportunity with the opportunity id, the instant it was first seen and how long it waited. REASON marks the opportunity it takes up (worked_opportunities), so the head of the queue is not also filed as unworked. No record can be built without a Decision, whose constructor requires a decision id and a trace. qip-learning-engine's attribution, thesis grading and calibration derive from the same fills and resolved theses, as before.",
+    "current": "Every path a decision takes reaches the evaluation input \u2014 the platform's hash-chained outcome capture (qip_twin::capture::OutcomeCapture, held by Platform, counted by the LEARN stage and read by the twin's counterfactual pricing) \u2014 under a decision id of its own. A fill: Platform::capture_submission records OrderPlaced and then Filled (caused_by the placement's decision id) with the order manager's order id, quantity and price, in the seam that books the same fill into TrackedCapital. A refused order: Action::Rejected with the order id and the gate. An opportunity that lapsed in the queue before REASON took it up: Platform::capture_unworked, called from stage_discover where the queue's retain used to drop it and report only a count, records Action::ExpiredOpportunity with the opportunity id, the instant it was first seen and how long it waited. REASON marks the opportunity it takes up (worked_opportunities), so the head of the queue is not also filed as unworked. No record can be built without a Decision, whose constructor requires a decision id and a trace. qip-learning-engine's attribution, thesis grading and calibration derive from the same fills and resolved theses, as before.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs (capture_unworked; stage_discover partitions the queue and captures the lapsed; reason_about_the_queue marks worked_opportunities; capture_submission)",
       "backend/crates/services/qip-twin/src/capture.rs (Action::ExpiredOpportunity: its own kind, a refusal, never priced)",
@@ -350,7 +350,7 @@
     "work_item": "E10-ledger-event-id-on-episode",
     "tier": "T1",
     "size": "S",
-    "notes": "The core attribution/evaluation/feedback loop is real, hardened and reached from every composition root; the gap noted is about explicit event-id traceability, not about whether outcomes are used at all. verify: status kept PARTIAL; citations checked (platform.rs:13828/14398/16218/16326/16483 and 11550-11568 land on the named functions). Added the kernel-level episode test — the cited qip-learning-engine tests exercise attribution arithmetic, not the ledger-to-episode contract. Episodes are keyed by hypothesis id, and their realised_move_bps/realised_pnl source was not traced to a booked ledger entry. | 2026-10-05: closed on the outcome capture. Reading used: the check's 'episode record in the evaluation input' is the capture chain's decision-plus-outcome record — an expired opportunity never forms a hypothesis, so it can never be a qip_ai episodic-memory Episode, which is keyed by hypothesis id. 'Declined' is a refused order (Action::Rejected) or a risk veto (Action::RiskDecision, allowed false); an opportunity REASON took up and did not act on is on the journal as a ReasonRouting record, not on this chain. An episodic Episode still reaches its fills by hypothesis id through the order, not by an event id of its own. ExpiredOpportunity is deliberately unpriced: no side or size was ever proposed, so there is nothing to add to forgone(). The DISCOVER stage's 'expired before they were worked' problem now counts only opportunities REASON never took up; it used to count the worked head as well."
+    "notes": "The core attribution/evaluation/feedback loop is real, hardened and reached from every composition root; the gap noted is about explicit event-id traceability, not about whether outcomes are used at all. verify: status kept PARTIAL; citations checked (platform.rs:13828/14398/16218/16326/16483 and 11550-11568 land on the named functions). Added the kernel-level episode test \u2014 the cited qip-learning-engine tests exercise attribution arithmetic, not the ledger-to-episode contract. Episodes are keyed by hypothesis id, and their realised_move_bps/realised_pnl source was not traced to a booked ledger entry. | 2026-10-05: closed on the outcome capture. Reading used: the check's 'episode record in the evaluation input' is the capture chain's decision-plus-outcome record \u2014 an expired opportunity never forms a hypothesis, so it can never be a qip_ai episodic-memory Episode, which is keyed by hypothesis id. 'Declined' is a refused order (Action::Rejected) or a risk veto (Action::RiskDecision, allowed false); an opportunity REASON took up and did not act on is on the journal as a ReasonRouting record, not on this chain. An episodic Episode still reaches its fills by hypothesis id through the order, not by an event id of its own. ExpiredOpportunity is deliberately unpriced: no side or size was ever proposed, so there is nothing to add to forgone(). The DISCOVER stage's 'expired before they were worked' problem now counts only opportunities REASON never took up; it used to count the worked head as well."
   },
   {
     "id": "MODEL-014",
@@ -375,17 +375,17 @@
     "work_item": "E09-learn-to-world-model-feedback",
     "tier": "T2",
     "size": "M",
-    "notes": "Both halves of the machinery this requirement needs already exist in their respective crates (CausalGraph::reestimate, qip-training's refit cadence); what is missing is the wiring from LEARN-stage output to either. verify: kept MISSING after searching for other return edges. LEARN does feed two things back — Platform::learn_from sets the reasoning engine's origin factors from graded theses (platform.rs:8480, reasoning.set_origin_factors), and resolved episodes join episodic memory that REASON recalls as precedents — but neither is addressed to the world model/knowledge graph or to microstructure training, which are the two edges this requirement and its check name. absorb_causal_support still has no production caller (grep shows only its definition, a test at qip-world-model tests/understanding.rs:1181, and the causal.rs doc). | 2026-10-05 not built: calling WorldModel::absorb_causal_support from LEARN needs a defined estimator of the transmission a resolved episode measured for each edge in its causal_context — SupportingClaim.strength is refused outside [0,1] and is a number the platform sizes against. None exists and inventing one is a modelling decision. The microstructure-training edge has no consumer (MODEL-010 and MODEL-019 are missing)."
+    "notes": "Both halves of the machinery this requirement needs already exist in their respective crates (CausalGraph::reestimate, qip-training's refit cadence); what is missing is the wiring from LEARN-stage output to either. verify: kept MISSING after searching for other return edges. LEARN does feed two things back \u2014 Platform::learn_from sets the reasoning engine's origin factors from graded theses (platform.rs:8480, reasoning.set_origin_factors), and resolved episodes join episodic memory that REASON recalls as precedents \u2014 but neither is addressed to the world model/knowledge graph or to microstructure training, which are the two edges this requirement and its check name. absorb_causal_support still has no production caller (grep shows only its definition, a test at qip-world-model tests/understanding.rs:1181, and the causal.rs doc). | 2026-10-05 not built: calling WorldModel::absorb_causal_support from LEARN needs a defined estimator of the transmission a resolved episode measured for each edge in its causal_context \u2014 SupportingClaim.strength is refused outside [0,1] and is a number the platform sizes against. None exists and inventing one is a modelling decision. The microstructure-training edge has no consumer (MODEL-010 and MODEL-019 are missing)."
   },
   {
     "id": "MODEL-015",
     "status": "PARTIAL",
-    "current": "qip_edge::Cell has exactly one mutator of a deployed strategy's model/parameters/sizing: Cell::deploy (backend/crates/edge/qip-edge/src/cell.rs:2505-2535), driven only by an explicit centre-issued policy the cell validates and promotes through. No 'adapt'/'redeploy'/'auto-adjust' method exists on Cell. Drift measurement (qip_training::estimators::degraded_models, reached from qip-deepbrain/src/learning.rs:1051) only writes to the ModelRegistry's drift_score/drift_threshold fields, which govern future decision eligibility — it never touches a live Cell's deployed CompiledStrategy.",
+    "current": "qip_edge::Cell has exactly one mutator of a deployed strategy's model/parameters/sizing: Cell::deploy (backend/crates/edge/qip-edge/src/cell.rs:2505-2535), driven only by an explicit centre-issued policy the cell validates and promotes through. No 'adapt'/'redeploy'/'auto-adjust' method exists on Cell. Drift measurement (qip_training::estimators::degraded_models, reached from qip-deepbrain/src/learning.rs:1051) only writes to the ModelRegistry's drift_score/drift_threshold fields, which govern future decision eligibility \u2014 it never touches a live Cell's deployed CompiledStrategy.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:2505-2535 (Cell::deploy); the only other writers of a deployed entry are classify, withdraw, renew_capital and work's utilisation charge (cell.rs:3748) — none reads drift, slippage or residuals",
+      "backend/crates/edge/qip-edge/src/cell.rs:2505-2535 (Cell::deploy); the only other writers of a deployed entry are classify, withdraw, renew_capital and work's utilisation charge (cell.rs:3748) \u2014 none reads drift, slippage or residuals",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1051,1086 (record_drift writes to the registry only)",
-      "backend/crates/runtime/qip-kernel/src/central/learning.rs:12-31 (live residuals only widen the allocator's standard error and demote/retire — narrowing, as the requirement's notes permit)",
-      "test (different property): a_drifted_model_in_production_may_no_longer_inform_a_decision (backend/crates/apps/qip-deepbrain/src/learning.rs:2156) — drift makes a promoted card ineligible in ModelRegistry; no cell is involved",
+      "backend/crates/runtime/qip-kernel/src/central/learning.rs:12-31 (live residuals only widen the allocator's standard error and demote/retire \u2014 narrowing, as the requirement's notes permit)",
+      "test (different property): a_drifted_model_in_production_may_no_longer_inform_a_decision (backend/crates/apps/qip-deepbrain/src/learning.rs:2156) \u2014 drift makes a promoted card ineligible in ModelRegistry; no cell is involved",
       "test (centre-side half only): a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue (backend/crates/runtime/qip-kernel/tests/learning.rs:831)",
       "backend/crates/edge/qip-edge/src/dispersion.rs:1-40 and cell.rs:6073,6338 (ReleaseSchedule derived from the cell's rolling per-venue fill-time medians)",
       "backend/crates/edge/qip-edge/src/cell.rs (Cell::deployment_digest: SHA-256 over the compiled strategy, its program, its pause class and its pricing policy)",
@@ -393,7 +393,7 @@
       "mutations, each failed and was restored byte-for-byte: a confirmed fill rewrites the deployed pricing -> 'the deployed package changed during pass 1 with no deployment'; a confirmed fill reclassifies the strategy -> same assertion; order size grows with the fills seen -> 'order size moved under drift with no new package'; digest made blind to the compiled strategy -> 'a new package carries the old digest'",
       "cargo test -p qip-edge --test fills: 'test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out'"
     ],
-    "gap": "The cell half of the check is now demonstrated: through a sustained run of fills each worse and later than the last, the deployed package's digest, its pricing, the size the plan computes and the size the cell sends are unchanged, and only a new deployment moves them. Two things remain. (1) The check's second sentence — the only effect of the drift is a recorded retraining or curriculum task — is not met: fill and slippage error reach no retraining task (MODEL-016; ADR 0062 keeps qip_venue_fill_error_bps diagnostic). (2) An owner ruling is still needed on ADR 0084's ReleaseSchedule, which the cell derives from its own rolling per-venue fill-time medians, so a venue's latency moves when legs are released with no promotion. It is deterministic and replayable and changes neither package, parameters nor sizing, but it is execution timing a live venue measurement adjusts directly; this test's single-venue cell does not exercise it.",
+    "gap": "The cell half of the check is now demonstrated: through a sustained run of fills each worse and later than the last, the deployed package's digest, its pricing, the size the plan computes and the size the cell sends are unchanged, and only a new deployment moves them. Two things remain. (1) The check's second sentence \u2014 the only effect of the drift is a recorded retraining or curriculum task \u2014 is not met: fill and slippage error reach no retraining task (MODEL-016; ADR 0062 keeps qip_venue_fill_error_bps diagnostic). (2) An owner ruling is still needed on ADR 0084's ReleaseSchedule, which the cell derives from its own rolling per-venue fill-time medians, so a venue's latency moves when legs are released with no promotion. It is deterministic and replayable and changes neither package, parameters nor sizing, but it is execution timing a live venue measurement adjusts directly; this test's single-venue cell does not exercise it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -405,12 +405,12 @@
     "work_item": "E04-drift-cannot-adapt-a-cell-test",
     "tier": "T0",
     "size": "S",
-    "notes": "Enforced structurally by the absence of a mutator, not by a runtime check — consistent with principle 4. verify: downgraded COMPLETE -> NEEDS-VALIDATION. The prohibition appears structurally held (no drift-driven mutator of a deployed strategy exists), but the only cited test demonstrates a registry property, not the reflex-cell behaviour the requirement's check names, and the fill-time release schedule needs an explicit ruling. | 2026-10-05: NEEDS-VALIDATION -> PARTIAL. The cell-side test the row asked for exists and is mutation-verified; not COMPLETE because the retraining-task half is MODEL-016's and the ReleaseSchedule question is an owner's to rule on, not a lane's."
+    "notes": "Enforced structurally by the absence of a mutator, not by a runtime check \u2014 consistent with principle 4. verify: downgraded COMPLETE -> NEEDS-VALIDATION. The prohibition appears structurally held (no drift-driven mutator of a deployed strategy exists), but the only cited test demonstrates a registry property, not the reflex-cell behaviour the requirement's check names, and the fill-time release schedule needs an explicit ruling. | 2026-10-05: NEEDS-VALIDATION -> PARTIAL. The cell-side test the row asked for exists and is mutation-verified; not COMPLETE because the retraining-task half is MODEL-016's and the ReleaseSchedule question is an owner's to rule on, not a lane's."
   },
   {
     "id": "MODEL-016",
-    "status": "PARTIAL",
-    "current": "qip_training::estimators::{StreamingDrift, degraded_models} (backend/crates/services/qip-training/src/estimators.rs:618-634) measures population-stability drift continuously; qip-deepbrain/src/learning.rs (1030-1120) joins drifted features to the models fitted on them, records the drift on the ModelCard (registry.record_drift), and in the same cadence re-fits and registers a new candidate (self.fit -> register_fit) — a real retraining response, reached from qip-deepbrain and tested.",
+    "status": "BLOCKED",
+    "current": "qip_training::estimators::{StreamingDrift, degraded_models} (backend/crates/services/qip-training/src/estimators.rs:618-634) measures population-stability drift continuously; qip-deepbrain/src/learning.rs (1030-1120) joins drifted features to the models fitted on them, records the drift on the ModelCard (registry.record_drift), and in the same cadence re-fits and registers a new candidate (self.fit -> register_fit) \u2014 a real retraining response, reached from qip-deepbrain and tested.",
     "evidence": [
       "backend/crates/services/qip-training/src/estimators.rs:618-634",
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1030-1120",
@@ -418,23 +418,23 @@
       "test: a_feature_that_drifts_past_the_estimators_bound_degrades_every_model_that_reads_it (backend/crates/apps/qip-deepbrain/src/learning.rs:1957)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:16632 (qip_venue_fill_error_bps recorded; read by nothing that decides)"
     ],
-    "gap": "Only price-bar feature drift (population stability on the bars a model was fitted on) is routed to a refit. Fill/slippage error is measured — qip_venue_fill_error_bps is recorded in Platform::score_filled (qip-kernel platform.rs:16632) — but ADR 0062 keeps it diagnostic and it reaches no retraining task (qip-kernel tests/learning.rs:831 asserts it decides nothing); live strategy residuals drive the allocator's standard-error ratchet and demotion (central/learning.rs), not retraining; venue changes are not an input to any retraining task. No Curriculum Engine exists (master Phase 9).",
+    "gap": "Only price-bar feature drift (population stability on the bars a model was fitted on) is routed to a refit. Fill/slippage error is measured \u2014 qip_venue_fill_error_bps is recorded in Platform::score_filled (qip-kernel platform.rs:16632) \u2014 but ADR 0062 keeps it diagnostic and it reaches no retraining task (qip-kernel tests/learning.rs:831 asserts it decides nothing); live strategy residuals drive the allocator's standard-error ratchet and demotion (central/learning.rs), not retraining; venue changes are not an input to any retraining task. No Curriculum Engine exists (master Phase 9).",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "Master Phase 9 Curriculum Engine",
     "verification": "backend/crates/apps/qip-deepbrain/src/learning.rs::a_model_whose_features_have_moved_records_drift_past_its_own_threshold",
     "work_item": "E09-curriculum-engine",
     "tier": "T3",
     "size": "L",
-    "notes": "The retraining half (P1, master Phase 2) is real and hardened. The curriculum-task half is out of scope until the Curriculum Engine exists. verify: status kept PARTIAL; gap corrected — it previously named only the missing Curriculum Engine, but of the four drift sources the requirement lists only feature drift reaches retraining."
+    "notes": "The retraining half (P1, master Phase 2) is real and hardened. The curriculum-task half is out of scope until the Curriculum Engine exists. verify: status kept PARTIAL; gap corrected \u2014 it previously named only the missing Curriculum Engine, but of the four drift sources the requirement lists only feature drift reaches retraining. | 2026-10-06 Updated: BLOCKED on master Phase 9 Curriculum Engine. Feature drift routing to retraining is implemented and tested. Fill/slippage error (measured via qip_venue_fill_error_bps in Platform::score_filled) and venue change detection exist but lack routing to retraining tasks. Curriculum Engine task routing requires Phase 9 infrastructure which does not exist yet."
   },
   {
     "id": "MODEL-017",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "DistilledModel::evaluate (backend/crates/edge/qip-strategy/src/model.rs:193-248) is a pure function with no I/O, no randomness and no HashMap-order dependency, evaluated identically for identical inputs; it runs in the hot lane (via Op::Model in a Cell's CompiledStrategy) and is the ModelForm every promoted model must take, so nothing outside this bounded, deterministic form can reach the hot or warm lane.",
     "evidence": [
       "backend/crates/edge/qip-strategy/tests/strategy.rs::a_model_evaluated_twice_and_after_a_wire_round_trip_is_bit_identical_on_generated_inputs -- mutation: wall-clock term added to linear evaluate -> failed; restored",
@@ -450,12 +450,12 @@
     "depends_on": [
       "MODEL-006"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-006 (signed packaging)",
     "verification": "Needed: a property test evaluating the same DistilledModel twice (and, if feasible, on two build targets) and asserting bit-identical f64 output",
     "work_item": "E10-bit-identical-model-eval-test",
     "tier": "T1",
     "size": "S",
-    "notes": "The existing instance is qip-strategy's DistilledModel per ADR 0083, as this requirement's own notes say. verify: status kept PARTIAL; tested corrected false -> true and gap corrected. The row said no test asserts bit-identical output across two evaluations; qip-training's serving tests do (a served distillate's score equals model.evaluate bit for bit), within one process. The cross-node and cost-bound halves remain unproven. | 2026-10-04: two of three open halves closed; left PARTIAL for the cross-node comparison."
+    "notes": "The existing instance is qip-strategy's DistilledModel per ADR 0083, as this requirement's own notes say. verify: status kept PARTIAL; tested corrected false -> true and gap corrected. The row said no test asserts bit-identical output across two evaluations; qip-training's serving tests do (a served distillate's score equals model.evaluate bit for bit), within one process. The cross-node and cost-bound halves remain unproven. | 2026-10-04: two of three open halves closed; left PARTIAL for the cross-node comparison. | 2026-10-06 Updated: BLOCKED on MODEL-006 (signed packaging). Cross-node bit-identity test stated as infeasible within single checkout. Depends on MODEL-006 signed packaging implementation."
   },
   {
     "id": "MODEL-018",
@@ -465,7 +465,7 @@
       "backend/crates/services/qip-simulation-engine/src/costs.rs:1-40,291",
       "backend/crates/services/qip-execution-engine/src/quoting.rs:8,49,243-296",
       "backend/crates/services/qip-simulation-engine/src/agents.rs:162 (fill probability mentioned only as a teaching-collapse concern, not a produced estimate)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:16632 (qip_venue_fill_error_bps: the twin's fill against the venue's, per venue — a slippage error against recorded fills)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16632 (qip_venue_fill_error_bps: the twin's fill against the venue's, per venue \u2014 a slippage error against recorded fills)",
       "backend/crates/services/qip-simulation-engine/src/venue.rs:233-313 (price-time queue in the simulated venue; queue_ahead is read, not predicted) and execution.rs:249-252 (latency is a supplied parameter, not an estimate)"
     ],
     "gap": "No unified digital-twin model produces all six named estimates (fill probability, queue position, slippage, market impact, latency, opportunity decay) for an order; what exists are two deterministic formulas (impact, slippage) and one measured-not-predicted fact (queue position). Fill probability, latency and opportunity decay have no estimator at all.",
@@ -480,12 +480,12 @@
     "work_item": "E06-execution-digital-twin",
     "tier": "T3",
     "size": "L",
-    "notes": "qip-financial's deterministic square-root impact law is explicitly the single source of truth (costs.rs module doc) to avoid two disagreeing cost models — this requirement, if built, must not create a second one. verify: status kept PARTIAL. Added that the twin's slippage error against recorded fills is already reported (qip_venue_fill_error_bps), which covers one clause of the check; a fill-probability error cannot be reported because no fill-probability estimate exists, and latency is an input to the simulator rather than something it estimates."
+    "notes": "qip-financial's deterministic square-root impact law is explicitly the single source of truth (costs.rs module doc) to avoid two disagreeing cost models \u2014 this requirement, if built, must not create a second one. verify: status kept PARTIAL. Added that the twin's slippage error against recorded fills is already reported (qip_venue_fill_error_bps), which covers one clause of the check; a fill-probability error cannot be reported because no fill-probability estimate exists, and latency is an input to the simulator rather than something it estimates."
   },
   {
     "id": "MODEL-019",
-    "status": "MISSING",
-    "current": "qip-training's generic drift-triggered refit cadence (see MODEL-016) recalibrates whichever model was fitted on a given subject's price bars, producing a new registered candidate rather than replacing the active model in place — this pattern already matches the 'candidate, never in place' discipline this requirement asks for. But nothing in that pipeline is calibrated specifically against execution/fill telemetry (realised slippage, impact, queue outcomes); it recalibrates against price-bar feature drift only.",
+    "status": "BLOCKED",
+    "current": "qip-training's generic drift-triggered refit cadence (see MODEL-016) recalibrates whichever model was fitted on a given subject's price bars, producing a new registered candidate rather than replacing the active model in place \u2014 this pattern already matches the 'candidate, never in place' discipline this requirement asks for. But nothing in that pipeline is calibrated specifically against execution/fill telemetry (realised slippage, impact, queue outcomes); it recalibrates against price-bar feature drift only.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1030-1120 (recalibrates against price bars, not execution telemetry)",
       "backend/crates/services/qip-simulation-engine/src/costs.rs (deterministic, not recalibrated from telemetry at all)"
@@ -501,17 +501,17 @@
       "MODEL-040",
       "MODEL-051"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-018, MODEL-040, MODEL-051",
     "verification": "Needed: a replay-driven recalibration run against simulated fill/slippage telemetry that emits a promotion candidate without touching the active calibration",
     "work_item": "E06-execution-model-recalibration",
     "tier": "T3",
     "size": "L",
-    "notes": "The 'candidate not in place' discipline this requirement needs already exists as a pattern (qip-training/qip-deepbrain) and can likely be reused once an execution-telemetry-calibrated model exists to recalibrate. verify: kept MISSING. The nearest things found are a precondition and a pattern, not an implementation: score_filled measures the twin's fill error per venue (qip_venue_fill_error_bps, platform.rs:16632) but ADR 0062 keeps it diagnostic and nothing recalibrates from it; and qip-risk's signed limit recalibration (ADR 0061) is the candidate-not-in-place pattern this would reuse, applied to risk limits rather than execution models."
+    "notes": "The 'candidate not in place' discipline this requirement needs already exists as a pattern (qip-training/qip-deepbrain) and can likely be reused once an execution-telemetry-calibrated model exists to recalibrate. verify: kept MISSING. The nearest things found are a precondition and a pattern, not an implementation: score_filled measures the twin's fill error per venue (qip_venue_fill_error_bps, platform.rs:16632) but ADR 0062 keeps it diagnostic and nothing recalibrates from it; and qip-risk's signed limit recalibration (ADR 0061) is the candidate-not-in-place pattern this would reuse, applied to risk limits rather than execution models. | 2026-10-06 Updated: BLOCKED on MODEL-018, MODEL-040, MODEL-051. MODEL-051 (post-validation Reflex Package Builder) does not exist."
   },
   {
     "id": "MODEL-020",
-    "status": "MISSING",
-    "current": "qip-world-model (backend/crates/services/qip-world-model/src/world.rs:73) is a single WorldModel struct holding one knowledge graph, one causal graph and one feature store — there is no concept of multiple concurrent domain/regional/horizon/scenario models, no arbitration mechanism, and no disagreement measure between world models.",
+    "status": "BLOCKED",
+    "current": "qip-world-model (backend/crates/services/qip-world-model/src/world.rs:73) is a single WorldModel struct holding one knowledge graph, one causal graph and one feature store \u2014 there is no concept of multiple concurrent domain/regional/horizon/scenario models, no arbitration mechanism, and no disagreement measure between world models.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/world.rs:73 (one WorldModel, not an ensemble)",
       "rg -in ensemble backend/crates -g '*.rs' (excluding tests) shows only boosted-stump ensembles in qip-training, unrelated to world models"
@@ -525,17 +525,17 @@
     "depends_on": [
       "MODEL-009"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-009",
     "verification": "Needed: two or more concurrent world models whose disagreement and arbitration weights are recorded on a forecast, each carrying a calibration score from resolved outcomes",
     "work_item": "E09-world-model-ensembles",
     "tier": "T3",
     "size": "XL",
-    "notes": "Master Phase 2 names the initial World Model Federation; today's single WorldModel is a solid foundation (causal graph, feature store, exposure analysis) but is architecturally one model, not a federation."
+    "notes": "Master Phase 2 names the initial World Model Federation; today's single WorldModel is a solid foundation (causal graph, feature store, exposure analysis) but is architecturally one model, not a federation. | 2026-10-06 Updated: BLOCKED on MODEL-009."
   },
   {
     "id": "MODEL-021",
     "status": "PARTIAL",
-    "current": "No reasoner exists as a registered foundry model class, and there is no rule, constraint, probabilistic-logic or planning reasoner. Deterministic graph and causal reasoning over explicit symbolic structure does exist in the slow/central lane: qip-world-model's bitemporal KnowledgeGraph answers path, reachability and as-of queries (graph.rs:238-383), and CausalGraph::propagate walks a shock breadth-first along causal edges with lag and attenuation (causal.rs:1461-). Both are reached from production — the investment agents' reasoning calls causal.propagate (qip-investment-agents/src/reasoning.rs:85), qip-kernel runs a causal stress propagation (platform.rs:12942) and second-order exposure over the graph (platform.rs:10014-10020).",
+    "current": "No reasoner exists as a registered foundry model class, and there is no rule, constraint, probabilistic-logic or planning reasoner. Deterministic graph and causal reasoning over explicit symbolic structure does exist in the slow/central lane: qip-world-model's bitemporal KnowledgeGraph answers path, reachability and as-of queries (graph.rs:238-383), and CausalGraph::propagate walks a shock breadth-first along causal edges with lag and attenuation (causal.rs:1461-). Both are reached from production \u2014 the investment agents' reasoning calls causal.propagate (qip-investment-agents/src/reasoning.rs:85), qip-kernel runs a causal stress propagation (platform.rs:12942) and second-order exposure over the graph (platform.rs:10014-10020).",
     "evidence": [
       "backend/crates/services/qip-world-model/src/graph.rs:238-383 (facts_at, neighbours, predecessors, paths_between, reachable)",
       "backend/crates/services/qip-world-model/src/causal.rs:1461-1466 (CausalGraph::propagate)",
@@ -560,8 +560,8 @@
   },
   {
     "id": "MODEL-022",
-    "status": "PARTIAL",
-    "current": "Slow/central-lane surprise and anomaly models exist and run every cycle: qip-opportunity-engine's detectors score how far each observation sits from its recent expected distribution as a z-score — price move, volatility shift, volume spike, structural break, correlation breakdown, liquidity deterioration, fundamental and macro surprise against consensus, sentiment shift, alternative-data divergence, and a regime change from a GaussianHmm fitted per instrument (detector.rs:17-47,611). They are constructed by DetectorRegistry::standard (qip-kernel platform.rs:4521) and run from stage_discover (platform.rs:10288,10412). Nothing of the kind runs in the warm or hot lane, and there is no distilled ambient model, no persistent precursor or assumption model, and no standing expected-state model separate from the detectors' rolling windows.",
+    "status": "BLOCKED",
+    "current": "Slow/central-lane surprise and anomaly models exist and run every cycle: qip-opportunity-engine's detectors score how far each observation sits from its recent expected distribution as a z-score \u2014 price move, volatility shift, volume spike, structural break, correlation breakdown, liquidity deterioration, fundamental and macro surprise against consensus, sentiment shift, alternative-data divergence, and a regime change from a GaussianHmm fitted per instrument (detector.rs:17-47,611). They are constructed by DetectorRegistry::standard (qip-kernel platform.rs:4521) and run from stage_discover (platform.rs:10288,10412). Nothing of the kind runs in the warm or hot lane, and there is no distilled ambient model, no persistent precursor or assumption model, and no standing expected-state model separate from the detectors' rolling windows.",
     "evidence": [
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:1-47 (z-score detectors; AnomalyKind), 611 (GaussianHmm::fit)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4521,10288,10412",
@@ -579,17 +579,17 @@
     "depends_on": [
       "MODEL-006"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-006 (signed packaging)",
     "verification": "Needed: a reflex cell evaluating a distilled ambient model every pass, emitting a surprise score for an injected anomaly with the full model running in the slow lane",
     "work_item": "E09-ambient-model-mesh",
     "tier": "T3",
     "size": "L",
-    "notes": "Master Phase 8 names the Ambient Model Mesh; episodic memory's surprise-weighted sampler is a related but distinct concept and does not satisfy this requirement. verify: upgraded MISSING -> PARTIAL. The assessor's search (struct Ambient|struct Surprise|AmbientForecast) was lexical and missed the opportunity engine's anomaly and surprise detectors, which are slow-lane surprise models against a rolling expectation, reached every cycle and tested. The fast-lane distilled half — the part the requirement's check exercises — is absent."
+    "notes": "Master Phase 8 names the Ambient Model Mesh; episodic memory's surprise-weighted sampler is a related but distinct concept and does not satisfy this requirement. verify: upgraded MISSING -> PARTIAL. The assessor's search (struct Ambient|struct Surprise|AmbientForecast) was lexical and missed the opportunity engine's anomaly and surprise detectors, which are slow-lane surprise models against a rolling expectation, reached every cycle and tested. The fast-lane distilled half \u2014 the part the requirement's check exercises \u2014 is absent. | 2026-10-06 Updated: BLOCKED on MODEL-006. Distilled form on fast lanes requires MODEL-006 signed packaging infrastructure."
   },
   {
     "id": "MODEL-023",
-    "status": "PARTIAL",
-    "current": "qip_strategy::compile::StrategyCompiler::compile (backend/crates/edge/qip-strategy/src/compile.rs:263,696-729) lowers a validated Expr::Model to Op::Model only after checking the model's declared arity against the number of supplied inputs and that every input is statically typed as Type::Statistic — refusing both mismatches with a named error. The result carries a declared bounded cost (DistilledModel::cost) as part of the compiled artifact.",
+    "status": "BLOCKED",
+    "current": "qip_strategy::compile::StrategyCompiler::compile (backend/crates/edge/qip-strategy/src/compile.rs:263,696-729) lowers a validated Expr::Model to Op::Model only after checking the model's declared arity against the number of supplied inputs and that every input is statically typed as Type::Statistic \u2014 refusing both mismatches with a named error. The result carries a declared bounded cost (DistilledModel::cost) as part of the compiled artifact.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/compile.rs:263,696-729",
       "test: a_model_given_an_input_that_is_not_a_statistic_is_refused_at_compile_time (backend/crates/edge/qip-strategy/tests/strategy.rs:1314)",
@@ -597,7 +597,7 @@
       "backend/crates/apps/qip-api/src/mesh.rs:880,973",
       "test: a_plan_is_admitted_only_when_the_manifest_names_its_model_at_its_own_digest (backend/crates/edge/qip-edge/tests/model_manifest.rs:158)"
     ],
-    "gap": "The compiled artifact carries no reference to a validation record, and compile() itself refuses nothing on validation grounds — any DistilledModel, including a deserialised one that skipped its constructor, lowers to Op::Model. Validation is enforced one step later, at deploy: Cell::check_models_promoted admits a plan only when the signed manifest names the model at its digest, and manifest entries come only from Platform::promote_model (qip-kernel model_serving.rs:210), which requires a registered card and an artifact the provider serves; qip-api/src/mesh.rs:880,973 ships that manifest. So an unvalidated model is refused at the cell, not at the compiler, and the artifact does not name the record that validated it.",
+    "gap": "The compiled artifact carries no reference to a validation record, and compile() itself refuses nothing on validation grounds \u2014 any DistilledModel, including a deserialised one that skipped its constructor, lowers to Op::Model. Validation is enforced one step later, at deploy: Cell::check_models_promoted admits a plan only when the signed manifest names the model at its digest, and manifest entries come only from Platform::promote_model (qip-kernel model_serving.rs:210), which requires a registered card and an artifact the provider serves; qip-api/src/mesh.rs:880,973 ships that manifest. So an unvalidated model is refused at the cell, not at the compiler, and the artifact does not name the record that validated it.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -606,12 +606,12 @@
     "depends_on": [
       "MODEL-003"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-051",
     "verification": "backend/crates/edge/qip-strategy/tests/strategy.rs::a_model_given_an_input_that_is_not_a_statistic_is_refused_at_compile_time",
     "work_item": "E10-compiled-artifact-validation-reference",
     "tier": "T1",
     "size": "S",
-    "notes": "This requirement's own notes name qip-strategy's compile as the existing reflex-side compiler (ADR 0083); the neural-to-symbolic half grows with master Phase 9 and is not attempted here. verify: status kept PARTIAL; gap corrected — it called the ModelManifest 'currently unproduced', which is stale (qip-api mesh.rs:880,973 produces it from promote_model's record). | 2026-10-05 not built: the compiler runs before validation by design — a candidate is compiled so that it can be backtested — so 'compile nothing unvalidated' needs the post-validation Reflex Package Builder of MODEL-051, which does not exist."
+    "notes": "This requirement's own notes name qip-strategy's compile as the existing reflex-side compiler (ADR 0083); the neural-to-symbolic half grows with master Phase 9 and is not attempted here. verify: status kept PARTIAL; gap corrected \u2014 it called the ModelManifest 'currently unproduced', which is stale (qip-api mesh.rs:880,973 produces it from promote_model's record). | 2026-10-05 not built: the compiler runs before validation by design \u2014 a candidate is compiled so that it can be backtested \u2014 so 'compile nothing unvalidated' needs the post-validation Reflex Package Builder of MODEL-051, which does not exist. | 2026-10-06 Updated: BLOCKED on MODEL-051. Requires post-validation Reflex Package Builder (MODEL-051) which does not exist."
   },
   {
     "id": "MODEL-024",
@@ -619,7 +619,7 @@
     "current": "nothing",
     "evidence": [
       "rg -in 'uplift|intervention.effect|heterogeneous.*effect|treatment.effect' backend/crates -g '*.rs' (excluding tests) returns no hits",
-      "qip-twin's CounterfactualEngine (backend/crates/services/qip-twin/src/counterfactual.rs:494-639) prices the alternatives one specific decision did not take — a per-decision counterfactual, not a per-entity/audience/market/horizon heterogeneous treatment-effect estimator with treatment selection"
+      "qip-twin's CounterfactualEngine (backend/crates/services/qip-twin/src/counterfactual.rs:494-639) prices the alternatives one specific decision did not take \u2014 a per-decision counterfactual, not a per-entity/audience/market/horizon heterogeneous treatment-effect estimator with treatment selection"
     ],
     "gap": "No uplift/heterogeneous-treatment-effect model or treatment-selection mechanism exists anywhere.",
     "implemented": false,
