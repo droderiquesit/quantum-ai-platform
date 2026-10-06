@@ -1192,100 +1192,58 @@ fn an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_re
 }
 
 #[test]
-fn one_cycle_exercising_order_placed_filled_partially_filled_rejected_and_expired_opportunity()
--> Result<()> {
-    // MODEL-039 gap: 'no test drives one cycle holding an action, a decline, a
-    // partial fill and a failure and asserts one episode for each'.
-    // A venue failure cannot be forced through the platform's own broker,
-    // but the test can exercise OrderPlaced, Filled, PartiallyFilled, Rejected,
-    // and ExpiredOpportunity in one cycle from production code.
-    use std::collections::BTreeSet;
-
+fn one_cycle_records_a_placement_a_partial_fill_and_a_decline_on_one_verified_chain() -> Result<()>
+{
+    // MODEL-039 gap (2) asks for one cycle holding an action, a decline, a
+    // partial fill and a failure. The other tests here each prove one of
+    // those on its own; this one proves the first three land together on a
+    // single chain that still verifies, so a change that splits them across
+    // captures, or that breaks the chain when they interleave, is caught.
+    // A venue failure cannot be forced through the platform's own simulated
+    // broker, so the fourth kind is still the row's open gap.
     let mut platform = platform(PlatformConfig::default())?;
     platform.observe(jump_bars("AAA", 120));
     platform.observe(jump_bars("BBB", 120));
 
-    // Fill one order -> produces OrderPlaced and PartiallyFilled (desk fills 60%)
+    // The default venue fills 60%, so one desk order is both a placement and
+    // a partial fill.
     let _filled_order = fill_one(&mut platform, start())?;
 
-    // Submit an order that will be rejected (missing required data)
-    let rejected_order = platform.order_from(
+    // A proposal with no hypotheses is declined before it becomes an order.
+    let declined = platform.order_from(
         object("AAA"),
         Side::Buy,
         dec!("1000"),
         dec!("100"),
         "prop-invalid",
-        Vec::new(), // empty rationale - will be rejected
+        Vec::new(),
         start(),
     );
-    assert!(platform.submit_order(rejected_order, start()).is_err());
+    assert!(platform.submit_order(declined, start()).is_err());
 
-    // Queue multiple opportunities for the cycle
     platform.run_cycle(start());
 
     let capture = platform.outcomes();
     capture.verify()?;
 
-    // Collect all action types from this cycle
-    let mut actions = BTreeSet::new();
-    for entry in capture.entries() {
-        match &entry.decision.action {
-            Action::OrderPlaced { .. } => {
-                actions.insert("OrderPlaced");
-            }
-            Action::Filled { .. } => {
-                actions.insert("Filled");
-            }
-            Action::PartiallyFilled { .. } => {
-                actions.insert("PartiallyFilled");
-            }
-            Action::Rejected { .. } => {
-                actions.insert("Rejected");
-            }
-            Action::ExpiredOpportunity { .. } => {
-                actions.insert("ExpiredOpportunity");
-            }
-            _ => {}
-        }
-    }
-
-    // Assert all five action types are present in the capture
+    let count = |pick: fn(&Action) -> bool| {
+        capture
+            .entries()
+            .iter()
+            .filter(|e| pick(&e.decision.action))
+            .count()
+    };
     assert!(
-        actions.contains("OrderPlaced"),
-        "OrderPlaced action not found in capture"
+        count(|a| matches!(a, Action::OrderPlaced { .. })) > 0,
+        "no OrderPlaced entry on the chain"
     );
     assert!(
-        actions.contains("PartiallyFilled"),
-        "PartiallyFilled action not found in capture"
+        count(|a| matches!(a, Action::PartiallyFilled { .. })) > 0,
+        "no PartiallyFilled entry on the chain"
     );
     assert!(
-        actions.contains("Rejected"),
-        "Rejected action not found in capture"
+        count(|a| matches!(a, Action::Rejected { .. })) > 0,
+        "no Rejected entry on the chain"
     );
-
-    // Verify that each action has its own distinct record
-    let order_placed_count = capture
-        .entries()
-        .iter()
-        .filter(|e| matches!(e.decision.action, Action::OrderPlaced { .. }))
-        .count();
-    let partially_filled_count = capture
-        .entries()
-        .iter()
-        .filter(|e| matches!(e.decision.action, Action::PartiallyFilled { .. }))
-        .count();
-    let rejected_count = capture
-        .entries()
-        .iter()
-        .filter(|e| matches!(e.decision.action, Action::Rejected { .. }))
-        .count();
-
-    assert!(order_placed_count > 0, "no OrderPlaced entries recorded");
-    assert!(
-        partially_filled_count > 0,
-        "no PartiallyFilled entries recorded"
-    );
-    assert!(rejected_count > 0, "no Rejected entries recorded");
-
     Ok(())
 }
