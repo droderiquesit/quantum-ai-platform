@@ -4,10 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use qip_contracts::ambient::{
-    Advisory, AmbientSignal, AttentionRouter, Disposition, Pathway, PromotionCase, RoutingPolicy,
-    SignalClass, Trigger, promote,
+    Advisory, AmbientSignal, AttentionRouter, Detection, Disposition, Pathway, PromotionCase,
+    RoutingPolicy, SignalClass, Trigger, promote,
 };
-use qip_core::{Duration, Timestamp};
+use qip_core::{Duration, Timestamp, dec};
 use std::collections::BTreeSet;
 
 const WINDOW_SECS: i64 = 60;
@@ -16,7 +16,28 @@ fn at(secs: i64) -> Timestamp {
     Timestamp::from_secs(secs)
 }
 
-fn signal(id: usize, class: SignalClass, severity: u32, secs: i64) -> AmbientSignal {
+/// A complete CONTRACT-025 detection made at `secs`, live for two hours.
+fn detection(secs: i64) -> Detection {
+    Detection {
+        observed_deviation: dec!("0.05"),
+        expected_baseline: dec!("1.02"),
+        horizon: Duration::from_secs(3_600),
+        novelty_bp: 500,
+        affected_entities: vec!["EURUSD".into()],
+        urgency_bp: 2_000,
+        wake_targets: vec![Pathway::SpecialistActivation],
+        evidence_ids: vec!["ev-1".into()],
+        expiry: at(secs + 7_200),
+    }
+}
+
+fn signal_with(
+    id: usize,
+    class: SignalClass,
+    severity: u32,
+    secs: i64,
+    detection: Detection,
+) -> AmbientSignal {
     AmbientSignal::new(
         format!("sig-{id}"),
         class,
@@ -24,17 +45,13 @@ fn signal(id: usize, class: SignalClass, severity: u32, secs: i64) -> AmbientSig
         severity,
         Trigger::Schedule("every-minute".into()),
         at(secs),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        500,
-        vec!["EURUSD".to_string()],
-        2_000,
-        vec!["alert".to_string()],
-        vec!["ev-1".to_string()],
-        at(secs + 7200),
+        detection,
     )
     .expect("a well-formed signal")
+}
+
+fn signal(id: usize, class: SignalClass, severity: u32, secs: i64) -> AmbientSignal {
+    signal_with(id, class, severity, secs, detection(secs))
 }
 
 fn policy(budget: u32, defer: usize) -> RoutingPolicy {
@@ -65,15 +82,7 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
         10_000,
         Trigger::Event("world-model-updated".into()),
         at(0),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        500,
-        vec!["book".to_string()],
-        2_000,
-        vec!["alert".to_string()],
-        vec!["ev-1".to_string()],
-        at(7200),
+        detection(0),
     );
     assert!(ok.is_ok(), "premise: a valid signal is admitted");
     let unnamed = AmbientSignal::new(
@@ -83,15 +92,7 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
         1,
         Trigger::Schedule(String::new()),
         at(0),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        500,
-        vec!["book".to_string()],
-        2_000,
-        vec!["alert".to_string()],
-        vec!["ev-1".to_string()],
-        at(7200),
+        detection(0),
     );
     assert!(unnamed.is_err());
     let loud = AmbientSignal::new(
@@ -101,15 +102,7 @@ fn a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused(
         10_001,
         Trigger::Schedule("t".into()),
         at(0),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        500,
-        vec!["book".to_string()],
-        2_000,
-        vec!["alert".to_string()],
-        vec!["ev-1".to_string()],
-        at(7200),
+        detection(0),
     );
     assert!(loud.is_err());
 }
@@ -260,265 +253,223 @@ fn an_ambient_output_without_evidence_a_pass_an_approver_and_held_controls_is_re
     }
 }
 
-#[test]
-fn an_ambient_signal_must_have_novelty_and_urgency_within_range_and_expiry_after_detection() {
-    let base_ok = AmbientSignal::new(
-        "s1",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        5_000,
-        vec!["EURUSD".to_string()],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(200),
-    );
-    assert!(
-        base_ok.is_ok(),
-        "premise: valid signal with max values succeeds"
-    );
+// ---- CONTRACT-025: the fields an ambient signal carries, and its expiry.
 
-    let novelty_too_high = AmbientSignal::new(
-        "s2",
+fn new_with(d: Detection) -> qip_core::Result<AmbientSignal> {
+    AmbientSignal::new(
+        "s",
         SignalClass::Risk,
-        "EUR",
+        "book",
         5_000,
-        Trigger::Event("test".into()),
+        Trigger::Event("world-model-updated".into()),
         at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        10_001,
-        vec!["EURUSD".to_string()],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(200),
-    );
-    assert!(
-        novelty_too_high.is_err(),
-        "novelty exceeding 10000 is refused"
-    );
-
-    let urgency_too_high = AmbientSignal::new(
-        "s3",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        5_000,
-        vec!["EURUSD".to_string()],
-        10_001,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(200),
-    );
-    assert!(
-        urgency_too_high.is_err(),
-        "urgency exceeding 10000 is refused"
-    );
-
-    let expiry_before_detection = AmbientSignal::new(
-        "s4",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        5_000,
-        vec!["EURUSD".to_string()],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(50),
-    );
-    assert!(
-        expiry_before_detection.is_err(),
-        "expiry before detection is refused"
-    );
-}
-
-#[test]
-fn an_ambient_signal_must_have_entities_and_evidence_and_non_empty_horizons() {
-    let no_entities = AmbientSignal::new(
-        "s1",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        5_000,
-        vec![],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(200),
-    );
-    assert!(
-        no_entities.is_err(),
-        "signal must affect at least one entity"
-    );
-
-    let empty_entity = AmbientSignal::new(
-        "s2",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        5_000,
-        vec!["EURUSD".to_string(), String::new()],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(200),
-    );
-    assert!(empty_entity.is_err(), "empty entity names are refused");
-
-    let no_evidence = AmbientSignal::new(
-        "s3",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        5_000,
-        vec!["EURUSD".to_string()],
-        5_000,
-        vec!["action".to_string()],
-        vec![],
-        at(200),
-    );
-    assert!(
-        no_evidence.is_err(),
-        "signal must reference at least one evidence item"
-    );
-
-    let empty_evidence = AmbientSignal::new(
-        "s4",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(3600),
-        5_000,
-        vec!["EURUSD".to_string()],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string(), String::new()],
-        at(200),
-    );
-    assert!(empty_evidence.is_err(), "empty evidence ids are refused");
-
-    let negative_horizon = AmbientSignal::new(
-        "s5",
-        SignalClass::Risk,
-        "EUR",
-        5_000,
-        Trigger::Event("test".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::from_secs(-1),
-        5_000,
-        vec!["EURUSD".to_string()],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(200),
-    );
-    assert!(negative_horizon.is_err(), "negative horizon is refused");
-}
-
-#[test]
-fn an_ambient_signal_carries_all_contract_fields_and_they_are_accessible() {
-    let sig = AmbientSignal::new(
-        "s1",
-        SignalClass::Opportunity,
-        "opportunity",
-        3_000,
-        Trigger::Schedule("daily".into()),
-        at(100),
-        0.15,
-        1.05,
-        Duration::from_secs(7200),
-        2_500,
-        vec!["EURUSD".to_string(), "GBPUSD".to_string()],
-        8_000,
-        vec!["research".to_string(), "specialist".to_string()],
-        vec!["ev-1".to_string(), "ev-2".to_string()],
-        at(300),
+        d,
     )
-    .expect("valid signal");
+}
 
-    assert_eq!(sig.id(), "s1");
-    assert_eq!(sig.class(), SignalClass::Opportunity);
-    assert_eq!(sig.subject(), "opportunity");
-    assert_eq!(sig.severity_bp(), 3_000);
-    assert_eq!(sig.detected_at(), at(100));
-    assert_eq!(sig.observed_deviation(), 0.15);
-    assert_eq!(sig.expected_baseline(), 1.05);
-    assert_eq!(sig.horizon(), Duration::from_secs(7200));
-    assert_eq!(sig.novelty_bp(), 2_500);
-    assert_eq!(
-        sig.affected_entities(),
-        &["EURUSD".to_string(), "GBPUSD".to_string()][..]
+#[test]
+fn an_ambient_signal_missing_any_contract_field_is_refused_naming_that_field() {
+    // Premise: the unaltered detection is admitted, so each refusal below is
+    // caused by the one field it alters and not by the fixture.
+    assert!(
+        new_with(detection(100)).is_ok(),
+        "premise: a complete detection is admitted"
     );
+
+    let cases: [(&str, Detection, &str); 9] = [
+        (
+            "no affected entity",
+            Detection {
+                affected_entities: vec![],
+                ..detection(100)
+            },
+            "entities it affects",
+        ),
+        (
+            "a blank affected entity",
+            Detection {
+                affected_entities: vec!["EURUSD".into(), String::new()],
+                ..detection(100)
+            },
+            "entities it affects",
+        ),
+        (
+            "no wake target",
+            Detection {
+                wake_targets: vec![],
+                ..detection(100)
+            },
+            "pathway to wake",
+        ),
+        (
+            "no evidence lineage",
+            Detection {
+                evidence_ids: vec![],
+                ..detection(100)
+            },
+            "evidence lineage",
+        ),
+        (
+            "a blank evidence id",
+            Detection {
+                evidence_ids: vec!["ev-1".into(), String::new()],
+                ..detection(100)
+            },
+            "evidence lineage",
+        ),
+        (
+            "novelty above the scale",
+            Detection {
+                novelty_bp: 10_001,
+                ..detection(100)
+            },
+            "novelty 10001 bp",
+        ),
+        (
+            "urgency above the scale",
+            Detection {
+                urgency_bp: 10_001,
+                ..detection(100)
+            },
+            "urgency 10001 bp",
+        ),
+        (
+            "a negative horizon",
+            Detection {
+                horizon: Duration::from_secs(-1),
+                ..detection(100)
+            },
+            "negative horizon",
+        ),
+        (
+            "an expiry before detection",
+            Detection {
+                expiry: at(99),
+                ..detection(100)
+            },
+            "expiry before detection",
+        ),
+    ];
+    for (what, d, names) in cases {
+        match new_with(d) {
+            Ok(_) => panic!("{what} was admitted"),
+            Err(e) => assert!(
+                e.message().contains(names),
+                "{what} was refused for the wrong reason: {}",
+                e.message()
+            ),
+        }
+    }
+}
+
+#[test]
+fn an_ambient_signal_with_a_zero_horizon_or_an_expiry_at_detection_is_admitted() {
+    // The boundaries of the two ordering checks: zero is "matters now", and an
+    // expiry equal to detection is a signal live for one instant.
+    let d = Detection {
+        horizon: Duration::ZERO,
+        expiry: at(100),
+        ..detection(100)
+    };
+    assert!(new_with(d).is_ok());
+}
+
+#[test]
+fn an_ambient_signal_carries_every_contract_field_it_was_given() {
+    let d = Detection {
+        observed_deviation: dec!("0.15"),
+        expected_baseline: dec!("1.05"),
+        horizon: Duration::from_secs(7_200),
+        novelty_bp: 2_500,
+        affected_entities: vec!["EURUSD".into(), "GBPUSD".into()],
+        urgency_bp: 8_000,
+        wake_targets: vec![Pathway::ResearchTask, Pathway::RiskReview],
+        evidence_ids: vec!["ev-1".into(), "ev-2".into()],
+        expiry: at(300),
+    };
+    let sig = new_with(d).expect("valid signal");
+    assert_eq!(sig.class(), SignalClass::Risk);
+    assert_eq!(sig.observed_deviation(), dec!("0.15"));
+    assert_eq!(sig.expected_baseline(), dec!("1.05"));
+    assert_eq!(sig.horizon(), Duration::from_secs(7_200));
+    assert_eq!(sig.novelty_bp(), 2_500);
+    assert_eq!(sig.affected_entities(), ["EURUSD", "GBPUSD"]);
     assert_eq!(sig.urgency_bp(), 8_000);
     assert_eq!(
-        sig.suggested_actions(),
-        &["research".to_string(), "specialist".to_string()][..]
+        sig.wake_targets(),
+        [Pathway::ResearchTask, Pathway::RiskReview]
     );
-    assert_eq!(
-        sig.evidence_ids(),
-        &["ev-1".to_string(), "ev-2".to_string()][..]
-    );
+    assert_eq!(sig.evidence_ids(), ["ev-1", "ev-2"]);
     assert_eq!(sig.expiry(), at(300));
 }
 
 #[test]
-fn an_ambient_signal_with_zero_horizon_is_admitted() {
-    let sig = AmbientSignal::new(
-        "s1",
-        SignalClass::Risk,
-        "test",
-        5_000,
-        Trigger::Event("alert".into()),
-        at(100),
-        0.05,
-        1.02,
-        Duration::ZERO,
-        5_000,
-        vec!["TEST".to_string()],
-        5_000,
-        vec!["action".to_string()],
-        vec!["ev-1".to_string()],
-        at(200),
+fn a_material_signal_consumed_after_its_expiry_wakes_nothing() {
+    let short = |secs| Detection {
+        expiry: at(secs + 10),
+        ..detection(secs)
+    };
+    // Premise: at its expiry instant the same signal still activates.
+    let mut router = AttentionRouter::new(policy(5, 0));
+    let live = router
+        .route(
+            &signal_with(1, SignalClass::Risk, 9_000, 0, short(0)),
+            at(10),
+        )
+        .expect("routes");
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].disposition, Disposition::Activated);
+
+    let mut router = AttentionRouter::new(policy(5, 0));
+    let late = router
+        .route(
+            &signal_with(2, SignalClass::Risk, 9_000, 0, short(0)),
+            at(11),
+        )
+        .expect("routes");
+    assert_eq!(late.len(), 1, "an expired signal is recorded, not silent");
+    assert_eq!(late[0].signal_id, "sig-2");
+    assert_eq!(late[0].disposition, Disposition::Expired);
+    assert!(
+        late.iter().all(|e| e.disposition != Disposition::Activated),
+        "an expired signal woke something"
     );
-    assert!(sig.is_ok(), "zero horizon is permitted");
+}
+
+#[test]
+fn a_held_signal_that_expires_while_deferred_wakes_nothing_and_spends_no_budget() {
+    // Budget one per window, room to hold one.
+    let mut router = AttentionRouter::new(policy(1, 1));
+    let first = router
+        .route(&signal(1, SignalClass::Risk, 9_000, 0), at(0))
+        .expect("routes");
+    assert_eq!(first[0].disposition, Disposition::Activated);
+    // Live for 30s, so stale by the next window at 60s.
+    let short = Detection {
+        expiry: at(30),
+        ..detection(1)
+    };
+    let held = router
+        .route(&signal_with(2, SignalClass::Risk, 9_000, 1, short), at(1))
+        .expect("routes");
+    assert_eq!(held[0].disposition, Disposition::Deferred);
+    assert_eq!(router.deferred_len(), 1, "premise: sig-2 is held");
+
+    // The next window drains the hold queue: sig-2 is expired, so it is
+    // recorded Expired and the window's one slot still goes to sig-3.
+    let next = router
+        .route(&signal(3, SignalClass::Risk, 9_000, 60), at(60))
+        .expect("routes");
+    let dispositions: Vec<_> = next
+        .iter()
+        .map(|e| (e.signal_id.as_str(), e.disposition))
+        .collect();
+    assert_eq!(
+        dispositions,
+        [
+            ("sig-2", Disposition::Expired),
+            ("sig-3", Disposition::Activated)
+        ]
+    );
+    assert_eq!(router.deferred_len(), 0);
 }

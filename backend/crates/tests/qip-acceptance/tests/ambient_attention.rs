@@ -14,9 +14,10 @@
 
 use qip_acceptance::{files_with_extension, read};
 use qip_contracts::ambient::{
-    AmbientSignal, AttentionEvent, AttentionRouter, RoutingPolicy, SignalClass, Trigger,
+    AmbientSignal, AttentionEvent, AttentionRouter, Detection, Pathway, RoutingPolicy, SignalClass,
+    Trigger,
 };
-use qip_core::{CorrelationId, Duration, EventId, Lineage, Timestamp};
+use qip_core::{CorrelationId, Duration, EventId, Lineage, Timestamp, dec};
 use qip_events::{Envelope, EventBody, EventLog, Topic};
 use serde::{Deserialize, Serialize};
 
@@ -47,6 +48,17 @@ fn an_ambient_signal_and_the_attention_event_it_caused_round_trip_through_the_ev
         8_000,
         Trigger::Event("world-model-updated".into()),
         at,
+        Detection {
+            observed_deviation: dec!("0.031"),
+            expected_baseline: dec!("1.0842"),
+            horizon: Duration::from_secs(3_600),
+            novelty_bp: 7_500,
+            affected_entities: vec!["EURUSD".into()],
+            urgency_bp: 6_000,
+            wake_targets: vec![Pathway::SpecialistActivation],
+            evidence_ids: vec!["evt-world-model-7".into()],
+            expiry: Timestamp::from_secs(4_600),
+        },
     )
     .expect("a valid signal");
     let policy = RoutingPolicy::standard(4_000, 2, Duration::from_secs(60), 4).expect("policy");
