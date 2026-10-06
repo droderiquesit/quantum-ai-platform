@@ -1850,7 +1850,10 @@ fn a_hypothesis_is_expired_when_read_after_its_ttl() -> Result<()> {
     let hypothesis = Hypothesis::form(draft(supported_from(1), sound_chain()))?;
 
     // Premise: the hypothesis has a valid horizon
-    assert!(hypothesis.horizon.as_nanos() > 0, "premise: horizon must be positive");
+    assert!(
+        hypothesis.horizon.as_nanos() > 0,
+        "premise: horizon must be positive"
+    );
 
     let as_of = hypothesis.as_of;
     let horizon = hypothesis.horizon;

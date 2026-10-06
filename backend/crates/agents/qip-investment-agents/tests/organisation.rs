@@ -1569,7 +1569,7 @@ fn the_organisation_feeds_the_reasoning_engine() -> Result<()> {
     // team attacks the result before anyone could act on it.
     use qip_reasoning_engine::engine::{ReasoningEngine, SynthesisInput};
     use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
-    use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim};
+    use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim, UncertaintyType};
     use qip_reasoning_engine::redteam::ReviewPolicy;
     use qip_world_model::causal::Mechanism;
 
@@ -1638,6 +1638,7 @@ fn the_organisation_feeds_the_reasoning_engine() -> Result<()> {
         findings: report.findings.clone(),
         direct_evidence: direct,
         prior: 0.25,
+        uncertainty_type: UncertaintyType::Epistemic,
         falsifiers: vec!["the next quarterly report shows flat gross margin".to_string()],
         leading_alternative:
             "the market already knows the funding structure and has priced the margin path"
@@ -1696,7 +1697,7 @@ fn two_briefs_identical_except_for_the_precedent_produce_identical_convictions_a
     // with the precedent as without it, bit for bit.
     use qip_reasoning_engine::engine::{ReasoningEngine, SynthesisInput};
     use qip_reasoning_engine::evidence::EvidenceSet;
-    use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim};
+    use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim, UncertaintyType};
     use qip_reasoning_engine::redteam::ReviewPolicy;
     use qip_world_model::causal::Mechanism;
 
@@ -1774,6 +1775,7 @@ fn two_briefs_identical_except_for_the_precedent_produce_identical_convictions_a
         findings,
         direct_evidence: EvidenceSet::from_items(Vec::new()),
         prior: 0.25,
+        uncertainty_type: UncertaintyType::Epistemic,
         falsifiers: vec!["the next quarterly report shows flat gross margin".to_string()],
         leading_alternative: "the market has priced the margin path".to_string(),
         horizon: Duration::from_days(60),
