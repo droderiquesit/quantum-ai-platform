@@ -464,5 +464,28 @@
     "tier": "T1",
     "size": "S",
     "notes": "P0 in the source requirement precisely because a vacuous truth here reads as protection and is not — the same lesson this repository's own MaxExpectedShortfall history names. verify: status MISSING -> PARTIAL; implemented, tested, integrated and deployable all false -> true. The assessor cited modules/cicd/main.tf:189 as 'a different domain's own no-delete-role acceptance check'. It is not a different domain. That comment describes infrastructure.rs:4044, which enforces this requirement's GCS object-deletion slice over every Terraform identity, including the one agents use for cost teardowns. The cicd module states outright that agents tear infrastructure down to stop the meter, so an agent cost action exists today. It is held off prod by infra.yml and off object deletion by the tested role scan. Its retention-update permission (storage.buckets.update) is unguarded, and that is the gap to close first."
+  },
+  {
+    "id": "FINOPS-020",
+    "status": "MISSING",
+    "current": "scripts/model-gateway.mjs enforces one cumulative model-call ceiling (ALGORIK_WORKER_MAX_CALLS) per ledger file, with no period or per-role breakdown; no per-role daily/monthly budget buckets exist. ADR 0098 routes no packet to a non-Anthropic model, so the gateway carries no calls in the factory as it runs today.",
+    "evidence": [
+      "scripts/model-gateway.mjs:62, 163-166, 290-303 (the enforced call budget and its refusal, cumulative per ledger, no per-role split)",
+      "docs/adr/0098-the-development-factory-is-the-orchestration-policy-run-on-the-owners-desktop-with-claude-tiers-and-the-gcp-fabric-waits-on-a-measured-rung.md decision 2 (no packet to a non-Anthropic model)",
+      "scripts/model-gateway.test.mjs:409 (test_a_spent_call_ceiling_refuses_the_next_task_before_anything_is_sent)"
+    ],
+    "gap": "No per-role budget concept exists; the ceiling is one cumulative value per ledger file, not separate budgets per agent/training family with daily and monthly periods. ADR 0101 adopts v12.0, which requires per-role budgets below the 25 USD/day ceiling, but the implementation is missing.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "integration: a budget value exists per role and a run exceeding it is stopped.",
+    "work_item": "E01",
+    "tier": "T2",
+    "size": "M",
+    "notes": "New in v12.0 and ADR 0101. It is scored against the repository as found, and it authorises no execution. The gateway is dev tooling (ADR 0098) reached from no composition root and no environment. The requirement's own notes flag EXTERNAL_ACTION and it is marked with the COST policy flag. Per-role budget tracking would require a per-role ledger or account, and a mechanism to enforce per-role daily and monthly ceilings in the presence of concurrent tasks."
   }
 ]
