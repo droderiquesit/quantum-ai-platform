@@ -524,6 +524,9 @@ fn state() -> RiskState {
         // unevaluated. A fixture with an entry here is a state no order may
         // pass, which is the property `pretrade.rs` tests separately.
         unevaluated: BTreeMap::new(),
+        // No venue limit is exercised in this file; venue rules have their
+        // pass and veto fixtures in limit_fixtures.rs.
+        venue_exposures: BTreeMap::new(),
     }
 }
 
