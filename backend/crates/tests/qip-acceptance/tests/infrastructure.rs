@@ -10751,68 +10751,64 @@ fn the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resou
 }
 
 #[test]
-fn all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern() {
-    // GCP-024: "No single flat VPC" — the requirement prohibits a single VPC
-    // spanning all planes (Reflex, Fabric, Service, Data, Engineering). Today's
-    // architecture violates this: `modules/network` declares one VPC per
-    // environment, and `modules/trust-zones` places all thirteen zones as
-    // subnets of that one VPC.
-    //
-    // This test documents the violation: every zone subnet references the
-    // same VPC ID input (var.network_id), and in the root module, that
-    // network_id is wired to the single `modules/network` VPC. When GCP-024
-    // is fixed by separating planes into distinct VPCs, the root module will
-    // need to wire different VPCs to different sets of zones. This test will
-    // then fail (mutation-verified).
-
+fn trust_zones_are_not_one_flat_vpc_gcp_024() {
+    // GCP-024: "No single flat VPC". This test was written (lane l049) to
+    // document the violation -- every zone subnet on one `var.network_id` --
+    // and to fail once the planes were separated. GCP-009 separated them
+    // (Reflex, Fabric, Service) before it merged, so it now guards the fix
+    // instead: a zone subnet that goes back to one shared network, or a
+    // network map that collapses to one VPC, fails here.
     let zones = without_comments(&read(TRUST_ZONES_MODULE));
 
-    // Extract all google_compute_subnetwork resources from trust-zones.
     let zone_subnets = terraform_resources(&zones, "google_compute_subnetwork");
     assert!(
-        zone_subnets.len() > 0,
+        !zone_subnets.is_empty(),
         "no google_compute_subnetwork resources found in modules/trust-zones; \
-         this check is reading the wrong module or zones are no longer defined as subnets"
+         this check is reading the wrong module or zones are no longer subnets"
     );
-
-    // Every zone subnet must reference the same VPC network (proving the
-    // violation). The module uses `var.network_id`, so all zones use the
-    // value passed in. The premise: all zones reference the same variable.
-    let mut network_refs: Vec<String> = Vec::new();
     for (subnet_name, subnet_body) in &zone_subnets {
         let network_ref = hcl_field(subnet_body, "network").unwrap_or_else(|| {
-            panic!(
-                "zone subnet `{}` has no `network` field; \
-                     trust-zones subnets no longer reference the VPC",
-                subnet_name
-            )
+            panic!("zone subnet `{subnet_name}` has no `network` field")
         });
-        network_refs.push(network_ref);
+        assert!(
+            network_ref.starts_with("lookup(local.zone_network,"),
+            "zone subnet `{subnet_name}` takes its network from `{network_ref}` \
+             rather than the per-zone network map -- the single-VPC anti-pattern"
+        );
     }
 
-    // All zones must use the same network reference (they all use
-    // var.network_id). If they differed, the test would catch it.
-    let unique_refs: Vec<String> = network_refs
-        .clone()
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
+    // The map itself must name more than one VPC, and the execution zone
+    // must not share the public edge's network.
+    let map_start = zones
+        .find("zone_network = {")
+        .expect("modules/trust-zones declares no zone_network map");
+    let map_end = map_start
+        + zones[map_start..]
+            .find('}')
+            .expect("zone_network map is not closed");
+    let entries: std::collections::BTreeMap<String, String> = zones[map_start..map_end]
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (zone, network) = line.split_once('=')?;
+            Some((
+                zone.trim().trim_matches('"').to_string(),
+                network.trim().to_string(),
+            ))
+        })
         .collect();
-    assert_eq!(
-        unique_refs.len(),
-        1,
-        "zones reference different VPCs: {unique_refs:?}; \
-         the anti-pattern is partially fixed but not complete"
-    );
-
-    // Verify the reference is to the module's network_id variable.
     assert!(
-        unique_refs[0].contains("var.network_id"),
-        "all zones reference `{}`, not `var.network_id` from modules/trust-zones",
-        unique_refs[0]
+        entries.len() >= 2,
+        "zone_network names fewer than two zones: {entries:?}"
     );
-
-    // Summary: all zones use the same var.network_id, which is wired to the
-    // single VPC in the root module. This is the GCP-024 anti-pattern: one
-    // flat VPC for all planes/zones. This test documents the violation.
+    let networks: std::collections::BTreeSet<&String> = entries.values().collect();
+    assert!(
+        networks.len() > 1,
+        "every zone maps to the same network {networks:?}: one flat VPC (GCP-024)"
+    );
+    assert_ne!(
+        entries.get("execution"),
+        entries.get("public-edge"),
+        "the execution zone shares the public edge's VPC"
+    );
 }
