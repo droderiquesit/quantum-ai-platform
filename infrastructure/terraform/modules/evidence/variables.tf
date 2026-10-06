@@ -54,6 +54,11 @@ variable "retention_locked" {
 
   type    = bool
   default = true
+
+  validation {
+    condition     = var.retention_locked == true
+    error_message = "Evidence bucket retention policy must be locked to ensure immutability of decision audit records. Set retention_locked = true."
+  }
 }
 
 variable "writer_service_accounts" {
