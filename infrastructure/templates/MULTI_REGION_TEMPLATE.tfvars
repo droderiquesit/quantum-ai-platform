@@ -1,8 +1,14 @@
 # Multi-region edge cell deployment template.
 #
 # This file shows how to configure seven regional edge cells, staged from
-# shadow mode through observation to live trading. Every cell is independent
-# until capital mirrors are configured.
+# shadow mode through observation to venue paths opened. Every cell is
+# paper-only throughout (ADR 0003): leaving shadow mode opens paths to the
+# simulated venue and provider sandboxes, never to a live order route. Every
+# cell is independent until capital mirrors are configured.
+#
+# This is a template, not an environment. It lives outside
+# infrastructure/environments/ because `infra.yml` parses every tfvars file
+# there as one of the four environments.
 #
 # See infrastructure/EDGE_CELL_DEPLOYMENT_GUIDE.md for the deployment sequence.
 
@@ -23,7 +29,7 @@ execution_nodes = {
   #
   # us-east4 is the primary trading region. This cell is the reference for
   # all other cells' decisions and the reconciliation point for cross-region
-  # mirrors. Deployed first, runs in live mode once observed.
+  # mirrors. Deployed first, leaves shadow mode first once observed.
   "cell-us-east4" = {
     region              = "us-east4"
     zone                = "us-east4-a"

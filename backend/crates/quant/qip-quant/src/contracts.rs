@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 /// the request context — the portfolio it applies to, the moment it was made,
 /// and the strategy that is proposing it. Solvers use context to explain their
 /// choices; a request without context produces a meaningless result.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DecisionRequest {
     /// The quadratic unconstrained binary optimization problem to solve.
     pub problem: Qubo,
@@ -61,7 +61,7 @@ impl DecisionRequest {
             return Err(Error::invalid("strategy_id must not be empty"));
         }
 
-        let num_variables = problem.num_variables();
+        let num_variables = problem.n;
         if num_variables == 0 {
             return Err(Error::invalid(
                 "QUBO must have at least one variable to optimize",
@@ -103,7 +103,7 @@ impl DecisionRequest {
         if self.num_variables == 0 {
             return Err(Error::invalid("num_variables must be > 0"));
         }
-        if self.problem.num_variables() != self.num_variables {
+        if self.problem.n != self.num_variables {
             return Err(Error::invalid(
                 "problem size does not match num_variables declaration",
             ));

@@ -33,18 +33,22 @@ FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bda
 
 ARG BINARY
 
-# musl-dev is the only build dependency: alpine's Rust images target musl, which
-# is what makes the output static.
+# No package is installed here. musl-dev and gcc, the only build dependencies
+# (alpine's Rust images target musl, which is what makes the output static),
+# are layers of the digest above: rust-lang/docker-rust's own Dockerfile runs
+# `apk add musl-dev gcc` when it builds the image, so their revisions are
+# frozen by the digest like everything else in it.
 #
-# Unpinned deliberately (hadolint DL3018), and the limit of that is stated here
-# rather than left to be discovered: the digest above freezes the alpine minor
-# and the repository list this pulls from, but not the package revision alpine
-# serves today. Pinning the revision would break every time alpine rotates it,
-# and the failure would name a version nobody chose. So this line is the one
-# part of the build that is not byte-reproducible — and it is a C toolchain in
-# the builder, not anything that ships: the final stage is scratch.
-# hadolint ignore=DL3018
-RUN apk add --no-cache musl-dev
+# This line used to run `apk add --no-cache musl-dev` again, which refreshed
+# alpine's index over the network on every build: the one step whose input was
+# not pinned by anything in this repository (CICD-048). Pinning its revision
+# instead was tried and is worse — alpine keeps only the latest revision in a
+# release branch, so a pin breaks the build on the day alpine rotates it, and
+# the failure names a version nobody chose. Moving musl or gcc is now a digest
+# edit, which is a line a reviewer sees.
+#
+# The acceptance test `the_build_stage_installs_nothing_the_digest_does_not_pin`
+# refuses an `apk` invocation coming back.
 
 WORKDIR /src
 # The build context is the repository root; only the Rust workspace under

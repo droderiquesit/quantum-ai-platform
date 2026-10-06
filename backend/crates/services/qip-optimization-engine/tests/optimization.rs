@@ -729,3 +729,262 @@ fn the_encoding_never_produces_a_weight_above_the_position_cap() -> Result<()> {
     assert!(approx_eq(unbound.achievable_gross(4), 1.0, 1e-12));
     Ok(())
 }
+
+// --- the classical baseline computation (mandatory first run) -----------
+
+#[test]
+fn the_classical_solver_runs_first_before_quantum_is_attempted() -> Result<()> {
+    // ADR 0006 mandate: the classical baseline is not optional and must run
+    // before any quantum path, even when the quantum path will be attempted.
+    let provider = Arc::new(SimulatedProvider::new(3).with_max_qubits(12));
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 12,
+        qaoa: QaoaSettings {
+            layers: 1,
+            optimiser_iterations: 20,
+            shots: 0,
+        },
+        ..RoutingPolicy::default()
+    };
+    let router = ComputeRouter::classical(1)
+        .with_policy(policy)
+        .with_quantum(provider);
+    let decision = router.solve(&discrete(10, 4)?)?;
+
+    // The classical run must be present.
+    let classical_run = decision
+        .runs
+        .iter()
+        .find(|r| !r.solver.is_quantum())
+        .expect("no classical run found, violating the mandatory baseline rule");
+
+    // The classical run must be first (or at worst, indistinguishable from
+    // first). Iteration order is insertion order in Vec, and the classical
+    // solve is pushed before any quantum attempt.
+    let first_run = decision.runs.first().expect("no runs recorded at all");
+    assert!(
+        !first_run.solver.is_quantum(),
+        "the first run must be classical, not {:?}",
+        first_run.solver
+    );
+
+    // The classical objective must be finite and recorded.
+    assert!(
+        classical_run.objective.is_finite(),
+        "classical objective must be finite, got {}",
+        classical_run.objective
+    );
+    assert!(
+        decision.classical_objective.is_finite(),
+        "decision.classical_objective must be finite, got {}",
+        decision.classical_objective
+    );
+    Ok(())
+}
+
+#[test]
+fn the_classical_objective_is_always_used_as_the_baseline_for_quantum_comparison() -> Result<()> {
+    // The quantum answer's improvement is measured against the classical
+    // baseline that was computed on the same problem. This is the enforcement
+    // mechanism for not measuring against a weak baseline.
+    let problem = discrete(12, 4)?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 12,
+        quantum_margin: 0.0001,
+        ..RoutingPolicy::default()
+    };
+
+    // Find a better solution to hand to the quantum provider.
+    let baseline = ComputeRouter::classical(99)
+        .with_policy(policy)
+        .solve(&problem)?;
+    let baseline_obj = baseline.classical_objective;
+    assert!(
+        baseline_obj.is_finite(),
+        "baseline must compute a finite objective"
+    );
+
+    // Search for a feasible three-name assignment that beats the baseline.
+    let encoding = QuboEncoding::equal_weight_bounded(4, 1.0, 0.3);
+    let mut better_assignment = None;
+    let mut better_objective = baseline_obj;
+
+    for a in 0..12 {
+        for b in (a + 1)..12 {
+            for c in (b + 1)..12 {
+                let mut assignment = vec![0u8; 12];
+                for idx in [a, b, c] {
+                    assignment[idx] = 1;
+                }
+                let obj = problem.objective_at(&encoding.to_weights(&assignment));
+                if obj < better_objective - 1e-9 {
+                    better_objective = obj;
+                    better_assignment = Some(assignment);
+                }
+            }
+        }
+    }
+
+    if let Some(assignment) = better_assignment {
+        // Now solve with a scripted quantum provider that returns this better
+        // assignment. The router must use the same classical baseline
+        // (baseline_obj) to measure improvement.
+        let decision = ComputeRouter::classical(99)
+            .with_policy(policy)
+            .with_quantum(Arc::new(ScriptedProvider {
+                assignment,
+                simulated: false,
+            }))
+            .solve(&problem)?;
+
+        // The classical objective in the decision must equal the one we computed.
+        assert!(
+            approx_eq(decision.classical_objective, baseline_obj, 1e-9),
+            "classical_objective must be the same baseline: got {} vs computed {}",
+            decision.classical_objective,
+            baseline_obj
+        );
+
+        // If quantum was chosen, the improvement was measured against this
+        // baseline.
+        if decision.chosen == Solver::Quantum {
+            let measured = decision.measured_quantum_advantage().unwrap();
+            let expected = (baseline_obj - decision.objective) / baseline_obj.abs();
+            assert!(
+                approx_eq(measured, expected, 1e-9),
+                "quantum improvement must be measured against the classical baseline: got {} vs expected {}",
+                measured,
+                expected
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn the_classical_baseline_is_computed_and_recorded_regardless_of_quantum_availability() -> Result<()>
+{
+    // Whether a quantum provider is attached, reachable, or used must not affect
+    // whether the classical baseline is computed. The platform defaults to
+    // classical and behaves identically to a classical-only deployment if the
+    // quantum path is unavailable.
+    let problem = discrete(12, 4)?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 12,
+        ..RoutingPolicy::default()
+    };
+
+    // Solve with no quantum provider.
+    let no_quantum = ComputeRouter::classical(42)
+        .with_policy(policy)
+        .solve(&problem)?;
+
+    // Solve with an unreachable quantum provider.
+    let unreachable = Arc::new(HostedProvider::new(HostedConfig {
+        vendor: "ibm-quantum".to_string(),
+        backend: "unreachable_backend".to_string(),
+        credential_env: "QIP_QUANTUM_TOKEN".to_string(),
+        endpoint: "https://unreachable.example.com".to_string(),
+        max_qubits: 133,
+        cost_per_job_micros: 1_000_000,
+    }));
+    let with_unreachable = ComputeRouter::classical(42)
+        .with_policy(policy)
+        .with_quantum(unreachable)
+        .solve(&problem)?;
+
+    // Both must have computed a classical baseline.
+    assert!(
+        no_quantum.classical_objective.is_finite(),
+        "classical_objective must be finite even without quantum provider"
+    );
+    assert!(
+        with_unreachable.classical_objective.is_finite(),
+        "classical_objective must be finite even with unreachable provider"
+    );
+
+    // The classical objectives must be identical (same seed, same problem,
+    // same policy).
+    assert!(
+        approx_eq(
+            no_quantum.classical_objective,
+            with_unreachable.classical_objective,
+            1e-12
+        ),
+        "classical baseline must be independent of quantum provider state: got {} vs {}",
+        no_quantum.classical_objective,
+        with_unreachable.classical_objective
+    );
+
+    // Both must have computed the same solution weights.
+    assert_eq!(
+        no_quantum.weights.len(),
+        with_unreachable.weights.len(),
+        "weight vector length must match"
+    );
+    for (i, (a, b)) in no_quantum
+        .weights
+        .iter()
+        .zip(with_unreachable.weights.iter())
+        .enumerate()
+    {
+        assert!(
+            approx_eq(*a, *b, 1e-12),
+            "weight[{i}] must match: got {} vs {}",
+            a,
+            b
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_classical_baseline_value_is_preserved_through_the_routing_decision() -> Result<()> {
+    // The classical_objective field in RoutingDecision is the value that is
+    // used to judge quantum answers. It must be stable and equal to the
+    // objective of the classical run.
+    let problem = discrete(10, 4)?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 12,
+        ..RoutingPolicy::default()
+    };
+    let router = ComputeRouter::classical(1).with_policy(policy);
+    let decision = router.solve(&problem)?;
+
+    // Extract the classical run from the runs vector.
+    let classical_run = decision
+        .runs
+        .iter()
+        .find(|r| !r.solver.is_quantum())
+        .expect("no classical run in decision.runs");
+
+    // The decision.classical_objective must equal the classical run's objective.
+    assert!(
+        approx_eq(decision.classical_objective, classical_run.objective, 1e-9),
+        "decision.classical_objective must equal the classical run's objective: {} vs {}",
+        decision.classical_objective,
+        classical_run.objective
+    );
+
+    // The decision's own objective must be >= classical_objective (never worse
+    // than the baseline).
+    assert!(
+        decision.objective >= decision.classical_objective - 1e-9,
+        "decision.objective must never be worse than classical_objective: {} vs {}",
+        decision.objective,
+        decision.classical_objective
+    );
+
+    // For a classical-only solve, the chosen solver must be the one in the run.
+    if decision.chosen == classical_run.solver {
+        assert!(
+            approx_eq(decision.objective, classical_run.objective, 1e-9),
+            "when classical is chosen, objectives must match"
+        );
+    }
+    Ok(())
+}
