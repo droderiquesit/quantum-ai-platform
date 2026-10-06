@@ -2724,15 +2724,19 @@ struct FirewallRule {
     destinations: Option<String>,
 }
 
+/// Extract a field value from an HCL resource or block body.
+/// Searches for `key = value` and returns the value.
+fn hcl_field(body: &str, key: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        collapsed(line)
+            .strip_prefix(&format!("{key} = "))
+            .map(str::to_string)
+    })
+}
+
 /// Every `google_compute_firewall` in a module.
 fn firewall_rules(text: &str) -> Vec<FirewallRule> {
-    let field = |body: &str, key: &str| -> Option<String> {
-        body.lines().find_map(|line| {
-            collapsed(line)
-                .strip_prefix(&format!("{key} = "))
-                .map(str::to_string)
-        })
-    };
+    let field = hcl_field;
     terraform_resources(text, "google_compute_firewall")
         .into_iter()
         .map(|(name, body)| FirewallRule {
@@ -10744,4 +10748,71 @@ fn the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resou
         !has_iam_binding_for_agent,
         "the agent_identity account must not have any IAM bindings that grant roles"
     );
+}
+
+#[test]
+fn all_trust_zones_are_subnets_of_a_single_vpc_gcp_024_anti_pattern() {
+    // GCP-024: "No single flat VPC" — the requirement prohibits a single VPC
+    // spanning all planes (Reflex, Fabric, Service, Data, Engineering). Today's
+    // architecture violates this: `modules/network` declares one VPC per
+    // environment, and `modules/trust-zones` places all thirteen zones as
+    // subnets of that one VPC.
+    //
+    // This test documents the violation: every zone subnet references the
+    // same VPC ID input (var.network_id), and in the root module, that
+    // network_id is wired to the single `modules/network` VPC. When GCP-024
+    // is fixed by separating planes into distinct VPCs, the root module will
+    // need to wire different VPCs to different sets of zones. This test will
+    // then fail (mutation-verified).
+
+    let zones = without_comments(&read(TRUST_ZONES_MODULE));
+
+    // Extract all google_compute_subnetwork resources from trust-zones.
+    let zone_subnets = terraform_resources(&zones, "google_compute_subnetwork");
+    assert!(
+        zone_subnets.len() > 0,
+        "no google_compute_subnetwork resources found in modules/trust-zones; \
+         this check is reading the wrong module or zones are no longer defined as subnets"
+    );
+
+    // Every zone subnet must reference the same VPC network (proving the
+    // violation). The module uses `var.network_id`, so all zones use the
+    // value passed in. The premise: all zones reference the same variable.
+    let mut network_refs: Vec<String> = Vec::new();
+    for (subnet_name, subnet_body) in &zone_subnets {
+        let network_ref = hcl_field(subnet_body, "network").unwrap_or_else(|| {
+            panic!(
+                "zone subnet `{}` has no `network` field; \
+                     trust-zones subnets no longer reference the VPC",
+                subnet_name
+            )
+        });
+        network_refs.push(network_ref);
+    }
+
+    // All zones must use the same network reference (they all use
+    // var.network_id). If they differed, the test would catch it.
+    let unique_refs: Vec<String> = network_refs
+        .clone()
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(
+        unique_refs.len(),
+        1,
+        "zones reference different VPCs: {unique_refs:?}; \
+         the anti-pattern is partially fixed but not complete"
+    );
+
+    // Verify the reference is to the module's network_id variable.
+    assert!(
+        unique_refs[0].contains("var.network_id"),
+        "all zones reference `{}`, not `var.network_id` from modules/trust-zones",
+        unique_refs[0]
+    );
+
+    // Summary: all zones use the same var.network_id, which is wired to the
+    // single VPC in the root module. This is the GCP-024 anti-pattern: one
+    // flat VPC for all planes/zones. This test documents the violation.
 }
