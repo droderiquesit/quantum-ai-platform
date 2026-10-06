@@ -37,7 +37,7 @@ M5 adds a fourth fence at the ledger writer, the process that posts fills to dur
 
 **Type system continuation.** The edge cell's type system (ADR 0100 §9, layer 3) ensures that only `simulated=true` fills are created. The ledger's type system (this fence) ensures that only records marked `simulated=true` are posted. The two together create an invariant that the balance sheet never reflects a live trade.
 
-## Cost
+## What it costs
 
 **Minimal.** A boolean check on every fill is nanoseconds. The refusal is logged but not alarmed; the operator sees the counter and the log line if they look, but it does not page anybody unless the rate becomes pathological (which would indicate a real breach).
 
