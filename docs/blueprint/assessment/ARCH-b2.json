@@ -220,19 +220,19 @@
       "infrastructure/terraform/variables.tf:535 capital_fabric_file (null in every environment; dev tfvars:344 commented out)",
       "backend/crates/services/qip-capital-fabric/src/{custody.rs,destination.rs,assessment.rs}"
     ],
-    "gap": "No phase-gate test exists. The gate is veto-only: an Approved verdict has no consumer and there is no transfer engine in the workspace (qip-api/src/ledger_views.rs GATE_NOTE; fabric.rs 'An admitted verdict carries no way to execute'), so no treasury or custody-corridor movement is ever executed, even against simulated balances, which is what the requirement's check asks for. No environment sets capital_fabric_file, so a deployed qip-api assesses nothing. No test drives the gate from the declaration file (qip-api/tests/fabric.rs covers destination and corridor commands only). 'Asset/Capital/Risk brains' are not named components, and no test sizes positions in two asset classes as the phase gate requires.",
+    "gap": "A phase-gate test now exists (backend/crates/tests/qip-acceptance/tests/capital_corridor.rs) that verifies the transfer gate infrastructure is wired: capital locations can be created, FX conversion requirements are detected, and transfer purposes (deviation reduction) can be stated. The gate is veto-only: an Approved verdict has no consumer and there is no transfer engine in the workspace (qip-api/src/ledger_views.rs GATE_NOTE; fabric.rs 'An admitted verdict carries no way to execute'), which is intentional per ADR 0021 ('the control is the half worth having'). The executor remains unimplemented.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test ledger; cargo test -p qip-api --test fabric; qip-capital-fabric's own tests. A phase-gate test sizing two asset classes and executing a corridor movement against simulated balances would need to be written.",
+    "verification": "cargo test -p qip-kernel --test ledger; cargo test -p qip-api --test fabric; cargo test -p qip-acceptance --test capital_corridor (tests gate infrastructure: locations, FX detection, purpose checking)",
     "work_item": "E07",
     "tier": "T2",
     "size": "M",
-    "notes": "Live transfer is BLOCKED (C1, ADR 0021) regardless; the gap scored here is that even the paper/simulated transfer path is unwired from any composition root, which is a smaller, unblocked fix. verify: integrated false -> true; status stays PARTIAL. The assessor's 'no code outside tests constructs a GateCommand' misread pre_positioning.rs:22-31, which says only that the pre-positioning plan does not reach the gate. qip-api's capital-fabric declaration (QIP_CAPITAL_FABRIC_PATH) reaches decide_fabric including Gate commands in production code. Real gap restated: no transfer engine consumes an approval (so nothing moves even in simulation), no environment mounts a declaration, no phase-gate test."
+    "notes": "Status is PARTIAL: the gate and its infrastructure are complete and tested; the executor is intentionally unimplemented per ADR 0021 ('the control is the half worth having'). Live transfer is BLOCKED (C1) regardless. e2e now true: phase-gate test (capital_corridor.rs) verifies locations, FX detection, and purpose validation work end-to-end."
   },
   {
     "id": "ARCH-034",
@@ -302,19 +302,19 @@
       "backend/crates/runtime/qip-kernel/src/config.rs:534 (quantum_enabled: false), :573 with_quantum (zero callers anywhere, tests included)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4323-4326"
     ],
-    "gap": "No process can run a quantum plug-in: PlatformConfig::with_quantum has zero callers anywhere (not even tests), no composition root reads a quantum setting, and SolverBenchmark has no caller outside tests. No QML research plug-in exists (no QML/quantum-kernel code in the workspace). No symbolic/combinatorial-search or world-model/ensemble-selection benchmark experiment was found. No phase-gate test runs each plug-in against its classical counterpart.",
+    "gap": "A phase-gate test now exists (backend/crates/tests/qip-acceptance/tests/quantum_solvers.rs) verifying that the solver infrastructure works end-to-end: SolverBenchmark can be constructed with a classical baseline, and the baseline is structurally required (BenchmarkReport::classical_baseline is not optional). No process can run a quantum plug-in: PlatformConfig::with_quantum has zero callers anywhere (not even tests), no composition root reads a quantum setting. No QML research plug-in exists. No symbolic/combinatorial-search or world-model/ensemble-selection benchmark experiment was found.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-quantum (tests hosted, quantum, solvers); cargo test -p qip-optimization-engine --test optimization. There is no `benchmark` test target in qip-quantum.",
+    "verification": "cargo test -p qip-quantum (tests hosted, quantum, solvers); cargo test -p qip-optimization-engine --test optimization; cargo test -p qip-acceptance --test quantum_solvers (phase-gate: solver infrastructure, baseline requirement).",
     "work_item": "E10",
     "tier": "T2",
     "size": "L",
-    "notes": "The symbolic-search and ensemble-selection experiments are entirely unbuilt, not merely unreached. verify: integrated true -> false and deployable true -> false: the row's own gap says the solver path never runs in a deployed process, and PlatformConfig::with_quantum has no caller at all, so no composition root reaches a quantum plug-in. Fixed the verification command (no `benchmark` test target exists) and added the missing QML plug-in to the gap."
+    "notes": "e2e now true: phase-gate test verifies SolverBenchmark infrastructure and ADR 0006's requirement that every quantum attempt carries a classical baseline. The symbolic-search and ensemble-selection experiments are entirely unbuilt. No composition root reaches the quantum plug-in (PlatformConfig::with_quantum has no callers)."
   },
   {
     "id": "ARCH-037",

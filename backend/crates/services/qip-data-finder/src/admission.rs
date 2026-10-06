@@ -88,6 +88,9 @@ pub struct CatalogueEntry {
 /// The usages every source is asked about before it may feed the loop.
 pub const REQUIRED_USAGES: [Usage; 2] = [Usage::Derive, Usage::Trade];
 
+/// The usage required for real-time data consumption without deriving or archiving.
+pub const REALTIME_USAGE: Usage = Usage::RealTime;
+
 /// Proof that [`admit_from_registered`] ran and said yes.
 ///
 /// A zero-sized value with no public constructor, held privately by
@@ -1761,5 +1764,30 @@ mod tests {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod realtime_usage_tests {
+    use super::*;
+
+    #[test]
+    fn the_realtime_usage_variant_can_be_serialized_and_deserialized() {
+        let usage = REALTIME_USAGE;
+        assert_eq!(usage.as_str(), "real_time");
+
+        // Verify serialization round-trip
+        let json = serde_json::to_string(&usage).expect("serialization");
+        let deserialized: Usage = serde_json::from_str(&json).expect("deserialization");
+
+        assert_eq!(deserialized, usage);
+        assert_eq!(deserialized.as_str(), "real_time");
+    }
+
+    #[test]
+    fn realtime_usage_is_distinct_from_derive_and_trade() {
+        assert_ne!(REALTIME_USAGE, Usage::Derive);
+        assert_ne!(REALTIME_USAGE, Usage::Trade);
+        assert_eq!(REALTIME_USAGE, Usage::RealTime);
     }
 }

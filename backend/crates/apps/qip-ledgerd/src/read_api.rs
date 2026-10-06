@@ -144,32 +144,34 @@ mod tests {
     }
 
     #[test]
-    fn empty_ledger_returns_zero_balance() {
+    fn an_empty_ledger_returns_zero_balance_for_any_venue_and_currency() {
         let store = temp_store();
         let api = ReadApi::new("127.0.0.1:9091".parse().expect("valid socket"), store);
 
+        // Premise: the store is empty, so a query for any account reads zero.
         let balance = api
             .handle_balance("venue:sim-xnys", "USD")
             .expect("query succeeds");
-        assert_eq!(balance, "0", "empty ledger returns zero balance");
+        assert_eq!(balance, "0");
     }
 
     #[test]
-    fn read_api_returns_postings_as_text() {
+    fn an_empty_ledger_returns_a_readable_no_postings_message() {
         let store = temp_store();
         let api = ReadApi::new("127.0.0.1:9091".parse().expect("valid socket"), store);
 
+        // Premise: the store is empty, so a query for postings reads the message
+        // that tells an operator nothing has been recorded, not an empty list.
         let postings = api
             .handle_postings("venue:sim-xnys", 0, u64::MAX)
             .expect("query succeeds");
-        assert_eq!(
-            postings, "no postings found",
-            "empty ledger returns no postings"
-        );
+        assert_eq!(postings, "no postings found");
     }
 
     #[test]
-    fn parse_account_handles_all_formats() {
+    fn the_account_parser_accepts_all_three_formats_and_rejects_malformed_ones() {
+        // Premise: each format can be parsed successfully, so the assertion below
+        // is about the parsing and not about the fixture.
         let trading = parse_account("trading:cell-a/strategy-b").expect("parses trading");
         assert!(matches!(
             trading,
@@ -191,7 +193,8 @@ mod tests {
             Account::Fees { venue: v } if v == "sim-xnys"
         ));
 
+        // The other half: a malformed format is rejected.
         let invalid = parse_account("invalid:format");
-        assert!(invalid.is_err(), "rejects invalid account format");
+        assert!(invalid.is_err());
     }
 }

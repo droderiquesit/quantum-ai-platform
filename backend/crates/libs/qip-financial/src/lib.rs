@@ -29,6 +29,7 @@ pub mod extensions;
 pub mod history;
 pub mod identifiers;
 pub mod intelligence;
+pub mod inventory;
 pub mod ladder;
 pub mod manifest;
 pub mod object;
@@ -58,6 +59,7 @@ pub use identifiers::{IdentifierKind, Identifiers};
 pub use intelligence::{
     AlternativeDataPoint, EntityMention, FundamentalUpdate, MacroObservation, NewsItem, Sentiment,
 };
+pub use inventory::{GoodsCondition, GoodsLocation, InventoryLedger, InventoryRecord, Reservation};
 pub use ladder::{
     LadderEntry, LiquidationHorizon, LiquidationPlan, LiquidityLadder, PlanLeg, Rung,
 };

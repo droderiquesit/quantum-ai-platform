@@ -105,6 +105,11 @@ qip-storage.workspace = true
 qip-capital.workspace = true
 qip-twin.workspace = true
 
+# ARCH-033's phase-gate test verifies the transfer gate infrastructure:
+# capital locations, FX conversion detection, and stated purposes (deviation reduction).
+# These types live in the capital-fabric service.
+qip-capital-fabric.workspace = true
+
 # The region-share suite issues grants through `CentralPlane::issue`, the
 # door a deployment uses, and that door refuses a strategy below pilot;
 # walking one there needs the lifecycle's family and evidence types, which
@@ -118,6 +123,11 @@ qip-streaming.workspace = true
 # ADR 0100's ledger posting logic, so a later packet's acceptance test can
 # walk fill-to-ledger reconciliation without a second manifest edge.
 qip-portfolio.workspace = true
+
+# EVENT-001 integration test for event prediction scoring. This crate holds
+# the scoring module that compares platform probability against market
+# probability for event contracts. In-tree; the two-dependency rule is untouched.
+qip-prediction.workspace = true
 
 [lints]
 workspace = true

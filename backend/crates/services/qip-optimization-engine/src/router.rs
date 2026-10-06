@@ -452,6 +452,20 @@ impl ComputeRouter {
         let result = provider.solve_qubo(&qubo, &self.policy.qaoa)?;
         let weights = encoding.to_weights(&result.assignment);
 
+        // Validate the provider's claimed energy against the recomputed QUBO objective.
+        // A provider whose claim disagrees with the assignment's actual value is
+        // untrustworthy and must be refused.
+        let recomputed_objective = qubo.evaluate(&result.assignment);
+        const ENERGY_TOLERANCE: f64 = 1e-6;
+        if (result.energy - recomputed_objective).abs() > ENERGY_TOLERANCE {
+            return Err(qip_core::error::Error::invalid(format!(
+                "quantum provider claimed energy {:.6} but assignment scored {:.6}; mismatch of {:.6}",
+                result.energy,
+                recomputed_objective,
+                (result.energy - recomputed_objective).abs()
+            )));
+        }
+
         let mut relaxations = vec![encoding.describe()];
         if provider.capabilities().simulated {
             relaxations.push(

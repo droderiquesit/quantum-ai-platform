@@ -86,7 +86,7 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    assert_eq!(roster.len(), 18, "the organisation is eighteen agents");
+    assert_eq!(roster.len(), 19, "the organisation is nineteen agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -227,6 +227,22 @@ fn compliance_has_no_language_model() {
             .capabilities
             .contains(Capability::CallLanguageModel)
     );
+}
+
+#[test]
+fn the_event_prediction_analyst_is_registered_and_reads_event_markets() {
+    let roster = manifests::roster(now());
+    let analyst = roster
+        .get(ids::EVENT)
+        .expect("event analyst must be registered");
+    assert_eq!(analyst.role, AgentRole::Research);
+    assert!(analyst.capabilities.contains(Capability::PublishHypothesis));
+    assert!(analyst.capabilities.contains(Capability::CallLanguageModel));
+    assert!(analyst.capabilities.contains(Capability::ReadMarketData));
+    assert!(analyst.capabilities.contains(Capability::ReadReferenceData));
+    assert!(analyst.capabilities.contains(Capability::ReadWorldModel));
+    assert!(!analyst.capabilities.contains(Capability::SubmitOrder));
+    assert_eq!(analyst.owner, "quantitative-research");
 }
 
 #[test]

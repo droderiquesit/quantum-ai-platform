@@ -387,6 +387,11 @@ fn a_handler_that_publishes_in_a_loop_is_stopped() {
     // The idempotency key stops the exact repeat, so the loop is broken either
     // by deduplication or by the ceiling; neither may hang.
     let result = bus.drain(&ctx);
+    // Premise: the handler published at least once (it publishes on every invocation).
+    assert!(
+        bus.duplicates_suppressed() > 0 || result.is_err(),
+        "the loop must be stopped either by dedup or by hitting the ceiling"
+    );
     assert!(
         result.is_ok()
             || result
@@ -958,6 +963,11 @@ fn unregistered_topics_are_reported() {
         })
         .unwrap();
     let missing = registry.unregistered_topics();
+    // Premise: registering one topic leaves others unregistered.
+    assert!(
+        !missing.is_empty(),
+        "the registry must have unregistered topics"
+    );
     assert!(!missing.contains(&Topic::MarketTick));
     assert!(missing.contains(&Topic::OrderFilled));
 }
@@ -2414,7 +2424,7 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
     // Premise: the closed set is the size the registry says, so a topic
     // added to `ALL` without a row below is a failure here and not a silent
     // default.
-    assert_eq!(Topic::ALL.len(), 86, "the topic registry changed size");
+    assert_eq!(Topic::ALL.len(), 88, "the topic registry changed size");
 
     let expected = |topic: Topic| match topic {
         Topic::MarketTick | Topic::MarketQuote | Topic::MarketOrderBook => {
@@ -2471,6 +2481,7 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
         | Topic::OrderCancelled
         | Topic::OrderRejected
         | Topic::OrderFilled
+        | Topic::SettlementRecorded
         | Topic::PositionUpdated
         | Topic::PnlUpdated
         | Topic::ReconciliationCompleted
@@ -2495,6 +2506,7 @@ fn every_topic_declares_the_retention_class_its_record_carries() {
         | Topic::ModelEvaluated
         | Topic::LearningCompleted
         | Topic::LessonRecorded
+        | Topic::WorldModelSnapshot
         | Topic::SourceRevisionDetected
         | Topic::SourceLifecycleChanged
         | Topic::ResearchCampaignClosed

@@ -5,6 +5,7 @@
 //! it — the point being that a new event cannot be introduced without the
 //! routing, documentation and observability for it being considered.
 
+use crate::event_fabric::policy::QosClass;
 use crate::retention::RetentionClass;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -158,6 +159,10 @@ pub enum Topic {
     OrderCancelled,
     OrderRejected,
     OrderFilled,
+    /// A settlement record the fabric producer writes for an executed fill
+    /// (P1Outcomes, ADR 0100 §5). Carries the trade settlement date, amount
+    /// and any special terms. On P1, never dropped.
+    SettlementRecorded,
     PositionUpdated,
     PnlUpdated,
     ReconciliationCompleted,
@@ -181,6 +186,10 @@ pub enum Topic {
     ModelEvaluated,
     LearningCompleted,
     LessonRecorded,
+    /// A snapshot of the world model state (P3Research, ADR 0100 §5). Carries
+    /// the current entity state, relationships and derived features for
+    /// research campaigns and counterfactual analysis. Backlog allowed.
+    WorldModelSnapshot,
     /// A source was found to have revised an extent this platform had
     /// already used (ADR 0057). Its own topic rather than
     /// `DataQualityFailed`, which is not retained permanently and which the
@@ -303,7 +312,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 86] = [
+    pub const ALL: [Self; 88] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -358,6 +367,7 @@ impl Topic {
         Self::OrderCancelled,
         Self::OrderRejected,
         Self::OrderFilled,
+        Self::SettlementRecorded,
         Self::PositionUpdated,
         Self::PnlUpdated,
         Self::ReconciliationCompleted,
@@ -369,6 +379,7 @@ impl Topic {
         Self::ModelEvaluated,
         Self::LearningCompleted,
         Self::LessonRecorded,
+        Self::WorldModelSnapshot,
         Self::SourceRevisionDetected,
         Self::SourceLifecycleChanged,
         Self::ResearchCampaignClosed,
@@ -450,6 +461,7 @@ impl Topic {
             Self::OrderCancelled => "order.cancelled",
             Self::OrderRejected => "order.rejected",
             Self::OrderFilled => "order.filled",
+            Self::SettlementRecorded => "settlement.recorded",
             Self::PositionUpdated => "position.updated",
             Self::PnlUpdated => "pnl.updated",
             Self::ReconciliationCompleted => "reconciliation.completed",
@@ -461,6 +473,7 @@ impl Topic {
             Self::ModelEvaluated => "model.evaluated",
             Self::LearningCompleted => "learning.completed",
             Self::LessonRecorded => "lesson.recorded",
+            Self::WorldModelSnapshot => "world_model.snapshot",
             Self::SourceRevisionDetected => "learning.source_revised",
             Self::SourceLifecycleChanged => "learning.source_lifecycle",
             Self::ResearchCampaignClosed => "learning.campaign_closed",
@@ -552,6 +565,7 @@ impl Topic {
             | Self::OrderCancelled
             | Self::OrderRejected
             | Self::OrderFilled
+            | Self::SettlementRecorded
             | Self::PositionUpdated
             | Self::PnlUpdated
             | Self::ReconciliationCompleted
@@ -564,6 +578,7 @@ impl Topic {
             | Self::ModelEvaluated
             | Self::LearningCompleted
             | Self::LessonRecorded
+            | Self::WorldModelSnapshot
             | Self::SourceRevisionDetected
             | Self::SourceLifecycleChanged
             | Self::ResearchCampaignClosed
@@ -682,7 +697,7 @@ impl Topic {
             | Self::VenueWithdrawn
             | Self::VenueReinstated => RetentionClass::Irreplaceable,
             // Own orders, fills, positions, reconciliations, a region going
-            // dark: permanently.
+            // dark: permanently. Settlement records: fills that have settled.
             Self::OrderProposed
             | Self::OrderApproved
             | Self::OrderSubmitted
@@ -690,20 +705,22 @@ impl Topic {
             | Self::OrderCancelled
             | Self::OrderRejected
             | Self::OrderFilled
+            | Self::SettlementRecorded
             | Self::PositionUpdated
             | Self::PnlUpdated
             | Self::ReconciliationCompleted
             | Self::RegionDark
             | Self::RegionLit => RetentionClass::Irreplaceable,
             // Outcomes, attributions, lessons, a source's revision, a
-            // campaign's close: compressed state with its outcome, indexed
-            // for retrieval, kept indefinitely.
+            // campaign's close, world model snapshots: compressed state with its outcome,
+            // indexed for retrieval, kept indefinitely.
             Self::OutcomeObserved
             | Self::AttributionCompleted
             | Self::HypothesisScored
             | Self::ModelEvaluated
             | Self::LearningCompleted
             | Self::LessonRecorded
+            | Self::WorldModelSnapshot
             | Self::SourceRevisionDetected
             | Self::SourceLifecycleChanged
             | Self::ResearchCampaignClosed
@@ -758,6 +775,44 @@ impl Topic {
     /// the kill switch's engagement was permanent while its release was not.
     pub const fn requires_permanent_retention(&self) -> bool {
         self.retention_class().is_permanent()
+    }
+
+    /// The event fabric QoS class for topics published on the fabric
+    /// (ADR 0100 §5), or None for topics not routed through the fabric.
+    ///
+    /// Topics are classified by durability requirement:
+    /// - P0Control: Policy announcements, never dropped
+    /// - P1Outcomes: Order fills, settlement, never dropped
+    /// - P2MarketJournal: Reflex journal entries, throttled
+    /// - P3Research: World model, research/knowledge, backlog allowed
+    /// - P4Telemetry: System telemetry, sampled or shed
+    pub const fn pclass(&self) -> Option<QosClass> {
+        match self {
+            // P0Control: policy and control announcements
+            Self::PolicyDistributed => Some(QosClass::P0Control),
+
+            // P1Outcomes: order fills, settlement, never dropped
+            Self::OrderFilled
+            | Self::SettlementRecorded
+            | Self::ReflexOutcomeRecorded
+            | Self::ReflexChainSpan => Some(QosClass::P1Outcomes),
+
+            // P2MarketJournal: reflex journal entries, throttled
+            Self::ReflexJournalRecorded | Self::MarketEventApplied | Self::EventFabricGap => {
+                Some(QosClass::P2MarketJournal)
+            }
+
+            // P3Research: world model snapshots, research/knowledge events, backlog allowed
+            Self::WorldModelSnapshot
+            | Self::OutcomeObserved
+            | Self::HypothesisScored
+            | Self::ModelEvaluated
+            | Self::LearningCompleted => Some(QosClass::P3Research),
+
+            // Topics not on the event fabric: market data (replaceable), discovery,
+            // reasoning, simulation, platform control (not yet published on fabric)
+            _ => None,
+        }
     }
 }
 

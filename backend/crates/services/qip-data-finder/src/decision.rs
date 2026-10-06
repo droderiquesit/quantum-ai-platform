@@ -37,6 +37,8 @@ pub enum LifecycleStage {
     Score,
     Route,
     Register,
+    Sandbox,
+    Promote,
     Monitor,
     DetectDrift,
     FindReplacement,
@@ -52,6 +54,8 @@ impl LifecycleStage {
             Self::Score => "score",
             Self::Route => "route",
             Self::Register => "register",
+            Self::Sandbox => "sandbox",
+            Self::Promote => "promote",
             Self::Monitor => "monitor",
             Self::DetectDrift => "detect_drift",
             Self::FindReplacement => "find_replacement",
@@ -59,7 +63,7 @@ impl LifecycleStage {
     }
 
     /// The stages in the order the lifecycle runs them.
-    pub const ORDER: [Self; 10] = [
+    pub const ORDER: [Self; 12] = [
         Self::Discover,
         Self::Classify,
         Self::Probe,
@@ -67,6 +71,8 @@ impl LifecycleStage {
         Self::Score,
         Self::Route,
         Self::Register,
+        Self::Sandbox,
+        Self::Promote,
         Self::Monitor,
         Self::DetectDrift,
         Self::FindReplacement,

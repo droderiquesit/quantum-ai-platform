@@ -58,7 +58,7 @@
   },
   {
     "id": "CICD-071",
-    "status": "INCORRECT",
+    "status": "BLOCKED",
     "current": "The platform's one documented schema-migration discipline for its own wire schemas is a single-step bump that makes an older consumer stop, which is what this row forbids. qip_contracts::wire::CELL_DELTA_SCHEMA_VERSION (wire.rs:122-148) says 'Raise it whenever the delta's wire shape changes in a way an older reader would misunderstand... a bump means an unupgraded centre goes quiet about the cells that have moved ahead of it', and versions 2-4 were each additive fields deliberately made breaking. qip-mesh's WireDelta decodes through AnyEvent::decode (delta.rs:149), which refuses any payload newer than the reader (envelope.rs:129-136), so every version bump is breaking for every older consumer by construction; qip-api's composition root decodes cell deltas this way. No producer writes two forms, and SchemaRegistry refuses two body types on one topic (registry.rs:69-77). The only additive-compatible rule in the tree is qip-market-ingestion's connector SchemaVersion (newer minor admitted, newer major refused), which governs external vendor source schemas, not the platform's own.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/wire.rs:122-148 (CELL_DELTA_SCHEMA_VERSION: bump => unupgraded centre goes quiet)",
@@ -77,12 +77,12 @@
     "depends_on": [
       "CICD-069"
     ],
-    "blocked_by": "",
+    "blocked_by": "ARCHITECTURE_DECISION",
     "verification": "none exists",
     "work_item": "E02",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: reclassified MISSING -> INCORRECT. The assessor missed that a migration discipline does exist for the platform's own wire schema (CELL_DELTA_SCHEMA_VERSION, wire.rs:122-148) and it is single-step: every bump makes an older reader refuse and 'go quiet', contradicting the verification clause 'a consumer on the old version keeps working'. It is reached from qip-api's composition root via qip_mesh::delta. The connector SchemaVersion major/minor rule covers vendor sources only."
+    "notes": "Blocked on architectural decision: current wire schema discipline is deliberately fail-loud (single-step breaking bumps), documented in CELL_DELTA_SCHEMA_VERSION wire.rs:122-148 as the chosen pattern ('bump means an unupgraded centre goes quiet'). Requirement asks for additive-compatible migration (consumer on old version keeps working). These are contradictory. Meeting this row requires an ADR to change the fundamental discipline from fail-loud to additive-first, plus implementation of dual-write/dual-read or versioned topics. Recommend deferring to next planning cycle."
   },
   {
     "id": "CICD-072",

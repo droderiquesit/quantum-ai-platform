@@ -988,3 +988,122 @@ fn the_classical_baseline_value_is_preserved_through_the_routing_decision() -> R
     }
     Ok(())
 }
+
+/// A quantum provider that claims a different energy than its assignment produces.
+#[derive(Debug)]
+struct LyingQuantumProvider {
+    assignment: Vec<u8>,
+    claimed_energy: f64,
+    simulated: bool,
+}
+
+impl QuantumProvider for LyingQuantumProvider {
+    fn name(&self) -> &str {
+        "lying"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            max_qubits: 64,
+            simulated: self.simulated,
+            noisy: false,
+            typical_queue: qip_core::time::Duration::ZERO,
+            cost_per_job_micros: 0,
+        }
+    }
+    fn solve_qubo(&self, _qubo: &Qubo, _settings: &QaoaSettings) -> Result<QaoaResult> {
+        let assignment = self.assignment.clone();
+        Ok(QaoaResult {
+            energy: self.claimed_energy,
+            assignment,
+            expectation: 0.0,
+            success_probability: 1.0,
+            layers: 1,
+            angles: vec![0.0, 0.0],
+            evaluations: 1,
+        })
+    }
+}
+
+#[test]
+fn a_quantum_answer_with_a_mismatched_claimed_energy_is_refused() -> Result<()> {
+    let problem = discrete(12, 4)?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 12,
+        quantum_margin: 0.0,
+        ..RoutingPolicy::default()
+    };
+
+    // Create an assignment that's feasible but claim a different energy.
+    let encoding = QuboEncoding::equal_weight_bounded(4, 1.0, 0.3);
+    let mut assignment = vec![0u8; 12];
+    for idx in [0, 1, 2, 3] {
+        assignment[idx] = 1;
+    }
+    let true_objective = problem.objective_at(&encoding.to_weights(&assignment));
+
+    let router = ComputeRouter::classical(99)
+        .with_policy(policy)
+        .with_quantum(Arc::new(LyingQuantumProvider {
+            assignment,
+            claimed_energy: true_objective - 100.0, // Lie by 100
+            simulated: false,
+        }));
+
+    let decision = router.solve(&problem)?;
+
+    // The quantum answer's claimed improvement should not be trusted, so classical
+    // should be chosen. This test verifies that ComputeRouter rejects quantum
+    // candidates whose claimed energy doesn't match their actual assignment value.
+    assert_ne!(
+        decision.chosen,
+        Solver::Quantum,
+        "quantum answer with mismatched energy claim should be refused; rationale: {}",
+        decision.rationale
+    );
+    Ok(())
+}
+
+#[test]
+fn a_quantum_answer_that_violates_the_cardinality_constraint_is_refused() -> Result<()> {
+    let problem = discrete(12, 4)?;
+    let policy = RoutingPolicy {
+        minimum_assets_for_quantum: 4,
+        exact_enumeration_limit: 12,
+        quantum_margin: 0.0,
+        ..RoutingPolicy::default()
+    };
+
+    // Create an assignment with too many holdings (5 instead of cardinality 4).
+    // This satisfies the QUBO but violates the cardinality constraint that
+    // the QUBO relaxation dropped.
+    let mut assignment = vec![0u8; 12];
+    for idx in [0, 1, 2, 3, 4] {
+        assignment[idx] = 1; // 5 holdings instead of 4
+    }
+
+    let encoding = QuboEncoding::equal_weight_bounded(4, 1.0, 0.3);
+    let _true_objective = problem.objective_at(&encoding.to_weights(&assignment));
+
+    let router = ComputeRouter::classical(99)
+        .with_policy(policy)
+        .with_quantum(Arc::new(ScriptedProvider {
+            assignment,
+            simulated: false,
+        }));
+
+    let decision = router.solve(&problem)?;
+
+    // The cardinality constraint violation should be caught by ComputeRouter's
+    // score() function when it re-evaluates against the real PortfolioProblem.
+    assert_ne!(
+        decision.chosen,
+        Solver::Quantum,
+        "quantum answer violating cardinality should be refused; rationale: {}",
+        decision.rationale
+    );
+    Ok(())
+}

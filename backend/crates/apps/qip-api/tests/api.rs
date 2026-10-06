@@ -3213,3 +3213,97 @@ fn the_api_binary_serves_through_the_golden_signal_wrapper_under_the_limits_it_b
         "the server is bound with limits other than the ones saturation is reported against"
     );
 }
+
+/// OBS-023: A request-scoped span is created for each API request.
+#[test]
+fn a_request_scoped_span_is_created_for_each_api_request() {
+    use qip_api::http::{Handler, Request, Response, StreamDecision};
+    use qip_observability::trace::SpanKind;
+    use std::sync::Arc;
+
+    struct TestHandler;
+
+    impl Handler for TestHandler {
+        fn handle(&self, _: &Request) -> Response {
+            Response {
+                status: 200,
+                headers: Default::default(),
+                body: "test response".into(),
+            }
+        }
+
+        fn stream(&self, _: &Request) -> StreamDecision {
+            StreamDecision::NotAStream
+        }
+    }
+
+    let clock = Arc::new(ManualClock::new(now()));
+    let tracer = Arc::new(qip_observability::trace::Tracer::new("qip-api-test", clock));
+
+    let inner = Arc::new(TestHandler);
+    let handler = qip_api::TracingHandler::new(inner, tracer.clone());
+
+    // Make first request
+    let request1 = Request {
+        method: qip_api::http::Method::Get,
+        path: "/api/v1".to_string(),
+        query: Default::default(),
+        headers: Default::default(),
+        body: Default::default(),
+        peer: "127.0.0.1:54321".to_string(),
+    };
+    let response1 = handler.handle(&request1);
+    assert_eq!(response1.status, 200);
+
+    // Make second request
+    let request2 = Request {
+        method: qip_api::http::Method::Get,
+        path: "/api/v1/governance".to_string(),
+        query: Default::default(),
+        headers: Default::default(),
+        body: Default::default(),
+        peer: "127.0.0.1:54322".to_string(),
+    };
+    let response2 = handler.handle(&request2);
+    assert_eq!(response2.status, 200);
+
+    // Verify spans were created
+    let spans = tracer.spans();
+    assert!(
+        spans.len() >= 2,
+        "expected at least 2 spans, got {}",
+        spans.len()
+    );
+
+    // Check first span attributes
+    let first_span = &spans[0];
+    assert_eq!(first_span.kind, SpanKind::Server);
+    assert_eq!(
+        first_span.attributes.get("http.method"),
+        Some(&"GET".to_string())
+    );
+    assert_eq!(
+        first_span.attributes.get("http.status_code"),
+        Some(&"200".to_string())
+    );
+    assert_eq!(
+        first_span.attributes.get("http.url"),
+        Some(&"/api/v1".to_string())
+    );
+
+    // Check second span attributes
+    let second_span = &spans[1];
+    assert_eq!(second_span.kind, SpanKind::Server);
+    assert_eq!(
+        second_span.attributes.get("http.method"),
+        Some(&"GET".to_string())
+    );
+    assert_eq!(
+        second_span.attributes.get("http.status_code"),
+        Some(&"200".to_string())
+    );
+    assert_eq!(
+        second_span.attributes.get("http.url"),
+        Some(&"/api/v1/governance".to_string())
+    );
+}

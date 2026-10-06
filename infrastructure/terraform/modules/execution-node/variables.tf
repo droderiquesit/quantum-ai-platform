@@ -772,3 +772,59 @@ variable "region_allocation" {
     EOT
   }
 }
+
+variable "standby_enabled" {
+  description = <<-EOT
+    Whether a standby node is provisioned in a different zone for reflex
+    promotion (GCP-043).
+
+    False by default. When true, this module creates a standby instance group
+    manager in a different zone within the same region, configured with
+    identical machine type, boot image, and firewall posture as the primary.
+    The standby monitors the primary's liveness via a fencing token on port 9443
+    and is promoted to hold the cell when the primary fails.
+  EOT
+
+  type    = bool
+  default = false
+}
+
+variable "standby_zone" {
+  description = <<-EOT
+    The zone the standby node runs in, used only when standby_enabled is true.
+
+    Must be in the same region as var.zone but in a different zone for
+    geographic diversity. This supports the reflex standby promotion described
+    in GCP-043.
+  EOT
+
+  type = string
+
+  validation {
+    condition     = startswith(var.standby_zone, "${var.region}-")
+    error_message = "The standby zone must be in the region: a standby in ${var.region} with a zone elsewhere is a node whose subnet and instance group are in different places."
+  }
+
+  validation {
+    condition     = var.standby_zone != var.zone
+    error_message = "The standby zone must differ from the primary zone for geographic diversity."
+  }
+}
+
+variable "standby_subnet_cidr" {
+  description = <<-EOT
+    The standby node's own subnet range, used only when standby_enabled is true.
+
+    Must not overlap the primary node's subnet, any trust zone's range, or
+    another region's node subnet. Like subnet_cidr, this provides a separate
+    range so firewall rules targeting a subnet and tag describe the standby
+    unambiguously.
+  EOT
+
+  type = string
+
+  validation {
+    condition     = can(cidrhost(var.standby_subnet_cidr, 0))
+    error_message = "The standby subnet CIDR must be a valid CIDR block such as 10.41.1.0/24."
+  }
+}

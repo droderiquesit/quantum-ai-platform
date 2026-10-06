@@ -153,3 +153,111 @@ fn the_build_stage_installs_nothing_the_digest_does_not_pin() {
         "the build stage must start from a digest-pinned base: {from_build:?}"
     );
 }
+
+/// CICD-052: the artifact registry holds container images, Rust packages,
+/// and deployment bundles.
+///
+/// The registry module must declare three repositories: images (DOCKER format),
+/// rust_packages (GENERIC format for Cargo crates), and deployment_bundles
+/// (GENERIC format for versioned OCI artifacts). Each is configured with
+/// immutable tags (where applicable), cleanup policies in dry-run mode, and
+/// IAM bindings that allow CI to push but not delete.
+#[test]
+fn the_artifact_registry_declares_all_three_repositories() {
+    let text = read("infrastructure/terraform/modules/registry/main.tf");
+
+    // Verify the container image repository is declared.
+    assert!(
+        text.contains("resource \"google_artifact_registry_repository\" \"images\""),
+        "container image repository (images) not declared"
+    );
+    assert!(
+        text.contains("format        = \"DOCKER\""),
+        "container image repository must use DOCKER format"
+    );
+    assert!(
+        text.contains("immutable_tags = true"),
+        "container image repository must have immutable tags enabled"
+    );
+
+    // Verify the Rust package repository is declared.
+    assert!(
+        text.contains("resource \"google_artifact_registry_repository\" \"rust_packages\""),
+        "Rust package repository (rust_packages) not declared"
+    );
+    let rust_section = text
+        .split("resource \"google_artifact_registry_repository\" \"rust_packages\"")
+        .nth(1)
+        .expect("rust_packages section not found")
+        .split("resource \"google_artifact_registry_repository\"")
+        .next()
+        .unwrap_or("");
+    assert!(
+        rust_section.contains("format        = \"GENERIC\""),
+        "Rust package repository must use GENERIC format"
+    );
+    assert!(
+        rust_section.contains("cleanup_policy_dry_run = true"),
+        "Rust package repository must have cleanup policy in dry-run mode"
+    );
+
+    // Verify the deployment bundle repository is declared.
+    assert!(
+        text.contains("resource \"google_artifact_registry_repository\" \"deployment_bundles\""),
+        "deployment bundle repository (deployment_bundles) not declared"
+    );
+    let bundle_section = text
+        .split("resource \"google_artifact_registry_repository\" \"deployment_bundles\"")
+        .nth(1)
+        .expect("deployment_bundles section not found")
+        .split("resource \"google_artifact_registry_repository\"")
+        .next()
+        .unwrap_or("");
+    assert!(
+        bundle_section.contains("format        = \"GENERIC\""),
+        "deployment bundle repository must use GENERIC format"
+    );
+    assert!(
+        bundle_section.contains("cleanup_policy_dry_run = true"),
+        "deployment bundle repository must have cleanup policy in dry-run mode"
+    );
+
+    // Verify CI has push access to all three repositories via writer role.
+    assert!(
+        text.contains("resource \"google_artifact_registry_repository_iam_member\" \"ci_push\""),
+        "CI push access to container images not configured"
+    );
+    assert!(
+        text.contains(
+            "resource \"google_artifact_registry_repository_iam_member\" \"rust_packages_ci_push\""
+        ),
+        "CI push access to rust packages not configured"
+    );
+    assert!(
+        text.contains("resource \"google_artifact_registry_repository_iam_member\" \"deployment_bundles_ci_push\""),
+        "CI push access to deployment bundles not configured"
+    );
+
+    // Verify all three use the writer role (push without delete).
+    let ci_push_sections: Vec<&str> = text.split("\"ci_push\"").collect();
+    assert!(
+        ci_push_sections
+            .iter()
+            .any(|section| { section.contains("role       = \"roles/artifactregistry.writer\"") }),
+        "container image CI push must use writer role"
+    );
+    let rust_push_sections: Vec<&str> = text.split("\"rust_packages_ci_push\"").collect();
+    assert!(
+        rust_push_sections
+            .iter()
+            .any(|section| { section.contains("role       = \"roles/artifactregistry.writer\"") }),
+        "Rust package CI push must use writer role"
+    );
+    let bundle_push_sections: Vec<&str> = text.split("\"deployment_bundles_ci_push\"").collect();
+    assert!(
+        bundle_push_sections
+            .iter()
+            .any(|section| { section.contains("role       = \"roles/artifactregistry.writer\"") }),
+        "deployment bundle CI push must use writer role"
+    );
+}
