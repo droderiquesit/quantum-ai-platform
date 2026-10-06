@@ -422,6 +422,13 @@ impl CentralPlane {
 
         let reviews = self.factory_mut().review(&observations, models, now)?;
 
+        // Promote strategies with evidence to their next rung. Candidate→Holdout
+        // is handled by deepbrain; this handles Holdout→Paper, Paper→Shadow, and
+        // Shadow→Pilot (if evidence is adequate). The gate for each rung verifies
+        // the evidence and refuses if inadequate. No human approval is required
+        // here: only Pilot and Scaled hold capital and need it.
+        self.promote_strategies_with_evidence(now)?;
+
         // Dispositioned before the learnings are assembled, at the seam where
         // the retirement is known: the review says the ledger retired the
         // strategy this tick, and the books are as the last settlement left
@@ -667,6 +674,60 @@ impl CentralPlane {
         let resized = (updated.expected_sharpe, updated.sharpe_standard_error);
         self.set_proposal(updated);
         Some(resized)
+    }
+
+    /// Promote strategies with evidence to their next rung without human approval.
+    ///
+    /// Rungs Holdout, Paper and Shadow do not hold capital and do not require approval.
+    /// A strategy at Holdout with Paper evidence is promoted to Paper. A strategy at
+    /// Paper with Shadow evidence is promoted to Shadow. A strategy at Shadow with
+    /// adequate Shadow evidence can be promoted to Pilot, but that requires approval
+    /// (not handled here; approval comes through `approve_promotion` in qip-api).
+    fn promote_strategies_with_evidence(&mut self, now: Timestamp) -> Result<()> {
+        // Collect strategies that are at non-capital rungs with evidence for the next rung.
+        let promotable: Vec<(StrategyId, GateStage)> = self
+            .factory()
+            .candidates()
+            .filter_map(|candidate| {
+                let id = candidate.strategy().clone();
+                let stage = self.factory().stage_of(&id);
+                if !matches!(
+                    stage,
+                    GateStage::Holdout | GateStage::Paper | GateStage::Shadow
+                ) {
+                    return None;
+                }
+                let Some(next) = stage.next() else {
+                    return None;
+                };
+                if next.requires_human_approval() {
+                    return None;
+                }
+                // Check if this candidate has evidence for the next rung.
+                let has_evidence = match next {
+                    GateStage::Paper => candidate.evidence().paper.is_some(),
+                    GateStage::Shadow => candidate.evidence().shadow.is_some(),
+                    GateStage::Pilot => false, // Pilot requires approval
+                    _ => false,
+                };
+                if !has_evidence {
+                    return None;
+                }
+                Some((id, next))
+            })
+            .collect();
+
+        // Attempt to promote each eligible strategy.
+        for (strategy, next) in promotable {
+            let stage = self.factory().stage_of(&strategy);
+            let rationale = format!(
+                "automatic promotion from {} with {} evidence",
+                stage.as_str(),
+                next.as_str()
+            );
+            let _ = self.factory_mut().promote(&strategy, None, rationale, now);
+        }
+        Ok(())
     }
 }
 
