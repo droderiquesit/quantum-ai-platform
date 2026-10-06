@@ -20,6 +20,8 @@
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::Arc;
+
 use qip_core::error::Result;
 use qip_core::hash::{sha256_hex, to_hex};
 use qip_core::hmac_sha256;
@@ -430,8 +432,6 @@ fn replay_verification_produces_deterministic_watermarks() -> Result<()> {
 /// The test will post the fill twice.
 #[test]
 fn a_duplicate_fill_is_posted_only_once() -> Result<()> {
-    use std::sync::Arc;
-
     // Simulate ledger state: balances and partition tails
     let mut balances: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
     let mut partition_tails: std::collections::BTreeMap<String, PartitionTail> =
