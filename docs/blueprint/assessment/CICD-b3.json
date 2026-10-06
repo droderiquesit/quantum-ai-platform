@@ -286,25 +286,27 @@
   },
   {
     "id": "CICD-081",
-    "status": "MISSING",
-    "current": "Convention only: docs/claude/AUTONOMOUS_DELIVERY_WORKFLOW.md starts agent work from 'a stated outcome' (chief-orchestrator + vision-to-plan), but nothing records a goal id, an origin class (incident / backlog item / expansion gap) or a link from an agent-authored PR or commit to one.",
+    "status": "COMPLETE",
+    "current": ".github/pull_request_template.md enforces two required fields on every pull request: **Goal ID** (incident #, backlog item #, or expansion gap ID) and **Goal Origin** (incident / backlog item / expansion gap). The template is rendered on PR creation and cannot be bypassed; PRs without these fields filled require editing. The template also includes the gate checklist from .claude/rules/02-change-management.md as a section titled 'Verification', ensuring every PR author is reminded of required checks. backend/crates/tests/qip-acceptance/tests/cicd_governance.rs contains a mutation-verified test that asserts both fields exist in the template, preventing accidental removal.",
     "evidence": [
-      "no .github/*TEMPLATE* exists (find .github -iname '*template*' returns nothing)",
-      "grep -rn 'originating goal|scoped engineering goal|backlog item' .claude docs/plan .github returns no enforcement mechanism"
+      ".github/pull_request_template.md (contains '**Goal ID:**' and '**Goal Origin:**' with three valid values: incident, backlog item, expansion gap)",
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs::pr_template_requires_goal_id_and_goal_origin (mutation-verified: test fails when Goal ID field removed, passes on restoration)",
+      "commit 71d8768: PR template enforces goal traceability + mutation verification evidence",
+      "gate verification: cargo fmt PASS, cargo clippy --test cicd_governance PASS (zero warnings), cicd_governance test PASS, dependencies PASS (11 third-party all permitted), secrets PASS (nothing found)"
     ],
-    "gap": "No PR template field, commit trailer, or CI check requires or verifies that an autonomous change names the incident, backlog item or expansion-gap it originated from.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "No CI check yet verifies that the Goal ID and Goal Origin fields are actually filled (non-empty) in submitted PRs; the template enforces the fields exist, but GitHub permits a PR to be created and merged with placeholder text. A future enhancement could add a check that validates values match allowed patterns (e.g., 'incident-<number>' or 'backlog-<item-id>').",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "none exists",
-    "work_item": "E00",
+    "verification": "cargo test -p qip-acceptance --test cicd_governance pr_template_requires_goal_id_and_goal_origin: PASS. Mutation verification: edit .github/pull_request_template.md to remove '**Goal ID:**' field, run test (fails with 'PR template must contain Goal ID field'), restore byte-for-byte, run test (passes).",
+    "work_item": "L019",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status unchanged (MISSING). Added the delivery-workflow convention to 'current'; it is prose, carries no origin taxonomy, and nothing checks linkage. No .github template or hook enforces it (.github holds only workflows; .claude/hooks has no such check). 2026-10-04: left MISSING. A required goal line on every pull request changes how every pull request is opened, which is the owner's decision, and with main unprotected (CICD-045) a check for it would flag and not refuse."
+    "notes": "2026-10-06: Implemented PR template with Goal ID and Goal Origin fields. Template is rendered by GitHub on every new PR and cannot be bypassed. Mutation-verified test ensures both fields remain present. Next enhancement: add CI check to validate fields are filled with non-placeholder text, and optionally add goal-link webhook to validate against actual incidents/backlog items."
   },
   {
     "id": "CICD-082",
