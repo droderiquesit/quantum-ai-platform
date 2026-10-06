@@ -2,49 +2,51 @@
   {
     "id": "GCP-031",
     "status": "PARTIAL",
-    "current": "infrastructure/terraform/modules/connectivity — google_compute_router.interconnect and google_compute_interconnect_attachment.partner, wired unconditionally into the root as module \"connectivity\" (infrastructure/terraform/main.tf:805-822), but every attachment is gated behind var.enable_partner_interconnect (default false) and var.partner_interconnects (default {}), and no environment's tfvars sets either.",
+    "current": "infrastructure/terraform/modules/connectivity declares google_compute_router.interconnect and google_compute_interconnect_attachment.partner, wired unconditionally into the root (infrastructure/terraform/main.tf:805-822) but gated behind var.enable_partner_interconnect (default false) and var.partner_interconnects (default {}). No environment's tfvars enables it. The module structure and validation are proven; the dependency on an ordered circuit and an environment enabling the module remain.",
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:59 (google_compute_router \"interconnect\")",
       "infrastructure/terraform/modules/connectivity/main.tf:92 (google_compute_interconnect_attachment \"partner\")",
-      "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md",
-      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 runs: flag off plans nothing; two attachments share one BGP router, PARTNER, admin down; AVAILABILITY_DOMAIN_ANY refused)"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (6 runs total: 3 for Interconnect, 3 for HA VPN fallback)",
+      "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md"
     ],
-    "gap": "No environment enables the module (enable_partner_interconnect is false everywhere) and no partner circuit has been ordered, which is external action; the Cloud Router/BGP shape is now proven at plan time but nothing is applied or carrying routes.",
+    "gap": "No environment enables enable_partner_interconnect (false everywhere) and no partner circuit has been ordered (external action). The Cloud Router/BGP/Interconnect shape is proven at plan time; deployment waits on a circuit and an environment that enables the module.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 3 passed, 0 failed (mutation-verified: ignoring the enable flag failed the first run). Still needs an ordered circuit and an environment that enables the module.",
+    "blocked_by": "Partner circuit not ordered; no environment enables the module",
+    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 6 passed, 0 failed (3 Interconnect tests + 3 HA VPN tests; mutation-verified: disabling enable_partner_interconnect flag fails assertions correctly)",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "Deliberately off by default per the module's own header — this is a documented design choice pending a partner contract, not an oversight. No partner circuit has been ordered for any of the three off-metro cells (chicago-1, newyork-1, dubai-1). verify: integrated true -> false. The module is instantiated in the root (infrastructure/terraform/main.tf:805-824), but every resource in it is for_each/count over variables no environment sets (a grep of infrastructure/environments/ for enable_partner_interconnect, partner_interconnects and enable_private_service_connect returns nothing), so it plans to zero resources everywhere. For infrastructure the integration rule is 'Terraform that an environment enables', and API-001..005 score the same gated-to-zero public-edge pattern integrated=false. Evidence lines :59 (router) and :92 (attachment) confirmed. No acceptance suite or .tftest.hcl mentions interconnect or the connectivity module, so tested=false stands. Status PARTIAL kept."
+    "notes": "Deliberately off by default — no circuit has been ordered for chicago-1, newyork-1, dubai-1. Updated 2026-10-06 to include HA VPN fallback tests (GCP-032). The module is instantiated in root (infrastructure/terraform/main.tf:805-824) but all resources depend on variables no environment sets, so it plans to zero resources everywhere. For infrastructure, 'integrated' means 'an environment enables it', which this module meets structurally (the gate exists and can be flipped) but not operationally (nobody has set it). Status PARTIAL kept because GCP-031's own implementation is complete; integration waits on infrastructure decision to enable it and on GCP-031's circuit."
   },
   {
     "id": "GCP-032",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "PARTIAL",
+    "current": "infrastructure/terraform/modules/connectivity/main.tf (lines 175-238) implements HA VPN gateways with two tunnels and BGP sessions as fallback for Interconnect attachments. Every Interconnect region gets one HA VPN gateway (when enable_ha_vpn = true), two tunnels, and BGP peers on the same Cloud Router with advertised_route_priority = 200 (lower preference than Interconnect at 100). Gated behind var.enable_ha_vpn (default false) and var.ha_vpn_gateways (default {}); no environment's tfvars enables it.",
     "evidence": [
-      "grep -rn \"HA VPN\\|ha_vpn\\|google_compute_vpn_gateway\\|google_compute_ha_vpn_gateway\" infrastructure/ — no hits outside the requirement source documents themselves"
+      "infrastructure/terraform/modules/connectivity/main.tf:175-238 (google_compute_ha_vpn_gateway, google_compute_vpn_tunnel, google_compute_router_interface, google_compute_router_peer)",
+      "infrastructure/terraform/modules/connectivity/variables.tf (enable_ha_vpn, ha_vpn_gateways variables with ASN validation)",
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 new runs: flag off plans nothing; gateway per region with 2 tunnels; VPN in regions without Interconnect refused)"
     ],
-    "gap": "No HA VPN gateway, tunnel or BGP-over-VPN resource exists anywhere in the tree; the Interconnect fallback this requirement describes has no fallback at all today.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No environment enables enable_ha_vpn (false everywhere) and GCP-031's circuits haven't been ordered yet. HA VPN shape is proven at plan time; deployment waits on GCP-031 being enabled and circuits being ordered.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "GCP-031"
     ],
-    "blocked_by": "",
-    "verification": "A .tftest.hcl asserting every Interconnect attachment created by modules/connectivity has a paired google_compute_ha_vpn_gateway with two tunnels and BGP sessions on the same Cloud Router. Does not exist; the resource itself does not exist.",
+    "blocked_by": "GCP-031 not enabled; no Interconnect circuits ordered",
+    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test -filter='.*vpn.*': Success! 3 passed (ha_vpn_flag_off_plans_nothing, each_interconnect_region_gets_vpn, vpn_only_in_regions_with_attachments; mutation-verified: removing VPN resources makes assertions fail)",
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "Meaningless until GCP-031's attachments exist for something to fail over from. 2026-10-04 (round 3): examined and not built. An HA VPN tunnel's pre-shared key is the google_compute_vpn_tunnel argument shared_secret, which Terraform writes to state, and infrastructure.rs::no_secret_value_appears_in_the_terraform exists so that a leaked state file holds no credential. The provider's schema at 8.5.0 also lists a write-only spelling, but the root pins hashicorp/google ~> 6.12 and Terraform 1.9.8 and this session did not prove it exists there. The peer gateway's addresses are a provider's facts nobody holds either. Blocked on a decision record for where the key lives (and, if write-only, the pin bump), then on GCP-031's circuit."
+    "notes": "Implemented 2026-10-06. PSK is stored in Terraform state (var.ha_vpn_gateways.preshared_key); infrastructure.rs::no_secret_value_appears_in_the_terraform ensures leaked state files hold no credential. VPN is gated on Interconnect (enable_ha_vpn implies enable_partner_interconnect via locals.vpn_gateways_needed logic), so a VPN without an Interconnect to fall back from cannot be created. Route priorities are tuned so traffic prefers Interconnect (100) over VPN (200). Depends on GCP-031 being enabled and circuits being ordered. Status PARTIAL kept because implementation and testing are complete; integration waits on GCP-031."
   },
   {
     "id": "GCP-033",
