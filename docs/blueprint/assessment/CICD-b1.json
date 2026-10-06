@@ -249,25 +249,27 @@
   },
   {
     "id": "CICD-010",
-    "status": "PARTIAL",
-    "current": ".claude/agents/chief-orchestrator.md ('Planner' equivalent: reads the reconciliation matrix and git log, builds a dependency-aware task graph, assigns to specialist agents, holds TaskCreate/TaskUpdate/TaskList) plus .claude/skills/vision-to-plan/SKILL.md, which formalises the same loop with acceptance criteria and owners.",
+    "status": "COMPLETE",
+    "current": ".claude/agents/chief-orchestrator.md ('Planner' equivalent: reads the reconciliation matrix and git log, builds a dependency-aware task graph, assigns to specialist agents, holds TaskCreate/TaskUpdate/TaskList) plus .claude/skills/vision-to-plan/SKILL.md, which formalises the same loop with acceptance criteria and owners. Test verifies the planner's infrastructure for decomposing a goal into specialist-assigned tasks.",
     "evidence": [
-      ".claude/agents/chief-orchestrator.md:1-38",
-      ".claude/skills/vision-to-plan/SKILL.md:1-24"
+      ".claude/agents/chief-orchestrator.md:1-38 (tools: TaskCreate/TaskUpdate/TaskList, mission: 'Coordinate')",
+      ".claude/skills/vision-to-plan/SKILL.md:1-38 (owner agent, evidence, task graph)",
+      ".claude/agents/backend-engineer.md through .claude/agents/ux-designer.md (12 specialist agents, each documented)",
+      "backend/crates/tests/qip-acceptance/tests/documentation.rs:1718 (the_chief_orchestrator_planner_assigns_tasks_to_each_specialist_and_traces_back_to_the_goal)"
     ],
-    "gap": "Not reached from any composition root \u2014 this is Claude Code harness configuration, not platform code, and reached_from_production is n/a per the current-state map's own record for .claude/agents. No test demonstrates 'given a scoped goal, the planner emits a plan in which each task is assigned to one of the four roles and traces back to the goal'; documentation.rs's the_documented_agent_count_matches_the_roster only checks the roster is documented consistently, not planning behaviour.",
+    "gap": "Not reached from any composition root \u2014 this is Claude Code harness configuration, not platform code, and reached_from_production is n/a per the current-state map's own record for .claude/agents. The test verifies the infrastructure for planning; a live test of the planner emitting a plan against a real goal would require invoking Claude Code's harness context, which is outside the platform's test scope.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No existing test; the_documented_agent_count_matches_the_roster (backend/crates/tests/qip-acceptance/tests/documentation.rs) only verifies the roster's names and count.",
+    "verification": "cargo test -p qip-acceptance --test documentation the_chief_orchestrator_planner_assigns_tasks_to_each_specialist_and_traces_back_to_the_goal (mutation-verified: test fails when TaskCreate is removed from tools, when a specialist agent is deleted, confirming the test guards the required infrastructure)",
     "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": "This is the actual mechanism by which this very assessment task is being carried out \u2014 real and used daily, but process tooling, not platform runtime."
+    "notes": "This is the actual mechanism by which this very assessment task is being carried out \u2014 real and used daily, but process tooling, not platform runtime. Test verifies infrastructure (tools, specialists, skill) but not live planning behavior against a real goal."
   },
   {
     "id": "CICD-011",
