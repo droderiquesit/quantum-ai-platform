@@ -3,7 +3,7 @@
 
 use qip_ai::embedding::{Embedder, HashingEmbedder};
 use qip_ai::retrieval::{Document, RetrievalResult, SearchIndex};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Context, Duration, Timestamp};
 use qip_entity_resolution::entity::{Entity, EntityKind, EntityRecord};
 use qip_entity_resolution::resolver::Resolver;
@@ -344,6 +344,13 @@ impl WorldModel {
     /// absorbing it is the smaller failure.
     pub fn claim_causal(&mut self, edge: CausalEdge) -> Result<()> {
         edge.validate()?;
+        for evidence_id in &edge.evidence {
+            if evidence_id.starts_with("quantum:") {
+                return Err(Error::denied(
+                    "no quantum result is treated as causal proof",
+                ));
+            }
+        }
         let description = format!(
             "{} affects {} via {}",
             edge.cause,
