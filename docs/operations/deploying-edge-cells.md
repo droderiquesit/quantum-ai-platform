@@ -575,8 +575,10 @@ journalctl -u qip-execution-node -n 50
 
 2. **Check centre knows about this cell:**
    ```bash
-   # In the API (requires access)
-   curl -s http://qip-api:8080/api/v1/cells | jq '.[] | select(.id=="newyork-1")'
+   # GET /regions lists every cell that has reported, under `cells`, keyed by
+   # `cell`. A cell absent from it has never reported to the centre; if no
+   # cell has, the route answers `unavailable` rather than an empty list.
+   curl -s -H "Authorization: Bearer $QIP_TOKEN_VIEWER" .../api/v1/regions | jq '.cells[] | select(.cell=="newyork-1")'
    ```
 
 3. **Check mesh connectivity:**
