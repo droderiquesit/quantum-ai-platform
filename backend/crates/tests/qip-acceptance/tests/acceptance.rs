@@ -33,7 +33,7 @@ use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
-use qip_risk_engine::autonomy::{AutonomyLevel, OperatorIdentity};
+use qip_risk_engine::autonomy::{AutonomyLevel, Identification, OperatorIdentity};
 use std::sync::Arc;
 
 /// The liquidity every fixture in this file states, because nothing states it
@@ -303,6 +303,7 @@ fn the_assembled_platform_cannot_be_talked_into_live_trading() -> Result<()> {
             AutonomyLevel::AutonomousLive,
             &two,
             "attempting to enable fully autonomous live trading",
+            Some(Identification::Identified),
             start(),
         )
         .unwrap_err();
@@ -319,6 +320,7 @@ fn the_assembled_platform_cannot_be_talked_into_live_trading() -> Result<()> {
                 AutonomyLevel::SupervisedLive,
                 &one,
                 "enabling supervised live trading",
+                Some(Identification::Identified),
                 start()
             )
             .is_err()
@@ -333,6 +335,7 @@ fn the_assembled_platform_cannot_be_talked_into_live_trading() -> Result<()> {
                 AutonomyLevel::SupervisedLive,
                 &two,
                 "enabling supervised live trading",
+                Some(Identification::Identified),
                 stale
             )
             .is_err()
@@ -343,6 +346,7 @@ fn the_assembled_platform_cannot_be_talked_into_live_trading() -> Result<()> {
         AutonomyLevel::SupervisedLive,
         &two,
         "enabling supervised live trading for the pilot",
+        Some(Identification::Identified),
         start(),
     )?;
     assert!(capable.autonomy().is_live());

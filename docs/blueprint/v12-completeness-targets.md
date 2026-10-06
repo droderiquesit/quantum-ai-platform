@@ -17,7 +17,7 @@ requirement's assessment, with its evidence, and render again.
 | 3 | Thousands of specialist/temporary models can compete in a scored Model Tournament and internal Forecast Market. | MODEL-072: MISSING; MODEL-073: BLOCKED | OPEN (0 of 2 complete) |  |
 | 4 | Synthetic future trees and digital twins continuously explore worlds not present in historical data. | WORLD-070: MISSING; WORLD-021: PARTIAL; TICK-023: PARTIAL; TICK-051: PARTIAL | OPEN (0 of 4 complete) |  |
 | 5 | Active Sensing chooses new observations by expected value of information. | AMBIENT-029: PARTIAL | OPEN (0 of 1 complete) |  |
-| 6 | Adversarial verifier societies independently attack important predictions and models. | EVID-032: NEEDS-VALIDATION | OPEN (0 of 1 complete) |  |
+| 6 | Adversarial verifier societies independently attack important predictions and models. | EVID-032: MISSING | OPEN (0 of 1 complete) |  |
 | 7 | Meta-Intelligence allocates attention, agents and CPU/GPU/TPU/QPU compute by marginal information/economic value. | AMBIENT-031: PARTIAL | OPEN (0 of 1 complete) |  |
 | 8 | A Cognitive Compiler distills slow-lane discoveries into bounded specialist/reflex packages. | REASON-041: BLOCKED | OPEN (0 of 1 complete) |  |
 | 9 | Capital, hedge, model-risk and survival systems are independent from alpha generation and can veto/reduce exposure. | CAPITAL-035: BLOCKED; RISK-035: BLOCKED; RISK-036: PARTIAL; RISK-037: PARTIAL; RISK-020: COMPLETE | OPEN (1 of 5 complete) | A veto or a reduction here is a limit the deterministic Risk Gate evaluates, never an enforcement path of its own: RISK-020 keeps enforcement with the Gate, and RISK-036 lets these systems contract size and grants and never expand them or bypass it. |

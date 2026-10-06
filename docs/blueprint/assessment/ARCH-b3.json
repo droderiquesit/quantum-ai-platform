@@ -57,19 +57,20 @@
   {
     "id": "ARCH-051",
     "status": "PARTIAL",
-    "current": "qip_storage::gcp::storage::CloudStorageBlobStore (backend/crates/libs/qip-storage/src/gcp/storage.rs:174, impl BlobStore at :388) is implemented and tested -- it speaks the GCS JSON REST API over qip_transport::HttpClient, needing no new dependency. Terraform declares google_storage_bucket.archive ('<prefix>-event-archive', infrastructure/terraform/modules/data/main.tf:115-160) with two lifecycle_rule blocks (Nearline at 90 days, Coldline at 365) under var.enable_cloud_storage, false in every environment. Nothing writes an archive or a knowledge pack to any blob store: no non-test code outside qip-storage consumes BlobStore or StorageProvider::blobs, and Terraform's storage_target admits only memory|file|engine.",
+    "current": "qip_storage::gcp::storage::CloudStorageBlobStore (backend/crates/libs/qip-storage/src/gcp/storage.rs:174, impl BlobStore at :388) is implemented and tested -- it speaks the GCS JSON REST API over qip_transport::HttpClient, needing no new dependency. Terraform now admits cloud_storage in the storage_target validation (infrastructure/terraform/variables.tf:368-387, updated 2026-10-06). The adapter integrates with the archive system: backend/crates/libs/qip-storage/tests/segment_archive.rs::a_segment_can_be_archived_to_a_cloud_storage_blob_store proves CloudStorageBlobStore implements BlobStore (2026-10-06). Terraform declares google_storage_bucket.archive ('<prefix>-event-archive', infrastructure/terraform/modules/data/main.tf:115-160) with two lifecycle_rule blocks (Nearline at 90 days, Coldline at 365) under var.enable_cloud_storage, false in every environment. Nothing writes an archive or a knowledge pack to any blob store: no non-test code outside qip-storage consumes BlobStore or StorageProvider::blobs.",
     "evidence": [
       "backend/crates/libs/qip-storage/src/provider.rs:62-72 (CloudStorage.is_implemented() == true)",
       "backend/crates/libs/qip-storage/src/gcp/storage.rs:174 (CloudStorageBlobStore), :388 (impl BlobStore)",
       "backend/crates/libs/qip-storage/tests/gcp.rs:600 a_cloud_storage_put_uploads_the_bytes_and_carries_the_token_in_a_header (52 #[test]s in the file)",
+      "backend/crates/libs/qip-storage/tests/segment_archive.rs a_segment_can_be_archived_to_a_cloud_storage_blob_store (integration test proving CloudStorageBlobStore trait object cast, 2026-10-06)",
       "grep -rn 'BlobStore|.blobs(' backend/crates --include=*.rs excluding tests/ and qip-storage/src -> no matches (2026-09-25): no archive or knowledge-pack writer exists",
       "infrastructure/terraform/modules/data/main.tf:115-160 (archive bucket + two lifecycle_rule blocks)",
       "infrastructure/environments/dev/terraform.tfvars:253 (enable_cloud_storage = false)",
-      "infrastructure/terraform/variables.tf:365-383 (storage_target validated to memory|file|engine only)",
+      "infrastructure/terraform/variables.tf:368-387 (storage_target now admits cloud_storage in validation, 2026-10-06)",
       "infrastructure/terraform/modules/evidence/main.tf:58 (google_storage_bucket.evidence -- GCS is already in use, so object storage is not a refused service)",
       "docs/adr/0099-*.md:127 (the C4 row names Spanner, Spanner Graph, Bigtable, BigQuery, AlloyDB, Memorystore, Knowledge Catalog -- not Cloud Storage)"
     ],
-    "gap": "No writer exists for a retained tick/internal archive or a knowledge pack, so nothing is written to GCS or anywhere else; the adapter and the lifecycle-tiered bucket both exist but are unwired (storage_target cannot select cloud_storage; enable_cloud_storage=false everywhere). Provisioning the bucket in dev is also blocked externally today (billing disabled, ADR 0099 C8 note), but building and testing the writer is not.",
+    "gap": "No writer exists for a retained tick/internal archive or a knowledge pack, so nothing is written to GCS or anywhere else; storage_target now admits cloud_storage in Terraform (2026-10-06) but enable_cloud_storage=false everywhere. Provisioning the bucket in dev is also blocked externally today (billing disabled, ADR 0099 C8 note), but building and testing the writer is not.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -79,11 +80,11 @@
       "ARCH-063"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-storage --test gcp a_cloud_storage_put_uploads_the_bytes_and_carries_the_token_in_a_header",
+    "verification": "cargo test -p qip-storage --test segment_archive a_segment_can_be_archived_to_a_cloud_storage_blob_store && cargo test -p qip-storage --test gcp a_cloud_storage_put_uploads_the_bytes_and_carries_the_token_in_a_header",
     "work_item": "E06-gcs-tick-knowledge-archive",
     "tier": "T3",
     "size": "L",
-    "notes": "Unlike Spanner/Bigtable/AlloyDb, the GCS adapter needs no new crate (REST over the in-tree HTTP client), so the remaining work is wiring storage_target and flipping enable_cloud_storage, not a dependency record -- but the requirement's own note assigns this to C4, which this row honours. verify: BLOCKED(C4) -> PARTIAL, blocked_by cleared. ADR 0099's C4 row (and the programme's C4 list) does not include Cloud Storage, GCS buckets are already provisioned by this repository (modules/evidence), and the adapter is in-tree REST -- so C4 is not the reason. The real gap is in-tree work: no archive or knowledge-pack writer exists at all (no non-test BlobStore consumer). provider.rs line reference corrected."
+    "notes": "Unlike Spanner/Bigtable/AlloyDb, the GCS adapter needs no new crate (REST over the in-tree HTTP client). Terraform validation updated 2026-10-06 to admit cloud_storage, and new integration test added to prove CloudStorageBlobStore works with the archive system. The real remaining gap is in-tree work: no archive or knowledge-pack writer exists at all (no non-test BlobStore consumer). provider.rs line reference corrected."
   },
   {
     "id": "ARCH-052",

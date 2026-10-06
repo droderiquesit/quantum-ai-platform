@@ -106,6 +106,8 @@ fn news_mentioning_northwind(confidence: f64) -> NewsItem {
             confidence,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -0.7,

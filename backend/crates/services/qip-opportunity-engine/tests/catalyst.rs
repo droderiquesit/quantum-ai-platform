@@ -438,6 +438,8 @@ fn a_news_item_stamped_before_publication_is_clamped_to_publication() {
             confidence: 0.95,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -0.8,

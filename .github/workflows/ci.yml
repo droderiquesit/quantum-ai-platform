@@ -95,6 +95,15 @@ jobs:
             --base "$RUNNER_TEMP/base.lock.json" \
             --head crates/libs/qip-events/schemas.lock.json
 
+  # CICD-102: Validate that environment configuration only pins digests
+  # with valid Binary Authorization attestations.
+  attestation-check:
+    name: attestation check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash scripts/validate-attestations.sh
+
   # The build that would actually be deployed. Run separately from the tests
   # because a release build catches optimisation-dependent problems the debug
   # build does not, and because a green test suite that cannot be released is
@@ -463,3 +472,15 @@ jobs:
         with:
           node-version: 22
       - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs
+
+  # The repository's change-management hooks ensure every change goes through
+  # git commits and pull requests. The guard refuses destructive bypass
+  # commands before Bash executes them, and the formatter runs after edits.
+  # Both have already been wrong in ways that were invisible until exercised,
+  # so regression tests verify both the allow cases and the refuse cases.
+  hooks:
+    name: change management hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .claude/hooks/test_hooks.py

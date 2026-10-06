@@ -1,0 +1,57 @@
+# GitHub CodeQL analysis for security vulnerabilities.
+#
+# CodeQL performs static analysis to detect potential security vulnerabilities
+# and code quality issues. This workflow runs on every push to main and on pull
+# requests, enabling continuous security scanning in addition to the Trivy
+# container image scanning and Semgrep application-layer analysis.
+#
+# The workflow uses the language matrix to analyze supported languages.
+# For each language, CodeQL initializes its analysis database, attempts to
+# build the project (for compiled languages), and then performs analysis.
+
+name: CodeQL Analysis
+
+on:
+  push:
+    branches: ["main", "claude/**"]
+  pull_request:
+    branches: ["main"]
+  schedule:
+    # Run analysis at 09:00 UTC daily to detect new vulnerabilities
+    - cron: '0 9 * * *'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["rust", "typescript"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Optional: specify queries to customize CodeQL's analysis
+          queries: security-and-quality
+
+      - name: Setup Rust toolchain (Rust only)
+        if: matrix.language == 'rust'
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

@@ -137,6 +137,8 @@ fn story(feed: &str, confidence: f64, ingested: Timestamp) -> NewsItem {
             confidence,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment::neutral(),
         topics: Vec::new(),

@@ -3289,7 +3289,7 @@ fn a_credential_with_no_version_is_seeded_before_the_apply_that_resolves_it() {
             .unwrap_or_else(|| panic!("infra.yml has no step containing {needle}"))
     };
     let seed = position("name: seed any credential that has no version");
-    let apply = position("apply -input=false -auto-approve");
+    let apply = position("apply -input=false tfplan");
 
     assert!(
         seed < apply,
@@ -10693,5 +10693,64 @@ fn the_autonomous_agent_service_account_has_no_roles_on_capital_or_custody_resou
     assert!(
         !has_iam_binding_for_agent,
         "the agent_identity account must not have any IAM bindings that grant roles"
+    );
+}
+
+// --- byte-reproducible builds -----------------------------------------------
+
+#[test]
+fn the_dockerfile_is_configured_for_byte_reproducible_builds() {
+    // CICD-048: Every build of the same commit must produce byte-identical
+    // image digests. This requires:
+    // 1. SOURCE_DATE_EPOCH support in the Dockerfile
+    // 2. No package installed over the digest-pinned base
+    // 3. The CI pipeline passing SOURCE_DATE_EPOCH to docker build
+    let dockerfile = read("infrastructure/docker/Dockerfile");
+
+    // Verify SOURCE_DATE_EPOCH is declared as a build argument.
+    assert!(
+        dockerfile.contains("ARG SOURCE_DATE_EPOCH"),
+        "Dockerfile must declare SOURCE_DATE_EPOCH as a build argument for reproducible builds"
+    );
+
+    // Verify SOURCE_DATE_EPOCH is used in the build.
+    assert!(
+        dockerfile.contains("SOURCE_DATE_EPOCH"),
+        "Dockerfile must use SOURCE_DATE_EPOCH in the build command for reproducible timestamps"
+    );
+
+    // The build stage installs no package: musl-dev and gcc are layers of the
+    // digest-pinned base, so nothing alpine rotates can change the toolchain.
+    // A version pin was tried and named a revision no alpine release serves.
+    assert!(
+        !dockerfile
+            .lines()
+            .any(|l| !l.trim_start().starts_with('#') && l.contains("apk add")),
+        "the build stage must not install packages over the digest-pinned base"
+    );
+}
+
+#[test]
+fn the_deployment_pipeline_passes_source_date_epoch_to_docker_build() {
+    // CICD-048: The deploy.yml workflow must pass SOURCE_DATE_EPOCH when
+    // building images so that all builds of the same commit produce
+    // byte-identical digests.
+    let deploy_yml = read(".github/workflows/deploy.yml");
+
+    // Verify that docker build invocation includes SOURCE_DATE_EPOCH.
+    assert!(
+        deploy_yml.contains("SOURCE_DATE_EPOCH"),
+        "deploy.yml must pass SOURCE_DATE_EPOCH build argument to docker build for reproducible image digests"
+    );
+
+    // Verify the build-arg is passed in the correct context (for Dockerfile builds).
+    let docker_build_section = deploy_yml
+        .split("docker build")
+        .nth(1)
+        .expect("deploy.yml must contain a docker build command");
+    assert!(
+        docker_build_section.contains("--build-arg")
+            && docker_build_section.contains("SOURCE_DATE_EPOCH"),
+        "deploy.yml must pass SOURCE_DATE_EPOCH as a --build-arg to docker build"
     );
 }

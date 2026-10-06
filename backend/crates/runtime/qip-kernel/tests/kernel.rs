@@ -29,7 +29,7 @@ use qip_observability::Telemetry;
 use qip_observability::metrics::{Snapshot, labels, names};
 use qip_opportunity_engine::AnomalyKind;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
-use qip_risk_engine::autonomy::{AutonomyLevel, OperatorIdentity};
+use qip_risk_engine::autonomy::{AutonomyLevel, Identification, OperatorIdentity};
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -339,6 +339,7 @@ fn a_default_platform_is_in_paper_trading_and_cannot_go_live() -> Result<()> {
             AutonomyLevel::SupervisedLive,
             &two_operators,
             "attempting to enable live trading",
+            Some(Identification::Identified),
             start(),
         )
         .unwrap_err();
@@ -363,6 +364,7 @@ fn a_platform_configured_for_live_trading_says_so_and_still_needs_two_operators(
                 AutonomyLevel::SupervisedLive,
                 &one,
                 "enabling live trading for the pilot",
+                Some(Identification::Identified),
                 start()
             )
             .is_err()
