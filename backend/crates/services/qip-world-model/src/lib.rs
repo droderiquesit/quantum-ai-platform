@@ -27,6 +27,7 @@ pub mod granger;
 pub mod graph;
 pub mod inference;
 pub mod liquidity;
+pub mod reaction;
 pub mod relationship;
 pub mod resolution_source;
 pub mod state;
@@ -62,6 +63,7 @@ pub use liquidity::{
     Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
     VenueShift,
 };
+pub use reaction::ReactionEpisode;
 pub use relationship::{Relationship, RelationshipKind};
 pub use resolution_source::{RESOLUTION_SOURCE_PREFIX, ResolutionSourceClaim};
 pub use state::{Change, ChangeKind, WorldDiff, WorldState};

@@ -245,33 +245,38 @@
   },
   {
     "id": "WORLD-044",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No ReactionEpisode type or world-event-to-market-response pairing exists; rg -i 'reaction.?episode|material.?event' across backend/crates/services/qip-world-model and backend/crates/runtime/qip-kernel returned zero hits.",
-    "implemented": false,
-    "tested": false,
+    "status": "PARTIAL",
+    "current": "ReactionEpisode type defined in backend/crates/services/qip-world-model/src/reaction.rs with fields: episode_id, event_name, event_time, reaction_time, affected_instruments (Vec<(String, f64, f64)>), lag_bars, confidence [0,1], rationale, recorded_at. Constructor validation refuses: event_time >= reaction_time, confidence outside [0,1] or non-finite, empty instruments, NaN/infinite magnitudes, invalid direction (not in [-1.0, 0.0, 1.0]), lag_bars == 0. Methods: duration(), affected_count(), average_reaction_magnitude().",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src/reaction.rs (ReactionEpisode struct and constructor)",
+      "backend/crates/services/qip-world-model/src/lib.rs (pub mod reaction, pub use reaction::ReactionEpisode)",
+      "backend/crates/services/qip-world-model/tests/reaction.rs (7 tests, mutation-verified)"
+    ],
+    "gap": "Library-level only; not yet wired to absorb_news or to reaction intake paths. No composition root constructs or stores ReactionEpisode instances; the type exists and is tested but not integrated into the SENSE stage.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-world-model --lib reaction::tests --no-fail-fast (run 2026-10-06: 7 passed). All tests mutation-verified: breaking constructor validations failed the matching tests, restoring byte-for-byte.",
     "work_item": "E09",
     "tier": "T2",
     "size": "L",
-    "notes": "Would draw on the Tick Lake (E06) for the multi-horizon, tick-level market response and on qip-world-model's absorb_news for 'material world event'; neither is wired to the other today."
+    "notes": "verify: upgraded MISSING -> PARTIAL. Type structure and validation complete; integration to SENSE/UNDERSTAND stages pending. Closes the 'no type exists' half of the requirement; the mechanism by which reaction episodes are recorded and fed remains to be wired."
   },
   {
     "id": "WORLD-045",
-    "status": "MISSING",
-    "current": "nothing. qip_world_model::granger::establish_temporal_precedence (backend/crates/services/qip-world-model/src/granger.rs:151-210) discovers causal edges from return-history series with a fixed policy (TEMPORAL_PRECEDENCE_LAG=1, ALPHA=0.01, granger.rs:44-104) and is reached from qip-kernel's causal_review.rs, but this is statistical discovery over price series, not an update driven by labelled reaction episodes (which do not exist -- see WORLD-044).",
+    "status": "PARTIAL",
+    "current": "Function establish_precedence_from_reaction() added to backend/crates/services/qip-world-model/src/granger.rs (73 lines) takes a ReactionEpisode, mechanism (Mechanism), and recorded_at (Timestamp), returns Result<CausalEdge>. Creates CausalEdge from reaction episode with: cause_id from event_name, effect_id from first affected instrument, lag derived from lag_bars, evidence_id formatted as 'reaction:{episode_id}:event_at={event_time}:lag_bars={lag_bars}:confidence={confidence:.2}', edge_confidence = reaction.confidence * TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING, strength from average_reaction_magnitude / 1000.0 (bps to [0,1]). Complements existing Granger statistical discovery (granger.rs:151-210) with a labelled-episode driven path for temporal precedence updates.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/granger.rs:44-104,151-210"
+      "backend/crates/services/qip-world-model/src/granger.rs (establish_precedence_from_reaction function)",
+      "backend/crates/services/qip-world-model/src/reaction.rs (ReactionEpisode type supporting the function)"
     ],
-    "gap": "No reaction-episode feed exists to update causal propagation models with, so no update-toward-observed-lag mechanism can exist either.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Library-level only; function exists but has no caller. No UNDERSTAND-stage integration to feed reaction episodes into establish_precedence_from_reaction(); no refactoring of causal_review.rs to call the function. The existing statistical (Granger) path remains unchanged; the labelled-episode path is defined but not invoked.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -279,11 +284,11 @@
       "WORLD-044"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-world-model --lib reaction::tests --no-fail-fast (run 2026-10-06: 7 passed, covering ReactionEpisode); granger module compiles and builds. Both mutation-verified for reaction validation rules.",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "Blocked in practice on WORLD-044 existing first."
+    "notes": "verify: upgraded MISSING -> PARTIAL. Function signature and validation complete; integration to UNDERSTAND causal-graph update path pending. Closes the 'no function signature' half; the mechanism by which establish_precedence_from_reaction is called from causal_review remains to be wired."
   },
   {
     "id": "WORLD-046",
