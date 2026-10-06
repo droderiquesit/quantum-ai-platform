@@ -54,6 +54,17 @@ variables {
 
 # --- Admissions --------------------------------------------------------------
 
+# The admit half of the central-plane range gate: the specific subnets every
+# other run uses, and a /8 at the boundary, all plan. Without this a gate that
+# refused every range would pass the refusal runs below.
+run "specific_central_plane_ranges_and_a_slash_8_are_admitted" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["10.250.0.0/24", "199.36.153.8/30", "10.0.0.0/8"]
+  }
+}
+
 run "shadow_mode_isolates_cells" {
   command = plan
 
@@ -208,4 +219,46 @@ run "a_cell_with_no_venue_is_refused" {
   }
 
   expect_failures = [var.execution_nodes]
+}
+
+# The gate used to compare against the literal "0.0.0.0/0", so half the
+# internet in one range passed it.
+run "a_central_plane_range_of_0_0_0_0_slash_1_is_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["10.250.0.0/24", "0.0.0.0/1"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
+}
+
+run "a_central_plane_range_of_the_whole_internet_is_still_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["0.0.0.0/0"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
+}
+
+run "a_central_plane_range_wider_than_a_slash_8_is_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["10.0.0.0/7"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
+}
+
+run "a_central_plane_range_that_is_not_a_cidr_is_refused" {
+  command = plan
+
+  variables {
+    central_plane_ranges = ["not-a-range"]
+  }
+
+  expect_failures = [var.central_plane_ranges]
 }
