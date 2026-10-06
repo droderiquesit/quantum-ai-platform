@@ -3253,3 +3253,38 @@ fn a_dataset_manifest_refuses_to_describe_nothing_or_to_carry_a_hash_nobody_comp
     assert!(DatasetManifest::new("obj-AAA", "XNYS", 10, start(), start(), &hash).is_ok());
     Ok(())
 }
+
+#[test]
+fn the_strategy_ladder_is_strictly_ordered_one_rung_at_a_time_and_only_pilot_and_scaled_hold_capital()
+ {
+    // EXPAND-050/051 evidence, and only what it asserts: every rung below
+    // Scaled steps to exactly the next rung, the ladder's order is strict,
+    // and capital is held only at Pilot and Scaled -- so a strategy's
+    // research rungs carry no execution authority. It does not show that
+    // evidence or rollback provision grows with authority; rollback
+    // (demotion) is the same at every rung, and EXPAND-050 stays open on it.
+    let rungs = GateStage::all();
+    assert_eq!(rungs.len(), 7, "the premise: seven stages, Retired last");
+    assert_eq!(rungs[6], GateStage::Retired);
+    for pair in rungs[..6].windows(2) {
+        assert_eq!(
+            pair[0].next(),
+            Some(pair[1]),
+            "{:?} does not step to {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+    assert_eq!(GateStage::Scaled.next(), None);
+    assert_eq!(GateStage::Retired.next(), None);
+    for pair in rungs.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "{:?} is not below {:?}",
+            pair[0],
+            pair[1]
+        );
+    }
+    let holding: Vec<GateStage> = rungs.into_iter().filter(GateStage::holds_capital).collect();
+    assert_eq!(holding, vec![GateStage::Pilot, GateStage::Scaled]);
+}
