@@ -2912,6 +2912,10 @@ mod tests {
             Ok(SensedRecord::Tick(qip_market::quote::Tick {
                 object_id: self.subject.clone(),
                 venue: "STANDIN".to_string(),
+                event_time: self.at,
+                receive_time: self.at,
+                normalized_time: self.at,
+                clock_uncertainty: 0,
                 at: self.at,
                 price: Decimal::from_int(100),
                 volume: Decimal::from_int(1),

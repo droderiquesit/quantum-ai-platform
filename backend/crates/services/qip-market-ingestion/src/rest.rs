@@ -567,6 +567,10 @@ impl RestMarketDataAdapter {
         let quote = Quote {
             object_id: instrument.object_id.clone(),
             venue: instrument.venue.clone(),
+            event_time: wire.at,
+            receive_time: wire.at,
+            normalized_time: wire.at,
+            clock_uncertainty: 0,
             at: wire.at,
             bid: wire.bid,
             ask: wire.ask,
@@ -583,6 +587,10 @@ impl RestMarketDataAdapter {
         let trade = Trade {
             object_id: instrument.object_id.clone(),
             venue: instrument.venue.clone(),
+            event_time: wire.at,
+            receive_time: wire.at,
+            normalized_time: wire.at,
+            clock_uncertainty: 0,
             at: wire.at,
             price: wire.price,
             size: wire.size,

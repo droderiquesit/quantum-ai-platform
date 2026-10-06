@@ -265,6 +265,10 @@ impl OrderBook {
         Some(crate::quote::Quote {
             object_id: self.object_id.clone(),
             venue: self.venue.clone(),
+            event_time: self.at,
+            receive_time: self.at,
+            normalized_time: self.at,
+            clock_uncertainty: 0,
             at: self.at,
             bid: bid.price,
             ask: ask.price,

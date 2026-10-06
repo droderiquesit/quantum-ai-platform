@@ -194,6 +194,10 @@ pub fn generate_trades<R: Rng>(
             Trade {
                 object_id: object_id.clone(),
                 venue: venue.to_string(),
+                event_time: at,
+                receive_time: at,
+                normalized_time: at,
+                clock_uncertainty: 0,
                 at,
                 price: Decimal::from_f64(price.max(1e-6)).unwrap_or(Decimal::ONE),
                 size: Decimal::from_f64(size.round()).unwrap_or(Decimal::ONE),

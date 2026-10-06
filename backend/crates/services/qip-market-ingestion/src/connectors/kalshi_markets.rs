@@ -333,6 +333,10 @@ impl SourceConnector for KalshiMarketsConnector {
         Ok(SensedRecord::Quote(Quote {
             object_id: Self::object_id(ticker),
             venue: Self::VENUE.to_string(),
+            event_time: event.event_time,
+            receive_time: _ingest_time,
+            normalized_time: _ingest_time,
+            clock_uncertainty: 0,
             at: event.event_time,
             bid,
             ask,

@@ -421,10 +421,15 @@ mod tests {
     /// A quote whose bid is above its ask — the record `Quote::validate`
     /// refuses.
     fn crossed_quote() -> SensedRecord {
+        let ts = at();
         SensedRecord::Quote(Quote {
             object_id: ObjectId::from_string("OBJ0000000000000000000001"),
             venue: "XNYS".into(),
-            at: at(),
+            event_time: ts,
+            receive_time: ts,
+            normalized_time: ts,
+            clock_uncertainty: 0,
+            at: ts,
             bid: dec!("100.20"),
             ask: dec!("100.10"),
             bid_size: Decimal::from_int(100),
@@ -434,10 +439,15 @@ mod tests {
     }
 
     fn good_trade() -> SensedRecord {
+        let ts = at();
         SensedRecord::Trade(Trade {
             object_id: ObjectId::from_string("OBJ0000000000000000000001"),
             venue: "XNYS".into(),
-            at: at(),
+            event_time: ts,
+            receive_time: ts,
+            normalized_time: ts,
+            clock_uncertainty: 0,
+            at: ts,
             price: dec!("100.15"),
             size: Decimal::from_int(50),
             aggressor: None,

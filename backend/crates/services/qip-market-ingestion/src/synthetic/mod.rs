@@ -389,6 +389,10 @@ impl SyntheticEnvironment {
         records.push(SensedRecord::Tick(Tick {
             object_id: object_id.clone(),
             venue: venue.clone(),
+            event_time: at,
+            receive_time: at,
+            normalized_time: at,
+            clock_uncertainty: 0,
             at,
             price: Decimal::from_f64(price).unwrap_or(Decimal::ONE),
             volume: Decimal::ZERO,

@@ -602,6 +602,10 @@ fn a_crossed_quote_is_rejected_and_reported_rather_than_published() {
     let crossed = SensedRecord::Quote(Quote {
         object_id: ObjectId::from_string("OBJ0000000000000000000001"),
         venue: "XNYS".into(),
+        event_time: now,
+        receive_time: now,
+        normalized_time: now,
+        clock_uncertainty: 0,
         at: now,
         bid: dec!("100.20"),
         ask: dec!("100.10"),
@@ -612,6 +616,10 @@ fn a_crossed_quote_is_rejected_and_reported_rather_than_published() {
     let good = SensedRecord::Trade(Trade {
         object_id: ObjectId::from_string("OBJ0000000000000000000001"),
         venue: "XNYS".into(),
+        event_time: now,
+        receive_time: now,
+        normalized_time: now,
+        clock_uncertainty: 0,
         at: now,
         price: dec!("100.15"),
         size: Decimal::from_int(50),

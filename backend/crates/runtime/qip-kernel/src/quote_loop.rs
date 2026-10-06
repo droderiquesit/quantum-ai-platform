@@ -721,6 +721,10 @@ mod tests {
         let trade = SensedRecord::Trade(qip_market::quote::Trade {
             object_id: object(),
             venue: "XNYS".to_string(),
+            event_time: start(),
+            receive_time: start(),
+            normalized_time: start(),
+            clock_uncertainty: 0,
             at: start(),
             price: dec!("100"),
             size: dec!("10"),

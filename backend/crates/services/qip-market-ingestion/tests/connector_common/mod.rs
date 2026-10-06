@@ -148,6 +148,10 @@ impl SourceConnector for TestConnector {
         Ok(SensedRecord::Tick(Tick {
             object_id: self.object_id.clone(),
             venue: "TEST".to_string(),
+            event_time: event.event_time,
+            receive_time: _ingest_time,
+            normalized_time: _ingest_time,
+            clock_uncertainty: 0,
             at: event.event_time,
             price,
             volume: Decimal::parse("1").unwrap_or_default(),

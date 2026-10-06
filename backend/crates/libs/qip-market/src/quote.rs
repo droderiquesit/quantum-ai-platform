@@ -13,6 +13,15 @@ pub use crate::book::Side;
 pub struct Quote {
     pub object_id: ObjectId,
     pub venue: String,
+    /// When the exchange recorded this quote.
+    pub event_time: Timestamp,
+    /// When we received this quote.
+    pub receive_time: Timestamp,
+    /// When we normalized this quote for use.
+    pub normalized_time: Timestamp,
+    /// Uncertainty in this quote's timestamp in nanoseconds.
+    pub clock_uncertainty: i64,
+    /// Deprecated: use `event_time` instead. Kept for backwards compatibility.
     pub at: Timestamp,
     pub bid: Decimal,
     pub ask: Decimal,
@@ -163,6 +172,15 @@ impl TradeCondition {
 pub struct Trade {
     pub object_id: ObjectId,
     pub venue: String,
+    /// When the exchange recorded this trade.
+    pub event_time: Timestamp,
+    /// When we received this trade.
+    pub receive_time: Timestamp,
+    /// When we normalized this trade for use.
+    pub normalized_time: Timestamp,
+    /// Uncertainty in this trade's timestamp in nanoseconds.
+    pub clock_uncertainty: i64,
+    /// Deprecated: use `event_time` instead. Kept for backwards compatibility.
     pub at: Timestamp,
     pub price: Decimal,
     pub size: Decimal,
@@ -223,6 +241,15 @@ impl EventBody for Trade {
 pub struct Tick {
     pub object_id: ObjectId,
     pub venue: String,
+    /// When the exchange recorded this tick.
+    pub event_time: Timestamp,
+    /// When we received this tick.
+    pub receive_time: Timestamp,
+    /// When we normalized this tick for use.
+    pub normalized_time: Timestamp,
+    /// Uncertainty in this tick's timestamp in nanoseconds.
+    pub clock_uncertainty: i64,
+    /// Deprecated: use `event_time` instead. Kept for backwards compatibility.
     pub at: Timestamp,
     pub price: Decimal,
     #[serde(default)]

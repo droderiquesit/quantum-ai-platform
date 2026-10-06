@@ -145,10 +145,15 @@ fn go_long(platform: &mut Platform, shares: Decimal) -> Result<()> {
 /// A printed trade in the hedge instrument, which is the only thing that gives
 /// the survey a price to size against.
 fn print_hedge_price(platform: &mut Platform, price: Decimal) {
+    let start_time = start();
     let absorbed = platform.observe(vec![SensedRecord::Trade(Trade {
         object_id: ObjectId::from_string(HEDGE),
         venue: "XNYS".into(),
-        at: start(),
+        event_time: start_time,
+        receive_time: start_time,
+        normalized_time: start_time,
+        clock_uncertainty: 0,
+        at: start_time,
         price,
         size: Decimal::from_int(100),
         aggressor: None,

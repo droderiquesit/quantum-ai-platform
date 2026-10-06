@@ -1156,6 +1156,12 @@ fn the_cycle_cost_stops_growing_once_the_history_working_sets_reach_their_bounds
                 SensedRecord::Quote(Quote {
                     object_id: object(symbol),
                     venue: "XNYS".to_string(),
+                    event_time: start().saturating_sub(Duration::from_secs((total - index) as i64)),
+                    receive_time: start()
+                        .saturating_sub(Duration::from_secs((total - index) as i64)),
+                    normalized_time: start()
+                        .saturating_sub(Duration::from_secs((total - index) as i64)),
+                    clock_uncertainty: 0,
                     at: start().saturating_sub(Duration::from_secs((total - index) as i64)),
                     bid: Decimal::from_f64(99.9 + wiggle).expect("representable"),
                     ask: Decimal::from_f64(100.1 + wiggle).expect("representable"),

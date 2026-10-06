@@ -143,6 +143,10 @@ fn quote(symbol: &str, at: Timestamp, bps: f64) -> SensedRecord {
     SensedRecord::Quote(Quote {
         object_id: object(symbol),
         venue: "XNYS".to_string(),
+        event_time: at,
+        receive_time: at,
+        normalized_time: at,
+        clock_uncertainty: 0,
         at,
         bid: Decimal::from_f64(100.0 - half).expect("a price"),
         ask: Decimal::from_f64(100.0 + half).expect("a price"),

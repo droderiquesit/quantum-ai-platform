@@ -24,11 +24,33 @@ fn quote(bid: &str, ask: &str, bid_size: i64, ask_size: i64) -> Quote {
     Quote {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
+        event_time: now(),
+        receive_time: now(),
+        normalized_time: now(),
+        clock_uncertainty: 0,
         at: now(),
         bid: Decimal::parse(bid).unwrap(),
         ask: Decimal::parse(ask).unwrap(),
         bid_size: Decimal::from_int(bid_size),
         ask_size: Decimal::from_int(ask_size),
+        quality: Default::default(),
+    }
+}
+
+fn trade(price: Decimal, size: i64) -> Trade {
+    Trade {
+        object_id: id("obj-aapl"),
+        venue: "XNYS".into(),
+        event_time: now(),
+        receive_time: now(),
+        normalized_time: now(),
+        clock_uncertainty: 0,
+        at: now(),
+        price,
+        size: Decimal::from_int(size),
+        aggressor: None,
+        condition: TradeCondition::Regular,
+        trade_id: None,
         quality: Default::default(),
     }
 }
@@ -85,30 +107,16 @@ fn a_one_sided_quote_has_no_mid() {
 #[test]
 fn trade_aggressor_is_inferred_from_the_prevailing_quote() {
     let q = quote("100.00", "100.10", 100, 100);
-    let above = Trade {
-        object_id: id("obj-aapl"),
-        venue: "XNYS".into(),
-        at: now(),
-        price: dec!("100.08"),
-        size: Decimal::from_int(100),
-        aggressor: None,
-        condition: TradeCondition::Regular,
-        trade_id: None,
-        quality: Default::default(),
-    };
+    let mut above = trade(dec!("100.08"), 100);
     assert_eq!(above.infer_aggressor(&q), Some(Side::Buy));
 
-    let below = Trade {
-        price: dec!("100.02"),
-        ..above.clone()
-    };
+    let mut below = above.clone();
+    below.price = dec!("100.02");
     assert_eq!(below.infer_aggressor(&q), Some(Side::Sell));
 
     // At the mid the rule is undefined; guessing would bias signed volume.
-    let at_mid = Trade {
-        price: dec!("100.05"),
-        ..above.clone()
-    };
+    let mut at_mid = above.clone();
+    at_mid.price = dec!("100.05");
     assert_eq!(at_mid.infer_aggressor(&q), None);
 
     // A reported side always wins over inference.
@@ -200,7 +208,7 @@ const QUALITY_JSON: &str =
     r#"{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}"#;
 
 /// A trade as it is actually written, with every field the decoder requires.
-const TRADE_JSON: &str = r#"{"object_id":"obj-aapl","venue":"XNYS","at":"2026-08-22T00:00:00Z",
+const TRADE_JSON: &str = r#"{"object_id":"obj-aapl","venue":"XNYS","event_time":"2026-08-22T00:00:00Z","receive_time":"2026-08-22T00:00:00Z","normalized_time":"2026-08-22T00:00:00Z","clock_uncertainty":0,"at":"2026-08-22T00:00:00Z",
     "price":"10.01","size":"100","condition":"regular","quality":{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}}"#;
 
 // --- order book -------------------------------------------------------------
@@ -1242,16 +1250,23 @@ fn microstructure_metrics_decompose_the_spread() {
     let quotes = vec![q.clone()];
     // Three buyer-initiated trades at the offer.
     let trades: Vec<Trade> = (0..3)
-        .map(|i| Trade {
-            object_id: id("obj-aapl"),
-            venue: "XNYS".into(),
-            at: now().saturating_add(Duration::from_secs(i)),
-            price: dec!("100.10"),
-            size: Decimal::from_int(100),
-            aggressor: Some(Side::Buy),
-            condition: TradeCondition::Regular,
-            trade_id: Some(format!("t{i}")),
-            quality: Default::default(),
+        .map(|i| {
+            let time = now().saturating_add(Duration::from_secs(i));
+            Trade {
+                object_id: id("obj-aapl"),
+                venue: "XNYS".into(),
+                event_time: time,
+                receive_time: time,
+                normalized_time: time,
+                clock_uncertainty: 0,
+                at: time,
+                price: dec!("100.10"),
+                size: Decimal::from_int(100),
+                aggressor: Some(Side::Buy),
+                condition: TradeCondition::Regular,
+                trade_id: Some(format!("t{i}")),
+                quality: Default::default(),
+            }
         })
         .collect();
     // The mid drifts up afterwards: part of the spread was lost to information.
@@ -1287,6 +1302,10 @@ fn non_price_forming_trades_are_excluded() {
     let trades = vec![Trade {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
+        event_time: now(),
+        receive_time: now(),
+        normalized_time: now(),
+        clock_uncertainty: 0,
         at: now(),
         price: dec!("95.00"),
         size: Decimal::from_int(100_000),
@@ -1339,6 +1358,10 @@ fn the_snapshot_tracks_the_latest_state_and_advances_its_clock() {
     snapshot.apply_trade(Trade {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
+        event_time: later,
+        receive_time: later,
+        normalized_time: later,
+        clock_uncertainty: 0,
         at: later,
         price: dec!("100.05"),
         size: Decimal::from_int(250),
@@ -1380,6 +1403,10 @@ fn rolling_the_session_clears_volume_but_keeps_prices() {
     snapshot.apply_trade(Trade {
         object_id: id("obj-aapl"),
         venue: "XNYS".into(),
+        event_time: now(),
+        receive_time: now(),
+        normalized_time: now(),
+        clock_uncertainty: 0,
         at: now(),
         price: dec!("100"),
         size: Decimal::from_int(1000),

@@ -187,10 +187,14 @@ impl SourceConnector for CoinbaseTickerConnector {
         )])
     }
 
-    fn map(&self, event: &RawEvent, _ingest_time: Timestamp) -> Result<SensedRecord> {
+    fn map(&self, event: &RawEvent, ingest_time: Timestamp) -> Result<SensedRecord> {
         Ok(SensedRecord::Tick(Tick {
             object_id: self.object_id.clone(),
             venue: self.venue.clone(),
+            event_time: event.event_time,
+            receive_time: ingest_time,
+            normalized_time: ingest_time,
+            clock_uncertainty: 0,
             at: event.event_time,
             price: Self::decimal(&event.body, "price")?,
             // The size of the print this tick reports, not the product's
