@@ -422,14 +422,17 @@
   },
   {
     "id": "EXPAND-017",
-    "status": "MISSING",
-    "current": "No TickCampaign type or residual-threshold trigger exists. qip-kernel's central plane computes a diagnostic slippage/fill-error histogram (qip_venue_fill_error_bps, per the observability domain notes) but nothing reads it to spawn a research campaign, and no venue-discovery event triggers one either.",
+    "status": "PARTIAL",
+    "current": "qip_expansion::campaigns (backend/crates/services/qip-expansion/src/campaigns.rs) defines TickCampaign, a TickCampaignTrigger enum naming all seven triggers from the statement, and TickCampaignDetector, which opens an UnexplainedSlippage campaign when a residual's magnitude strictly exceeds its threshold (default 0.01, a house default: the blueprint does not define 'grow') and a NewVenue campaign the first time a venue is seen, each scoped to the instruments and venue supplied. Campaign ids are issued in sequence, so the same observations replayed through a fresh detector name the same campaigns. Only the slippage and new-venue triggers have detection logic; the other five variants are named but nothing raises them. Nothing in the tree feeds the detector: the central plane's qip_venue_fill_error_bps histogram is still read by nothing that decides.",
     "evidence": [
-      "rg -l 'TickCampaign' backend/crates -> no matches (2026-09-25)"
+      "backend/crates/services/qip-expansion/src/campaigns.rs (TickCampaignDetector::observe_slippage, ::observe_venue)",
+      "cargo test -p qip-expansion --lib campaigns -- a_window_where_slippage_grows_and_a_venue_appears_opens_one_scoped_campaign_for_each (replays 0.5% -> 0.9% -> 2% slippage then an unseen venue; asserts exactly one scoped campaign for each)",
+      "cargo test -p qip-expansion --lib campaigns -- replaying_the_same_window_through_a_fresh_detector_opens_identical_campaigns",
+      "rg -n 'TickCampaignDetector' backend/crates --glob '!qip-expansion/**' -> no matches (2026-10-06): no production caller"
     ],
-    "gap": "No campaign type and no residual-growth or new-venue trigger exist.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Five of the seven residual triggers (fill/queue prediction error, abnormal lead/lag, world-event reaction, paper-vs-replay divergence) have no detector. No production caller: nothing feeds qip_venue_fill_error_bps or venue discovery into the detector, and an opened campaign schedules no replay or retraining work (it is not yet turned into a curriculum item).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -437,11 +440,11 @@
       "EXPAND-016"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Needed: replay a window in which slippage residuals grow past a threshold and a previously unseen venue appears, and assert a TickCampaign is created for each, scoped to the affected instruments/venue.",
+    "verification": "cargo test -p qip-expansion --lib campaigns (6 tests, each mutation-verified 2026-10-06). The row's replay check is met at library level by a_window_where_slippage_grows_and_a_venue_appears_opens_one_scoped_campaign_for_each; it is not met against a recorded window from a running process, because none feeds the detector.",
     "work_item": "E06-tick-campaign-triggers",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-06: MISSING -> PARTIAL (PR #38). Slippage and new-venue triggers implemented and tested in qip-expansion; five triggers undetected and no production caller, so integrated stays false."
   },
   {
     "id": "EXPAND-018",
