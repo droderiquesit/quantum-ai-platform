@@ -32,6 +32,7 @@
 pub mod bayes;
 pub mod belief;
 pub mod constraint;
+pub mod contradiction;
 pub mod engine;
 pub mod evidence;
 pub mod hypothesis;
@@ -44,6 +45,7 @@ pub mod temporal;
 
 pub use bayes::{BaseRate, BeliefUpdate, EvidenceStrength};
 pub use belief::BeliefState;
+pub use contradiction::{ContradictionResolution, ResolutionMethod};
 pub use engine::{ReasoningEngine, ReasoningOutcome, SynthesisInput};
 pub use evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
 pub use hypothesis::{
