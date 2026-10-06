@@ -547,3 +547,200 @@ pub fn promote<T>(advisory: Advisory<T>, case: &PromotionCase) -> Result<Promote
         evidence: case.evidence.clone(),
     })
 }
+
+/// The outcome of an evidence acquisition decision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionStatus {
+    Requested,
+    InProgress,
+    Complete,
+    Halted,
+}
+
+/// Ranking criteria for candidate evidence acquisitions: economic significance,
+/// uncertainty reduction, urgency, and acquisition cost. All are 0-10000 basis points
+/// so they compare exactly and survive replay.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcquisitionCriteria {
+    /// Economic significance of reducing the uncertainty this evidence addresses,
+    /// in basis points (0 to 10000). Higher means more economically material.
+    pub economic_significance_bp: u32,
+    /// Uncertainty reduction capability: how much this evidence would reduce
+    /// decision uncertainty, in basis points. Higher means more informative.
+    pub uncertainty_reduction_bp: u32,
+    /// Urgency: how time-sensitive the decision is, in basis points. Higher means
+    /// more urgent to acquire now rather than later.
+    pub urgency_bp: u32,
+    /// Acquisition cost: estimated cost to obtain this evidence, in basis points
+    /// of the decision value. Higher means more expensive to acquire.
+    pub acquisition_cost_bp: u32,
+}
+
+impl AcquisitionCriteria {
+    /// Constructs acquisition criteria. Refuses any basis point value above 10000.
+    pub fn new(
+        economic_significance_bp: u32,
+        uncertainty_reduction_bp: u32,
+        urgency_bp: u32,
+        acquisition_cost_bp: u32,
+    ) -> Result<Self> {
+        if economic_significance_bp > MAX_SEVERITY_BP
+            || uncertainty_reduction_bp > MAX_SEVERITY_BP
+            || urgency_bp > MAX_SEVERITY_BP
+            || acquisition_cost_bp > MAX_SEVERITY_BP
+        {
+            return Err(Error::invalid(
+                "acquisition criteria: all basis points must be 0-10000; do not exceed MAX_SEVERITY_BP",
+            ));
+        }
+        Ok(Self {
+            economic_significance_bp,
+            uncertainty_reduction_bp,
+            urgency_bp,
+            acquisition_cost_bp,
+        })
+    }
+
+    /// Computes the net value of acquiring this evidence: the expected value of
+    /// information (EVI) minus the cost. Returns 0 if EVI is less than cost.
+    /// EVI is computed as a weighted average: economic_significance (40%) +
+    /// uncertainty_reduction (40%) + urgency (20%).
+    pub fn net_value_bp(&self) -> u32 {
+        let evi = ((self.economic_significance_bp as u64 * 40
+            + self.uncertainty_reduction_bp as u64 * 40
+            + self.urgency_bp as u64 * 20)
+            / 100) as u32;
+        evi.saturating_sub(self.acquisition_cost_bp)
+    }
+}
+
+/// A request to acquire evidence to reduce uncertainty in a decision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InfoRequest {
+    id: String,
+    decision_id: String,
+    criteria: AcquisitionCriteria,
+    /// When acquisition must complete, or after which new acquisitions are rejected.
+    deadline: Timestamp,
+    /// When the request was issued.
+    requested_at: Timestamp,
+    status: AcquisitionStatus,
+    /// Cumulative cost spent on acquisitions against this request so far, in basis points.
+    cumulative_cost_bp: u32,
+}
+
+impl InfoRequest {
+    /// Constructs an information acquisition request. Refuses empty id or decision_id,
+    /// or a deadline before the request time.
+    pub fn new(
+        id: impl Into<String>,
+        decision_id: impl Into<String>,
+        criteria: AcquisitionCriteria,
+        deadline: Timestamp,
+        requested_at: Timestamp,
+    ) -> Result<Self> {
+        let (id, decision_id) = (id.into(), decision_id.into());
+        if id.is_empty() || decision_id.is_empty() {
+            return Err(Error::invalid(
+                "info request: id and decision_id must not be empty; supply both",
+            ));
+        }
+        if deadline < requested_at {
+            return Err(Error::invalid(
+                "info request: deadline must not be before the request time; pass a future deadline",
+            ));
+        }
+        Ok(Self {
+            id,
+            decision_id,
+            criteria,
+            deadline,
+            requested_at,
+            status: AcquisitionStatus::Requested,
+            cumulative_cost_bp: 0,
+        })
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn decision_id(&self) -> &str {
+        &self.decision_id
+    }
+    pub fn criteria(&self) -> &AcquisitionCriteria {
+        &self.criteria
+    }
+    pub fn deadline(&self) -> Timestamp {
+        self.deadline
+    }
+    pub fn requested_at(&self) -> Timestamp {
+        self.requested_at
+    }
+    pub fn status(&self) -> AcquisitionStatus {
+        self.status
+    }
+    pub fn cumulative_cost_bp(&self) -> u32 {
+        self.cumulative_cost_bp
+    }
+
+    /// Records that an acquisition was completed at a cost. Refuses zero cost,
+    /// a cost that would overflow cumulative cost, or an attempt to record after
+    /// completion or halting.
+    pub fn record_acquisition(&mut self, acquisition_cost_bp: u32) -> Result<()> {
+        if acquisition_cost_bp == 0 {
+            return Err(Error::invalid(
+                "info request: acquisition cost must be positive; do not record zero-cost acquisitions",
+            ));
+        }
+        if self.status == AcquisitionStatus::Complete || self.status == AcquisitionStatus::Halted {
+            return Err(Error::denied(
+                "info request: cannot record acquisition after request is complete or halted; check status",
+            ));
+        }
+        self.cumulative_cost_bp = self
+            .cumulative_cost_bp
+            .checked_add(acquisition_cost_bp)
+            .ok_or_else(|| {
+                Error::numeric("info request: cumulative cost overflowed; reduce budget")
+            })?;
+        self.status = AcquisitionStatus::InProgress;
+        Ok(())
+    }
+
+    /// Completes the request. Refuses if the request was not in progress.
+    pub fn complete(&mut self) -> Result<()> {
+        if self.status != AcquisitionStatus::InProgress {
+            return Err(Error::invalid(
+                "info request: can only complete a request that is in progress; check status",
+            ));
+        }
+        self.status = AcquisitionStatus::Complete;
+        Ok(())
+    }
+
+    /// Halts acquisition for this request. Returns true if the request was halted,
+    /// false if it was already complete or halted.
+    pub fn halt(&mut self) -> bool {
+        if self.status == AcquisitionStatus::Requested
+            || self.status == AcquisitionStatus::InProgress
+        {
+            self.status = AcquisitionStatus::Halted;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Checks whether acquisition should halt: true if marginal value (next acquisition's
+    /// net value) is below the minimum viable threshold, or if the deadline has been reached.
+    pub fn should_halt(&self, now: Timestamp, min_viable_value_bp: u32) -> bool {
+        if now >= self.deadline {
+            return true;
+        }
+        if self.criteria.net_value_bp() < min_viable_value_bp {
+            return true;
+        }
+        false
+    }
+}

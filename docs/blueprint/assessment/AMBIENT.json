@@ -696,5 +696,77 @@
     "tier": "T3",
     "size": "S",
     "notes": "Shares its blocker and work item with AMBIENT-024; this row is the mesh's read side of that same gap. verify: changed BLOCKED(C4) -> MISSING. This is a contract, not a placement, and it names a 'Bigtable/Memory' tier. The read path can be built against an in-memory or in-tree K0, so C4 is not the reason it is absent. depends_on moved from AMBIENT-024 (the Bigtable placement row, still BLOCKED) to the mesh and surprise rows it actually needs."
+  },
+  {
+    "id": "AMBIENT-029",
+    "status": "PARTIAL",
+    "current": "AcquisitionCriteria (backend/crates/libs/qip-contracts/src/ambient.rs:565-619) holds four basis-point metrics (economic_significance, uncertainty_reduction, urgency, acquisition_cost) with validation (0-10000 bounds). It computes net_value_bp as weighted EVI (40% economic, 40% uncertainty, 20% urgency) minus cost, saturating at zero when cost exceeds EVI. InfoRequest (ambient.rs:620-745) tracks acquisition lifecycle (Requested → InProgress → Complete/Halted), cumulative costs, deadline enforcement, and halt conditions. Provides should_halt() checking deadline and minimum viable value threshold. Missing: integration with AMBIENT-013 (opportunity waking) and AMBIENT-031 (compute allocation); no ranking engine that sorts multiple candidate observations by net value and executes top-ranked acquisitions.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs:565-603 (AcquisitionCriteria with basis-point validation and net_value_bp calculation)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:620-745 (InfoRequest with status machine, cost tracking, deadline/threshold checks)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:489-810 (7 mutation-verified tests: criteria validation, EVI calculation, request field validation, status transitions, cost accumulation, should_halt logic, halt behavior)"
+    ],
+    "gap": "No ranking algorithm sorts candidate observations by net value and selects top N for acquisition. No orchestrator integrates InfoRequest into the decision loop or connects it to AMBIENT-013 and AMBIENT-031. Curriculum's expected_information_value and expected_economic_value fields still unused.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-013",
+      "AMBIENT-031"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-contracts --test ambient: 7 new tests all pass. Mutation verification confirmed: >= deadline check, basis-point validation, status-check refusal each cause test failures when removed. Integration test required: given two InfoRequests, verify ranking favors higher net_value_bp and acquisition halts when minimum threshold reached.",
+    "work_item": "E09-evidence-acquisition-by-evi",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Request types and validation complete; missing orchestrator to rank and select acquisitions. AMBIENT-031 (compute allocation) will record which work was chosen; AMBIENT-013 (opportunity waking) will feed candidate observations. No external dependency required; ranking engine is pure Rust logic in qip-contracts or a service."
+  },
+  {
+    "id": "AMBIENT-030",
+    "status": "BLOCKED",
+    "current": "Undefined in specification. A 'market microstructure probe' is mentioned but not defined. AMBIENT-030 is marked as an invariant guardrail, not a capability to build.",
+    "evidence": [
+      "docs/blueprint/requirements/AMBIENT.json AMBIENT-030: 'undefined in v12.0. It is treated as an external action and is not built'",
+      "docs/blueprint/requirements/AMBIENT.json policy_flags: ['EXTERNAL_ACTION', 'LIVE_CAPITAL']"
+    ],
+    "gap": "No code exists because none should exist. AMBIENT-030 is an invariant stating what must NOT happen: a probe of a live venue is never issued until it is defined. Paper layers 1-3 are intact. This is not work to do; it is work to refuse.",
+    "implemented": false,
+    "tested": true,
+    "integrated": false,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "EXTERNAL_ACTION, LIVE_CAPITAL",
+    "verification": "Invariant: no code path issues a probe to a live venue; paper boundary intact.",
+    "work_item": "NONE",
+    "tier": "T0",
+    "size": "NONE",
+    "notes": "This is a guardrail, not a feature. Mark BLOCKED. No changes required to this row unless a future v13.0 defines what a probe is. Classified as invariant (policy flag guardrail)."
+  },
+  {
+    "id": "AMBIENT-031",
+    "status": "PARTIAL",
+    "current": "AttentionRouter (backend/crates/libs/qip-contracts/src/ambient.rs:224-299) manages attention budget per window, routing signals to pathways by severity and materiality threshold. It records Activated, Deferred, and Shed dispositions. ModelReputation (ambient.rs:460-491) tracks accuracy_bp, signal_quality_bp, forecast_skill_bp (0-10000 basis points) by domain, horizon, regime, with overall_bp as weighted average (40/30/30). ComputeAllocation (ambient.rs:494-542) records allocation decisions naming work_id, resource_type (CPU/GPU/TPU/QPU), units, reputation and rationale. However, no mechanism yet kills persistently unproductive work, and compute allocation remains a record type; there is no allocation engine that routes work requests based on reputation or kills work.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs:460-491 (ModelReputation with domain/horizon/regime, weighted overall_bp)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:426-458 (ComputeResourceType enum: Cpu, Gpu, Tpu, Qpu)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:494-542 (ComputeAllocation struct and constructor validation)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:242-362 (four mutation-verified tests for reputation and allocation)"
+    ],
+    "gap": "ModelReputation and ComputeAllocation types are defined with full validation and auditability, but no allocation engine routes compute based on reputation, no work-killing mechanism monitors productivity, and the router remains signal-driven rather than value-driven.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-contracts --test ambient runs four mutation-verified tests for ModelReputation and ComputeAllocation. Integration test and work-killing mechanism remain to be implemented.",
+    "work_item": "E09-meta-intelligence-compute-allocation",
+    "tier": "T3",
+    "size": "L",
+    "notes": "ModelReputation and ComputeAllocation infrastructure is in place and tested. Next phase: allocation engine to route work based on reputation and overall value, and work killer to monitor productivity. AttentionRouter's relationship to v11.6 Attention Router is unstated in the requirement."
   }
 ]
