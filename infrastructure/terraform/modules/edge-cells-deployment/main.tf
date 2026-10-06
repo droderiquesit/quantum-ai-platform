@@ -70,31 +70,30 @@ module "execution_node" {
   node_count   = each.value.node_count
 
   # Image contract
-  boot_image              = var.boot_image
-  required_hugepages_gb   = var.required_hugepages_gb
-  isolated_cpus           = each.value.isolated_cpus
-  health_port             = each.value.health_port
-  watchdog_seconds        = each.value.watchdog_seconds
+  boot_image            = var.boot_image
+  required_hugepages_gb = var.required_hugepages_gb
+  isolated_cpus         = each.value.isolated_cpus
+  health_port           = each.value.health_port
+  watchdog_seconds      = each.value.watchdog_seconds
 
   # Venues and trading
-  venues                  = each.value.venues
-  shadow_mode             = each.value.shadow_mode
+  venues                     = each.value.venues
+  shadow_mode                = each.value.shadow_mode
   venue_credential_secret_id = var.venue_credential_secret_id
   venue_credential_readable  = var.venue_credential_readable
 
   # Configuration
-  default_pricing         = var.default_pricing
-  strategy_plan_path      = var.strategy_plan_path
+  default_pricing          = var.default_pricing
+  strategy_plan_path       = var.strategy_plan_path
   cross_region_mirror_path = var.cross_region_mirror_path
-  region_allocation       = each.value.region_allocation
+  region_allocation        = each.value.region_allocation
 
   # Capital envelope verification
   capital_envelope_secret_id = var.capital_envelope_secret_id
 
   # Observability and evidence
-  health_port           = each.value.health_port
-  evidence_bucket       = var.evidence_bucket
-  telemetry_endpoint    = var.telemetry_endpoint
+  evidence_bucket    = var.evidence_bucket
+  telemetry_endpoint = var.telemetry_endpoint
 
   # Egress proxy
   egress_bootstrap = var.egress_bootstrap
@@ -119,10 +118,10 @@ module "edge_mesh" {
   environment = var.environment
   network_id  = var.network_id
 
-  execution_nodes          = local.mesh_execution_nodes
-  central_plane_ranges     = local.mesh_central_plane_ranges
-  cross_region_mirrors     = var.cross_region_mirrors
-  psc_endpoint_addresses   = local.psc_addresses
+  execution_nodes        = local.mesh_execution_nodes
+  central_plane_ranges   = local.mesh_central_plane_ranges
+  cross_region_mirrors   = var.cross_region_mirrors
+  psc_endpoint_addresses = local.psc_addresses
 
   labels = var.labels
 

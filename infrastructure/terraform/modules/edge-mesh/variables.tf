@@ -29,12 +29,12 @@ variable "execution_nodes" {
   EOT
 
   type = map(object({
-    region       = string
-    zone         = string
-    subnet_cidr  = string
-    health_port  = number
-    shadow_mode  = bool
-    venues       = map(object({ cidr = string, port = number }))
+    region      = string
+    zone        = string
+    subnet_cidr = string
+    health_port = number
+    shadow_mode = bool
+    venues      = map(object({ cidr = string, port = number }))
   }))
 
   validation {
@@ -87,10 +87,10 @@ variable "cross_region_mirrors" {
   EOT
 
   type = list(object({
-    from_region              = string
-    to_region                = string
-    rtt_ms                   = number
-    inventory_band_pct       = number
+    from_region               = string
+    to_region                 = string
+    rtt_ms                    = number
+    inventory_band_pct        = number
     dislocation_threshold_pct = number
   }))
 

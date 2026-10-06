@@ -1766,5 +1766,15 @@ impl LimitSet {
                 Limit::new("cash-buffer", LimitKind::MinCashBuffer { limit: 0.02 })
                     .with_rationale("settlement and margin need headroom"),
             )
+            .with(
+                Limit::new(
+                    "venue-exposure-simulated",
+                    LimitKind::MaxVenueExposure {
+                        venue: "simulated".to_string(),
+                        limit: 1.0,
+                    },
+                )
+                .with_rationale("paper trading venue has no credit limit"),
+            )
     }
 }
