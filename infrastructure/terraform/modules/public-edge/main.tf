@@ -365,22 +365,51 @@ resource "google_compute_url_map" "edge" {
   }
 }
 
-resource "google_compute_managed_ssl_certificate" "edge" {
+# --- Certificate Manager for HTTPS ---------------------------------------------
+#
+# The platform switched from google_compute_managed_ssl_certificate (classic
+# managed SSL) to Certificate Manager's certificate and certificate map
+# resources. Certificate Manager is Google's recommended path for certificate
+# lifecycle management and is required for the public edge to operate.
+#
+# A certificate map is required because a global HTTPS proxy must reference a
+# map, not an individual certificate. The map entry connects a hostname pattern
+# to its certificate, and the proxy holds the map's ID.
+
+resource "google_certificate_manager_certificate" "edge" {
   count = local.enabled
 
   project = var.project_id
   name    = local.name
 
+  # Managed certificates tell Certificate Manager to issue and renew them
+  # automatically, the same behavior as the classic managed SSL certificate.
   managed {
     domains = var.hostnames
   }
 
-  # Google will not reissue in place; a domain change replaces the
-  # certificate, and the replacement has to exist before the proxy stops
-  # naming the old one or the edge serves nothing for the minutes in between.
-  lifecycle {
-    create_before_destroy = true
-  }
+  # A domain change replaces the certificate. The map and proxy reference the
+  # map, not the certificate, so a certificate replacement does not break the
+  # proxy's reference. The classic managed certificate used
+  # `create_before_destroy` to avoid a gap; that is no longer needed because
+  # the proxy never names the certificate directly.
+}
+
+resource "google_certificate_manager_certificate_map" "edge" {
+  count = local.enabled
+
+  project = var.project_id
+  name    = local.name
+}
+
+resource "google_certificate_manager_certificate_map_entry" "edge" {
+  count = local.enabled
+
+  project     = var.project_id
+  name        = local.name
+  map         = google_certificate_manager_certificate_map.edge[0].name
+  certificate = google_certificate_manager_certificate.edge[0].id
+  hostname    = "*"
 }
 
 resource "google_compute_target_https_proxy" "edge" {
@@ -390,7 +419,10 @@ resource "google_compute_target_https_proxy" "edge" {
   name    = local.name
   url_map = google_compute_url_map.edge[0].id
 
-  ssl_certificates = [google_compute_managed_ssl_certificate.edge[0].id]
+  # Reference the Certificate Manager certificate map. The map entry connects
+  # hostnames to the certificate, and the proxy uses the map to resolve which
+  # certificate to present for a given hostname.
+  certificate_map = google_certificate_manager_certificate_map.edge[0].id
 
   # TLS 1.2 and above, and no cipher Google classes as compatible-only. The
   # default profile admits TLS 1.0 for clients this platform does not have.
