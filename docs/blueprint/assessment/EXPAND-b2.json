@@ -238,12 +238,12 @@
     "depends_on": [
       "EXPAND-042"
     ],
-    "blocked_by": "",
+    "blocked_by": "E08-curriculum-engine: ResearchQueue/CurriculumItem does not exist to consume clustering results",
     "verification": "cargo test -p qip-opportunity-engine --test discovery corroborating_detectors_raise_confidence_above_any_one_of_them. No replay test plants a cross-subject cluster, residual cluster or belief contradiction.",
     "work_item": "E08-curriculum-engine",
     "tier": "T3",
     "size": "L",
-    "notes": "The blueprint itself does not define what counts as a cluster; that rule has to be written before this is testable even once the engine exists. verify: upgraded MISSING -> PARTIAL. The assessor searched for 'InvestigationTask' and missed qip_opportunity_engine::Investigation/Opportunity, which is exactly anomalies-grouped-into-unrequested-investigations, live on Platform and tested. Residual and contradiction inputs remain absent."
+    "notes": "Clustering infrastructure is live and tested for same-subject anomalies. Cross-subject and time-based clustering, plus residual/contradiction input, blocked on curriculum engine infrastructure that does not yet exist. 2026-10-06: marked blocked_by to reflect infrastructure dependency."
   },
   {
     "id": "EXPAND-044",
@@ -266,12 +266,12 @@
     "depends_on": [
       "EXPAND-042"
     ],
-    "blocked_by": "",
+    "blocked_by": "E08-curriculum-engine: ResearchQueue/CurriculumItem does not exist; coverage policy dimensions require design decision",
     "verification": "cargo test -p qip-kernel --test regime_boundary (weak causal-driver evidence -> a funded probe; none when nothing crossed). No test configures an asset-class/geography/language/venue coverage map or asserts acquisition items.",
     "work_item": "E08-curriculum-engine",
     "tier": "T3",
     "size": "L",
-    "notes": "The blueprint does not define 'weak'; a coverage measure and threshold per dimension still needs declaring even once a curriculum exists to consume qip-data-finder's coverage model. verify: upgraded MISSING -> PARTIAL. The exploration desk (blueprint section 13.2) automatically raises research probes where the platform measures weak evidence - a causal driver untested in its current regime is proven by a named test with a negative premise. Acquisition work and the named coverage dimensions remain absent."
+    "notes": "Exploration desk is live and tested for regime-boundary probe generation. Acquisition task generation and coverage-dimension policy blocked on curriculum engine and design decision. 2026-10-06: marked blocked_by to reflect infrastructure dependency and policy decision needed."
   },
   {
     "id": "EXPAND-045",
@@ -290,12 +290,12 @@
     "depends_on": [
       "EXPAND-042"
     ],
-    "blocked_by": "",
+    "blocked_by": "E08-curriculum-engine: LearningObjective type and ResearchQueue do not exist to consume failure signals",
     "verification": "No test exists. Would need a replay with repeated occurrences of each of the 5 failure types, asserting a learning objective per type and none for a single unrepeated event.",
     "work_item": "E08-curriculum-engine",
     "tier": "T4",
     "size": "XL",
-    "notes": "This requirement explicitly never relaxes the control that raised the underlying failure (veto, halt, retirement) — those controls are real and unaffected; only the curriculum-feeding step is absent. 2026-10-05: not closed. Adverse selection and failed arbitrage sagas have no event on the central log, so a replayed history cannot contain all five failure types."
+    "notes": "This requirement explicitly never relaxes the control that raised the underlying failure (veto, halt, retirement) — those controls are real and unaffected; only the curriculum-feeding step is absent. Adverse selection and failed arbitrage sagas have no event on the central log, so a replayed history cannot contain all five failure types. 2026-10-06: marked blocked_by to reflect major curriculum-engine infrastructure dependency."
   },
   {
     "id": "EXPAND-046",
@@ -314,12 +314,12 @@
       "EXPAND-004",
       "EXPAND-042"
     ],
-    "blocked_by": "",
+    "blocked_by": "E08-curriculum-engine + EXPAND-004 promotion pipeline; 'persistent' requires design definition",
     "verification": "No test exists. Would need holding a discrepancy past a persistence threshold and asserting a curriculum item proposing one of the four creations, citing the discrepancy.",
     "work_item": "E08-curriculum-engine",
     "tier": "T4",
     "size": "XL",
-    "notes": "The blueprint does not define 'persistent'; per the requirement's own notes anything created is a candidate that enters service only through EXPAND-004's promotion pipeline, which itself only partially exists (see EXPAND-049, EXPAND-058)."
+    "notes": "The blueprint does not define 'persistent'; a coverage measure and threshold per dimension still needs declaring even once a curriculum exists. 2026-10-06: marked blocked_by to reflect curriculum-engine dependency and policy definition needed."
   },
   {
     "id": "EXPAND-047",
@@ -343,12 +343,12 @@
       "EXPAND-029",
       "EXPAND-061"
     ],
-    "blocked_by": "",
+    "blocked_by": "Artifact-kind expansion and sandbox integration require cost decision on prioritization and deployment scope",
     "verification": "cargo test -p qip-deepbrain --lib evolution::tests::a_turn_registers_scored_candidates_with_the_platform_factory evolution::tests::the_node_fits_and_registers_a_model_rather_than_only_being_able_to. No e2e gap-to-candidate test for any kind.",
     "work_item": "E16-expansion-engine-build-pipeline",
     "tier": "T4",
     "size": "XL",
-    "notes": "GCP v2.1 §13 gives agent roles and hard boundaries for exactly this capability; this repository's actual self-modification path today is the human-supervised branch+PR workflow, which satisfies the safety intent but is not the platform capability the requirement describes. verify: upgraded MISSING -> PARTIAL. The assessor looked only for a code-building sandbox and missed the deep brain's evolution and learning loops, which build strategy and model candidates at runtime and hold them below any authority. The other four kinds, gap-driven triggering and branch artifacts remain."
+    "notes": "Strategy and model building infrastructure is live and tested. Extending to tools, agents, features, schemas requires cost/policy decision on which kinds to prioritize and how to integrate sandbox artifacts. GCP v2.1 §13 gives agent roles and hard boundaries; the repository's actual self-modification path today is the human-supervised branch+PR workflow, which satisfies the safety intent. 2026-10-06: marked blocked_by to reflect policy decision needed."
   },
   {
     "id": "EXPAND-048",
@@ -372,7 +372,7 @@
       "EXPAND-004",
       "EXPAND-047"
     ],
-    "blocked_by": "",
+    "blocked_by": "Sandboxed builder agent type does not exist; requires new agent architecture definition",
     "verification": "cargo test -p qip-agents --test agents (no_agent_may_change_its_own_autonomy_level, a_gated_facility_cannot_be_reached_without_its_capability). No test issues a sandboxed builder agent its credentials, because no such agent exists.",
     "work_item": "E16-expansion-engine-build-pipeline",
     "tier": "T3",
