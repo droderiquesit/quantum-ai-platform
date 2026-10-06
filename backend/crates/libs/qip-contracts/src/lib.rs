@@ -60,7 +60,10 @@ pub mod wire;
 pub use capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
 pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
-pub use expansion::{BrainSpec, CurriculumItem, GapClass, GapSignal};
+pub use expansion::{
+    BrainSpec, CurriculumItem, GapClass, GapSignal, MemoryEntry, MemoryKind, RetentionPolicy,
+    ValuePolicy,
+};
 pub use fabric_envelope::{AuthContext, FabricEnvelope, QoSClass};
 pub use feature::{
     Distribution, FeatureKey, FeatureSnapshot, FeatureValue, FeatureVector, ForecastLattice,

@@ -397,3 +397,98 @@ impl BrainSpec {
         Ok(v)
     }
 }
+
+/// Memory kinds in the registry: episodes, semantic knowledge, procedures, failures, simulations, and compressed abstractions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryKind {
+    Episodic,
+    Semantic,
+    Procedural,
+    Failure,
+    Simulation,
+    CompressedAbstraction,
+}
+
+/// Retention policy: how long a memory entry is kept.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetentionPolicy {
+    pub max_age_ms: u64,
+    pub description: String,
+}
+
+impl RetentionPolicy {
+    pub fn validate(&self, record: &str) -> Result<()> {
+        if self.max_age_ms == 0 {
+            return Err(Error::invalid(format!(
+                "{record}.max_age_ms must be above zero"
+            )));
+        }
+        text(record, "description", &self.description)?;
+        Ok(())
+    }
+}
+
+/// Value policy: how much an entry is worth keeping.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValuePolicy {
+    /// Importance in [0, 1]; entries below this threshold can be evicted.
+    pub importance_threshold: f64,
+    pub rationale: String,
+}
+
+impl ValuePolicy {
+    pub fn validate(&self, record: &str) -> Result<()> {
+        finite(
+            record,
+            "importance_threshold",
+            self.importance_threshold,
+            0.0,
+            1.0,
+        )?;
+        text(record, "rationale", &self.rationale)?;
+        Ok(())
+    }
+}
+
+/// Memory Registry entry: holds semantic knowledge, episodes, procedures, failures, simulations or compressed abstractions,
+/// governed by both retention and value policies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryEntry {
+    pub id: String,
+    pub kind: MemoryKind,
+    pub content: String,
+    pub retention_policy: RetentionPolicy,
+    pub value_policy: ValuePolicy,
+    pub created_at_ms: u64,
+    pub importance: f64,
+    pub tags: Vec<String>,
+}
+
+impl MemoryEntry {
+    pub fn validate(&self) -> Result<()> {
+        const R: &str = "MemoryEntry";
+        text(R, "id", &self.id)?;
+        text(R, "content", &self.content)?;
+        self.retention_policy.validate(R)?;
+        self.value_policy.validate(R)?;
+        if self.created_at_ms == 0 {
+            return Err(Error::invalid(
+                "MemoryEntry.created_at_ms must be above zero",
+            ));
+        }
+        finite(R, "importance", self.importance, 0.0, 1.0)?;
+        list(R, "tags", &self.tags)?;
+        Ok(())
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let v: Self = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a MemoryEntry: {e}; supply every field")))?;
+        v.validate()?;
+        Ok(v)
+    }
+}
