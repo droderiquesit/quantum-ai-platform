@@ -39,6 +39,14 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "~> 6.12"
     }
+    # GitHub provider for branch protection and repository configuration.
+    # Branch protection is load-bearing: it enforces tests and independent
+    # review before merge, and it is the enforcement point for the merge
+    # preconditions in CICD-045.
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
   }
 
   # State holds secret material references and the full topology. It lives in
@@ -57,6 +65,10 @@ provider "google" {
 provider "google-beta" {
   project = var.project_id
   region  = var.region
+}
+
+provider "github" {
+  owner = var.github_owner
 }
 
 # The project's numeric id, asked for rather than typed in.
@@ -1286,4 +1298,51 @@ module "dns_zone" {
       }
     },
   )
+}
+
+# Branch protection for the main branch.
+#
+# This enforces the CICD-045 requirement: "A change enters through a GitHub
+# branch or PR created by a human or an authorized agent. Branch protection
+# requires tests, and independent review scaled to the change's risk class,
+# before merge."
+#
+# The protection rule requires:
+# - All tests (CI status checks) must pass before merge
+# - At least one independent review is required
+# - Dismiss stale PR approvals when new commits are pushed
+# - Restrict who can push to or merge to the main branch
+resource "github_branch_protection" "main" {
+  repository_id  = var.github_repository
+  pattern        = "main"
+  enforce_admins = true
+
+  # Require status checks to pass before merging.
+  required_status_checks {
+    strict   = true # Require branches to be up to date before merging
+    contexts = [
+      "ci",                    # General CI check
+      "build / lint",          # Format and lint checks
+      "build / clippy",        # Rust linter
+      "build / tests",         # Test suite
+      "build / dependency_check",    # Dependency audit
+      "build / secret_scan"          # Secret scanning
+    ]
+  }
+
+  # Require at least one review before merging.
+  required_pull_request_reviews {
+    required_approving_review_count = 1
+    dismiss_stale_reviews          = true
+    require_code_owner_reviews     = true
+  }
+
+  # Require branches to be up to date before merging.
+  requires_strict_status_checks = true
+
+  # Restrict who can push to this branch (only through PRs).
+  restrictions {
+    users = []
+    teams = []
+  }
 }

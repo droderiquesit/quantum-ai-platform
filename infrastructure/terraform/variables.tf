@@ -1559,3 +1559,25 @@ variable "dns_record_ttl_seconds" {
     error_message = "dns_record_ttl_seconds must be between 60 and 86400. Under a minute most resolvers floor it, so the number describes nothing; over a day a wrong record — and a certificate waiting on it — stays wrong for a day."
   }
 }
+
+variable "github_owner" {
+  description = "GitHub repository owner (user or organization) for branch protection configuration."
+  type        = string
+  default     = "droderiquesit"
+
+  validation {
+    condition     = length(var.github_owner) > 0
+    error_message = "github_owner must not be empty."
+  }
+}
+
+variable "github_repository" {
+  description = "GitHub repository name for branch protection configuration."
+  type        = string
+  default     = "quantum-ai-platform"
+
+  validation {
+    condition     = length(var.github_repository) > 0
+    error_message = "github_repository must not be empty."
+  }
+}
