@@ -287,7 +287,7 @@ impl SourceConnector for KalshiMarketsConnector {
         Ok(events)
     }
 
-    fn map(&self, event: &RawEvent, _ingest_time: Timestamp) -> Result<SensedRecord> {
+    fn map(&self, event: &RawEvent, ingest_time: Timestamp) -> Result<SensedRecord> {
         let market = &event.body;
         let ticker = Self::text(market, "ticker")?;
         let market_type = Self::text(market, "market_type")?;
@@ -334,6 +334,7 @@ impl SourceConnector for KalshiMarketsConnector {
             object_id: Self::object_id(ticker),
             venue: Self::VENUE.to_string(),
             at: event.event_time,
+            capture_time: Some(ingest_time),
             bid,
             ask,
             bid_size,

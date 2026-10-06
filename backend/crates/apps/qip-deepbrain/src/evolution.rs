@@ -2907,12 +2907,13 @@ mod tests {
         fn map(
             &self,
             _event: &qip_market_ingestion::connector::RawEvent,
-            _ingest_time: Timestamp,
+            ingest_time: Timestamp,
         ) -> Result<SensedRecord> {
             Ok(SensedRecord::Tick(qip_market::quote::Tick {
                 object_id: self.subject.clone(),
                 venue: "STANDIN".to_string(),
                 at: self.at,
+                capture_time: Some(ingest_time),
                 price: Decimal::from_int(100),
                 volume: Decimal::from_int(1),
                 quality: qip_financial::quality::DataQuality::clean(),

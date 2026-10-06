@@ -144,6 +144,7 @@ fn quote(symbol: &str, at: Timestamp, bps: f64) -> SensedRecord {
         object_id: object(symbol),
         venue: "XNYS".to_string(),
         at,
+        capture_time: None,
         bid: Decimal::from_f64(100.0 - half).expect("a price"),
         ask: Decimal::from_f64(100.0 + half).expect("a price"),
         bid_size: dec!("1000"),
