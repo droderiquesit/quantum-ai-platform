@@ -463,3 +463,186 @@ test("a ledger line the budget cannot read, or one written before refusals were 
   assert.equal(spent(d.ledger), 3);
   d.remove();
 });
+
+// --- daily, monthly, and work-type budgets (FINOPS-017) ---
+
+test("a spent daily call budget refuses further calls today and is audited with the limit and usage", async () => {
+  // The failure: the daily budget was never enforced, so an agent could make
+  // unlimited model calls within a day as long as monthly and per-call ceilings held.
+  const d = desk();
+  const config = configure(
+    {
+      ALGORIK_WORKER_PROVIDER: "huggingface",
+      ALGORIK_WORKER_MODEL: "org/model",
+      HF_TOKEN_FILE: "/f",
+      ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_DAILY_CALLS: "1",
+    },
+    () => "k",
+  );
+  assert.deepEqual(config.problems, []);
+
+  const today = new Date().toISOString().split("T")[0];
+  // Pre-populate ledger with one allowed call today
+  writeFileSync(d.ledger, JSON.stringify({ at: `${today}T10:00:00Z`, decision: "allowed", billed: true, model: "org/model", agent: "test-engineer" }) + "\n");
+
+  const { requests, fetchImpl } = scripted(answer("refused"));
+  const as = (task) => run(config, d.task(task), { agent: "test-engineer", fetchImpl, ledger: d.ledger });
+
+  // Second call today exceeds daily budget
+  assert.equal(await as(goodTask), 3);
+  assert.equal(requests.length, 0, "a daily-budget refusal sent a request anyway");
+  const lastLine = d.lines().at(-1);
+  assert.equal(lastLine.decision, "refused:daily-budget");
+  assert.equal(lastLine.used, 1);
+  assert.equal(lastLine.daily_max, 1);
+
+  d.remove();
+});
+
+test("a spent monthly call budget refuses further calls this month and is audited with the limit and usage", async () => {
+  // The failure: the monthly budget was never enforced, so an agent could make
+  // unlimited calls within a month once daily ceilings rotated.
+  const d = desk();
+  const config = configure(
+    {
+      ALGORIK_WORKER_PROVIDER: "huggingface",
+      ALGORIK_WORKER_MODEL: "org/model",
+      HF_TOKEN_FILE: "/f",
+      ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_MONTHLY_CALLS: "2",
+    },
+    () => "k",
+  );
+  assert.deepEqual(config.problems, []);
+
+  const thisMonth = new Date().toISOString().substring(0, 7);
+  // Pre-populate ledger with two allowed calls this month
+  writeFileSync(
+    d.ledger,
+    [
+      JSON.stringify({ at: `${thisMonth}-05T10:00:00Z`, decision: "allowed", billed: true, model: "org/model", agent: "test-engineer" }),
+      JSON.stringify({ at: `${thisMonth}-15T14:00:00Z`, decision: "allowed", billed: true, model: "org/model", agent: "test-engineer" }),
+    ].join("\n") + "\n",
+  );
+
+  const { requests, fetchImpl } = scripted(answer("refused"));
+  const as = (task) => run(config, d.task(task), { agent: "test-engineer", fetchImpl, ledger: d.ledger });
+
+  // Third call this month exceeds monthly budget
+  assert.equal(await as(goodTask), 3);
+  assert.equal(requests.length, 0, "a monthly-budget refusal sent a request anyway");
+  const lastLine = d.lines().at(-1);
+  assert.equal(lastLine.decision, "refused:monthly-budget");
+  assert.equal(lastLine.used, 2);
+  assert.equal(lastLine.monthly_max, 2);
+
+  d.remove();
+});
+
+test("a spent build-type budget refuses further build-type calls and is audited with the limit and usage", async () => {
+  // The failure: the build-type budget was never enforced, so the gateway did
+  // not meter different call types separately as the platform intended.
+  const d = desk();
+  const config = configure(
+    {
+      ALGORIK_WORKER_PROVIDER: "huggingface",
+      ALGORIK_WORKER_MODEL: "org/model",
+      HF_TOKEN_FILE: "/f",
+      ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_BUILD_CALLS: "1",
+    },
+    () => "k",
+  );
+  assert.deepEqual(config.problems, []);
+
+  // Pre-populate ledger with one build-type call
+  writeFileSync(d.ledger, JSON.stringify({ decision: "allowed", billed: true, model: "org/model", agent: "test-engineer", work_type: "build" }) + "\n");
+
+  const { requests, fetchImpl } = scripted(answer("refused"));
+  const as = (task) => run(config, d.task(task), { agent: "test-engineer", fetchImpl, ledger: d.ledger });
+
+  // Second build-type call exceeds build budget
+  assert.equal(await as({ ...goodTask, work_type: "build" }), 3);
+  assert.equal(requests.length, 0, "a build-budget refusal sent a request anyway");
+  const lastLine = d.lines().at(-1);
+  assert.equal(lastLine.decision, "refused:build-budget");
+  assert.equal(lastLine.used, 1);
+  assert.equal(lastLine.build_max, 1);
+
+  d.remove();
+});
+
+test("a spent tool-type budget refuses further tool-type calls and is audited with the limit and usage", async () => {
+  // The failure: the tool-type budget was never enforced, so tool calls
+  // were not metered separately from model and build calls.
+  const d = desk();
+  const config = configure(
+    {
+      ALGORIK_WORKER_PROVIDER: "huggingface",
+      ALGORIK_WORKER_MODEL: "org/model",
+      HF_TOKEN_FILE: "/f",
+      ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_TOOL_CALLS: "1",
+    },
+    () => "k",
+  );
+  assert.deepEqual(config.problems, []);
+
+  // Pre-populate ledger with one tool-type call
+  writeFileSync(d.ledger, JSON.stringify({ decision: "allowed", billed: true, model: "org/model", agent: "test-engineer", work_type: "tool" }) + "\n");
+
+  const { requests, fetchImpl } = scripted(answer("refused"));
+  const as = (task) => run(config, d.task(task), { agent: "test-engineer", fetchImpl, ledger: d.ledger });
+
+  // Second tool-type call exceeds tool budget
+  assert.equal(await as({ ...goodTask, work_type: "tool" }), 3);
+  assert.equal(requests.length, 0, "a tool-budget refusal sent a request anyway");
+  const lastLine = d.lines().at(-1);
+  assert.equal(lastLine.decision, "refused:tool-budget");
+  assert.equal(lastLine.used, 1);
+  assert.equal(lastLine.tool_max, 1);
+
+  d.remove();
+});
+
+test("work-type-specific budgets do not block other work types: exhausting build does not block tool", async () => {
+  // The failure: a build budget refusal blocked tool calls, contradicting the design
+  // that build and tool budgets meter independently. Daily/monthly budgets still apply
+  // to all types; work-type-specific budgets apply only to their type.
+  const d = desk();
+  const config = configure(
+    {
+      ALGORIK_WORKER_PROVIDER: "huggingface",
+      ALGORIK_WORKER_MODEL: "org/model",
+      HF_TOKEN_FILE: "/f",
+      ALGORIK_WORKER_MAX_CALLS: "100",
+      ALGORIK_WORKER_BUILD_CALLS: "1",
+      ALGORIK_WORKER_TOOL_CALLS: "1",
+    },
+    () => "k",
+  );
+  assert.deepEqual(config.problems, []);
+
+  // Pre-populate: one build call and one tool call, each budget at its limit
+  writeFileSync(
+    d.ledger,
+    [
+      JSON.stringify({ decision: "allowed", billed: true, model: "org/model", agent: "test-engineer", work_type: "build" }),
+      JSON.stringify({ decision: "allowed", billed: true, model: "org/model", agent: "test-engineer", work_type: "tool" }),
+    ].join("\n") + "\n",
+  );
+
+  const { requests, fetchImpl } = scripted(answer("ok"));
+  const as = (task) => run(config, d.task(task), { agent: "test-engineer", fetchImpl, ledger: d.ledger });
+
+  // A second build call is refused, but a model call (no type-specific budget) should succeed
+  assert.equal(await as({ ...goodTask, work_type: "build" }), 3);
+  assert.equal(d.lines().at(-1).decision, "refused:build-budget");
+
+  // Model call should be allowed: no build budget applies to it
+  assert.equal(await as({ ...goodTask }), 0);
+  assert.equal(requests.length, 1, "a model call was refused by a build-specific budget");
+
+  d.remove();
+});
