@@ -23,15 +23,15 @@ locals {
   # and inter-region communication setup.
   has_cross_region_mirror = length(var.cross_region_mirrors) > 0
 
-  # Map of region names to the zones (subnets) that exist in them, derived from
-  # the node configuration map.
-  regions_by_node = {
-    for node_id, node_config in var.execution_nodes :
-    node_config.region => node_config.zone
-  }
-
-  # The distinct set of regions where nodes are deployed.
-  node_regions = distinct(values(local.regions_by_node))
+  # The distinct set of regions where nodes are deployed, sorted so the order
+  # is stable across plans. This was `distinct(values({ region => zone }))`,
+  # which is the set of *zones*: every PSC address lookup missed, the health
+  # rule's per-region index found no node, and two nodes in one region were
+  # a duplicate-key error. Nothing had ever planned this module, so nothing
+  # had noticed; `tests/mesh_connectivity.tftest.hcl` now does.
+  node_regions = sort(distinct([
+    for node_config in values(var.execution_nodes) : node_config.region
+  ]))
 }
 
 # --- Private Service Connect endpoints for cross-region communication ---------
@@ -93,9 +93,17 @@ resource "google_compute_firewall" "cell_ingress_health" {
   direction = "INGRESS"
   priority  = 1000
 
+  # The one port, named. This read `[tostring(each.value.health_port)]`, and
+  # nothing bounded `health_port` but its type — a cell configured with 22 or
+  # 3389 would have opened remote administration to the central plane and to
+  # every other cell's subnet, none of which is IAP. A computed port is also
+  # one no reviewer and no text scan can read. `variables.tf` refuses any
+  # health port but 8080 (`qip-edge-node`'s default), so a cell whose health
+  # surface sits elsewhere stops the plan instead of being silently
+  # unreachable.
   allow {
     protocol = "tcp"
-    ports    = [tostring(each.value.health_port)]
+    ports    = ["8080"]
   }
 
   # A cell is reached by:
