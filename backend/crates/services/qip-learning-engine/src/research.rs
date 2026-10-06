@@ -165,6 +165,7 @@ impl ResearchLedger {
 #[allow(clippy::unwrap_used, clippy::expect_used)] // tests may unwrap: a panic is the failure report
 mod tests {
     use super::*;
+    use qip_core::time::Duration;
 
     fn failed(id: &str, class: &str, verdict: Verdict) -> Evaluation {
         Evaluation {
@@ -180,6 +181,7 @@ mod tests {
             contributors: vec![],
             evaluated_at: Timestamp::from_secs(1),
             rationale: String::new(),
+            horizon: Duration::from_secs(3600),
         }
     }
 
