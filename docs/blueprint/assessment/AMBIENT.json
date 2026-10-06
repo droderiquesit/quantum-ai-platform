@@ -690,5 +690,78 @@
     "tier": "T3",
     "size": "S",
     "notes": "Shares its blocker and work item with AMBIENT-024; this row is the mesh's read side of that same gap. verify: changed BLOCKED(C4) -> MISSING. This is a contract, not a placement, and it names a 'Bigtable/Memory' tier. The read path can be built against an in-memory or in-tree K0, so C4 is not the reason it is absent. depends_on moved from AMBIENT-024 (the Bigtable placement row, still BLOCKED) to the mesh and surprise rows it actually needs."
+  },
+  {
+    "id": "AMBIENT-029",
+    "status": "MISSING",
+    "current": "no evidence acquisition mechanism exists. The platform has no way to decide when acquiring more information would reduce decision uncertainty, no way to rank candidate observations by expected value of information, no way to estimate acquisition cost, and no deadline-aware halting condition. qip-contracts has no types for InfoRequest, acquisition criteria, or acquisition status tracking.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src: no InfoRequest, EvidenceAcquisition, or ValueOfInformation types",
+      "backend/crates/services: no active-sensing or curiosity engine",
+      "rg 'expected.?value.?information|active.?sensing|curiosity' backend/crates --glob '*.rs': no hits"
+    ],
+    "gap": "No mechanism ranks observations by economic significance, uncertainty reduction, urgency and acquisition cost. No halt condition exists when marginal value falls below cost or at deadline. The requirement is strictly for paper-trade simulation only (no live acquisition).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-013",
+      "AMBIENT-031"
+    ],
+    "blocked_by": "",
+    "verification": "Integration test: given two candidate observations and a fixed budget, verify ranking matches specification and acquisition halts at cost/deadline bound.",
+    "work_item": "E09-evidence-acquisition-by-evi",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Depends on AMBIENT-013 (opportunity opportunities waking) and AMBIENT-031 (compute allocation machinery). Can be built entirely in-tree in Rust with qip-contracts types. No external service or new dependency is required."
+  },
+  {
+    "id": "AMBIENT-030",
+    "status": "BLOCKED",
+    "current": "Undefined in specification. A 'market microstructure probe' is mentioned but not defined. AMBIENT-030 is marked as an invariant guardrail, not a capability to build.",
+    "evidence": [
+      "docs/blueprint/requirements/AMBIENT.json AMBIENT-030: 'undefined in v12.0. It is treated as an external action and is not built'",
+      "docs/blueprint/requirements/AMBIENT.json policy_flags: ['EXTERNAL_ACTION', 'LIVE_CAPITAL']"
+    ],
+    "gap": "No code exists because none should exist. AMBIENT-030 is an invariant stating what must NOT happen: a probe of a live venue is never issued until it is defined. Paper layers 1-3 are intact. This is not work to do; it is work to refuse.",
+    "implemented": false,
+    "tested": true,
+    "integrated": false,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "EXTERNAL_ACTION, LIVE_CAPITAL",
+    "verification": "Invariant: no code path issues a probe to a live venue; paper boundary intact.",
+    "work_item": "NONE",
+    "tier": "T0",
+    "size": "NONE",
+    "notes": "This is a guardrail, not a feature. Mark BLOCKED. No changes required to this row unless a future v13.0 defines what a probe is. Classified as invariant (policy flag guardrail)."
+  },
+  {
+    "id": "AMBIENT-031",
+    "status": "PARTIAL",
+    "current": "ModelReputation (domain, horizon, regime, accuracy_bp, signal_quality_bp, forecast_skill_bp) is implemented with weighted overall_bp calculation (40% accuracy, 30% quality, 30% skill) and full validation. ComputeAllocation records work_id, resource_type, units, allocated_at, model_reputation, and rationale with complete validation and metadata preservation. Both types are in qip_contracts::ambient with unit and integration tests. Missing: the allocation engine that routes compute based on reputation and expected value, and the work-killing mechanism for unproductive work.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs:440-542 (ModelReputation, ComputeAllocation types, validation, overall_bp calculation)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs (a_model_reputation_requires_all_three_dimensions_and_all_metrics_within_bounds, a_model_reputation_overall_score_is_weighted_average, a_compute_allocation_requires_nonempty_fields_and_positive_units, a_compute_allocation_records_all_metadata_for_auditability, all mutation-verified)"
+    ],
+    "gap": "No allocation engine exists to route compute to high-value work. No work-killing mechanism exists to terminate unproductive tasks. No reputation accumulation pipeline exists to track model performance by domain/horizon/regime. Attention routing exists (AMBIENT-010) but compute allocation is separate.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "AMBIENT-005",
+      "AMBIENT-031"
+    ],
+    "blocked_by": "",
+    "verification": "Integration test: under fixed budget, allocation favours higher-value request; zero-value job is killed.",
+    "work_item": "E09-meta-intelligence-allocation-engine",
+    "tier": "T2",
+    "size": "M",
+    "notes": "ModelReputation and ComputeAllocation types are foundational types for the allocation engine; both are now implemented. The allocation engine (stateful work tracking, value scoring, compute routing, job termination) is the remaining work. No new dependency or external service required."
   }
 ]
