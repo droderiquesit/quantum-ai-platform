@@ -75,6 +75,11 @@ qip-protocols.workspace = true
 # crate's own tests can see the other.
 qip-routing.workspace = true
 
+# `m6_critical_path.rs` times the cost router's `select` on both arms of
+# `Determinism`. That suite imported `qip_cost_router` without this line and
+# so never compiled. In-tree; the workspace's two-dependency rule is untouched.
+qip-cost-router.workspace = true
+
 # The security suite additionally reaches the data finder, because the
 # threat model's "unknown is not permission" property lives in its
 # three-valued legality and nowhere else.

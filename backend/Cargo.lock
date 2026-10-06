@@ -38,6 +38,7 @@ dependencies = [
  "qip-compliance",
  "qip-contracts",
  "qip-core",
+ "qip-cost-router",
  "qip-data-finder",
  "qip-edge",
  "qip-entity-resolution",
@@ -129,6 +130,7 @@ dependencies = [
  "qip-market-ingestion",
  "qip-mesh",
  "qip-observability",
+ "qip-portfolio",
  "qip-risk",
  "qip-risk-engine",
  "qip-simulation-engine",
@@ -748,6 +750,7 @@ dependencies = [
 name = "qip-quantum"
 version = "0.1.0"
 dependencies = [
+ "qip-contracts",
  "qip-core",
  "qip-numerics",
  "qip-transport",
