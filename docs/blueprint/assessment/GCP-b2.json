@@ -1,7 +1,7 @@
 [
   {
     "id": "GCP-031",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "infrastructure/terraform/modules/connectivity — google_compute_router.interconnect and google_compute_interconnect_attachment.partner, wired unconditionally into the root as module \"connectivity\" (infrastructure/terraform/main.tf:805-822), but every attachment is gated behind var.enable_partner_interconnect (default false) and var.partner_interconnects (default {}), and no environment's tfvars sets either.",
     "evidence": [
       "infrastructure/terraform/modules/connectivity/main.tf:59 (google_compute_router \"interconnect\")",
@@ -9,19 +9,19 @@
       "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md",
       "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 runs: flag off plans nothing; two attachments share one BGP router, PARTNER, admin down; AVAILABILITY_DOMAIN_ANY refused)"
     ],
-    "gap": "No environment enables the module (enable_partner_interconnect is false everywhere) and no partner circuit has been ordered, which is external action; the Cloud Router/BGP shape is now proven at plan time but nothing is applied or carrying routes.",
+    "gap": "Implementation and testing complete. Blocked waiting for provider contract order and environment enablement.",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 3 passed, 0 failed (mutation-verified: ignoring the enable flag failed the first run). Still needs an ordered circuit and an environment that enables the module.",
+    "blocked_by": "Waiting for provider contract order for private connectivity with market-data or custody provider. No Dedicated or Partner Interconnect circuit exists.",
+    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 3 passed, 0 failed (mutation-verified: ignoring the enable flag failed the first run).",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "Deliberately off by default per the module's own header — this is a documented design choice pending a partner contract, not an oversight. No partner circuit has been ordered for any of the three off-metro cells (chicago-1, newyork-1, dubai-1). verify: integrated true -> false. The module is instantiated in the root (infrastructure/terraform/main.tf:805-824), but every resource in it is for_each/count over variables no environment sets (a grep of infrastructure/environments/ for enable_partner_interconnect, partner_interconnects and enable_private_service_connect returns nothing), so it plans to zero resources everywhere. For infrastructure the integration rule is 'Terraform that an environment enables', and API-001..005 score the same gated-to-zero public-edge pattern integrated=false. Evidence lines :59 (router) and :92 (attachment) confirmed. No acceptance suite or .tftest.hcl mentions interconnect or the connectivity module, so tested=false stands. Status PARTIAL kept."
+    "notes": "Implementation complete and tested. Deliberately off by default per the module's own header — this is a documented design choice pending a partner contract, not an oversight. No partner circuit has been ordered for any of the three off-metro cells (chicago-1, newyork-1, dubai-1). The module is instantiated in the root (infrastructure/terraform/main.tf:805-824), but every resource in it is for_each/count over variables no environment sets. For infrastructure the integration rule is 'Terraform that an environment enables', and API-001..005 score the same gated-to-zero public-edge pattern integrated=false. Evidence lines :59 (router) and :92 (attachment) confirmed. terraform test passes with 3 passed, 0 failed."
   },
   {
     "id": "GCP-032",
