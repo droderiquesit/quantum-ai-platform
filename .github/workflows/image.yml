@@ -124,6 +124,10 @@ on:
           - c3-highcpu-22
           - c3d-highcpu-8
           - c3d-highcpu-16
+          - c4-highcpu-8
+          - c4-highcpu-22
+          - c4d-highcpu-8
+          - c4d-highcpu-16
       base_image:
         description: "Full self-link of the Debian base to build on, e.g. projects/debian-cloud/global/images/debian-12-bookworm-vYYYYMMDD. A family is refused: it is a moving pointer."
         required: true

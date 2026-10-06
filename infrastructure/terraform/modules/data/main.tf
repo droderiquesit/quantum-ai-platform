@@ -328,7 +328,7 @@ resource "google_spanner_instance" "global" {
 
   project      = var.project_id
   name         = "${local.prefix}-global"
-  config       = "regional-${var.region}"
+  config       = "nam-eur-asea"
   display_name = "QIP ${var.environment} global"
   labels       = var.labels
 
