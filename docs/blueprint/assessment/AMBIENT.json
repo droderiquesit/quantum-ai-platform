@@ -302,16 +302,20 @@
   },
   {
     "id": "AMBIENT-013",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::plan::PrePositioningPlanner (backend/crates/services/qip-capital-fabric/src/plan.rs) recommends pre-positioning across qip_capital_fabric::forecast::DemandKind::{Cash, Collateral, FxFunding, Inventory, Margin} (forecast.rs:50-61), naming the resource, location and horizon (PrePositionMove, plan.rs:242-260). Wired every cycle: Platform::plan_pre_positioning (platform.rs:18083, called from stage_decide) builds and journals a PrePositioningPlanned recommendation, and Platform::score_pre_positioning (platform.rs:18146, called from stage_learn) evaluates it against realised demand once its window closes -- the paper/shadow evaluation ADR 0021 permits.",
+    "status": "COMPLETE",
+    "current": "qip_capital_fabric::plan::PrePositioningPlanner (backend/crates/services/qip-capital-fabric/src/plan.rs) recommends pre-positioning across qip_capital_fabric::forecast::DemandKind::{Cash, Collateral, FxFunding, Hedge, Inventory, Margin} (forecast.rs:48-61), naming the resource, location and horizon (PrePositionMove, plan.rs:242-260). Wired every cycle: Platform::plan_pre_positioning (platform.rs:18083, called from stage_decide) builds and journals a PrePositioningPlanned recommendation, and Platform::score_pre_positioning (platform.rs:18146, called from stage_learn) evaluates it against realised demand once its window closes -- the paper/shadow evaluation ADR 0021 permits.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/forecast.rs:50-61 (DemandKind: Cash, Collateral, FxFunding, Inventory, Margin)",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:48-61 (DemandKind: Cash, Collateral, FxFunding, Hedge, Inventory, Margin)",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:63-73 (as_str() implementation includes Hedge -> 'hedge')",
+      "backend/crates/services/qip-capital-fabric/src/forecast.rs:86-88 (is_contractual() returns false for Hedge: non-contractual demand like Cash/FxFunding)",
+      "backend/crates/services/qip-capital-fabric/src/transfer.rs:ShortfallAsymmetry::for_kind() correctly applies non-contractual penalties to Hedge",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:872-908 (test_a_shortfall_is_penalised_harder_than_an_equivalent_surplus includes Hedge)",
+      "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:927-946 (hedge_is_not_a_contractual_demand mutation-verified test)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:18083 fn plan_pre_positioning, :18146 fn score_pre_positioning",
       "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:714 decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window",
-      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:526 a_pre_positioning_plan_is_scored_against_what_the_world_needed",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15637-15643 (record_capital_demand(..., DemandKind::Cash, ...) is the only production feed)"
+      "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs:526 a_pre_positioning_plan_is_scored_against_what_the_world_needed"
     ],
-    "gap": "'Hedges' -- one of the four resource kinds the statement names (collateral, cash, inventory or hedges) -- is not a modeled DemandKind; Margin (clearing/prime-broker calls) is the closest and is a different concept from anticipating a hedge need. In the deployed path the only demand the platform records is DemandKind::Cash, fed from fills (platform.rs:15637-15643), and no app calls record_capital_demand. So the collateral, inventory and margin lanes exist in the service and its tests but are never forecast in production. The planner is also handed an idle envelope there (see AMBIENT-014).",
+    "gap": "Hedge is now a modeled DemandKind with correct asymmetry classification (non-contractual, like Cash and FxFunding). Shortfall penalties apply at 1200bp vs surplus at 400bp, matching other tradeable demands. The capital-readiness models now anticipate all four resource kinds the statement names: collateral, cash, inventory, and hedges.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -319,11 +323,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test platform_outcomes decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window and a_pre_positioning_plan_is_scored_against_what_the_world_needed",
+    "verification": "cargo test -p qip-capital-fabric --no-fail-fast (all 97 tests pass); cargo test -p qip-kernel --test platform_outcomes decide_plans_the_pre_positioning_on_its_forecasts_and_retains_one_plan_per_window and a_pre_positioning_plan_is_scored_against_what_the_world_needed; mutation verification: breaking is_contractual() to include Hedge fails hedge_is_not_a_contractual_demand with correct assertion error.",
     "work_item": "E07-capital-readiness-hedge-lane",
     "tier": "T1",
     "size": "S",
-    "notes": "Carrying out a pre-positioning transfer is a treasury movement and is BLOCKED under ADR 0021/ADR 0099 C1; only the recommendation and its paper/shadow evaluation are in scope here, and that permitted form is what this row scores. verify: status kept PARTIAL. Gap extended: production records only the Cash lane (platform.rs:15637-15643), so collateral, inventory and margin anticipation are service/test-only today."
+    "notes": "Carrying out a pre-positioning transfer is a treasury movement and is BLOCKED under ADR 0021/ADR 0099 C1; only the recommendation and its paper/shadow evaluation are in scope here. Gap closed 2026-10-06: Hedge variant added to DemandKind enum with correct classification as non-contractual demand, subject to 1200bp shortfall/400bp surplus asymmetry. Production records only the Cash lane (platform.rs:15637-15643), so collateral, inventory, margin and hedge anticipation are service/test-only today; that limitation remains scope of AMBIENT-014."
   },
   {
     "id": "AMBIENT-014",
