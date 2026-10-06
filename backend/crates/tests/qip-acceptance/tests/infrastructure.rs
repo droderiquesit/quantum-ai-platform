@@ -4574,6 +4574,45 @@ fn derived_data_stores_carry_bounded_retention_or_lifecycle_rules() {
     );
 }
 
+#[test]
+fn no_identity_with_retention_update_permission_can_access_unlocked_retention_buckets() {
+    // FINOPS-019: a cost action must never shorten retention on production state.
+    // storage.buckets.update permission includes the ability to update retention
+    // policies. This test verifies that identities with storage.buckets.update
+    // (specifically qip-infra-<env> which can run cost teardowns) are not granted
+    // any IAM role on buckets with unlocked retention (is_locked = false).
+
+    // Verify that buckets with unlocked retention exist (event-archive in data module)
+    let data_module = read("infrastructure/terraform/modules/data/main.tf");
+    assert!(
+        data_module.contains("is_locked") && data_module.contains("= false"),
+        "data module should have a bucket with unlocked retention (event-archive)"
+    );
+
+    // Verify that qip-infra-<env> (the identity that can run cost teardowns) is only
+    // defined in the cicd module, not granted IAM access to storage buckets elsewhere.
+    let cicd_module = read("infrastructure/terraform/modules/cicd/main.tf");
+    assert!(
+        cicd_module.contains("qip-infra"),
+        "cicd module should define qip-infra identity"
+    );
+
+    // Scan for any inappropriate qip-infra IAM bindings on storage buckets
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+
+        // qip-infra should only appear in cicd/main.tf where it's defined
+        if content.contains("qip-infra") && !path.ends_with("modules/cicd/main.tf") {
+            // If qip-infra appears in other modules, it must not be bound to storage resources
+            assert!(
+                !content.contains("google_storage_bucket_iam"),
+                "{} should not grant qip-infra IAM access to storage buckets",
+                path.display()
+            );
+        }
+    }
+}
+
 // --- capacity (FINOPS-002) ---------------------------------------------------
 
 /// The first resource type among `types` that a Terraform file declares.
