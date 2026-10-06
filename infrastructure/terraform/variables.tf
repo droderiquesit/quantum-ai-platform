@@ -381,8 +381,8 @@ variable "storage_target" {
   default     = "memory"
 
   validation {
-    condition     = contains(["memory", "file", "engine"], var.storage_target)
-    error_message = "The storage target is memory, file or engine — the three targets this build implements. A managed store here is a service that refuses to start."
+    condition     = contains(["memory", "file", "engine", "cloud_storage", "big_query"], var.storage_target)
+    error_message = "The storage target must be one of: memory, file, engine, cloud_storage, big_query. Unimplemented targets (memorystore, alloy_db, spanner, bigtable) are refused. A managed store here is a service that refuses to start."
   }
 }
 
@@ -932,6 +932,27 @@ variable "enable_vertex_ai" {
 # `terraform/tests/kms-protection.tftest.hcl` does not claim to prove it.
 # Saying so here is the alternative to a check that would read as protection
 # and could never fire.
+
+variable "venue_adapter_type" {
+  description = <<-EOT
+    The venue adapter this environment declares: "simulated", the in-process
+    matching engine (CICD-083, ADR 0003), and nothing else.
+
+    The execution node's startup template already pins QIP_VENUE_FEED to the
+    simulated feed and the binary refuses any other value; this variable makes
+    that explicit in tfvars. It admits no other value on purpose: the platform
+    is paper trading in every environment, and a variable that accepted a real
+    venue's name would be a fourth place a live path could be spelled.
+  EOT
+
+  type    = string
+  default = "simulated"
+
+  validation {
+    condition     = var.venue_adapter_type == "simulated"
+    error_message = "The venue adapter type is \"simulated\" in every environment (ADR 0003): the platform is paper trading only and has no real-venue adapter."
+  }
+}
 
 variable "kms_protection_level" {
   description = "Protection level for every KMS key in this configuration: SOFTWARE or HSM. One value for all four keys, so a mixed posture cannot be expressed."

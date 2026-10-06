@@ -211,6 +211,8 @@ fn a_news_item_lands_in_the_evidence_index_rather_than_vanishing() -> Result<()>
             confidence: 0.9,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: 0.8,
@@ -265,6 +267,8 @@ fn acme_news(item_id: &str, headline: String) -> Result<NewsItem> {
             confidence: 0.9,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: 0.8,
@@ -693,6 +697,8 @@ fn both_world_stream_and_tick_stream_are_required_and_fused() -> Result<()> {
             confidence: 0.95,
             is_primary: true,
             sentiment: None,
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: 0.9,

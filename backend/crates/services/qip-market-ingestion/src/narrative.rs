@@ -876,6 +876,9 @@ impl NarrativeAdapter {
                 confidence: mention.confidence,
                 is_primary: mention.is_primary,
                 sentiment: None,
+                // No kind or identifiers yet: the defaults say so rather than guess.
+                kind: Default::default(),
+                identifiers: Default::default(),
             });
         }
 

@@ -376,7 +376,9 @@ fn the_two_credential_windows_that_claim_to_be_the_same_window_agree_on_the_same
     // This is the first place in the workspace that can see both, which is why
     // the assertion lives here rather than in either crate's own tests.
     use qip_compliance::approval::{MAXIMUM_CREDENTIAL_AGE, OperatorCredential};
-    use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel, OperatorIdentity};
+    use qip_risk_engine::autonomy::{
+        AutonomyController, AutonomyLevel, Identification, OperatorIdentity,
+    };
 
     let authenticated_at = now();
     let inside = authenticated_at.saturating_add(Duration::from_mins(14));
@@ -394,6 +396,7 @@ fn the_two_credential_windows_that_claim_to_be_the_same_window_agree_on_the_same
                 AutonomyLevel::Advisory,
                 &identity,
                 "exercising the credential window",
+                None,
                 at,
             )
             .is_ok();

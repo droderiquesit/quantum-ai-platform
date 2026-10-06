@@ -64,6 +64,9 @@ pub fn mentions_for<R: Rng>(company: &SyntheticCompany, rng: &mut R) -> Vec<Enti
         confidence: if use_alias { 0.62 } else { 0.94 },
         is_primary: true,
         sentiment: None,
+        // No kind or identifiers yet: the defaults say so rather than guess.
+        kind: Default::default(),
+        identifiers: Default::default(),
     }]
 }
 
@@ -183,6 +186,9 @@ pub fn supply_chain_story<R: Rng>(
             confidence: 0.8,
             is_primary: false,
             sentiment: None,
+            // No kind or identifiers yet: the defaults say so rather than guess.
+            kind: Default::default(),
+            identifiers: Default::default(),
         });
     }
 
@@ -243,6 +249,9 @@ pub fn macro_story(series_id: &str, region: &str, surprise: f64, at: Timestamp) 
             confidence: 0.95,
             is_primary: true,
             sentiment: None,
+            // No kind or identifiers yet: the defaults say so rather than guess.
+            kind: Default::default(),
+            identifiers: Default::default(),
         }],
         sentiment: Sentiment {
             polarity: -(surprise.clamp(-1.0, 1.0)),

@@ -357,6 +357,9 @@ mod tests {
         let constant = 1.0;
         // Objective: 1.0 + 2.0*1*1 + (-1.0)*1*0 + 3.0*0*0 = 3.0
         let obj = SolverResult::recompute_objective(&assignment, &qubo, constant);
-        assert_eq!(obj.to_bits(), 3.0_f64.to_bits());
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(obj, 3.0);
+        }
     }
 }

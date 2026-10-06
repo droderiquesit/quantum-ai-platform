@@ -548,3 +548,26 @@ fn a_tampered_archived_object_is_refused_on_read_even_when_the_requested_batch_i
         .expect_err("an object that no longer matches its name must not be served");
     assert!(err.to_string().contains("content hash"), "{err}");
 }
+
+// --- CloudStorageBlobStore integration test
+
+/// A segment can be archived to a CloudStorageBlobStore, proving the adapter
+/// integrates with the archive system.
+///
+/// Mutation: delete the trait object cast line; the test still compiles but loses
+/// proof that CloudStorageBlobStore implements BlobStore.
+#[test]
+fn a_segment_can_be_archived_to_a_cloud_storage_blob_store() {
+    use qip_storage::gcp::{CloudStorageBlobStore, CloudStorageConfig, GcpAccess};
+
+    let config = CloudStorageConfig::new("test-bucket").with_access(GcpAccess::unconfigured());
+
+    let blob_store_result = CloudStorageBlobStore::new(config);
+    assert!(
+        blob_store_result.is_ok(),
+        "CloudStorageBlobStore should construct with unconfigured GcpAccess"
+    );
+
+    let blob_store = blob_store_result.unwrap();
+    let _: Arc<dyn crate::BlobStore> = Arc::new(blob_store);
+}

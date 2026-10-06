@@ -157,6 +157,13 @@ PROTECTED_BRANCHES = ("main", "ccr-0c1bacf8-kla0dd")
 # refspec examined -- and anything that can rewrite or remove a ref somebody
 # else has pulled is refused, whatever branch it names.
 #
+# Except one thing, since the owner asked for a clean branch list: a branch
+# deletion (--delete, -d, ":branch") is no longer refused by its spelling. It
+# is checked instead -- see ``deletion_verdict`` -- and allowed only on origin,
+# never for main or the integration branch, and only when the branch's tip is
+# already in origin/main or held by an ``archive/*`` tag. --mirror and --prune
+# delete refs nobody named, so they stay refused outright.
+#
 # Long options are matched as git matches them, by unambiguous prefix:
 # "--forc" is --force to git, and a guard that only knows full spellings is a
 # guard with a documented bypass.
@@ -165,14 +172,17 @@ PUSH_LONG_REFUSED: dict[str, tuple[str, bool]] = {
     "force": ("a force push", False),
     "force-with-lease": ("a force push (--force-with-lease still rewrites)", False),
     "force-if-includes": ("a force push (--force-if-includes)", False),
-    "delete": ("a remote branch deletion", True),
     "mirror": ("a mirror push, which force-updates and deletes remote refs", True),
     "prune": ("a push that deletes remote branches (--prune)", True),
 }
 PUSH_SHORT_REFUSED: dict[str, tuple[str, bool]] = {
     "f": ("a force push", False),
-    "d": ("a remote branch deletion", True),
 }
+# Deletion is the one push form that is no longer refused outright. It is
+# collected rather than refused, and each named branch is then checked against
+# the repository by ``deletion_verdict``.
+PUSH_LONG_DELETE = "delete"
+PUSH_SHORT_DELETE = "d"
 # Push options whose value may follow as a separate word; that word is the
 # option's argument, not a repository or a refspec.
 PUSH_LONG_WITH_ARG = ("repo", "receive-pack", "exec", "push-option")
@@ -198,6 +208,14 @@ DELETE_ADVICE = (
     "tracks it, and on main or the integration branch it removes the shared "
     "history outright. Ask the user, naming the branch."
 )
+PRESERVE_ADVICE = (
+    "Merge it, or tag it `archive/{tag}` at its tip first "
+    "(scripts/cleanup-branches.sh does both), then delete it."
+)
+# The remote whose tracking refs the check reads. A deletion naming any other
+# remote, or a URL, is refused: refs/remotes/origin/* says nothing about it.
+DELETION_REMOTE = "origin"
+GIT_TIMEOUT_SECONDS = 5
 SEPARATORS = {";", "&", "&&", "|", "||", "(", ")", ";;", "|&"}
 
 HEREDOC = re.compile(r"""<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1""")
@@ -252,11 +270,185 @@ def push_arguments(words: list[str]) -> list[str] | None:
     return None
 
 
-def refuse_push(args: list[str]) -> tuple[str, str] | None:
+def push_invocation(
+    words: list[str],
+) -> tuple[list[str], list[str], list[tuple[str, str]]] | None:
+    """(words before git, words after push, git's global options) for a push.
+
+    The first two are what a deletion check needs beyond the refspecs: an
+    environment assignment before ``git`` (``GIT_DIR=...``) or a global option
+    other than ``-C`` can point git at a repository other than the one the
+    check reads, so a deletion carrying either is refused rather than checked
+    against the wrong refs.
+    """
+    for start, word in enumerate(words):
+        if word.rsplit("/", 1)[-1] != "git":
+            continue
+        globals_: list[tuple[str, str]] = []
+        i = start + 1
+        while i < len(words):
+            token = words[i]
+            if token in GIT_GLOBAL_WITH_ARG:
+                value = words[i + 1] if i + 1 < len(words) else ""
+                globals_.append((token, value))
+                i += 2
+            elif token.startswith("-"):
+                globals_.append((token, ""))
+                i += 1
+            else:
+                break
+        if i < len(words) and words[i] == "push":
+            return words[:start], words[i + 1 :], globals_
+    return None
+
+
+def git(cwd: str, *args: str) -> subprocess.CompletedProcess[str] | None:
+    """Run one git command with a timeout; ``None`` if it could not run."""
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def archive_tag(branch: str) -> str:
+    """The tag name scripts/cleanup-branches.sh archives ``branch`` under."""
+    return "archive/" + branch.replace("/", "-")
+
+
+def preservation_failure(branch: str, cwd: str) -> str | None:
+    """Why deleting ``branch`` on origin could lose work, or ``None`` if not.
+
+    The branch's work is preserved when its tip, as this checkout last fetched
+    it, is either already in origin/main or held by the archive tag. Every
+    other outcome -- the ref missing, git failing or timing out, a tag at some
+    other commit -- is a reason to refuse: this check exists to say "provably
+    safe", and "could not tell" is not that.
+    """
+    tip = git(cwd, "rev-parse", "--verify", "-q", f"refs/remotes/origin/{branch}")
+    if tip is None:
+        return "git could not be run to find the branch's tip"
+    tip_sha = tip.stdout.strip()
+    if tip.returncode != 0 or not tip_sha:
+        return (
+            f"refs/remotes/origin/{branch} does not exist in {cwd}, so nothing "
+            "proves its work is preserved (fetch first if it is new)"
+        )
+
+    merged = git(cwd, "merge-base", "--is-ancestor", tip_sha, "refs/remotes/origin/main")
+    if merged is not None and merged.returncode == 0:
+        return None
+
+    tag = archive_tag(branch)
+    tagged = git(cwd, "rev-parse", "--verify", "-q", f"refs/tags/{tag}^{{commit}}")
+    if tagged is not None and tagged.returncode == 0 and tagged.stdout.strip() == tip_sha:
+        return None
+
+    if merged is None or merged.returncode not in (0, 1):
+        return "git could not decide whether the branch is merged into origin/main"
+    if tagged is not None and tagged.returncode == 0:
+        return (
+            f"it is not merged into origin/main, and the tag {tag} points at "
+            f"{tagged.stdout.strip()[:12]}, not at the branch tip {tip_sha[:12]}"
+        )
+    return f"it is not merged into origin/main and no tag {tag} holds its tip"
+
+
+def deletion_verdict(
+    remote: str | None,
+    branches: list[str],
+    prefix: list[str],
+    globals_: list[tuple[str, str]],
+    cwd: str | None,
+) -> tuple[str, str] | None:
+    """Refuse a remote branch deletion unless every branch's work is preserved.
+
+    On 2026-10-06 the owner asked for a fully clean branch list, which a guard
+    refusing every deletion makes impossible except by routing around it. So a
+    deletion is allowed exactly when it cannot lose work: never on the shared
+    branches, and otherwise only for a branch whose tip is already in main or
+    held by an archive tag. Anything the check cannot establish refuses.
+
+    One limit, stated rather than hidden: the tip is read from this checkout's
+    refs/remotes/origin/<branch>, as last fetched. A commit pushed to the
+    branch after that fetch is not covered, and the deletion would remove it.
+    Fetch immediately before deleting, as scripts/cleanup-branches.sh does.
+    A local archive tag is likewise only proof once it has been pushed; the
+    script pushes it before it deletes.
+    """
+    if not branches:
+        return "a remote deletion naming no branch", DELETE_ADVICE
+    if remote != DELETION_REMOTE:
+        return (
+            f"a remote branch deletion on {remote or 'an unnamed remote'}",
+            f"Only deletions on {DELETION_REMOTE} can be checked against "
+            f"refs/remotes/{DELETION_REMOTE}/main. Name {DELETION_REMOTE} explicitly.",
+        )
+    if any("=" in word for word in prefix):
+        return (
+            "a remote branch deletion with an environment override before git",
+            "An override such as GIT_DIR can point git at a repository the "
+            "check does not read. Run the deletion without it, using git -C.",
+        )
+    if any(option != "-C" for option, _ in globals_):
+        return (
+            "a remote branch deletion with a git global option other than -C",
+            "Options such as --git-dir or -c can change which repository or "
+            "remote the push reaches. Run the deletion with git -C only.",
+        )
+
+    # None means a cd made the directory unknowable (push_verdict); the
+    # refs this check reads would then belong to some other repository.
+    if cwd is None:
+        return (
+            "a remote branch deletion where the working directory is unknown",
+            "Run the deletion with git -C <dir> and no cd before it.",
+        )
+    directory = cwd
+    for option, value in globals_:
+        directory = os.path.join(directory, value)
+
+    for branch in branches:
+        name = branch.removeprefix("refs/heads/")
+        if name in PROTECTED_BRANCHES:
+            return f"a remote branch deletion of the shared branch {name}", DELETE_ADVICE
+        if (
+            not name
+            or name.startswith(("-", "refs/"))
+            or name == "HEAD"
+            or ":" in name
+            or "*" in name
+        ):
+            return (
+                f"a remote deletion of {branch}, which is not a plain branch name",
+                "Only branches may be deleted this way, and only by name. Tags, "
+                "especially archive/* tags, are the record of deleted work.",
+            )
+        reason = preservation_failure(name, directory)
+        if reason is not None:
+            return (
+                f"a remote branch deletion of {name}: {reason}",
+                PRESERVE_ADVICE.format(tag=archive_tag(name).removeprefix("archive/")),
+            )
+    return None
+
+
+def refuse_push(
+    args: list[str],
+    prefix: list[str] | None = None,
+    globals_: list[tuple[str, str]] | None = None,
+    cwd: str | None = None,
+) -> tuple[str, str] | None:
     """Return (what was refused, what to do instead) for a dangerous push."""
     positional: list[str] = []
     i = 0
     options_done = False
+    deleting = False
     while i < len(args):
         token = args[i]
         i += 1
@@ -269,6 +461,9 @@ def refuse_push(args: list[str]) -> tuple[str, str] | None:
         if token.startswith("--"):
             name, has_value, _ = token[2:].partition("=")
             if len(name) >= 2:
+                if PUSH_LONG_DELETE.startswith(name):
+                    deleting = True
+                    continue
                 for option, (refused, deletes) in PUSH_LONG_REFUSED.items():
                     if option.startswith(name):
                         return refused, DELETE_ADVICE if deletes else FORCE_ADVICE
@@ -281,6 +476,9 @@ def refuse_push(args: list[str]) -> tuple[str, str] | None:
         # argument ends the bundle: the rest of the word, or the next word,
         # is its value.
         for position, flag in enumerate(token[1:]):
+            if flag == PUSH_SHORT_DELETE:
+                deleting = True
+                continue
             if flag in PUSH_SHORT_REFUSED:
                 refused, deletes = PUSH_SHORT_REFUSED[flag]
                 return refused, DELETE_ADVICE if deletes else FORCE_ADVICE
@@ -290,6 +488,8 @@ def refuse_push(args: list[str]) -> tuple[str, str] | None:
                 break
 
     # The first positional word is the repository; the rest are refspecs.
+    # Under --delete every refspec is a branch to delete.
+    deletions: list[str] = []
     for refspec in positional[1:]:
         if refspec == ":":
             return (
@@ -298,10 +498,13 @@ def refuse_push(args: list[str]) -> tuple[str, str] | None:
             )
         if refspec.startswith("+"):
             return "a force push (a '+' refspec forces that ref)", FORCE_ADVICE
-        if refspec.startswith(":"):
-            target = refspec[1:].removeprefix("refs/heads/")
-            shared = " of a shared branch" if target in PROTECTED_BRANCHES else ""
-            return f"a remote branch deletion{shared} ({refspec})", DELETE_ADVICE
+        if deleting:
+            deletions.append(refspec)
+        elif refspec.startswith(":"):
+            deletions.append(refspec[1:])
+    if deleting or deletions:
+        remote = positional[0] if positional else None
+        return deletion_verdict(remote, deletions, prefix or [], globals_ or [], cwd)
     return None
 
 
@@ -545,15 +748,28 @@ def push_verdict(
     """
     if cwd == ".":
         cwd = os.getcwd()
-    for words in segments(text):
+    commands = segments(text)
+    # A "cd" anywhere in the line means git may run somewhere other than the
+    # directory the deletion check reads, so a deletion is refused outright.
+    changes_directory = any(
+        words and words[0] in ("cd", "pushd", "popd") for words in commands
+    )
+    for words in commands:
         if words and words[0] in ("cd", "pushd"):
             cwd = next_cwd(words, cwd)
             continue
-        args = push_arguments(words)
-        if args is not None:
-            verdict = refuse_push(args)
+        invocation = push_invocation(words)
+        if invocation is not None:
+            prefix, args, globals_ = invocation
+            verdict = refuse_push(args, prefix, globals_, cwd)
             if verdict is not None:
                 return verdict
+            if changes_directory and is_deletion(args):
+                return (
+                    "a remote branch deletion after a change of directory",
+                    "The check reads the directory the command starts in. "
+                    "Use git -C <dir> instead of cd.",
+                )
         verdict = refuse_protected(words, cwd)
         if verdict is not None:
             return verdict
@@ -572,6 +788,20 @@ def push_verdict(
                     if verdict is not None:
                         return verdict
     return None
+
+
+def is_deletion(args: list[str]) -> bool:
+    """Whether a push's arguments delete a remote ref, by any spelling."""
+    for token in args:
+        if token == "--":
+            break
+        if token.startswith("--"):
+            name = token[2:].partition("=")[0]
+            if len(name) >= 2 and PUSH_LONG_DELETE.startswith(name):
+                return True
+        elif token.startswith("-") and PUSH_SHORT_DELETE in token[1:]:
+            return True
+    return any(word.startswith(":") for word in args)
 
 
 def strip_heredocs(text: str) -> str:

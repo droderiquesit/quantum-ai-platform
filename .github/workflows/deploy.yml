@@ -450,7 +450,7 @@ jobs:
           if [ -n "${dockerfile}" ]; then
             recipe+=(--file "${dockerfile}")
           else
-            recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}")
+            recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}" --build-arg "SOURCE_DATE_EPOCH=$(date +%s)")
           fi
           docker build \
             "${recipe[@]}" \

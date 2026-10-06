@@ -32,6 +32,7 @@
 FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bdac73398d6d0a08 AS build
 
 ARG BINARY
+ARG SOURCE_DATE_EPOCH
 
 # No package is installed here. musl-dev and gcc, the only build dependencies
 # (alpine's Rust images target musl, which is what makes the output static),
@@ -58,7 +59,12 @@ COPY backend/ .
 
 # --locked, because a build that resolves a different dependency graph from the
 # one the test suite ran against is not the thing that was tested.
+#
+# SOURCE_DATE_EPOCH is passed through for tools that honour it. It is not yet
+# shown to make the image byte-reproducible; CICD-048 stays PARTIAL until a
+# rebuild of one commit is compared digest for digest.
 RUN test -n "$BINARY" \
+  && export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}" \
   && cargo build --release --locked --bin "$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
 
