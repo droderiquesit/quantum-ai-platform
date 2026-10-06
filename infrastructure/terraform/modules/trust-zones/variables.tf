@@ -171,11 +171,11 @@ variable "zone_identities" {
 variable "google_apis_range" {
   description = <<-EOT
     The range every zone may reach Google APIs on, for the one egress rule
-    that permits it. The restricted VIP by default, which `modules/network`'s
-    private zone resolves every `*.googleapis.com` to.
+    that permits it. The restricted VIP (199.36.153.4/30) by default, which
+    `modules/network`'s private zone resolves every `*.googleapis.com` to.
   EOT
   type        = string
-  default     = "199.36.153.8/30"
+  default     = "199.36.153.4/30"
 
   validation {
     condition     = var.google_apis_range != "0.0.0.0/0"

@@ -144,7 +144,7 @@ variable "private_service_connect_target" {
     Which bundle of Google APIs the endpoint reaches.
 
     `vpc-sc` by default: the restricted bundle, the same set the VPC's existing
-    `199.36.153.8/30` route reaches, and the only one a VPC Service Controls
+    `199.36.153.4/30` route reaches, and the only one a VPC Service Controls
     perimeter can protect. `all-apis` additionally reaches APIs no perimeter
     covers — which is precisely the hole
     `docs/operations/external-dependencies.md` describes when it explains why

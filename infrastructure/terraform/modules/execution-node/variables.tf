@@ -324,7 +324,7 @@ variable "google_apis_range" {
     The range the node reaches Google APIs on, for the one egress rule that
     permits it.
 
-    The restricted VIP by default — the same `199.36.153.8/30` the trust
+    The restricted VIP (199.36.153.4/30) by default — the same range the trust
     zones' Google-API egress rules name (`modules/trust-zones`), reached
     through the subnet's private Google access; the NetworkPolicies that once
     named it left with the chart (ADR 0024). Where a Private Service Connect endpoint
@@ -333,7 +333,7 @@ variable "google_apis_range" {
   EOT
 
   type    = string
-  default = "199.36.153.8/30"
+  default = "199.36.153.4/30"
 
   validation {
     condition     = var.google_apis_range != "0.0.0.0/0"
