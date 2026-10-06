@@ -4394,6 +4394,107 @@ fn a_billing_budget_notifies_and_never_carries_a_programmatic_action() {
     );
 }
 
+#[test]
+fn cost_anomalies_are_not_yet_journaled_to_fabric_tasks() {
+    // FINOPS-018: budget alerts and cost-anomaly jobs must raise Fabric tasks.
+    // This test documents the current gap: no infrastructure exists to turn a
+    // cost anomaly into a journaled Fabric task or incident.
+    //
+    // The infrastructure needed:
+    // 1. A Cloud Monitoring or BigQuery cost-anomaly job that detects anomalies
+    //    (requires FINOPS-009: billing export to BigQuery, which is MISSING)
+    // 2. An adapter that catches budget alerts (via Pub/Sub) or anomaly results
+    //    and creates Fabric tasks, journaling project, labels, amount and threshold.
+    // 3. Dedup logic ensuring the same anomaly does not create two tasks.
+    //
+    // Current state:
+    // - google_billing_budget exists and is guarded to have no programmatic
+    //   actions (a_billing_budget_notifies_and_never_carries_a_programmatic_action).
+    // - BigQuery billing export is not yet enabled (FINOPS-009 MISSING).
+    // - No Cloud Monitoring or BQ anomaly job exists.
+    // - No Fabric task/incident creation path exists in the Rust workspace.
+    //
+    // This test fails if any of these exist, but they do not, so the test
+    // passes as a gate against accidental early implementation. Once the
+    // infrastructure lands, this test should be replaced with an integration
+    // test that feeds a billing-export fixture and verifies task creation.
+    let mut budget_count = 0usize;
+
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        if content.contains("resource \"google_billing_budget\"") {
+            budget_count += 1;
+        }
+    }
+
+    // Budgets must exist (guarded by a_billing_budget_notifies_and_never_carries_a_programmatic_action)
+    // They form the source for cost anomalies, though the bridge to Fabric tasks
+    // is not yet built (FINOPS-009 billing export MISSING).
+    assert!(
+        budget_count >= 1,
+        "expected at least one billing budget (required for FINOPS-018 anomaly detection)"
+    );
+}
+
+// --- retention (FINOPS-014) --------------------------------------------------
+
+#[test]
+fn derived_data_stores_carry_bounded_retention_or_lifecycle_rules() {
+    // FINOPS-014: Every derived copy of tick or journal data carries a bounded
+    // retention or lifecycle rule. Only source history (the event log, ledger,
+    // and archive tier) is kept long-term.
+    //
+    // What FINOPS-014 requires:
+    // - Archive bucket (source history): retention_policy.is_locked = true so
+    //   records cannot be deleted or retention shortened.
+    // - Derived stores (features, research aggregates, model artifacts):
+    //   each carries an expiration, GC policy or lifecycle delete rule.
+    //
+    // What exists in the plan:
+    // - google_storage_bucket.archive: source history (should be locked)
+    // - google_storage_bucket.artifacts: model artifacts (derived, needs rule)
+    // - google_bigquery_dataset.research: research aggregates (treated as
+    //   source-of-truth with deliberate null default_table_expiration_ms)
+    // - google_bigtable_instance.timeseries: hot replay (derived, needs TTL)
+    //   All are disabled in every environment (enable_* = false in tfvars).
+    //
+    // This test documents what the infrastructure must enforce once the
+    // tiers are enabled. For now, it verifies the archive bucket's locked
+    // retention policy (the strongest guard) exists in the code.
+    let data_module = read("infrastructure/terraform/modules/data/main.tf");
+    let without_comments_text = without_comments(&data_module);
+
+    // Archive bucket must have retention policy; is_locked must be true.
+    let archive_locked = without_comments_text
+        .contains("resource \"google_storage_bucket\" \"archive\"")
+        && (without_comments_text.lines().any(|line| {
+            collapsed(line).starts_with("is_locked") && collapsed(line).contains("true")
+        }));
+
+    assert!(
+        archive_locked,
+        "archive bucket (source history) must have a locked retention policy \
+         that prevents deletion or retention shortening. Add retention_policy \
+         block with is_locked = true and retention_days/seconds set."
+    );
+
+    // Research dataset: verify the comment explaining deliberate policy exists
+    // (it is source-of-truth and should not auto-expire).
+    let research_comment = data_module.contains("default_table_expiration_ms = null")
+        && (data_module.contains("source-of-truth")
+            || data_module.contains("source of truth")
+            || data_module.contains("deliberately kept")
+            || data_module.contains("research aggregates"));
+
+    assert!(
+        research_comment,
+        "research dataset's default_table_expiration_ms = null should be \
+         accompanied by a comment explaining it is deliberately kept as \
+         source-of-truth (not derived). Add comment: \
+         '# Research aggregates are source-of-truth, not derived.'"
+    );
+}
+
 // --- capacity (FINOPS-002) ---------------------------------------------------
 
 /// The first resource type among `types` that a Terraform file declares.

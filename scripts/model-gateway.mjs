@@ -261,6 +261,24 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
   }
   const maxTokens = Number(env.ALGORIK_WORKER_MAX_TOKENS ?? 4000);
 
+  // FINOPS-017: Daily and monthly budgets, plus build and tool ceilings.
+  const dailyCallBudget = Number(env.ALGORIK_WORKER_DAILY_CALLS ?? 0);
+  if (dailyCallBudget && (!Number.isFinite(dailyCallBudget) || dailyCallBudget <= 0)) {
+    problems.push("ALGORIK_WORKER_DAILY_CALLS must be a positive number or unset");
+  }
+  const monthlyCallBudget = Number(env.ALGORIK_WORKER_MONTHLY_CALLS ?? 0);
+  if (monthlyCallBudget && (!Number.isFinite(monthlyCallBudget) || monthlyCallBudget <= 0)) {
+    problems.push("ALGORIK_WORKER_MONTHLY_CALLS must be a positive number or unset");
+  }
+  const buildBudget = Number(env.ALGORIK_WORKER_BUILD_CALLS ?? 0);
+  if (buildBudget && (!Number.isFinite(buildBudget) || buildBudget <= 0)) {
+    problems.push("ALGORIK_WORKER_BUILD_CALLS must be a positive number or unset");
+  }
+  const toolBudget = Number(env.ALGORIK_WORKER_TOOL_CALLS ?? 0);
+  if (toolBudget && (!Number.isFinite(toolBudget) || toolBudget <= 0)) {
+    problems.push("ALGORIK_WORKER_TOOL_CALLS must be a positive number or unset");
+  }
+
   // Provider-specific request fields, merged into the body as given. The
   // case that needed it: a reasoning model spends its whole output budget on
   // a hidden `reasoning` field and returns an empty `content`, and the switch
@@ -294,6 +312,10 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
     apiKey,
     maxCalls,
     maxTokens,
+    dailyCallBudget,
+    monthlyCallBudget,
+    buildBudget,
+    toolBudget,
     extraBody,
     problems,
   };
@@ -432,6 +454,72 @@ export function spent(ledger = LEDGER) {
     }).length;
 }
 
+/** Count billed calls made today (UTC). FINOPS-017. */
+export function spentToday(ledger = LEDGER) {
+  if (!existsSync(ledger)) return 0;
+  const today = new Date().toISOString().slice(0, 10);
+  return readFileSync(ledger, "utf8")
+    .split("\n")
+    .filter((line) => line.trim())
+    .filter((line) => {
+      try {
+        const entry = JSON.parse(line);
+        return entry.billed !== false && entry.at?.startsWith(today);
+      } catch {
+        return false;
+      }
+    }).length;
+}
+
+/** Count billed calls made this month (UTC). FINOPS-017. */
+export function spentThisMonth(ledger = LEDGER) {
+  if (!existsSync(ledger)) return 0;
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  return readFileSync(ledger, "utf8")
+    .split("\n")
+    .filter((line) => line.trim())
+    .filter((line) => {
+      try {
+        const entry = JSON.parse(line);
+        return entry.billed !== false && entry.at?.startsWith(thisMonth);
+      } catch {
+        return false;
+      }
+    }).length;
+}
+
+/** Count billed calls tagged as build-type work. FINOPS-017. */
+export function spentOnBuilds(ledger = LEDGER) {
+  if (!existsSync(ledger)) return 0;
+  return readFileSync(ledger, "utf8")
+    .split("\n")
+    .filter((line) => line.trim())
+    .filter((line) => {
+      try {
+        const entry = JSON.parse(line);
+        return entry.billed !== false && entry.work_type === "build";
+      } catch {
+        return false;
+      }
+    }).length;
+}
+
+/** Count billed calls tagged as tool-type work. FINOPS-017. */
+export function spentOnTools(ledger = LEDGER) {
+  if (!existsSync(ledger)) return 0;
+  return readFileSync(ledger, "utf8")
+    .split("\n")
+    .filter((line) => line.trim())
+    .filter((line) => {
+      try {
+        const entry = JSON.parse(line);
+        return entry.billed !== false && entry.work_type === "tool";
+      } catch {
+        return false;
+      }
+    }).length;
+}
+
 /** A calling agent's name, in the roster's own shape so it cannot carry a line break into the ledger. */
 const AGENT_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 
@@ -524,6 +612,40 @@ export async function run(config, taskPath, { agent, fetchImpl = fetch, ledger =
     return 3;
   }
 
+  // FINOPS-017: Check daily, monthly, build and tool budgets.
+  const workType = task.work_type ?? "model"; // model, build, tool
+  const todayUsed = spentToday(ledger);
+  if (config.dailyCallBudget && todayUsed >= config.dailyCallBudget) {
+    audit("refused:daily-budget", false, { used: todayUsed, daily_max: config.dailyCallBudget, work_type: workType });
+    console.error(`daily budget exhausted: ${todayUsed} of ${config.dailyCallBudget} calls used today`);
+    return 3;
+  }
+
+  const monthUsed = spentThisMonth(ledger);
+  if (config.monthlyCallBudget && monthUsed >= config.monthlyCallBudget) {
+    audit("refused:monthly-budget", false, { used: monthUsed, monthly_max: config.monthlyCallBudget, work_type: workType });
+    console.error(`monthly budget exhausted: ${monthUsed} of ${config.monthlyCallBudget} calls used this month`);
+    return 3;
+  }
+
+  if (workType === "build") {
+    const buildUsed = spentOnBuilds(ledger);
+    if (config.buildBudget && buildUsed >= config.buildBudget) {
+      audit("refused:build-budget", false, { used: buildUsed, build_max: config.buildBudget });
+      console.error(`build budget exhausted: ${buildUsed} of ${config.buildBudget} build calls used`);
+      return 3;
+    }
+  }
+
+  if (workType === "tool") {
+    const toolUsed = spentOnTools(ledger);
+    if (config.toolBudget && toolUsed >= config.toolBudget) {
+      audit("refused:tool-budget", false, { used: toolUsed, tool_max: config.toolBudget });
+      console.error(`tool budget exhausted: ${toolUsed} of ${config.toolBudget} tool calls used`);
+      return 3;
+    }
+  }
+
   const payload = [
     task.task,
     "",
@@ -585,7 +707,7 @@ export async function run(config, taskPath, { agent, fetchImpl = fetch, ledger =
 
   // The ledger is the budget's source of truth: counting in memory loses the
   // count on every crash, and a budget that resets on failure is not a budget.
-  audit("allowed", true, tokens);
+  audit("allowed", true, { ...tokens, work_type: workType });
 
   process.stdout.write(completion.text);
   return 0;
