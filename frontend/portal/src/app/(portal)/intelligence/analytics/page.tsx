@@ -232,7 +232,7 @@ export default function AnalyticsPage() {
           <PanelHead title="Opportunity score distribution" />
           <PanelBody>
             <ResourceView resource={opportunities} loadingRows={2}>
-              {() => (
+              {(_data) => (
                 <div style={{ height: "240px" }}>
                   <ChartJs
                     config={opportunityScoreChart}
@@ -296,7 +296,7 @@ export default function AnalyticsPage() {
           <PanelHead title="Decision status breakdown" />
           <PanelBody>
             <ResourceView resource={proposals} loadingRows={2}>
-              {() =>
+              {(_data) =>
                 proposalMetrics.total === 0 ? (
                   <StateBlock
                     tone="neutral"
