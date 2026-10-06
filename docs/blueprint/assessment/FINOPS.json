@@ -1,43 +1,44 @@
 [
   {
     "id": "FINOPS-001",
-    "status": "MISSING",
-    "current": "nothing — modules/execution-node declares a google_compute_instance_group_manager with no reservation_affinity block anywhere, and no google_compute_reservation resource exists under infrastructure/. The declaration itself (a reservation per zone/machine type, conditional on a node being declared, consumed by the instance template's reservation_affinity) and its plan test are buildable in-tree today at zero cost: the module already has a mocked-provider plan harness. Only provisioning it is C8.",
+    "status": "COMPLETE",
+    "current": "modules/execution-node declares google_compute_reservation.node (count = 1 when node_count > 0, specific_reservation count = node_count, machine_type = var.machine_type, same zone, specific_reservation_required = true) and the instance template consumes it through a dynamic reservation_affinity block (SPECIFIC_RESERVATION on compute.googleapis.com/reservation-name). A node held at zero plans neither. Provisioning remains C8: execution_nodes = {} in every environment.",
     "evidence": [
-      "infrastructure/terraform/modules/execution-node/main.tf:305-483 (instance template and group manager, no reservation)",
-      "infrastructure/environments/dev/terraform.tfvars:227, infrastructure/environments/prod/terraform.tfvars:51 (execution_nodes = {})",
-      "infrastructure/terraform/modules/execution-node/tests/affinity.tftest.hcl:15-37 (mock_provider google + command = plan with a node declared — the harness shape the verification needs already exists)"
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_reservation.node; reservation_affinity in google_compute_instance_template.node)",
+      "infrastructure/terraform/modules/execution-node/tests/capacity.tftest.hcl"
     ],
-    "gap": "No capacity reservation resource or reservation_affinity exists in the module, and no plan test asserts one. Separately, and only for deployment: there is no Reflex VM to reserve capacity for — execution_nodes = {} in every environment, and provisioning one is a cost decision C8 leaves to the owner.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "C8",
-    "verification": "infra-plan: with an execution node declared, the plan must contain a google_compute_reservation per zone/machine-type the node group uses, sized to target_size, and the instance template's reservation_affinity must consume it. Write it as a run block beside modules/execution-node/tests/affinity.tftest.hcl, which already plans this module with mocked providers.",
+    "blocked_by": "",
+    "verification": "cd infrastructure/terraform/modules/execution-node && terraform init -backend=false && terraform test -filter=tests/capacity.tftest.hcl (runs a_node_with_an_instance_holds_a_reservation_sized_to_its_target_and_consumes_it, a_node_held_at_zero_plans_no_reservation_and_no_affinity, a_group_larger_than_the_one_machine_per_region_ceiling_is_refused); mutation-verified: emptying the affinity for_each and hard-coding the reservation count each fail the named assertion.",
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "ADR 0099 C8 names the deployment gap: dedicated C4D/C4 Reflex VMs are cost-blocked and execution_nodes = {} everywhere; billing is also disabled on the dev project (external:billing) so even a trial reservation could not be applied there today. blocked_by C8 applies to provisioning only. verify: status BLOCKED -> MISSING. The requirement's own check is conditional ('with an execution node declared, the plan contains...'), and a conditional Terraform declaration plus a mocked-provider plan test costs nothing and needs no refused thing — modules/execution-node/tests/affinity.tftest.hcl already plans this module that way. Semantics buildable in-tree are MISSING with a note, not BLOCKED."
+    "notes": "ADR 0099 C8 names the deployment gap: dedicated C4D/C4 Reflex VMs are cost-blocked and execution_nodes = {} everywhere; billing is also disabled on the dev project (external:billing) so even a trial reservation could not be applied there today. blocked_by C8 applies to provisioning only. verify: status BLOCKED -> MISSING. The requirement's own check is conditional ('with an execution node declared, the plan contains...'), and a conditional Terraform declaration plus a mocked-provider plan test costs nothing and needs no refused thing — modules/execution-node/tests/affinity.tftest.hcl already plans this module that way. Semantics buildable in-tree are MISSING with a note, not BLOCKED. | verify: COMPLETE for the declaration and its plan test; deployable stays false because no node is provisioned (C8). The surge instance of the blue-green update policy is not reserved (owner cost decision)."
   },
   {
     "id": "FINOPS-002",
     "status": "PARTIAL",
-    "current": "google_compute_instance_group_manager.node in modules/execution-node — target_size = var.node_count (a fixed value, not an autoscaler output) with lifecycle.ignore_changes = [target_size] so Terraform never reconciles a manual scale back; no google_compute_autoscaler, region autoscaler or scheduled-scaling resource exists anywhere under infrastructure/. node_count is a per-region operator input validated to 0..2 (one dedicated machine per region, per §41.4), not a value derived from any shard map.",
+    "current": "google_compute_instance_group_manager.node in modules/execution-node — target_size = var.node_count (a fixed value, not an autoscaler output) with lifecycle.ignore_changes = [target_size] so Terraform never reconciles a manual scale back; no google_compute_autoscaler, region autoscaler or scheduled-scaling resource exists anywhere under infrastructure/. node_count is a per-region operator input validated to 0..2 (one dedicated machine per region, per §41.4), not a value derived from any shard map. Since this pass, qip-acceptance's infrastructure suite test reflex_capacity_is_never_scaled_by_a_reactive_autoscaler fails if any .tf declares a compute autoscaler type and pins target_size = var.node_count.",
     "evidence": [
       "infrastructure/terraform/modules/execution-node/main.tf:434-483 (target_size = var.node_count, line 440; lifecycle.ignore_changes, lines 477-482)",
       "infrastructure/terraform/modules/execution-node/variables.tf:201-227 (node_count: 'Zero or one, per §41.4', validation 0..2; no shard map input exists)",
       "no test: grep for autoscaler|target_size|node_count across backend/crates/tests/qip-acceptance/tests/*.rs and modules/execution-node/tests/*.hcl returns nothing for this property"
     ],
-    "gap": "The no-autoscaler half holds structurally but no named test asserts it, and it is unreached — execution_nodes = {} in every environment, so nothing is deployed for the property to hold true of. The second half of the requirement's check — each group's size derived from a declared venue/instrument shard map — does not exist: there is no shard map, and the unit of capacity is one machine per region, not one per shard.",
+    "gap": "The no-autoscaler half is now asserted (cargo test -p qip-acceptance --test infrastructure reflex_capacity_is_never_scaled_by_a_reactive_autoscaler, mutation-verified) but remains unreached because execution_nodes = {} everywhere. Still missing: a declared venue/instrument shard map from which each group's size is derived; the unit of capacity is one machine per region, and introducing a shard map is a design decision needing an ADR.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-001"],
+    "depends_on": [
+      "FINOPS-001"
+    ],
     "blocked_by": "",
     "verification": "infra-plan test asserting no autoscaler/autoscaling policy resource in the plan targets a Reflex node group, and target_size is a literal input derived from a declared shard map. Write one alongside modules/execution-node/tests/affinity.tftest.hcl.",
     "work_item": "E14",
@@ -86,7 +87,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-001"],
+    "depends_on": [
+      "FINOPS-001"
+    ],
     "blocked_by": "C8",
     "verification": "benchmark: at benchmark peak load with one Fabric zone or Reflex shard VM removed, remaining capacity still meets the hot-path SLO. No benchmark harness against deployed capacity exists.",
     "work_item": "E14",
@@ -176,7 +179,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-001"],
+    "depends_on": [
+      "FINOPS-001"
+    ],
     "blocked_by": "",
     "verification": "inspection: every commitment in infrastructure history cites the benchmark sizing it covers, and that sizing was stable across preceding benchmark runs. No commitments exist to inspect.",
     "work_item": "E14",
@@ -208,18 +213,21 @@
   },
   {
     "id": "FINOPS-010",
-    "status": "MISSING",
-    "current": "nothing — no google_billing_budget resource exists anywhere under infrastructure/",
+    "status": "PARTIAL",
+    "current": "modules/observability/budget.tf declares google_billing_budget.monthly (750 USD, 50/70/90/100% CURRENT_SPEND thresholds, notification channels), opt-in via billing_budget_enabled (false by default; billing_account_id passed outside committed tfvars). Verified: terraform test -filter=tests/budget.tftest.hcl in modules/observability, 4 passed 0 failed.",
     "evidence": [
-      "rg -n 'google_billing_budget' infrastructure -g '*.tf' returns nothing"
+      "infrastructure/terraform/modules/observability/budget.tf",
+      "infrastructure/terraform/modules/observability/tests/budget.tftest.hcl"
     ],
-    "gap": "No spend guardrail is declared in code for any environment's project; a spend past any threshold is discovered on the invoice, not alerted.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The budget is declared but off in every environment (billing_budget_enabled = false, no billing account in committed tfvars), so no plan contains one; its notification target is not wired to FINOPS-018's anomaly path, which does not exist.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-009"],
+    "depends_on": [
+      "FINOPS-009"
+    ],
     "blocked_by": "",
     "verification": "infra-plan: the plan contains a billing budget per environment project, a threshold rule, and a notification target wired to FINOPS-018's anomaly path. No such resource or harness exists.",
     "work_item": "E14",
@@ -267,7 +275,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-009", "FINOPS-011"],
+    "depends_on": [
+      "FINOPS-009",
+      "FINOPS-011"
+    ],
     "blocked_by": "",
     "verification": "integration: over a billing-export fixture with labelled and unlabelled rows, per-strategy/model/data-source/region totals plus an unattributed line sum exactly to the fixture total. No such code or test exists.",
     "work_item": "E08",
@@ -316,7 +327,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-013"],
+    "depends_on": [
+      "FINOPS-013"
+    ],
     "blocked_by": "",
     "verification": "infra-plan: every BigQuery table/dataset, Bigtable table and GCS bucket holding derived data has an expiration, GC policy or lifecycle delete rule; only declared source-history stores lack one. No such comprehensive test exists. Plus, for the journal: a derived-state record's on-disk bytes are released once it leaves its retention window.",
     "work_item": "E14",
@@ -338,7 +351,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-005"],
+    "depends_on": [
+      "FINOPS-005"
+    ],
     "blocked_by": "",
     "verification": "integration: driving one family's metered spend past its budget stops new work for that family only. No such harness exists.",
     "work_item": "E08",
@@ -361,7 +376,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-009", "FINOPS-012"],
+    "depends_on": [
+      "FINOPS-009",
+      "FINOPS-012"
+    ],
     "blocked_by": "",
     "verification": "acceptance: a model package cannot be registered for promotion unless its evaluation carries measured benefit against baseline, attributed training/serving cost, and added latency. No such refusal exists in ModelRegistry today.",
     "work_item": "E10",
@@ -384,7 +402,9 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-007"],
+    "depends_on": [
+      "FINOPS-007"
+    ],
     "blocked_by": "",
     "verification": "integration: an agent at its daily model budget is refused further model calls while build/tool budgets are metered separately, and the refusal lifts next period only if the monthly budget has room. No daily/monthly split or build/tool budget exists to test.",
     "work_item": "E01",
@@ -406,7 +426,10 @@
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": ["FINOPS-009", "FINOPS-010"],
+    "depends_on": [
+      "FINOPS-009",
+      "FINOPS-010"
+    ],
     "blocked_by": "",
     "verification": "integration: a billing-export fixture breaching a threshold produces exactly one Fabric task/incident naming project, labels and amount; replaying the same input produces no second one. No such code exists.",
     "work_item": "E12",
@@ -423,15 +446,18 @@
       "infrastructure/terraform/modules/cicd/main.tf:180-216 (the infra identity exists so agents can tear expensive parts down 'to stop the meter'; prod stays behind the human-run bootstrap), 278-300 (qipInfraStorage custom role: storage.buckets.update and storage.buckets.delete present, storage.objects.delete absent), 230-265 (infra_roles: compute/run/pubsub/logging/monitoring admin)",
       ".github/workflows/infra.yml:44-48, 122-147 (workflow_dispatch only; environment options dev/test/stage), 210-216 (explicit prod refusal)",
       ".claude/hooks/guard-dangerous-command.py:87-108 (teardown, 'gcloud ... delete', 'gsutil rm' refused)",
-      "infrastructure/terraform/modules/data/main.tf:139-142 (event-archive retention_policy is_locked = false)"
+      "infrastructure/terraform/modules/data/main.tf:139-142 (event-archive retention_policy is_locked = false)",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs no_terraform_grant_can_delete_or_drop_warehouse_tables_beyond_the_one_named_writer_role; a_billing_budget_notifies_and_never_carries_a_programmatic_action"
     ],
-    "gap": "The tested guard covers GCS object deletion only. Nothing scans for BigQuery, Bigtable or Spanner delete/truncate roles, and nothing scans for retention-update permissions. The agent-operated qip-infra-<env> identity is declared for every environment, prod included, because module cicd is unconditional. It holds storage.buckets.update, which can shorten or remove an unlocked retention policy such as the event-archive bucket's, and per-service admin roles that include deletion. The only thing keeping the agents' cost teardowns off prod is infra.yml's refusal, not the identity's grants. The guard hook matches patterns, so 'bq rm' and 'gcloud storage rm' pass it. No test asserts that a budget carries no programmatic action beyond notification; that is vacuous today because no budget exists.",
+    "gap": "The tested guard covers GCS object deletion only. Nothing scans for BigQuery, Bigtable or Spanner delete/truncate roles, and nothing scans for retention-update permissions. The agent-operated qip-infra-<env> identity is declared for every environment, prod included, because module cicd is unconditional. It holds storage.buckets.update, which can shorten or remove an unlocked retention policy such as the event-archive bucket's, and per-service admin roles that include deletion. The only thing keeping the agents' cost teardowns off prod is infra.yml's refusal, not the identity's grants. The guard hook matches patterns, so 'bq rm' and 'gcloud storage rm' pass it. A budget carrying no programmatic action is now asserted (a_billing_budget_notifies_and_never_carries_a_programmatic_action) and bigquery/bigtable/spanner admin roles are refused (no_terraform_grant_can_delete_or_drop_warehouse_tables_beyond_the_one_named_writer_role, mutation-verified, 109 passed in the infrastructure suite); the residual is roles/bigquery.dataEditor, which carries tables.delete and is granted to the data module's dataset writers, pinned to that one file but not removed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
-    "depends_on": ["FINOPS-018"],
+    "depends_on": [
+      "FINOPS-018"
+    ],
     "blocked_by": "",
     "verification": "infra-plan: extend no_workload_identity_can_delete_from_the_evidence_bucket to a scan that no identity able to run a budget action, anomaly job or agent-dispatched workflow holds delete/truncate/retention-update permission (storage.buckets.update on an unlocked retention bucket, bigquery.tables.delete/datasets.delete, bigtable.tables.delete, spanner.databases.drop) on any prod resource, and that every google_billing_budget has notification-only actions.",
     "work_item": "E14",

@@ -2612,6 +2612,9 @@ fn the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_t
     let student = DistilledModel::linear("bar-linear-mesh", 0.1, vec![0.5, -0.25])?;
     let promoted_at = start().saturating_add(Duration::from_hours(1));
     let artifact = InTreeProvider::pack(&teacher)?;
+    // A promotion names the desk that made it (MODEL-057); an unnamed one
+    // is refused before anything is journalled.
+    platform.name_model_desk("mesh-tests/model-desk")?;
     platform.promote_model(&mut registry, &artifact, Some(&student), &[], promoted_at)?;
     assert_ne!(
         student.digest(),
@@ -2642,6 +2645,21 @@ fn the_trained_models_slot_ships_unproduced_until_a_distillate_is_promoted_and_t
     assert_ne!(payload.trained_models.produced_at(), Some(asked_at));
     assert!(
         pending.models[0].starts_with("trained models: shipped 1 distillate(s)"),
+        "{}",
+        pending.models[0]
+    );
+    // MODEL-037: the line the shipper journals names the Model Pack the
+    // manifest was produced from and what it superseded, so "which version
+    // of the promoted set was this cell told about" is answered on the
+    // shipping path itself rather than by replaying promotion records.
+    let pack = platform
+        .model_pack()
+        .ok_or_else(|| Error::invalid("a platform that promoted holds no model pack"))?;
+    assert!(
+        pending.models[0].contains(&format!(
+            "model pack {} supersedes nothing (+1 added, 0 kept, -0 removed)",
+            &pack.id[..12]
+        )),
         "{}",
         pending.models[0]
     );

@@ -23,7 +23,7 @@
     "work_item": "E02-decision-version-provenance",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": " | 2026-10-05 not closed: needs strategy, policy and configuration version fields on Intent, Order and Proposal and a refusal when one is absent -- a contract change across qip-contracts and the order path with a refusal at each constructor, sized L in this register."
   },
   {
     "id": "LEDGER-027",
@@ -97,7 +97,7 @@
     "work_item": "E05-ledger-archive-export",
     "tier": "T3",
     "size": "L",
-    "notes": ""
+    "notes": " | 2026-10-05 not closed: needs enable_cloud_storage and is_locked = true (a Terraform change that needs a real plan) and an exporter writing segments through StorageProvider::blobs; the segment archive is the slice programme's (SLICE-21 and qip-fabricd's archiver)."
   },
   {
     "id": "LEDGER-030",
@@ -125,7 +125,7 @@
     "work_item": "E05-grant-ledger-consistency-proof",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: NEEDS-VALIDATION -> PARTIAL; tested false->true, deployable true->false. The cited evidence was wrong: central/plane.rs:36 is a `use` line, qip-api/src/main.rs:1095 is inside a #[cfg(test)] module, and FabricJournal (journal.rs) records transfer-fabric commands (destinations, corridors, wallets, gates), not capital grants. The real grant record path (Platform::issue_capital journalling CapitalGrantEntry) and a test for it exist, but every deployed request is refused by the presence gate and the outstanding-equals-records property is untested."
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL; tested false->true, deployable true->false. The cited evidence was wrong: central/plane.rs:36 is a `use` line, qip-api/src/main.rs:1095 is inside a #[cfg(test)] module, and FabricJournal (journal.rs) records transfer-fabric commands (destinations, corridors, wallets, gates), not capital grants. The real grant record path (Platform::issue_capital journalling CapitalGrantEntry) and a test for it exist, but every deployed request is refused by the presence gate and the outstanding-equals-records property is untested. | 2026-10-05 not closed: the grant route is refused by the ADR 0065 presence gate in every deployed process, and the store is the in-process log rather than the strongly consistent store the requirement names (C4)."
   },
   {
     "id": "LEDGER-031",
@@ -147,7 +147,7 @@
     "work_item": "E14-org-folder-project-model",
     "tier": "T3",
     "size": "L",
-    "notes": ""
+    "notes": " | 2026-10-05 not closed: needs a GCP folder and project model in Terraform -- organisation-level resources this repository does not create."
   },
   {
     "id": "LEDGER-032",
@@ -175,7 +175,7 @@
     "work_item": "E03-fabric-p1-topic-durability",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status unchanged. Named the retention tests (the prior filter `-- retention` matches no test name in backbone.rs) and added the uplink dead-letter gap."
+    "notes": "verify: status unchanged. Named the retention tests (the prior filter `-- retention` matches no test name in backbone.rs) and added the uplink dead-letter gap. | 2026-10-05 not closed: the immutable-archive half needs the GCS archive (LEDGER-029) and the fabric broker (slice programme). Desk fills are now journalled on an Irreplaceable topic, which the log never evicts."
   },
   {
     "id": "LEDGER-033",
@@ -202,7 +202,7 @@
     "work_item": "E05-ledger-sink-retry",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: BLOCKED(C4) -> INCORRECT; implemented/integrated/deployable true->false. The retry-indefinitely semantics are store-independent and buildable in-tree (DurableSpool exists), so C4 is not the reason. The in-tree outcome path (cell uplink -> centre settlement) dead-letters outcome-bearing deltas after a bounded ladder, keeps dead letters in memory, and never redrives them, which the requirement forbids; the cited EventLog refusal is a different behaviour (refuse the new write), not a retrying sink. The forbidden path is reached from qip-edge-node and qip-api composition roots, but no edge node is deployed (execution_nodes = {} everywhere)."
+    "notes": "verify: BLOCKED(C4) -> INCORRECT; implemented/integrated/deployable true->false. The retry-indefinitely semantics are store-independent and buildable in-tree (DurableSpool exists), so C4 is not the reason. The in-tree outcome path (cell uplink -> centre settlement) dead-letters outcome-bearing deltas after a bounded ladder, keeps dead letters in memory, and never redrives them, which the requirement forbids; the cited EventLog refusal is a different behaviour (refuse the new write), not a retrying sink. The forbidden path is reached from qip-edge-node and qip-api composition roots, but no edge node is deployed (execution_nodes = {} everywhere). | 2026-10-05 not closed: blocked on SLICE-31 and SLICE-32: the consumer that retries without limit and never advances past an uncommitted outcome is specified there (FABRIC-082) and those packets own the files."
   },
   {
     "id": "LEDGER-034",
@@ -276,7 +276,7 @@
     "work_item": "E05-ledger-commit-off-hot-path-proof",
     "tier": "T2",
     "size": "M",
-    "notes": "deployable=false because qip-edge-node (the only binary that runs Cell::work outside tests) has execution_nodes={} in every environment. verify: status and flags unchanged. Added the qip-edge-node unreachable-centre test and recorded that durable outcome queuing is contradicted by the in-memory dead-letter uplink, not just untested."
+    "notes": "deployable=false because qip-edge-node (the only binary that runs Cell::work outside tests) has execution_nodes={} in every environment. verify: status and flags unchanged. Added the qip-edge-node unreachable-centre test and recorded that durable outcome queuing is contradicted by the in-memory dead-letter uplink, not just untested. | 2026-10-05 not closed: the order-path-with-commits-stalled proof is SLICE-42's ledger-outage suite, and the durable queue it depends on is SLICE-24 and SLICE-32."
   },
   {
     "id": "LEDGER-037",
@@ -376,7 +376,7 @@
     "work_item": "E05-reconciliation-break-event",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status unchanged; deployable true->false and evidence corrected. routes.rs:3018 is the cycle report's own halted flag, not a reconciliation HaltScope (replaced with routes.rs:3112). Added the custody-statement reconciliation, which does journal its discrepancies as an event, but as one ComplianceEvaluated record per reconcile command rather than one break event per mismatch on a P0/P1 class. Not deployable in fact: no environment mounts a wallet statement and no cell is deployed to report a position break."
+    "notes": "verify: status unchanged; deployable true->false and evidence corrected. routes.rs:3018 is the cycle report's own halted flag, not a reconciliation HaltScope (replaced with routes.rs:3112). Added the custody-statement reconciliation, which does journal its discrepancies as an event, but as one ComplianceEvaluated record per reconcile command rather than one break event per mismatch on a P0/P1 class. Not deployable in fact: no environment mounts a wallet statement and no cell is deployed to report a position break. | 2026-10-05 not closed: a break event on a P0 or P1 class needs a new topic bound to a P0 or P1 class in qip_events::event_fabric::bindings and in the committed stream catalogue (slice programme: SLICE-14, SLICE-53), and ReconciliationBreak needs a venue field on the mesh wire."
   },
   {
     "id": "LEDGER-041",
@@ -406,7 +406,7 @@
     "work_item": "E05-reconciliation-break-policy",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: COMPLETE -> PARTIAL; gap, work_item, tier and size filled. The COMPLETE rested on 'The HaltScope reaches the cell through the mesh policy payload (mesh.rs:895)', which is false: the payload's halted flag is is_globally_tripped() (mesh.rs:799), so the centre's cell-scoped reconciliation halt never reaches the cell. The cited central.rs tests assert the centre's own switch, not local execution. There is no policy table/threshold, no narrow action, and no replay test; the cell-side path is not deployed. Central-plane half runs in qip-api."
+    "notes": "verify: COMPLETE -> PARTIAL; gap, work_item, tier and size filled. The COMPLETE rested on 'The HaltScope reaches the cell through the mesh policy payload (mesh.rs:895)', which is false: the payload's halted flag is is_globally_tripped() (mesh.rs:799), so the centre's cell-scoped reconciliation halt never reaches the cell. The cited central.rs tests assert the centre's own switch, not local execution. There is no policy table/threshold, no narrow action, and no replay test; the cell-side path is not deployed. Central-plane half runs in qip-api. | 2026-10-05 not closed: needs a policy table with a narrowing arm and the centre's scoped trip carried to the cell on the policy payload (a mesh wire change); every break halts today."
   },
   {
     "id": "LEDGER-042",
@@ -457,21 +457,22 @@
   },
   {
     "id": "LEDGER-044",
-    "status": "MISSING",
-    "current": "No outcome-to-ledger backlog/lag metric exists anywhere. `grep -rn 'ledger.lag\\|ledger_lag\\|outcome_to_ledger\\|ledger_backlog' backend/crates docs/adr` returns nothing. The observability domain's own extensive metrics inventory (.claude/rules/domains/observability.md) enumerates qip_central_reconciliation_breaks_total, qip_central_cell_halts_total, qip_central_orders_sent_total, qip_central_fills_attributed_total and qip_venue_fill_error_bps as the central-plane series that exist, and none of them is a backlog/lag gauge. Nearest existing signals, neither of which is a backlog: qip_journal_write_failures_total (metrics.rs:834, recorded in platform.rs) counts cycles that could not be journalled and never returns to zero; the edge node charts uplink dead letters (qip_edge_mesh_deltas_total{outcome}), which counts outcome-bearing deltas lost rather than outstanding (see LEDGER-033).",
+    "status": "COMPLETE",
+    "current": "qip_central_outcome_backlog_orders (names::CENTRAL_OUTCOME_BACKLOG) is a gauge of orders the centre registered sent whose fills it has not booked, written by CentralPlane::record_outcome_backlog on every settle (including a report that settles nothing), so it rises while outcomes are outstanding and returns to zero when they are booked. Scope: the ledger today is the centre's own books, so the backlog is sent-but-unbooked orders; no alert policy charts it and nothing is deployed.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs (no backlog/lag series defined)",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs (reconciliation-break and halt counters, no lag gauge)"
+      "backend/crates/libs/qip-observability/src/metrics.rs (CENTRAL_OUTCOME_BACKLOG)",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs (record_outcome_backlog, called in settle)",
+      "backend/crates/runtime/qip-kernel/tests/attribution.rs the_outcome_backlog_rises_while_an_order_is_unfilled_and_returns_to_zero_when_it_fills"
     ],
-    "gap": "No metric measures how far the ledger has fallen behind what cells/the desk have done; without an external ledger there is no natural 'commit lag' to measure yet, but even the trivial version (time since the last successful settle()/record_realised cycle) is not recorded.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "`grep -n 'BACKLOG\\|LEDGER_LAG' backend/crates/libs/qip-observability/src/metrics.rs` -> no match.",
+    "verification": "cargo test -p qip-kernel --test attribution -- the_outcome_backlog_rises_while_an_order_is_unfilled_and_returns_to_zero_when_it_fills. Mutation: removing the record_outcome_backlog call made it fail with 'an unfilled order is backlog' (left None, right Some(1.0)).",
     "work_item": "E12-outcome-to-ledger-backlog-metric",
     "tier": "T2",
     "size": "M",
@@ -503,17 +504,17 @@
   },
   {
     "id": "LEDGER-046",
-    "status": "PARTIAL",
-    "current": "Two component-level mechanisms independently implement 'ledger/statement, never a cache' reconciliation, covering cash and positions separately. Cash: qip_capital_fabric::wallet::Wallet::reconcile (backend/crates/services/qip-capital-fabric/src/wallet.rs:633-663) computes `expected = ledger_balance - reserved + in_flight` from the LedgerView alone and halts (never corrects) a venue-asset whose observed holding diverges beyond tolerance -- the module doc states this explicitly: 'a HALT that venue-asset, alert, never correct'. Positions: central/plane.rs::ingest_cell_report compares a cell's reported book against settlement/report reconciliation breaks (:2085-2091), the venue/centre's own record, not a cache.",
+    "status": "COMPLETE",
+    "current": "The desk's cash and positions are rebuilt from the authoritative record alone and then verified against statements. Platform::resume_book folds the event log's FillBooked and LotAdjusted records into TrackedCapital at assembly, so a process holding none of its predecessor's memory -- every registry, aggregate and view rebuilt or empty -- reaches the same cash and the same positions. Platform::reconcile_wallet, run by the LEARN stage on every cycle, then hands the wallet the book's view of the desk's cash and of each position the book holds at the desk's venue that a statement names, and qip_capital_fabric::wallet::Wallet::reconcile halts (never corrects) any venue-asset whose statement diverges beyond its tolerance. The log is hash-chained, so a log altered on disk is refused at assembly rather than rebuilt from.",
     "evidence": [
-      "backend/crates/services/qip-capital-fabric/src/wallet.rs:1-40,633-663",
-      "a_holding_the_ledger_never_booked_halts_as_unrecorded (backend/crates/services/qip-capital-fabric/tests/wallet.rs:498)",
-      "a_delta_at_tolerance_halts_exactly_that_venue_asset_and_no_other (backend/crates/services/qip-capital-fabric/tests/wallet.rs:385)",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs:2085-2099",
-      "every_registry_the_platform_acts_on_rebuilds_from_the_event_log_alone_and_one_flipped_byte_refuses_the_replay (backend/crates/tests/qip-acceptance/tests/truth_loop.rs:1193) -- rebuilds the desk's cash registry from the log alone in a second platform instance",
-      "the_wallet_statement_is_mountable_from_a_root_variable_and_no_environment_names_one (backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs:1954)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs (fn resume_book; fn reconcile_wallet: one LedgerView for the desk's cash and one per held instrument a statement names)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs with_every_derived_store_gone_the_log_and_the_statements_alone_rebuild_and_verify_the_desks_cash_and_positions",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill",
+      "backend/crates/services/qip-capital-fabric/src/wallet.rs (Wallet::reconcile: halt, never correct)",
+      "a_holding_the_ledger_never_booked_halts_as_unrecorded (backend/crates/services/qip-capital-fabric/tests/wallet.rs)",
+      "the_wallet_statement_is_mountable_from_a_root_variable_and_no_environment_names_one (backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs)"
     ],
-    "gap": "No acceptance-level test empties or poisons every cache/derived store and shows a rebuild from the ledger plus (simulated) venue/custody statements alone reproduces prior balances -- the existing tests prove the halt-not-correct behaviour at the component level, not a whole-platform rebuild.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -521,11 +522,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric --test wallet a_holding_the_ledger_never_booked_halts_as_unrecorded a_delta_at_tolerance_halts_exactly_that_venue_asset_and_no_other; cargo test -p qip-kernel --test central a_reconciliation_break_halts_that_cell_and_only_that_cell; no acceptance-level rebuild-with-poisoned-caches test exists yet.",
+    "verification": "cargo test -p qip-kernel --test ledger -- with_every_derived_store_gone_the_log_and_the_statements_alone_rebuild_and_verify_the_desks_cash_and_positions: a first process fills an order and reconciles clean against statements of its cash and its position; a second process over the same log file rebuilds the same cash and position and reconciles clean against the same statements; a statement ten shares short then halts that holding with delta -10 and not the cash; and the log with one booked quantity altered on disk refuses to assemble. Mutations, each restored byte-for-byte: removing the resume_book call failed it with 'the log rebuilt a different cash balance' (10000000 against 9939975.9982); withholding the position LedgerViews failed its premise with the agreeing statement halted as unrecorded_by_ledger (observed 600 against expected 0).",
     "work_item": "E05-reconciliation-rebuild-acceptance-proof",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status unchanged; deployable true->false. The cash half needs a custody statement and every environment declines QIP_WALLET_STATEMENT_PATH, and the position half depends on cell reports from undeployed edge nodes. Added truth_loop's rebuild-from-the-log-alone acceptance test, which covers the cash registry's rebuild but does not poison caches or compare against venue/custody statements."
+    "notes": "verify: status unchanged; deployable true->false. The cash half needs a custody statement and every environment declines QIP_WALLET_STATEMENT_PATH, and the position half depends on cell reports from undeployed edge nodes. Added truth_loop's rebuild-from-the-log-alone acceptance test, which covers the cash registry's rebuild but does not poison caches or compare against venue/custody statements. | 2026-10-05: COMPLETE for the platform's book of record, the desk's. Scope, so it is not read wider: the statements are operator-supplied files (no environment mounts one, hence deployable false); a cell's own positions are reconciled at the cell against its venue's drop copy and are not in this book (LEDGER-023); and the agents' BookView Portfolio is still a frozen copy, which reconciliation does not read (LEDGER-001, LEDGER-007)."
   },
   {
     "id": "LEDGER-047",
@@ -575,7 +576,7 @@
     "work_item": "E08-internal-outcome-discard-isolation-test",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: NEEDS-VALIDATION -> PARTIAL. The invariant is vacuous today (the discard pipeline does not exist) and the lake leg of 'written directly to their durable stores' is missing, so the code does not 'appear to implement' the whole requirement. Also corrected two false evidence claims: `grep qip_data_finder qip-kernel/src` does match (config.rs, references.rs), and the acceptance grep for scout|discard is not empty (incidental hits)."
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL. The invariant is vacuous today (the discard pipeline does not exist) and the lake leg of 'written directly to their durable stores' is missing, so the code does not 'appear to implement' the whole requirement. Also corrected two false evidence claims: `grep qip_data_finder qip-kernel/src` does match (config.rs, references.rs), and the acceptance grep for scout|discard is not empty (incidental hits). | 2026-10-05 not closed: the lake half cannot pass until LEDGER-049 exists. Desk fills are now journalled straight onto an Irreplaceable topic with no deduplication key, so nothing between the fill and the log can discard one."
   },
   {
     "id": "LEDGER-049",
@@ -600,6 +601,6 @@
     "work_item": "E06-internal-outcome-lake-write",
     "tier": "T3",
     "size": "M",
-    "notes": "verify: status unchanged; searched for lake/lakehouse and found the qip-mesh Lakehouse port, which has no production caller and holds no internal outcomes."
+    "notes": "verify: status unchanged; searched for lake/lakehouse and found the qip-mesh Lakehouse port, which has no production caller and holds no internal outcomes. | 2026-10-05 not closed: needs a GCS-backed lake (MANAGED_SERVICE; enable_cloud_storage is false in every environment) and a writer in a composition root."
   }
 ]

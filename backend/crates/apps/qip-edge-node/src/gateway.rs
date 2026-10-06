@@ -327,6 +327,16 @@ impl SimulatedGateway {
         Ok(())
     }
 
+    /// The venue's clock: the latest pass instant this gateway has been
+    /// advanced to, and the assembly instant before the first.
+    ///
+    /// What the feed stamps on each line as the venue's own time. It exists
+    /// on the simulated gateway alone, for the reason [`Self::quotes`] does:
+    /// a real venue states its time on its own wire.
+    pub fn now(&self) -> Timestamp {
+        self.now
+    }
+
     /// Orders held for an instant no pass has reached yet.
     pub fn held_count(&self) -> usize {
         self.held.values().map(Vec::len).sum()
@@ -593,6 +603,20 @@ impl Placer for SimulatedGateway {
         // the flag that decides whether a fill is paper comes from the thing
         // that produced the fill.
         self.exchange.is_simulated()
+    }
+
+    fn try_place(
+        &mut self,
+        _order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        _quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<bool> {
+        // Simulated gateway always accepts orders (brokers queue capacity not implemented yet)
+        Ok(true)
     }
 
     fn place(
@@ -950,6 +974,20 @@ impl Placer for RestGateway {
         self.adapter.is_simulated()
     }
 
+    fn try_place(
+        &mut self,
+        _order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        _quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<bool> {
+        // REST gateway placeholder: not yet implemented
+        Err(Error::unavailable("REST gateway is not yet implemented"))
+    }
+
     fn place(
         &mut self,
         order_id: &str,
@@ -1184,6 +1222,26 @@ impl Placer for NodeGateway {
         match self {
             Self::Simulated(gateway) => gateway.is_simulated(),
             Self::Live(gateway) => gateway.is_simulated(),
+        }
+    }
+
+    fn try_place(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<bool> {
+        match self {
+            Self::Simulated(gateway) => {
+                gateway.try_place(order_id, object_id, venue, side, quantity, price, at)
+            }
+            Self::Live(gateway) => {
+                gateway.try_place(order_id, object_id, venue, side, quantity, price, at)
+            }
         }
     }
 

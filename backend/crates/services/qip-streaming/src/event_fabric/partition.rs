@@ -35,6 +35,7 @@
 //! applied by a reader that holds no lock and so can afford to be wrong about
 //! a live tail, because it never touches it.
 
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -42,6 +43,7 @@ use std::path::{Path, PathBuf};
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256;
 use qip_events::event_fabric::codec::{Batch, DecodeOutcome};
+use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::{SegmentLog, SegmentLogConfig};
 
 /// The fixed byte length of a segment file's own header (magic + format
@@ -121,6 +123,62 @@ pub fn partition_for(key: &str, partition_count: u32) -> Result<u32> {
     Ok(index as u32)
 }
 
+/// FABRIC-076: which broker leads `(stream, partition)`, by rendezvous
+/// (highest-random-weight) assignment over `brokers`.
+///
+/// Each broker scores the partition with `u64(sha256(broker 0x00 stream 0x00
+/// partition)[0..8])` and the highest score leads, ties broken by the lower
+/// broker name. Because a broker's score for a partition does not depend on
+/// who else is in the set, adding a broker moves only the partitions the new
+/// broker now outscores everyone on, and removing one moves only the
+/// partitions it led. A `hash mod brokers.len()` would instead reshuffle
+/// nearly every partition when the count changed, which on a leader move
+/// means nearly every producer's epoch fenced at once.
+///
+/// Refuses an empty set, an empty broker name and a duplicate name, because
+/// each would let two brokers believe they were the same one.
+pub fn leader_for<'a>(stream: &str, partition: u32, brokers: &[&'a str]) -> Result<&'a str> {
+    if brokers.is_empty() {
+        return Err(Error::invalid(
+            "a partition needs at least one broker to lead it; none were given",
+        ));
+    }
+    let mut best: Option<(u64, &'a str)> = None;
+    for (index, broker) in brokers.iter().enumerate() {
+        if broker.is_empty() {
+            return Err(Error::invalid(
+                "a broker name must not be empty: it is what the leadership score is hashed from",
+            ));
+        }
+        if brokers[..index].contains(broker) {
+            return Err(Error::invalid(format!(
+                "broker '{broker}' is listed twice; leadership would be decided for one broker \
+                 under two identities"
+            )));
+        }
+        let mut material = Vec::new();
+        material.extend_from_slice(broker.as_bytes());
+        material.push(0);
+        material.extend_from_slice(stream.as_bytes());
+        material.push(0);
+        material.extend_from_slice(&partition.to_be_bytes());
+        let digest = sha256(&material);
+        let mut prefix = [0u8; 8];
+        prefix.copy_from_slice(&digest[..8]);
+        let score = u64::from_be_bytes(prefix);
+        let better = match best {
+            None => true,
+            Some((top, name)) => score > top || (score == top && *broker < name),
+        };
+        if better {
+            best = Some((score, broker));
+        }
+    }
+    best.map(|(_, name)| name).ok_or_else(|| {
+        Error::invalid("a partition needs at least one broker to lead it; none were given")
+    })
+}
+
 /// One `(stream, partition)`'s durable segment data. See the module
 /// documentation.
 #[derive(Debug)]
@@ -178,6 +236,43 @@ impl PartitionLog {
             .filter(|summary| summary.sealed)
             .map(|summary| summary.start_offset)
             .collect()
+    }
+
+    /// How many batches the active, not yet sealed segment holds.
+    pub fn active_batches(&self) -> u64 {
+        self.log
+            .segments()
+            .last()
+            .map_or(0, |active| active.end_offset - active.start_offset)
+    }
+
+    /// Seal the active segment now if it holds anything. See
+    /// [`SegmentLog::seal_active`].
+    pub fn seal_active(&self) -> Result<bool> {
+        self.log.seal_active()
+    }
+
+    /// Archive every sealed segment of this partition that is not archived
+    /// yet, oldest first, returning how many this call archived. Stops at
+    /// the first failure: `archived_through` only advances over an unbroken
+    /// run of archived segments, so archiving past a gap would cost an
+    /// upload and release nothing.
+    pub fn archive_sealed(
+        &self,
+        archiver: &Archiver,
+        stream: &str,
+        partition: u32,
+        entitlements: &BTreeSet<String>,
+    ) -> Result<u64> {
+        let mut archived = 0u64;
+        for start_offset in self.sealed_segment_starts() {
+            if self.log.is_archived(start_offset)? {
+                continue;
+            }
+            archiver.archive(&self.log, start_offset, stream, partition, entitlements)?;
+            archived += 1;
+        }
+        Ok(archived)
     }
 
     /// The highest offset below which every batch has been durably archived.

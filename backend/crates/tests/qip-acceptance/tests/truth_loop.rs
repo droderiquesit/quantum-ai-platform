@@ -26,6 +26,7 @@
 
 // See the note in `acceptance.rs`: in a test the assertion is the deliverable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_compliance::licensing::{EntitlementRegistry, LicensedData};
 use qip_compliance::pit::{LeakageDetector, PointInTime};
@@ -413,25 +414,27 @@ fn walk() -> Result<Journey> {
 
     // --- 7. UPDATE STATE AND GRAPH --------------------------------------
     let mut world = WorldModel::new();
-    world.add_entity(northwind());
+    world.add_entity(northwind())?;
     world.graph_mut().add_node(Node::new(
         OBJECT,
         NodeKind::FinancialObject,
         &mapping.canonical_symbol,
         known_at,
-    ));
-    world.relate(
-        Relationship::new(
-            entity_id.as_str(),
-            OBJECT,
-            RelationshipKind::Issues,
-            1.0,
-            FEED,
-        ),
-        valid_at,
-        known_at,
-        0.99,
-    );
+    ))?;
+    world
+        .relate(
+            Relationship::new(
+                entity_id.as_str(),
+                OBJECT,
+                RelationshipKind::Issues,
+                1.0,
+                FEED,
+            ),
+            valid_at,
+            known_at,
+            0.99,
+        )
+        .unwrap();
     // The known-time stage 2 established, not the bar's close: this bar came
     // over a wire and the platform learned it a quarter of a second later.
     world.absorb_bar(&bar, known_at);

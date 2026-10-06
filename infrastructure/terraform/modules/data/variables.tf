@@ -54,7 +54,7 @@ variable "enable_bigquery" {
   description = <<-EOT
     Research warehouse for attribution, backtest results and cost history.
 
-    `qip_storage::gcp::bigquery` is a working REST adapter. Enabling this still
+    `qip_mesh::bigquery` is a working REST adapter. Enabling this still
     requires a TLS-terminating proxy at `QIP_GCP_ENDPOINT` and one token
     source, since this build cannot mint a credential.
   EOT

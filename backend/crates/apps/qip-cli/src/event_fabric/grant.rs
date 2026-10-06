@@ -51,7 +51,7 @@ use qip_core::time::Duration;
 use qip_core::{CorrelationId, Decimal, Lineage, Timestamp};
 use qip_edge::envelope::sign_payload;
 use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record};
-use qip_events::event_fabric::policy::AckProfile;
+use qip_events::event_fabric::policy::{AckProfile, QosClass};
 use qip_events::{AnyEvent, Envelope, EventBody};
 use qip_mesh::spine::{CapitalGrantFrame, PolicyFrame};
 use qip_transport::breaker::BreakerPolicy;
@@ -122,13 +122,17 @@ pub const MAXIMUM_VALIDITY_SECS: i64 = 24 * 60 * 60;
 /// past this is not the file that was meant.
 pub const MAXIMUM_FILE_BYTES: u64 = 64 * 1024;
 
-/// The batch header's schema id. No numeric schema registry assigns one yet;
-/// each record's `AnyEvent` names its own topic and schema version, and that
-/// is what the cell's downlink checks before it decodes anything.
-const UNREGISTERED_SCHEMA_ID: u32 = 0;
+/// The batch header's schema id: the P0 control class's own, from the one
+/// table the broker registers every declared stream against (FABRIC-024).
+/// This read `0` under the name `UNREGISTERED_SCHEMA_ID` while no broker
+/// enforced a registry; a broker that does would have refused every grant
+/// this command published had the two numbers ever drifted apart. Each
+/// record's `AnyEvent` still names its own topic and schema version, and
+/// that is what the cell's downlink checks before it decodes anything.
+const CONTROL_BATCH_SCHEMA_ID: u32 = QosClass::P0Control.batch_schema_id();
 
-/// The batch header's schema version, for the same reason.
-const BATCH_SCHEMA_VERSION: u32 = 1;
+/// The batch header's schema version, from the same table.
+const BATCH_SCHEMA_VERSION: u32 = qip_events::event_fabric::policy::BATCH_SCHEMA_VERSION;
 
 /// Fixed so that two runs of the command retry on the same schedule: a
 /// replay that diverges in its retry timing is a replay that diverges.
@@ -557,7 +561,7 @@ impl fmt::Debug for FixtureKey {
 /// Refused rather than ignored: an operator who exported the key directly
 /// believes it is in use, and silently reading the file instead would sign
 /// with a key they did not think was in play.
-fn file_only(environment: &Environment, variable: &str) -> Result<Option<String>> {
+pub(crate) fn file_only(environment: &Environment, variable: &str) -> Result<Option<String>> {
     if environment.variable(variable).is_some() {
         return Err(Error::denied(format!(
             "{variable} is set directly. This command reads it only from the file \
@@ -687,6 +691,7 @@ pub fn publish(
         stream: fixture.stream(),
         partition: fixture.partition,
         producer_id: RELEASE_CONTROLLER.to_string(),
+        qos_class: QosClass::P0Control,
         ack_profile: AckProfile::Quorum,
         retry_policy: RetryPolicy::default(),
         breaker_policy: BreakerPolicy::default(),
@@ -704,7 +709,7 @@ pub fn publish(
         .collect::<Result<Vec<_>>>()?;
     let batch = Batch::new(
         MessageType::Data,
-        UNREGISTERED_SCHEMA_ID,
+        CONTROL_BATCH_SCHEMA_ID,
         BATCH_SCHEMA_VERSION,
         PayloadCodec::CanonicalJson,
         records,

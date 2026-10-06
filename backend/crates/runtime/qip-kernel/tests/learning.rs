@@ -12,6 +12,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
 use qip_core::ids::OrderId;
@@ -90,6 +91,67 @@ fn limits() -> LimitSet {
             Limit::new("max-leverage", LimitKind::MaxLeverage { limit: 2.0 })
                 .with_rationale("gross exposure is capped at 2x equity"),
         )
+}
+
+// --- failure clusters become research prompts (MODEL-046) -------------------
+
+#[test]
+fn a_cluster_of_failed_theses_raises_one_research_prompt_that_closes_onto_a_named_task()
+-> Result<()> {
+    // The failure this guards: the same hypothesis class was wrong again and
+    // again and every miss was charged to a track record and forgotten, so
+    // the research side was never asked why. `learn_from` is the call the
+    // LEARN stage makes; the prompt must come out of it, not out of a helper
+    // the stage never calls.
+    use qip_learning_engine::{Outcome, ThesisClaim};
+    let mut platform = platform()?;
+    let claim = |id: &str, class: &str| ThesisClaim {
+        hypothesis_id: id.to_string(),
+        class: class.to_string(),
+        subject: "AAA".to_string(),
+        formed_at: start(),
+        resolves_at: Timestamp::from_secs(1_760_000_000 + 60),
+        direction: 1.0,
+        expected_move_bps: 100.0,
+        confidence: 0.8,
+        falsifiers: vec![],
+        contributors: vec![],
+    };
+    let outcome = |id: &str| Outcome {
+        hypothesis_id: id.to_string(),
+        observed_at: Timestamp::from_secs(1_760_000_000 + 61),
+        realised_move_bps: -100.0,
+        realised_pnl: -1.0,
+        falsifiers_triggered: vec![],
+        mechanism_confirmed: None,
+    };
+    let now = Timestamp::from_secs(1_760_000_000 + 120);
+
+    // Premise: nothing has been prompted yet.
+    assert_eq!(platform.research().prompts().count(), 0);
+
+    // Two failures of one class, and one of another, are not a cluster.
+    let claims = [
+        claim("h1", "momentum"),
+        claim("h2", "momentum"),
+        claim("h9", "carry"),
+    ];
+    let outcomes = [outcome("h1"), outcome("h2"), outcome("h9")];
+    platform.learn_from(&claims, &outcomes, now)?;
+    assert_eq!(platform.research().prompts().count(), 0);
+
+    // The third failure of the class completes the cluster.
+    platform.learn_from(&[claim("h3", "momentum")], &[outcome("h3")], now)?;
+    let prompts: Vec<_> = platform.research().prompts().cloned().collect();
+    assert_eq!(prompts.len(), 1, "exactly one prompt for one cluster");
+    assert_eq!(prompts[0].class, "momentum");
+    assert_eq!(prompts[0].episodes, vec!["h1", "h2", "h3"]);
+    assert!(prompts[0].is_open());
+
+    platform.close_research_prompt(&prompts[0].id, "task-42", now)?;
+    let closed = platform.research().prompt(&prompts[0].id).cloned().unwrap();
+    assert_eq!(closed.answered_by.as_deref(), Some("task-42"));
+    Ok(())
 }
 
 fn platform() -> Result<Platform> {
@@ -454,6 +516,48 @@ fn a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate
         .expect("the cycle that priced a path journals it");
     assert_eq!(journaled.scored, 1);
     assert_eq!(journaled.deferred, 0);
+    Ok(())
+}
+
+#[test]
+fn a_declined_actions_counterfactual_record_names_the_method_that_estimated_it_and_never_joins_the_observed_outcomes()
+-> Result<()> {
+    // WORLD-039. The failure this guards: a declined path's score said it was
+    // simulated (the `Simulated` type) and did not say by what. The pricer
+    // was implicit in the code path, so a record read back later could not
+    // be told from one a different pricer produced, and a regret series
+    // mixing two methods would have looked like one.
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 90));
+    let order_id = refuse_one(&mut platform, "prop-refused", start())?;
+    platform.observe(bars_after("AAA", start(), 5));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    // Premise: the cycle priced exactly the action that was declined.
+    let scores = platform.declined_scores();
+    assert_eq!(scores.len(), 1, "no declined path was priced");
+    assert_eq!(scores[0].order_id, order_id);
+    assert!(
+        scores[0].alternatives > 1,
+        "the twin priced nothing, so there is no estimate to attribute"
+    );
+
+    // The record names its method, on the value and in the journalled form.
+    assert_eq!(
+        scores[0].method.as_str(),
+        "bar_open_replay",
+        "the counterfactual record does not name the method that priced it"
+    );
+    let journalled = serde_json::to_value(&scores[0]).expect("a score serialises");
+    assert_eq!(journalled["method"], "bar_open_replay");
+
+    // And it is an estimate that never joins what was observed: the declined
+    // order has no taken outcome, and nothing reached the realised line.
+    assert!(
+        platform.outcomes().taken().is_empty(),
+        "a declined action was counted among the observed outcomes"
+    );
+    assert_eq!(platform.outcomes().realised_pnl(), Decimal::ZERO);
     Ok(())
 }
 

@@ -44,6 +44,7 @@
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
+use qip_deepbrain::artifacts::{MODEL_ARTIFACTS_NAMESPACE, write_model_artifact};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::{health, node, roster};
 use qip_financial::universe::Universe;
@@ -92,7 +93,12 @@ fn run() -> Result<()> {
         .storage
         .preflight()
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let archive = ChainArchive::open(config.storage.key_value("event-log")?)?;
+    // The same hand-over that archives the log seals the platform's own
+    // orders, fills and verdicts into the Tick/Internal Lake (TICK-065).
+    // Opened here, so a lake that cannot be opened stops the process rather
+    // than the first archived cycle.
+    let archive = ChainArchive::open(config.storage.key_value("event-log")?)?
+        .with_outcome_lake(config.storage.blobs(qip_storage::lake::LAKE_NAMESPACE)?);
 
     // Bound before the platform is assembled: a busy port is a deployment
     // mistake, and finding it after building a platform wastes the start-up.
@@ -107,7 +113,7 @@ fn run() -> Result<()> {
     // registry made for the health thread would answer every scrape with an
     // empty surface forever, while the platform recorded diligently into one
     // nothing could reach.
-    let telemetry = Telemetry::new("qip-deepbrain", clock.clone());
+    let telemetry = Telemetry::foreground("qip-deepbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
     // A second handle on the same three `Arc`s, taken for the same reason the
     // registry handle above is: the drain thread must read the registry the
@@ -234,7 +240,10 @@ fn run() -> Result<()> {
     // storage beside the event log that holds the promotion record. Opened
     // before anything runs, so a store that cannot be opened stops the
     // process rather than the first promotion.
-    let model_artifacts = config.storage.key_value(MODEL_ARTIFACTS_NAMESPACE)?;
+    //
+    // A blob store: `key_value` refuses the Cloud Storage target for this
+    // content (MODEL-052).
+    let model_artifacts = config.storage.blobs(MODEL_ARTIFACTS_NAMESPACE)?;
 
     // The trust root, before anything is served: install the operator's
     // envelope key when the deployment provides one, and refuse to run
@@ -307,6 +316,7 @@ fn run() -> Result<()> {
     // When a provider was named and withheld, this line is where an operator
     // learns which precondition is missing and which variable supplies it.
     println!("  language model:   {}", language_model.describe());
+    println!("  tool registry:    {}", language_model.describe_tools());
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
@@ -680,8 +690,9 @@ fn run() -> Result<()> {
             }
             if let Some(assessment) = &outcome.discovery {
                 println!(
-                    "  discovery: {} candidate(s) assessed, {} registered, {} catalogue \
-                     problem(s)",
+                    "  discovery: {} target(s) with no source, {} candidate(s) assessed, {} \
+                     registered, {} catalogue problem(s)",
+                    assessment.targets.len(),
                     assessment.decisions.len(),
                     assessment.registered(),
                     assessment.catalogue_problems.len()
@@ -853,26 +864,6 @@ fn relabel(error: &Error, message: String) -> Error {
         Error::Guard(_) => Error::Guard(message),
         Error::Timeout(_) => Error::Timeout(message),
     }
-}
-
-/// The key-value namespace a promoted model's artifact is written under,
-/// beside `event-log`, `trial-book` and `universe` on the same storage.
-const MODEL_ARTIFACTS_NAMESPACE: &str = "model-artifacts";
-
-/// Write a promoted artifact under its digest-named key, as the JSON the
-/// registry rendered it in, so `ModelArtifact::from_json` reads it back and
-/// `verify_digest` can check the bytes against the name.
-fn write_model_artifact(
-    store: &dyn qip_storage::KeyValueStore,
-    published: &qip_ai::registry::PublishedArtifact,
-) -> Result<()> {
-    let value: serde_json::Value = serde_json::from_str(&published.contents).map_err(|error| {
-        Error::invalid(format!(
-            "the registry rendered {} as text that is not JSON: {error}",
-            published.file_name
-        ))
-    })?;
-    store.put(&published.file_name, value)
 }
 
 /// What this process will do, before it does any of it.

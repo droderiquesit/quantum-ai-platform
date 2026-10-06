@@ -88,7 +88,7 @@ const ALLOWED_UPSTREAMS: [(&str, &str); 7] = [
     ),
     (
         "bigquery.googleapis.com",
-        "qip_storage::gcp::bigquery — same requirement string, same variable, \
+        "qip_mesh::bigquery — same requirement string, same variable, \
          distinguished from Cloud Storage by path",
     ),
     (

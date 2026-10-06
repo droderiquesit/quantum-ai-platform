@@ -55,7 +55,7 @@ impl StorageTarget {
     ///
     /// Implemented does not mean shaped like a [`crate::KeyValueStore`]. Cloud
     /// Storage is a blob store and BigQuery is neither — a warehouse is a third
-    /// shape, reached through [`crate::BigQueryWarehouse`] rather than through
+    /// shape, reached through `qip_mesh::bigquery::BigQueryWarehouse` rather than through
     /// this provider. [`StorageProvider::key_value`] and
     /// [`StorageProvider::blobs`] each say so for the target they cannot
     /// serve, instead of reporting the adapter as absent.
@@ -371,7 +371,8 @@ impl StorageProvider {
             )),
             StorageTarget::BigQuery => Err(Error::invalid(
                 "BigQuery has an adapter in this build, but a warehouse is neither a key-value \
-                 store nor a blob store: use qip_storage::BigQueryWarehouse directly, which \
+                 store nor a blob store: use `BigQueryWarehouse` in the qip-mesh crate's `bigquery` \
+                 module directly, which \
                  streams rows in and runs queries. BigQuery has no primary-key lookup and \
                  charges by bytes scanned, so a `get` per key would be a full scan per key",
             )),

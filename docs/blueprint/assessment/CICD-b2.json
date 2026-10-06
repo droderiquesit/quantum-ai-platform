@@ -2,26 +2,23 @@
   {
     "id": "CICD-035",
     "status": "PARTIAL",
-    "current": "scripts/model-gateway.mjs writes a spend ledger (`.worker-spend.jsonl`, key `ALGORIK_WORKER_LEDGER`) on every completed or empty-completion call: `run()` appends `{at, task, model, prompt_tokens, completion_tokens, ms}` on success (model-gateway.mjs:375-386) and the same shape with `empty: true` when the provider returns no content (model-gateway.mjs:356-367). `spent()` (model-gateway.mjs:261-264) counts calls from that ledger for the budget check.",
+    "current": "The gateway's command-line path now audits every request. scripts/model-gateway.mjs `run` appends exactly one ledger line per `--task` request, allowed or refused, naming the calling agent (ALGORIK_WORKER_AGENT; a request that names none is refused and still audited with agent null), the model and the decision: allowed, refused:task-contract, refused:budget, refused:credential (the shapes' names, never the payload), refused:provider, refused:empty-completion, failed:transport, refused:unconfigured. `billed` keeps spend apart from requests, so `spent()` counts only what reached the provider and a refusal does not consume the call ceiling. The agent's name is what the caller says it is; nothing authenticates it. The fleet path (ADR 0102, scripts/fleet/worker.mjs) keeps its own ledger: one object per packet, reserved before the call, recording the packet's role, the model, the status and every attempt. ci.yml's new `scripts` job runs both suites on every push and pull request.",
     "evidence": [
-      "scripts/model-gateway.mjs:261-264 (spent)",
-      "scripts/model-gateway.mjs:292-303 (task-contract and budget refusals, return 2/3, no ledger line)",
-      "scripts/model-gateway.mjs:315-321 (credential-screen refusal, return 4, no ledger line)",
-      "scripts/model-gateway.mjs:347-350 (provider HTTP refusal, return 5, no ledger line)",
-      "scripts/model-gateway.mjs:356-367 (empty-completion ledger write)",
-      "scripts/model-gateway.mjs:375-386 (success ledger write)",
-      "scripts/model-gateway.mjs:407-411 (unconfigured gateway, exit 78, no ledger line)",
-      "scripts/model-gateway.test.mjs (10 tests, none assert ledger completeness or an agent-identity field)"
+      "scripts/model-gateway.mjs (`run`: the `audit` closure and its eight call sites; `spent`: `billed !== false`)",
+      "scripts/model-gateway.test.mjs ('every request leaves exactly one audit line naming the agent, the model and the decision, whether it was allowed or refused': nine requests, nine lines)",
+      "scripts/fleet/worker.test.mjs ('the ledger object exists as a worst-case reservation before the call is made...', 'one packet makes exactly one chat call ... and leaves one output object and one ledger object')",
+      "scripts/fleet/worker.test.mjs ('a missing, unparseable, invalid, unpriced or over-cap packet is refused before any call and leaves no ledger object')",
+      ".github/workflows/ci.yml `scripts` job (node --test over the three suites)"
     ],
-    "gap": "The ledger records model, tokens and timing but never a calling-agent identity and never a policy decision field, and five refusal paths write no ledger line: unconfigured/ambiguous config (exit 78, model-gateway.mjs:407-411), task-contract refusal (:292-296), budget exhausted (:299-303), credential found in the payload (:315-321) and provider HTTP refusal (:347-350). So 'the number of audit records equals the number of requests' is false by construction for every refused call. The gateway is also outside backend/crates and frontend/packages, is not invoked from ci.yml, and its own test file is not run in CI (no reference to model-gateway in .github/workflows/ or Makefile).",
+    "gap": "The fleet path does not ledger a packet it refuses before the call: a packet its validator or the gateway's credential screen refuses leaves no ledger object, by ADR 0102's design and pinned by worker.test.mjs. Such a refusal reaches only the task's stderr, so over a window that includes one, ledger objects do not equal requests. Changing that amends ADR 0102. Separately, the calling agent on the command-line path is self-declared, and no provider credential is present, so the gateway has never audited a live call.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Needed: a test that dispatches N calls (mixing at least one refusal of each kind) against a fake fetch and asserts N ledger lines exist, each naming the calling agent.",
+    "verification": "node --test scripts/model-gateway.test.mjs (23 tests, 23 pass on 2026-10-04). The audit test was mutation-verified: with the credential refusal's audit call deleted it failed 'the number of audit lines is not the number of requests', and passed again on a byte-for-byte restore. Also cargo test -p qip-acceptance --test pipeline_scripts (backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs): every_test_file_under_scripts_is_run_by_the_pipelines_scripts_job (mutation-verified: a suite removed from the job's line).",
     "work_item": "E13-model-gateway-audit-completeness",
     "tier": "T1",
     "size": "S",
@@ -39,7 +36,7 @@
       ".claude/agents/chief-orchestrator.md:16-17 (reads 'the reconciliation matrix' before planning)",
       ".claude/agents/solution-architect.md:23-25"
     ],
-    "gap": "The service catalogue survives only as infrastructure/terraform/catalogue.tf (ADR 0091 retired its per-service granularity for five binaries), and no agent instruction points at it as architecture memory, no runbook/game-day/remediation-policy index exists as a distinct machine-readable class (docs/operations/*.md are prose runbooks, not indexed), no SLO index is machine-readable (qip-observability/src/slo.rs is code, not a queryable SLO catalogue), and nothing wires the orchestrator to the issue tracker (no GitHub issue integration found anywhere in .claude/ or scripts/). No mechanism verifies 'a planner run cites the contracts it read' \u2014 agent instructions ask for this in prose but nothing checks it.",
+    "gap": "The service catalogue survives only as infrastructure/terraform/catalogue.tf (ADR 0091 retired its per-service granularity for five binaries), and no agent instruction points at it as architecture memory, no runbook/game-day/remediation-policy index exists as a distinct machine-readable class (docs/operations/*.md are prose runbooks, not indexed), no SLO index is machine-readable (qip-observability/src/slo.rs is code, not a queryable SLO catalogue), and nothing wires the orchestrator to the issue tracker (no GitHub issue integration found anywhere in .claude/ or scripts/). No mechanism verifies 'a planner run cites the contracts it read' — agent instructions ask for this in prose but nothing checks it.",
     "implemented": true,
     "tested": false,
     "integrated": false,
@@ -63,7 +60,7 @@
       ".claude/settings.json (hooks.PreToolUse wiring)",
       "grep -rn 'autonomous.*repair|self.heal|sre.agent' backend/crates finds nothing"
     ],
-    "gap": "Because no autonomous runtime-repair capability exists, the second permitted path ('a pre-approved runtime action whose event is durably audited') has nothing to be durably audited \u2014 there is no event-audit mechanism for runtime actions at all. The requirement is satisfied only by omission (nothing autonomous can act outside git yet), not by a positive control that would catch one if it existed. The cited positive control is narrower than it reads: guard-dangerous-command.py refuses destructive commands (force push, recursive delete, teardown, `terraform apply -auto-approve`, `gcloud ... delete`, `kubectl delete`, destructive SQL) but not non-destructive production mutations made outside git, such as `gcloud run deploy`, `gcloud run services update`, `kubectl apply`/`edit` or a plain `terraform apply`, so an agent can still make an invisible change. Nothing configures Cloud Audit Logs in Terraform (no google_project_iam_audit_config), and Argo CD's selfHeal on dev, which would revert out-of-git edits to reconciled objects, runs on the suspended control plane (ADR 0093).",
+    "gap": "Because no autonomous runtime-repair capability exists, the second permitted path ('a pre-approved runtime action whose event is durably audited') has nothing to be durably audited — there is no event-audit mechanism for runtime actions at all. The requirement is satisfied only by omission (nothing autonomous can act outside git yet), not by a positive control that would catch one if it existed. The cited positive control is narrower than it reads: guard-dangerous-command.py refuses destructive commands (force push, recursive delete, teardown, `terraform apply -auto-approve`, `gcloud ... delete`, `kubectl delete`, destructive SQL) but not non-destructive production mutations made outside git, such as `gcloud run deploy`, `gcloud run services update`, `kubectl apply`/`edit` or a plain `terraform apply`, so an agent can still make an invisible change. Nothing configures Cloud Audit Logs in Terraform (no google_project_iam_audit_config), and Argo CD's selfHeal on dev, which would revert out-of-git edits to reconciled objects, runs on the suspended control plane (ADR 0093).",
     "implemented": true,
     "tested": false,
     "integrated": true,
@@ -82,7 +79,7 @@
   {
     "id": "CICD-038",
     "status": "OBSOLETE",
-    "current": "backend/crates/ is the sole Rust workspace root (`find . -name Cargo.toml -not -path './backend/*'` returns nothing) and holds apps (qip-api, qip-web, ...), edge (qip-edge, qip-routing, ...), services, libs and backend/crates/tests/qip-acceptance \u2014 i.e. everything the requirement names except a literal event Fabric, which does not exist yet under any name (C2).",
+    "current": "backend/crates/ is the sole Rust workspace root (`find . -name Cargo.toml -not -path './backend/*'` returns nothing) and holds apps (qip-api, qip-web, ...), edge (qip-edge, qip-routing, ...), services, libs and backend/crates/tests/qip-acceptance — i.e. everything the requirement names except a literal event Fabric, which does not exist yet under any name (C2).",
     "evidence": [
       "backend/Cargo.toml (workspace root)",
       "no Cargo.toml exists outside backend/"
@@ -305,7 +302,7 @@
   {
     "id": "CICD-047",
     "status": "INCORRECT",
-    "current": "Builds run on GitHub-hosted `runs-on: ubuntu-latest` runners (deploy.yml:93,266,597; image.yml:172) \u2014 public, shared infrastructure with no private-networking guarantee. No Cloud Build resource, private pool, or VPC peering for a build worker exists anywhere in infrastructure/ (`grep -rln 'cloudbuild|Cloud Build|private.pool' infrastructure/` finds nothing but an unrelated Config Connector manifest and a docs mention).",
+    "current": "Builds run on GitHub-hosted `runs-on: ubuntu-latest` runners (deploy.yml:93,266,597; image.yml:172) — public, shared infrastructure with no private-networking guarantee. No Cloud Build resource, private pool, or VPC peering for a build worker exists anywhere in infrastructure/ (`grep -rln 'cloudbuild|Cloud Build|private.pool' infrastructure/` finds nothing but an unrelated Config Connector manifest and a docs mention).",
     "evidence": [
       "deploy.yml:93, :266, :597 (runs-on: ubuntu-latest)",
       "image.yml:172 (runs-on: ubuntu-latest)",
@@ -363,7 +360,7 @@
       "backend/crates/edge/qip-orderbook/tests/replay.rs",
       "backend/crates/tests/qip-acceptance/tests/performance.rs:527 (book_apply_costs_what_the_budget_says)"
     ],
-    "gap": "No fuzz testing exists at all (no cargo-fuzz harness, no libFuzzer target anywhere in backend/) and no separately-named property-testing framework is used (no proptest/quickcheck \u2014 both would be new dependencies under ADR 0002's two-dependency rule). Some tests use seeded-random iteration in an informal property-test style (e.g. backend/crates/edge/qip-routing/tests/routing.rs) but this is not systematic and is not gated as a distinct 'property tests' step.",
+    "gap": "No fuzz testing exists at all (no cargo-fuzz harness, no libFuzzer target anywhere in backend/) and no separately-named property-testing framework is used (no proptest/quickcheck — both would be new dependencies under ADR 0002's two-dependency rule). Some tests use seeded-random iteration in an informal property-test style (e.g. backend/crates/edge/qip-routing/tests/routing.rs) but this is not systematic and is not gated as a distinct 'property tests' step.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -388,7 +385,7 @@
       "backend/crates/tests/qip-acceptance/tests/architecture.rs",
       "backend/crates/tests/qip-acceptance/tests/blueprint_rules.rs"
     ],
-    "gap": "No Kubernetes admission-policy engine (OPA/Gatekeeper/Kyverno/Policy Controller) is deployed or configured anywhere in infrastructure/. No dedicated SAST tool runs (clippy is a lint, not SAST; trunk-action's actionlint/shellcheck/hadolint cover workflow/shell/Dockerfile shape, not application logic) \u2014 no CodeQL or Semgrep workflow exists.",
+    "gap": "No Kubernetes admission-policy engine (OPA/Gatekeeper/Kyverno/Policy Controller) is deployed or configured anywhere in infrastructure/. No dedicated SAST tool runs (clippy is a lint, not SAST; trunk-action's actionlint/shellcheck/hadolint cover workflow/shell/Dockerfile shape, not application logic) — no CodeQL or Semgrep workflow exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -521,9 +518,9 @@
       "backend/crates/tests/qip-acceptance/tests/gitops.rs:2310 (RunService useDefault parity)",
       "grep -rn 'REQUIRE_ATTESTATION\\|ENFORCED_BLOCK' backend/ (no test asserts the policy's evaluation or enforcement mode)"
     ],
-    "gap": "The core property, that an unattested image is refused, is asserted by no test. The tests prove that services opt into the project policy, but nothing asserts the policy's own rule, so changing evaluation_mode to ALWAYS_ALLOW or enforcement_mode to DRYRUN_AUDIT_LOG_ONLY passes the whole suite. The requirement's e2e check (unsigned refused, then attested admitted) has never run. The GKE/NetworkPolicy half is C3. The execution-node VM path has no admission controller, and its signature check belongs to CICD-060.",
+    "gap": "The policy's own rule is now pinned by a test (REQUIRE_ATTESTATION, ENFORCED_BLOCK_AND_AUDIT_LOG, named attestor; mutation-verified against ALWAYS_ALLOW and DRYRUN). Still open: the e2e refuse-then-admit pair has never run (needs a deploying project) and the GKE/NetworkPolicy half is C3.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -531,7 +528,7 @@
       "CICD-054"
     ],
     "blocked_by": "",
-    "verification": "Needed: a test asserting REQUIRE_ATTESTATION + ENFORCED_BLOCK_AND_AUDIT_LOG + a non-empty require_attestations_by on the default rule (mutation-verified against ALWAYS_ALLOW/DRYRUN), and a live refusal/admission pair once the project can deploy. Existing: cargo test -p qip-acceptance --test infrastructure every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy.",
+    "verification": "cargo test -p qip-acceptance --test pipeline_waivers the_binary_authorization_default_rule_requires_a_named_attestation_and_blocks; e2e pair outstanding",
     "work_item": "E13-binauthz-policy-refusal-test",
     "tier": "T1",
     "size": "S",
@@ -671,7 +668,7 @@
       "docs/adr/0100-*.md (the first fabric build is a single-node RF1 broker; 'Replication appearing in-tree before C2's record' is listed under 'What would make this wrong', and replication-dependent rows are scored BLOCKED(C2))",
       "docs/adr/0099-*.md C8 (five brokers per region is also a cost/deployment conflict)"
     ],
-    "gap": "A native Rust Fabric with independently-deployed brokers needs Tokio/QUIC/mTLS/a Rust Raft per v11.6 \u2014 exactly ADR 0099's C2, none of which is permitted under the current two-dependency rule (ADR 0002/0009) without a new dependency-class ADR.",
+    "gap": "A native Rust Fabric with independently-deployed brokers needs Tokio/QUIC/mTLS/a Rust Raft per v11.6 — exactly ADR 0099's C2, none of which is permitted under the current two-dependency rule (ADR 0002/0009) without a new dependency-class ADR.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -788,17 +785,19 @@
   },
   {
     "id": "CICD-066",
-    "status": "PARTIAL",
-    "current": "Retention exists, but rollback does not. ModelRegistry never removes a card: retire() marks it Retired, and promote() does not demote the previous Production card. promote_artifact refuses to put different bytes under an already-promoted version (qip-ai/src/registry.rs:304-343). The deep brain writes each promoted artifact under its digest and never deletes one (qip-deepbrain/src/main.rs:865), so the previous epoch's exact bytes stay addressable by digest. production_version() would fall back to the older Production card if the newer one were retired, but it has no production caller, and no operation re-activates a previous epoch for cells. The policy payload's sequence rule refuses a lower sequence, so a rollback must republish the old content under a new sequence.",
+    "status": "COMPLETE",
+    "current": "ModelRegistry::rollback retires the production card and returns its recorded rollback_parent to production under the artifact digest it was promoted with, refusing when there is no parent or the parent holds no digest; cards and digest-named artifacts are never deleted, so nothing is re-fetched or rebuilt. The deep brain's promotion records the parent (EXPAND-038) and its learning test rolls back a copy of the registry to the incumbent's exact digest. Policy epochs roll back through qip-edge's policy_rollback suite.",
     "evidence": [
       "backend/crates/libs/qip-ai/src/registry.rs:255-261 (production_version), :278-290 (promote leaves prior cards), :304-343 (promote_artifact), :345-353 (retire)",
       "backend/crates/apps/qip-deepbrain/src/main.rs:858-876 (digest-named write, no delete)",
       "backend/crates/libs/qip-ai/tests/model_infrastructure.rs:618 (the_registry_finds_the_current_production_version: both versions retained, newest selected; no rollback asserted)",
-      "backend/crates/services/qip-evolution/src/promotion.rs:205-224 (strategy analogue: deposed champion tracked in Succession)"
+      "backend/crates/services/qip-evolution/src/promotion.rs:205-224 (strategy analogue: deposed champion tracked in Succession)",
+      "backend/crates/libs/qip-ai/src/registry.rs (rollback, record_rollback_parent)",
+      "backend/crates/apps/qip-deepbrain/src/learning.rs (scratch.rollback restores the incumbent digest)"
     ],
-    "gap": "No rollback path restores the prior epoch's manifest digest without re-fetching: there is no 'reactivate previous' operation on the registry, the kernel or the policy publisher, and no test performs a rollback. Buildable in-tree; not C5.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -806,7 +805,7 @@
       "CICD-065"
     ],
     "blocked_by": "",
-    "verification": "Needed: an e2e test that promotes epoch N+1, rolls back, and asserts that the active manifest digest equals epoch N's, with no fetch or rebuild. Existing retention evidence: cargo test -p qip-ai --test model_infrastructure the_registry_finds_the_current_production_version.",
+    "verification": "cargo test -p qip-ai --test model_infrastructure a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_artifact (mutation-verified: restored card left Retired fails at model_infrastructure.rs:1005; restored byte-for-byte). Also a_model_with_no_recorded_parent_cannot_be_rolled_back.",
     "work_item": "E10-model-policy-release-lifecycle",
     "tier": "T3",
     "size": "M",
@@ -839,15 +838,15 @@
   },
   {
     "id": "CICD-068",
-    "status": "MISSING",
-    "current": "nothing. No change-window (time-of-day/day-of-week) restriction exists anywhere in infra.yml or the Terraform modules for folder, project, network or database-shaped changes; the only maintenance-window references in the tree are about physical network-circuit maintenance (infrastructure/terraform/modules/connectivity), unrelated to this requirement.",
+    "status": "PARTIAL",
+    "current": "qip_compliance::release::ChangeWindows::admit refuses a folder, project, network or database change outside every declared half-open window and admits one inside it; no window declared means none open.",
     "evidence": [
       "grep -rn 'change.window|change_window' .github/workflows/infra.yml infrastructure/ (no matches for a deploy/apply gate)",
       "infrastructure/terraform/modules/connectivity/main.tf:104 (unrelated: physical circuit maintenance window)"
     ],
-    "gap": "No mechanism refuses a folder/project/network/database-touching apply outside a declared window; infra.yml's 'up' action runs at any time a person dispatches it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The gate is a library type; infra.yml's apply path does not call it, so an apply still runs at any time a person dispatches it, and no window is declared in any environment's tfvars. Wire it into the apply gate to close.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -855,10 +854,10 @@
       "CICD-067"
     ],
     "blocked_by": "",
-    "verification": "No verification possible; nothing exists to verify.",
+    "verification": "backend/crates/libs/qip-compliance/tests/release_governance.rs::a_network_change_outside_every_declared_window_is_refused_and_inside_one_is_admitted (mutation-verified); wiring into infra.yml untested",
     "work_item": "E14-change-window-gate",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-04: not wired. infra.yml's `up` runs `terraform apply -auto-approve` with no saved plan, so the gate has no list of resource types to judge; wiring it means restructuring `up` to plan, show the plan as JSON, call the gate and apply that plan, and proving it needs a dispatch of infra.yml against the dev project, which is an external action."
   }
 ]

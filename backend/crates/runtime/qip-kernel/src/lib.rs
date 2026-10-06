@@ -57,9 +57,12 @@ pub mod references;
 pub mod regime_allocation;
 pub mod regime_transition;
 pub mod rule_review;
+pub mod self_watch;
 pub mod session_replay;
 pub mod shared_cause;
 pub mod sizing_review;
+pub mod source_discovery;
+pub mod source_lifecycle;
 pub mod valuation;
 pub mod venue_admission;
 pub mod venue_measurement;
@@ -69,7 +72,9 @@ pub use asset_class_registry::{AssetClassRecord, AssetClassRegistry, ValuationEn
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};
-pub use model_serving::{DistilledManifestEntry, ModelManifestIssue, ModelPromotion};
+pub use model_serving::{
+    DistilledManifestEntry, ModelManifestIssue, ModelProducer, ModelPromotion,
+};
 pub use platform::{
     CapitalGrantEntry, ChainAbsorption, CycleJournalEntry, Platform, RecordedPrediction,
     SourceAssessment, UniverseAssembled,

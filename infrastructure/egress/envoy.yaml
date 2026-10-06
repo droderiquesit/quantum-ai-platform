@@ -16,7 +16,7 @@
 # HTTP/1.1 client with no TLS stack. It refuses the `https` scheme by name
 # rather than downgrading it. Every outbound adapter in the workspace therefore
 # says the same thing in its own error message — `qip_quantum::provider`,
-# `qip_training::vertex`, `qip_storage::gcp::{storage,bigquery}`,
+# `qip_training::vertex`, `qip_storage::gcp::storage`, `qip_mesh::bigquery`,
 # `qip_market_ingestion::{rest,depth,narrative,alternative}`,
 # `qip_brokers::rest`, `qip_chain::rpc` — and what they all ask for is one
 # thing: an `http://host[:port]` next to the process that terminates TLS and
@@ -86,8 +86,8 @@
 #   * `storage.googleapis.com` — named in `qip_storage::gcp::storage`'s own
 #     requirement string. Reached through `QIP_GCP_ENDPOINT` on the `gcp`
 #     listener, path `/storage/v1/`.
-#   * `bigquery.googleapis.com` — named in `qip_storage::gcp::bigquery`'s
-#     requirement string. Same listener, path `/bigquery/v2/`.
+#   * `bigquery.googleapis.com` — named in the requirement string of
+#     `qip_mesh::bigquery`'s target. Same listener, path `/bigquery/v2/`.
 #   * `europe-west2-aiplatform.googleapis.com` — `qip_training::vertex`
 #     documents its upstream as `{region}-aiplatform.googleapis.com`. One
 #     region, deliberately not a wildcard: `*-aiplatform.googleapis.com` would

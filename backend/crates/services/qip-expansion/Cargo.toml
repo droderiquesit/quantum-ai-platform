@@ -1,0 +1,20 @@
+[package]
+name = "qip-expansion"
+description = "The Intelligence Expansion Engine's curriculum: gap classification, the eleven-input score, the ranked ResearchQueue and its budgeted scheduler."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+qip-core.workspace = true
+# GapSignal, GapClass and CurriculumItem (CONTRACT-031/032): the brains'
+# contract types this engine reads and writes.
+qip-contracts.workspace = true
+# The Tool Registry and Research Registry a candidate is admitted against.
+qip-agents.workspace = true
+
+[lints]
+workspace = true

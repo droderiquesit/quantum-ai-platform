@@ -59,7 +59,7 @@
     "work_item": "E07",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: COMPLETE->PARTIAL, e2e true->false. The central pre-trade leverage veto is real, integrated and tested, but the requirement's 'whatever originated the action' fails for the edge cell's autonomous order path, which reaches the simulator with no MaxLeverage check; no e2e/acceptance test demonstrates a leverage refusal | Enforced on the central OrderManager path (qip-api/qip-cli), the only order-submission path actually deployed today. The edge Reflex cell (not yet deployed anywhere: execution_nodes={} in every environment) bounds an autonomously-originated order via the fixed capital-envelope corridor rather than recomputing MaxLeverage locally \u2014 a coarser but still deterministic bound; see RISK-023."
+    "notes": "verify: COMPLETE->PARTIAL, e2e true->false. The central pre-trade leverage veto is real, integrated and tested, but the requirement's 'whatever originated the action' fails for the edge cell's autonomous order path, which reaches the simulator with no MaxLeverage check; no e2e/acceptance test demonstrates a leverage refusal | Enforced on the central OrderManager path (qip-api/qip-cli), the only order-submission path actually deployed today. The edge Reflex cell (not yet deployed anywhere: execution_nodes={} in every environment) bounds an autonomously-originated order via the fixed capital-envelope corridor rather than recomputing MaxLeverage locally — a coarser but still deterministic bound; see RISK-023."
   },
   {
     "id": "RISK-003",
@@ -147,7 +147,7 @@
   {
     "id": "RISK-006",
     "status": "PARTIAL",
-    "current": "qip_execution_engine::oms::OrderManager::new(checker: PreTradeChecker) (oms.rs:408) \u2014 a checker is required to construct the type at all \u2014 and OrderManager::submit (oms.rs:573) calls self.checker.check(...) (oms.rs:735) before returning an Order. Architecture tests restrict who may even hold an OrderManager.",
+    "current": "qip_execution_engine::oms::OrderManager::new(checker: PreTradeChecker) (oms.rs:408) — a checker is required to construct the type at all — and OrderManager::submit (oms.rs:573) calls self.checker.check(...) (oms.rs:735) before returning an Order. Architecture tests restrict who may even hold an OrderManager.",
     "evidence": [
       "backend/crates/services/qip-execution-engine/src/oms.rs:408,573,735",
       "backend/crates/runtime/qip-kernel/src/platform.rs:4528 OrderManager::new(PreTradeChecker::new(limits.clone()))",
@@ -170,11 +170,11 @@
     "work_item": "E07",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: COMPLETE->PARTIAL, e2e true->false. 'No path reaches a venue adapter or the simulator without a Risk Gate verdict' is false for qip-edge-node's gateway (gateway.rs:364), which submits Cell orders directly; architecture.rs line refs corrected (584/634, not 583/633) | The edge Cell's own order path (Cell::send) does not construct an OrderManager at all; it goes through feasibility::assess + envelope admission + its own named gates (Cell::refuse), which is a structurally separate but equally mandatory gate sequence \u2014 no path bypasses both."
+    "notes": "verify: COMPLETE->PARTIAL, e2e true->false. 'No path reaches a venue adapter or the simulator without a Risk Gate verdict' is false for qip-edge-node's gateway (gateway.rs:364), which submits Cell orders directly; architecture.rs line refs corrected (584/634, not 583/633) | The edge Cell's own order path (Cell::send) does not construct an OrderManager at all; it goes through feasibility::assess + envelope admission + its own named gates (Cell::refuse), which is a structurally separate but equally mandatory gate sequence — no path bypasses both."
   },
   {
     "id": "RISK-007",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "qip_risk_engine::monitor::RiskMonitor::observe (backend/crates/services/qip-risk-engine/src/monitor.rs), held as a Platform field (platform.rs:236) constructed at platform.rs:4533, called on every material change (fills) and returning Continue/Warn/ReduceOnly/HaltScope/HaltGlobally.",
     "evidence": [
       "backend/crates/services/qip-risk-engine/src/monitor.rs:1-60",
@@ -182,21 +182,22 @@
       "backend/crates/services/qip-risk-engine/tests/risk_engine.rs:720 a_clean_book_continues; :734 a_drawdown_past_the_threshold_halts_everything_immediately; :765 a_first_limit_breach_goes_reduce_only_rather_than_halting; :785 a_persistent_breach_escalates_to_a_scoped_halt; :857 every_observation_is_recorded",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13326-13335 (stage_act_orders: monitor.observe on risk_state built from RiskAggregates::apply_fill)",
       "backend/crates/runtime/qip-kernel/tests/kernel.rs:1119 every_pass_of_the_risk_monitor_is_recorded_with_the_breach_count_it_saw (zero-breach case only)",
-      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs:1280-1300 (a cycle over an illiquid book goes reduce_only)"
+      "backend/crates/runtime/qip-kernel/tests/valuation_seam.rs:1280-1300 (a cycle over an illiquid book goes reduce_only)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs decide_tests::a_fill_that_gapped_past_the_pre_trade_assumption_is_charged_at_the_price_it_filled_at (premise: 0.08 at the assumed price is not even a warning; the fill at 115 is a blocking position-weight breach and RiskMonitor::observe returns reduce_only)"
     ],
-    "gap": "RiskMonitor::observe runs once per ACT stage over a RiskState built from the fills that actually occurred, so the mechanism is in place and reached. No test does what the requirement's verification names: drive a partial, slipped or gapped fill that differs from the pre-trade assumption and show the post-trade evaluation reflects the actual fill and reports a breach the pre-trade check could not have seen. The cited risk_engine.rs tests feed hand-built RiskStates to the monitor; cancels and settlement events are not shown to re-drive the evaluation.",
+    "gap": "Cancels and settlement events are not separately shown to re-drive the evaluation; the fill case the requirement names is.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needs a kernel test: submit through a simulator configured to slip/partially fill, run the next cycle, and assert the monitor's breach names the limit the fill (not the order) crossed; mutate apply_fill to charge the order's assumed price and confirm the test fails.",
+    "verification": "cargo test -p qip-kernel --lib a_fill_that_gapped_past_the_pre_trade_assumption_is_charged_at_the_price_it_filled_at (mutation: aggregate_fill charging 70% of the fill failed it with \"the post-trade state did not see it\")",
     "work_item": "E07",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: COMPLETE->NEEDS-VALIDATION, tested/e2e true->false. The post-trade monitor exists and is reached every ACT stage, but no named test drives a fill that diverges from the pre-trade assumption; the cited tests exercise the monitor's escalation on constructed states"
+    "notes": "Round 2: closed by a kernel test over TrackedCapital::apply_fill + Platform::aggregate_fill, the production fill-capture pair, mutation-verified."
   },
   {
     "id": "RISK-008",
@@ -209,7 +210,7 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs:12749-12880 (stress_the_book, stress_through_the_graph)",
       "backend/crates/libs/qip-risk/tests/risk.rs (VaR/factor tests), tests/shared_cause.rs"
     ],
-    "gap": "Volatility, VaR/ES, factor and causal-driver exposure are computed and limit-checked; 'gap' and 'basis' are not named as distinct measures anywhere in qip-risk, and qip_financial::risk_profile::Greeks (backend/crates/libs/qip-financial/src/risk_profile.rs) is never read by qip-risk's measurement or limit layer (grep for Greeks in qip-risk and qip-kernel/platform.rs returns nothing) \u2014 so options exposure is not represented in the risk model.",
+    "gap": "Volatility, VaR/ES, factor and causal-driver exposure are computed and limit-checked; 'gap' and 'basis' are not named as distinct measures anywhere in qip-risk, and qip_financial::risk_profile::Greeks (backend/crates/libs/qip-financial/src/risk_profile.rs) is never read by qip-risk's measurement or limit layer (grep for Greeks in qip-risk and qip-kernel/platform.rs returns nothing) — so options exposure is not represented in the risk model.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -225,17 +226,18 @@
   },
   {
     "id": "RISK-009",
-    "status": "PARTIAL",
-    "current": "qip_capital::margin::{LiquidityAssessment,assess_liquidity,LiquidationHorizon} (backend/crates/services/qip-capital/src/margin.rs:34,172) computes participation-based time-to-exit and worst/weighted days; qip_capital::exposure::AggregateExposure::crowded (exposure.rs:126,201) names instruments more than one cell holds (crowded exit); qip_risk::limits has MinLiquidity/MaxDaysToLiquidate limits; qip-edge's feasibility::DEPTH gate checks order-book depth.",
+    "status": "COMPLETE",
+    "current": "qip_capital::margin::{LiquidityAssessment,assess_liquidity,LiquidationHorizon} (backend/crates/services/qip-capital/src/margin.rs:34,172) computes participation-based time-to-exit and worst/weighted days; qip_capital::exposure::AggregateExposure::crowded (exposure.rs:126,201) names instruments more than one cell holds (crowded exit); qip_risk::limits has MinLiquidity/MaxDaysToLiquidate limits; qip-edge's feasibility::DEPTH gate checks order-book depth. qip_capital::margin::estimate_exit (margin.rs) now costs one position's exit as time-to-exit plus square-root impact plus borrow charge, and returns ExitCost::Unavailable(NoQuote|NoBorrow|NoVolumeEstimate) rather than a zero cost.",
     "evidence": [
       "backend/crates/services/qip-capital/src/margin.rs:160-230",
       "backend/crates/services/qip-capital/src/exposure.rs:1-60,126,201",
       "backend/crates/edge/qip-edge/src/feasibility.rs (DEPTH gate constant)",
       "backend/crates/services/qip-capital/tests/capital.rs:1673 a_liquidity_assessment_needs_a_participation_rate_in_the_unit_interval",
       "backend/crates/runtime/qip-kernel/tests/central.rs:613 three_cells_holding_one_name_produce_a_concentration_recall (crowded exit path)",
-      "backend/crates/libs/qip-financial/src/costs.rs:172-230 (square-root impact law, impact_coefficient_bps)"
+      "backend/crates/libs/qip-financial/src/costs.rs:172-230 (square-root impact law, impact_coefficient_bps)",
+      "backend/crates/services/qip-capital/tests/capital.rs an_exit_is_costed_from_depth_and_an_unavailable_quote_or_borrow_is_not_costed_as_zero (mutation-verified: bypassing the quote check made it fail with Estimated where Unavailable(NoQuote) was expected)"
     ],
-    "gap": "Borrow cost is computed (qip_financial::costs short_borrow_bps_annual / simulation borrow_cost) but no code path represents unavailable quotes or unavailable borrow as 'unavailable' rather than a cost - the specific failure mode the requirement names. Market impact does exist as a square-root-law term in qip_financial::costs::TransactionCostModel (impact_coefficient_bps), but the stress exit (stress_the_book) deliberately leaves impact out and no test computes time-to-exit and impact together to expected values from order-book depth.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -243,11 +245,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital --test capital a_liquidity_assessment_needs_a_participation_rate_in_the_unit_interval",
+    "verification": "cargo test -p qip-capital --test capital an_exit_is_costed_from_depth_and_an_unavailable_quote_or_borrow_is_not_costed_as_zero",
     "work_item": "E07",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status unchanged (PARTIAL). Corrected the gap: a square-root impact curve does exist in qip_financial::costs; the real gaps are unavailable quote/borrow representation and a depth-driven exit/impact test"
+    "notes": "Verified at the unit level the requirement names. estimate_exit has no production caller yet (integrated stays true only for the pre-existing assess_liquidity/limits path); the stress exit still omits impact by design."
   },
   {
     "id": "RISK-010",
@@ -310,7 +312,7 @@
       "backend/crates/libs/qip-compliance/src/plane.rs:28,170,223",
       "backend/crates/runtime/qip-kernel/src/feature_statistics.rs:1-40,380,436 (per-instrument distribution-shift via StreamingDrift PSI and stuck/quantised-feed findings, reached from stage_understand at platform.rs:9954)"
     ],
-    "gap": "Drift/deterioration (venue fill quality) and regime mismatch are covered; uncertainty, feature failure and adversarial-input categories are not represented as distinct findings anywhere qip-compliance or qip-kernel computes model risk, and ModelRiskRegister is a filing/admission ledger (governance) rather than an automatic detector \u2014 no replay test drives a drifted feature, a failed feature or a crafted adversarial input and asserts a matching finding, as the requirement's verification method specifies.",
+    "gap": "Drift/deterioration (venue fill quality) and regime mismatch are covered; uncertainty, feature failure and adversarial-input categories are not represented as distinct findings anywhere qip-compliance or qip-kernel computes model risk, and ModelRiskRegister is a filing/admission ledger (governance) rather than an automatic detector — no replay test drives a drifted feature, a failed feature or a crafted adversarial input and asserts a matching finding, as the requirement's verification method specifies.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -358,7 +360,7 @@
       "backend/crates/tests/qip-acceptance/tests/chaos.rs:763 randomly_injected_faults_never_break_the_five_invariants",
       "backend/crates/tests/qip-acceptance/tests/resilience.rs:303 a_degraded_feed_does_not_stop_the_loop; :398 a_halt_and_a_recovery_mid_run_leave_the_platform_consistent; :527 the_event_log_chain_verifies_after_a_long_chaotic_run"
     ],
-    "gap": "No 'operational risk' domain type exists (grep for OperationalRisk returns nothing); node/network/clock-skew/bad-deployment/credential/dependency-outage are not each represented under their own category in a risk state the way the requirement's verification method demands \u2014 what exists is general resilience (bounded state, absorbed disorder) plus incident severity scoping, not a per-category operational-risk finding.",
+    "gap": "No 'operational risk' domain type exists (grep for OperationalRisk returns nothing); node/network/clock-skew/bad-deployment/credential/dependency-outage are not each represented under their own category in a risk state the way the requirement's verification method demands — what exists is general resilience (bounded state, absorbed disorder) plus incident severity scoping, not a per-category operational-risk finding.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -401,7 +403,7 @@
   {
     "id": "RISK-016",
     "status": "PARTIAL",
-    "current": "Platform::stress_the_book (platform.rs:12749), called every SIMULATE cycle, produces forward-looking scenario loss estimates (StressReport) \u2014 a forecast of book risk under each scenario, distinct from the pre-trade Risk Gate's present-state check.",
+    "current": "Platform::stress_the_book (platform.rs:12749), called every SIMULATE cycle, produces forward-looking scenario loss estimates (StressReport) — a forecast of book risk under each scenario, distinct from the pre-trade Risk Gate's present-state check.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:12749-12880",
       "backend/crates/runtime/qip-kernel/tests/stress.rs:150 the_simulate_stage_stresses_the_open_book_against_the_standard_library"
@@ -474,10 +476,10 @@
   {
     "id": "RISK-019",
     "status": "COMPLETE",
-    "current": "qip_risk::limits::{LimitSet::check, LimitCheck} (limits.rs:604,850,942) is a pure function of (proposed state, RiskState, LimitSet) \u2014 no I/O, no model dependency; the crate's workspace_deps are qip-core/qip-numerics/qip-portfolio only, none of which name a model or inference component.",
+    "current": "qip_risk::limits::{LimitSet::check, LimitCheck} (limits.rs:604,850,942) is a pure function of (proposed state, RiskState, LimitSet) — no I/O, no model dependency; the crate's workspace_deps are qip-core/qip-numerics/qip-portfolio only, none of which name a model or inference component.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:604,794,850,942",
-      "backend/crates/libs/qip-risk/Cargo.toml (workspace_deps: qip-core, qip-numerics, qip-portfolio \u2014 no qip-ai)",
+      "backend/crates/libs/qip-risk/Cargo.toml (workspace_deps: qip-core, qip-numerics, qip-portfolio — no qip-ai)",
       "backend/crates/services/qip-risk-engine/tests/risk_engine.rs:552 the_permitted_quantity_is_identical_across_runs_and_across_order_direction",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs:407 no_safety_critical_engine_can_reach_a_language_model (qip-risk-engine in SAFETY_CRITICAL, transitive walk)",
       "backend/crates/services/qip-risk-engine/Cargo.toml (deps: serde, qip-core, qip-risk)"
@@ -530,7 +532,7 @@
       "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:476 a_book_whose_positions_share_an_unheld_causal_driver_has_it_surfaced_by_the_understand_stage (observed bars -> submit_order -> run_cycle; asserts 'hidden concentration(s)' and names obj-DRV)",
       "backend/crates/services/qip-world-model/src/exposure.rs:688 a_driver_reaching_two_held_positions_is_surfaced_as_hidden_concentration; :711 a_driver_the_book_already_holds_is_not_reported_as_hidden (control case)"
     ],
-    "gap": "Discovery is via deterministic causal-graph/factor-axis arithmetic, not a general AI model \u2014 a narrower mechanism than 'AI, causal and scenario models' names, though causal is one of the three named methods and is exactly what is implemented.",
+    "gap": "Discovery is via deterministic causal-graph/factor-axis arithmetic, not a general AI model — a narrower mechanism than 'AI, causal and scenario models' names, though causal is one of the three named methods and is exactly what is implemented.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -572,14 +574,14 @@
   {
     "id": "RISK-023",
     "status": "PARTIAL",
-    "current": "qip_edge::cell::Cell::work/Cell::send evaluate every gate (feasibility::assess, VerifiedEnvelope::admit, quote-budget, policy narrowing, autonomy/kill-switch) purely in memory with no network call in the hot path \u2014 the module doc states this as a design invariant and qip-edge has no dependency on qip-ai. qip_edge_node runs Cell::work only under QIP_VENUE_FEED=simulated.",
+    "current": "qip_edge::cell::Cell::work/Cell::send evaluate every gate (feasibility::assess, VerifiedEnvelope::admit, quote-budget, policy narrowing, autonomy/kill-switch) purely in memory with no network call in the hot path — the module doc states this as a design invariant and qip-edge has no dependency on qip-ai. qip_edge_node runs Cell::work only under QIP_VENUE_FEED=simulated.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/lib.rs:14-30 (module doc: 'The hot path does no I/O', 'Nothing here can reach a language model')",
       "backend/crates/edge/qip-edge/src/envelope.rs:120- (VerifiedEnvelope::admit, local)",
       "backend/crates/tests/qip-acceptance/tests/chaos.rs:763 randomly_injected_faults_never_break_the_five_invariants",
       "backend/crates/apps/qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move"
     ],
-    "gap": "The full deterministic Risk Gate (qip_risk::limits::LimitSet \u2014 MaxLeverage, MaxNetExposure, MaxValueAtRisk etc.) is never imported by backend/crates/edge (grep confirms zero references); at the edge, risk is bounded only by the fixed capital-envelope corridor and feasibility/quote gates, not by re-evaluating the same LimitKind set the central Gate uses. Additionally, qip-edge-node is not deployed in any environment (execution_nodes={} everywhere), so this whole path runs only in tests today.",
+    "gap": "The full deterministic Risk Gate (qip_risk::limits::LimitSet — MaxLeverage, MaxNetExposure, MaxValueAtRisk etc.) is never imported by backend/crates/edge (grep confirms zero references); at the edge, risk is bounded only by the fixed capital-envelope corridor and feasibility/quote gates, not by re-evaluating the same LimitKind set the central Gate uses. Additionally, qip-edge-node is not deployed in any environment (execution_nodes={} everywhere), so this whole path runs only in tests today.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -625,7 +627,7 @@
     "status": "MISSING",
     "current": "nothing. No intervention-risk scoring (truthfulness, disclosure, identity, channel permission, causal overclaiming, action-channel compromise) exists anywhere in the tree.",
     "evidence": [
-      "(absence) rg -in 'intervention.?risk|causal.?overclaim|action.?channel' backend/crates -g '*.rs' \u2014 no hits"
+      "(absence) rg -in 'intervention.?risk|causal.?overclaim|action.?channel' backend/crates -g '*.rs' — no hits"
     ],
     "gap": "No type or check represents any of the six named intervention-risk categories.",
     "implemented": false,
@@ -644,7 +646,7 @@
   {
     "id": "RISK-026",
     "status": "BLOCKED",
-    "current": "No separate 'Risk Brain' service exists anywhere in this codebase \u2014 grep for RiskBrain/risk_brain across backend/crates returns nothing except the domain label string in qip-cli's blueprint.rs (\"Risk Brain and deterministic Risk Gate\"). The risk-forecasting behaviour (stress_the_book, scenario library) runs inside the monolithic Platform composed into qip-api/qip-fastbrain/qip-deepbrain, deployed to Cloud Run per ADR 0024. Permitted form: risk forecasting (stress_the_book over the scenario library and the causal graph) runs as a warm central service inside the Cloud Run binaries every SIMULATE stage, and no Risk Brain component is on the Reflex node (qip-edge and qip-edge-node depend on neither qip-kernel nor qip-simulation-engine).",
+    "current": "No separate 'Risk Brain' service exists anywhere in this codebase — grep for RiskBrain/risk_brain across backend/crates returns nothing except the domain label string in qip-cli's blueprint.rs (\"Risk Brain and deterministic Risk Gate\"). The risk-forecasting behaviour (stress_the_book, scenario library) runs inside the monolithic Platform composed into qip-api/qip-fastbrain/qip-deepbrain, deployed to Cloud Run per ADR 0024. Permitted form: risk forecasting (stress_the_book over the scenario library and the causal graph) runs as a warm central service inside the Cloud Run binaries every SIMULATE stage, and no Risk Brain component is on the Reflex node (qip-edge and qip-edge-node depend on neither qip-kernel nor qip-simulation-engine).",
     "evidence": [
       "backend/crates/apps/qip-cli/src/blueprint.rs:47",
       "docs/adr/0024 (Cloud Run for warm binaries, Kubernetes retired)",
@@ -664,7 +666,7 @@
     "work_item": "E99",
     "tier": "T4",
     "size": "L",
-    "notes": "verify: blocker confirmed (GKE placement needs C3); added C8 because the requirement asks for the workload in each region's cluster. Flags set for the permitted form per the programme rule: forecasting runs warm on Cloud Run and is absent from the Reflex node | ADR 0099 leaves this conflict to a runtime record; until one exists the standing ADR 0024 decision (Cloud Run, no Kubernetes) holds. The forecasting capability itself is not blocked (see RISK-016/RISK-017) \u2014 only its placement on Regional GKE Standard is."
+    "notes": "verify: blocker confirmed (GKE placement needs C3); added C8 because the requirement asks for the workload in each region's cluster. Flags set for the permitted form per the programme rule: forecasting runs warm on Cloud Run and is absent from the Reflex node | ADR 0099 leaves this conflict to a runtime record; until one exists the standing ADR 0024 decision (Cloud Run, no Kubernetes) holds. The forecasting capability itself is not blocked (see RISK-016/RISK-017) — only its placement on Regional GKE Standard is."
   },
   {
     "id": "RISK-027",
@@ -675,7 +677,7 @@
       "backend/crates/libs/qip-contracts/src/policy.rs:386-397,608,664,751",
       "backend/crates/apps/qip-api/tests/mesh.rs:686-692 a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it (asserts payload.payload().risk_envelope.value().is_some())"
     ],
-    "gap": "Enforcement is not wired: qip_edge::cell::Cell::apply_policy (cell.rs:2111) reads halted/narrowing/region_share/adversary-posture from the verified payload but never reads .risk_envelope's content at all (grep for risk_envelope across backend/crates/edge returns zero hits) \u2014 the shipped limit set is signed, verified and held, but no gate at the cell refuses an action outside it or admits one inside it, which is exactly what the requirement's verification method demands.",
+    "gap": "Enforcement is not wired: qip_edge::cell::Cell::apply_policy (cell.rs:2111) reads halted/narrowing/region_share/adversary-posture from the verified payload but never reads .risk_envelope's content at all (grep for risk_envelope across backend/crates/edge returns zero hits) — the shipped limit set is signed, verified and held, but no gate at the cell refuses an action outside it or admits one inside it, which is exactly what the requirement's verification method demands.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -699,7 +701,7 @@
       "backend/crates/runtime/qip-kernel/src/central/plane.rs:213-237,2090-2129,2665-2701",
       "backend/crates/runtime/qip-kernel/tests/central.rs:737 a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause"
     ],
-    "gap": "No P0/P1 priority taxonomy exists anywhere in the codebase (grep for 'enum.*Priority' with P0/P1 values returns nothing) \u2014 qip_contracts::governance::Severity has four levels (Observation/Scoped/Cell/Global), none named P0/P1. The break is recorded as an internal Incident and a metric counter, not published as a discrete event on a Fabric-like bus another region or console consumes directly; the requirement's specific verification (a P0/P1-classed event carrying both values and direction) cannot be demonstrated against current code.",
+    "gap": "No P0/P1 priority taxonomy exists anywhere in the codebase (grep for 'enum.*Priority' with P0/P1 values returns nothing) — qip_contracts::governance::Severity has four levels (Observation/Scoped/Cell/Global), none named P0/P1. The break is recorded as an internal Incident and a metric counter, not published as a discrete event on a Fabric-like bus another region or console consumes directly; the requirement's specific verification (a P0/P1-classed event carrying both values and direction) cannot be demonstrated against current code.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -716,7 +718,7 @@
   {
     "id": "RISK-029",
     "status": "COMPLETE",
-    "current": "CentralPlane::ingest_cell_report (central/plane.rs:2095-2124): a non-empty breaks list deterministically calls kill_switch.trip_scope(cell, ...) \u2014 a scoped halt on exactly the affected cell, never a global stop, and an empty breaks list leaves execution untouched. The halt reaches the cell via PolicyPayload.halted (mesh.rs) and Cell::apply_policy enforces it locally.",
+    "current": "CentralPlane::ingest_cell_report (central/plane.rs:2095-2124): a non-empty breaks list deterministically calls kill_switch.trip_scope(cell, ...) — a scoped halt on exactly the affected cell, never a global stop, and an empty breaks list leaves execution untouched. The halt reaches the cell via PolicyPayload.halted (mesh.rs) and Cell::apply_policy enforces it locally.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/central/plane.rs:2095-2124",
       "backend/crates/edge/qip-edge/src/cell.rs:2111-2200 (apply_policy halting logic)",
@@ -766,20 +768,21 @@
     "work_item": "E05",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: COMPLETE->NEEDS-VALIDATION, tested/e2e true->false. The assessor's premise 'Redis does not exist anywhere in this workspace' is false (qip_storage::redis, StorageTarget::Memorystore, google_redis_instance). The property appears to hold in code, but no test demonstrates it and the binaries accept a memorystore storage target | Holds by structural absence rather than by a test that flushes a running cache, since no cache exists yet (GCP Phase 6, per the requirement's own notes) \u2014 the dependency gate is what would catch a violation the moment one was introduced."
+    "notes": "verify: COMPLETE->NEEDS-VALIDATION, tested/e2e true->false. The assessor's premise 'Redis does not exist anywhere in this workspace' is false (qip_storage::redis, StorageTarget::Memorystore, google_redis_instance). The property appears to hold in code, but no test demonstrates it and the binaries accept a memorystore storage target | Holds by structural absence rather than by a test that flushes a running cache, since no cache exists yet (GCP Phase 6, per the requirement's own notes) — the dependency gate is what would catch a violation the moment one was introduced."
   },
   {
     "id": "RISK-031",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "The Risk Gate itself needs no Redis: qip_risk::limits::LimitSet::check and qip_risk_engine::pretrade::PreTradeChecker are pure in-memory functions, qip-risk/qip-risk-engine/qip-edge have no dependency on qip-storage (where the in-tree Redis client lives), and the edge Cell's gates run in memory with the journal flush outside Cell::work. Redis is present in the workspace (qip_storage::redis, see RISK-030), so absence from the dependency allowlist is not the reason this holds.",
     "evidence": [
       "backend/crates/libs/qip-risk/src/limits.rs:604,794,850,942 (pure function, no client fields)",
       "backend/crates/libs/qip-risk/Cargo.toml, backend/crates/services/qip-risk-engine/Cargo.toml, backend/crates/edge/qip-edge/Cargo.toml (no qip-storage)",
-      "backend/crates/libs/qip-storage/src/settings.rs:231-248 (preflight round-trips the configured store before a process serves)"
+      "backend/crates/libs/qip-storage/src/settings.rs:231-248 (preflight round-trips the configured store before a process serves)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs the_risk_gate_and_everything_that_holds_it_cannot_reach_the_redis_client (vacuity guard: qip-api reaches qip-storage)"
     ],
-    "gap": "No named test shows verdicts identical with Redis reachable and unreachable, and no architecture test forbids the gate crates a path to qip-storage. Under QIP_STORAGE_TARGET=memorystore (refused only by Terraform's storage_target validation, not by the binaries) every process hosting the gate runs StorageSettings::preflight against Redis and refuses to start when it is unreachable, so the gate would produce no verdicts at all in that configuration.",
+    "gap": "A QIP_STORAGE_TARGET=memorystore process still fails storage preflight when Redis is down; that is process start-up, not a gate verdict, and Terraform refuses the target.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -787,21 +790,21 @@
       "RISK-030"
     ],
     "blocked_by": "",
-    "verification": "Needs: an architecture test that qip-risk, qip-risk-engine, qip-execution-engine and qip-edge cannot reach qip-storage (with a vacuity guard), and a composition-root refusal or test covering QIP_STORAGE_TARGET=memorystore for gate-hosting binaries.",
+    "verification": "cargo test -p qip-acceptance --test architecture the_risk_gate_and_everything_that_holds_it_cannot_reach_the_redis_client (mutation: qip-storage added to qip-risk-engine failed it naming the edge)",
     "work_item": "E07",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: COMPLETE->NEEDS-VALIDATION, tested/e2e true->false. The cited evidence (the dependency allowlist) does not establish the property because an in-tree Redis client exists; the gate is structurally Redis-free but no test proves it, and a memorystore-configured process cannot start without Redis"
+    "notes": "Round 2: verdicts are Redis-independent by construction, proven on the transitive dependency graph of qip-risk, qip-risk-engine, qip-execution-engine and qip-edge."
   },
   {
     "id": "RISK-032",
     "status": "PARTIAL",
-    "current": "qip_kernel::Platform::risk_limits() -> RiskEnvelopeSnapshot is published every cycle as PolicyPayload.risk_envelope over qip-api's mesh (qip-api/src/mesh.rs:800,930) \u2014 a durable, sequenced, signed channel from the centre to each cell \u2014 and is verified/consumed at the cell (qip_edge::policy::VerifiedPolicy).",
+    "current": "qip_kernel::Platform::risk_limits() -> RiskEnvelopeSnapshot is published every cycle as PolicyPayload.risk_envelope over qip-api's mesh (qip-api/src/mesh.rs:800,930) — a durable, sequenced, signed channel from the centre to each cell — and is verified/consumed at the cell (qip_edge::policy::VerifiedPolicy).",
     "evidence": [
       "backend/crates/apps/qip-api/src/mesh.rs:800,930",
       "backend/crates/apps/qip-api/tests/mesh.rs:686-692 a_cycle_ships_a_signed_payload_the_cell_verifies_and_a_trip_reaches_it"
     ],
-    "gap": "The channel is qip-mesh's HTTP poll/dispatch backbone, not a pub-sub broker with the Fabric's stated QoS/offset/archive semantics (FABRIC domain, assessed separately) \u2014 publication and consumption are real, but 'the regional Fabric' as a distinct broker is not what carries it. Also, per RISK-027, the published content is not enforced once received.",
+    "gap": "The channel is qip-mesh's HTTP poll/dispatch backbone, not a pub-sub broker with the Fabric's stated QoS/offset/archive semantics (FABRIC domain, assessed separately) — publication and consumption are real, but 'the regional Fabric' as a distinct broker is not what carries it. Also, per RISK-027, the published content is not enforced once received.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -820,7 +823,7 @@
   {
     "id": "RISK-033",
     "status": "PARTIAL",
-    "current": "qip_capital's EnvelopeIssuer-minted CapitalEnvelope grants are shipped as PolicyPayload.capital_grants (GrantManifest) every cycle over the same mesh channel as RISK-032, and \u2014 unlike the risk envelope \u2014 are actually enforced: VerifiedEnvelope::admit (qip-edge/src/envelope.rs) bounds every order the cell places against the grant.",
+    "current": "qip_capital's EnvelopeIssuer-minted CapitalEnvelope grants are shipped as PolicyPayload.capital_grants (GrantManifest) every cycle over the same mesh channel as RISK-032, and — unlike the risk envelope — are actually enforced: VerifiedEnvelope::admit (qip-edge/src/envelope.rs) bounds every order the cell places against the grant.",
     "evidence": [
       "backend/crates/apps/qip-api/src/mesh.rs:895-922",
       "backend/crates/edge/qip-edge/src/envelope.rs:120-",

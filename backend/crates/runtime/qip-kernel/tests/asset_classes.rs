@@ -47,6 +47,36 @@ fn object(
     builder.build(start())
 }
 
+/// A future on `underlying`, carrying the underlying and expiry the object
+/// model demands of a derivative.
+fn future(id: &str, underlying: &str) -> Result<FinancialObject> {
+    use qip_financial::extensions::{Extension, FutureDetails, SettlementStyle};
+    let expiry = start().saturating_add(qip_core::time::Duration::from_days(90));
+    FinancialObject::builder(
+        ObjectId::from_string(id),
+        id,
+        InstrumentType::Future,
+        liquidity(),
+    )
+    .venue("XNYS")
+    .sector(Sector::InformationTechnology)
+    .price(dec!("100"))
+    .underlying(ObjectId::from_string(underlying))
+    .extension(Extension::Future(FutureDetails {
+        underlying_object_id: underlying.to_string(),
+        expiry,
+        contract_size: dec!("1"),
+        tick_size: dec!("0.01"),
+        tick_value: dec!("0.01"),
+        initial_margin: dec!("10"),
+        maintenance_margin: dec!("8"),
+        settlement: SettlementStyle::Cash,
+        contract_month_index: 1,
+    }))
+    .provenance(Provenance::synthetic("asset-class-test", start()))
+    .build(start())
+}
+
 fn universe_of(objects: Vec<FinancialObject>) -> Result<Universe> {
     let mut universe = Universe::new();
     for object in objects {
@@ -152,5 +182,53 @@ fn an_instrument_quoted_finer_than_its_class_expresses_is_refused_at_assembly() 
     let message = error.message();
     assert!(message.contains("finer than the"), "{message}");
     assert!(message.contains("obj-AAA"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn a_derivative_order_is_refused_before_it_exists_until_the_desk_is_granted_that_type() -> Result<()>
+{
+    use qip_execution_engine::order::Side;
+    use qip_financial::constraints::Jurisdiction;
+    use qip_financial::derivative_permissions::DerivativePermissions;
+
+    let mut platform = assemble(universe_of(vec![
+        object("obj-AAA", InstrumentType::CommonStock, None)?,
+        future("obj-VAR", "obj-AAA")?,
+    ])?)?;
+    let order = |platform: &mut Platform, id: &str| {
+        platform.order_for(
+            ObjectId::from_string(id),
+            Side::Buy,
+            dec!("10"),
+            dec!("100"),
+            "prop-1",
+            vec!["hyp-1".to_string()],
+            start(),
+        )
+    };
+    // Premise: the platform assembled over the derivative, so research and
+    // simulation can hold it, and the equity is orderable; the refusals below
+    // are the permission and not a missing instrument.
+    assert!(
+        platform
+            .asset_class_registry()
+            .is_registered(AssetClass::Derivative)
+    );
+    assert!(order(&mut platform, "obj-AAA").is_ok());
+
+    // No permissions configured: refused.
+    let error = order(&mut platform, "obj-VAR").expect_err("an ungranted derivative got an order");
+    assert!(error.message().contains("obj-VAR"), "{}", error.message());
+
+    // Granted to another entity than the desk: refused.
+    let mut permissions = DerivativePermissions::none();
+    permissions.grant("desk-a", Jurisdiction::UnitedStates, InstrumentType::Future)?;
+    platform.authorise_derivatives("desk-b", Jurisdiction::UnitedStates, permissions.clone());
+    assert!(order(&mut platform, "obj-VAR").is_err());
+
+    // Granted to this desk: the same order is admitted.
+    platform.authorise_derivatives("desk-a", Jurisdiction::UnitedStates, permissions);
+    assert!(order(&mut platform, "obj-VAR").is_ok());
     Ok(())
 }

@@ -160,8 +160,9 @@ pub mod matching;
 pub mod rest;
 
 pub use adapter::{
-    AdapterClass, CashBalance, Heartbeat, MarginState, MarketData, OrderAck, PositionSnapshot,
-    VenueAdapter, VenueOrder, VenueOrderState, stamp_simulated,
+    AdapterClass, CashBalance, Heartbeat, MarginState, MarketData, NativeExtension,
+    NativeInstruction, OrderAck, PositionSnapshot, VenueAdapter, VenueOrder, VenueOrderState,
+    stamp_simulated,
 };
 pub use connection::{ConnectionPhase, ConnectionState, ReadyTicket, SessionHealth};
 pub use credential::{
@@ -169,7 +170,7 @@ pub use credential::{
     requirements_of_kind, standard_requirements,
 };
 pub use dex::DexVenue;
-pub use exchange::{BookableFill, ExchangeSettings, SimulatedDepth, SimulatedExchange};
+pub use exchange::{BookableFill, ExchangeSettings, POST_ONLY, SimulatedDepth, SimulatedExchange};
 pub use ledger::{AccountLedger, MarginPolicy};
 pub use matching::{ExecutionOutcome, MatchingEngine, Participant, Resting, Trade};
 pub use rest::{

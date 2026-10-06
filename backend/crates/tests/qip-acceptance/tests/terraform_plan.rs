@@ -30,6 +30,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_acceptance::{files_with_extension, read, repository_root};
 
@@ -286,6 +287,142 @@ fn the_public_edge_attaches_every_backend_to_the_cloud_armor_policy() {
         module.contains("origin.region_code"),
         "the Cloud Armor policy can express no geographic restriction; §40.14 names one"
     );
+}
+
+#[test]
+fn the_public_edge_application_backend_is_reached_over_https_and_never_plain_http() {
+    // A backend service defaults to HTTP when `protocol` is omitted, which
+    // would put the load balancer-to-origin hop in the clear while every
+    // other line of the module reads as secure. Cut the one backend service
+    // out and match its own attribute, not the string anywhere in the file.
+    let module = without_comments(&read(PUBLIC_EDGE));
+    let header = "resource \"google_compute_backend_service\" \"application\"";
+    let start = module
+        .find(header)
+        .unwrap_or_else(|| panic!("the public edge declares no `{header}`"));
+    let rest = &module[start + header.len()..];
+    let block = &rest[..rest.find("\nresource ").unwrap_or(rest.len())];
+    // Premise: the cut-out is the backend service, not an empty slice.
+    assert!(
+        block.contains("enable_cdn"),
+        "the extracted block is not the application backend service"
+    );
+    let protocols: Vec<&str> = block
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("protocol") && l.contains('='))
+        .collect();
+    assert_eq!(
+        protocols.len(),
+        1,
+        "expected one protocol line: {protocols:?}"
+    );
+    let value = protocols[0].split('=').nth(1).unwrap_or("").trim();
+    assert_eq!(
+        value, "\"HTTPS\"",
+        "the application backend must speak HTTPS"
+    );
+}
+
+#[test]
+fn every_public_edge_backend_block_carries_its_own_cloud_armor_attachment() {
+    // The sibling test above matches `security_policy = ...` anywhere in the
+    // file, so it passed while the static shell's backend bucket carried none:
+    // the one backend a browser reaches first was unprotected and the file
+    // still contained the string. Here each backend resource is cut out on its
+    // own and must hold its own attachment.
+    let module = without_comments(&read(PUBLIC_EDGE));
+    let block = |header: &str| -> String {
+        let start = module
+            .find(header)
+            .unwrap_or_else(|| panic!("the public edge declares no `{header}`"));
+        let rest = &module[start + header.len()..];
+        let end = rest.find("\nresource ").unwrap_or(rest.len());
+        rest[..end].to_string()
+    };
+
+    let service = block("resource \"google_compute_backend_service\" \"application\"");
+    let bucket = block("resource \"google_compute_backend_bucket\" \"static_shell\"");
+    // Premise: the two cut-outs are different blocks, not the same text twice.
+    assert_ne!(
+        service, bucket,
+        "the block extraction returned one block for two resources"
+    );
+
+    assert!(
+        service.contains("security_policy = google_compute_security_policy.edge[0].id"),
+        "the application backend service is not attached to the Cloud Armor policy"
+    );
+    assert!(
+        bucket.contains("edge_security_policy = google_compute_security_policy.edge_static[0].id"),
+        "the static shell's backend bucket carries no Cloud Armor edge policy; it is the first \
+         backend a browser reaches"
+    );
+    let edge_static = block("resource \"google_compute_security_policy\" \"edge_static\"");
+    assert!(
+        edge_static.contains("type        = \"CLOUD_ARMOR_EDGE\""),
+        "a backend bucket accepts only an edge-type policy"
+    );
+}
+
+#[test]
+fn the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy() {
+    // GCP-054. The test above found the policy attached and the rate limit
+    // present; it passed while the policy held no WAF rule at all. Each half
+    // is asserted on the block it belongs to, so a string living in a
+    // neighbouring resource cannot satisfy it.
+    let module = without_comments(&read(PUBLIC_EDGE));
+    let blocks = |kind: &str| -> Vec<(String, String)> {
+        let marker = format!("resource \"{kind}\" \"");
+        module
+            .split(&marker)
+            .skip(1)
+            .map(|rest| {
+                let (name, body) = rest.split_once('"').unwrap_or((rest, ""));
+                let body = body.split("\nresource ").next().unwrap_or(body);
+                (name.to_string(), body.to_string())
+            })
+            .collect()
+    };
+
+    let policies = blocks("google_compute_security_policy");
+    let (_, edge) = policies
+        .iter()
+        .find(|(name, _)| name == "edge")
+        .expect("the public edge declares its application policy");
+    for set in ["sqli-v33-stable", "xss-v33-stable"] {
+        let at = edge
+            .find(&format!("evaluatePreconfiguredWaf('{set}'"))
+            .unwrap_or_else(|| panic!("the edge policy carries no `{set}` WAF rule"));
+        assert!(
+            edge[..at]
+                .rsplit("rule {")
+                .next()
+                .is_some_and(|rule| rule.contains("action   = \"deny(403)\"")),
+            "the `{set}` rule does not block; a WAF rule that only allows or previews refuses nothing"
+        );
+    }
+
+    let services = blocks("google_compute_backend_service");
+    let buckets = blocks("google_compute_backend_bucket");
+    assert!(
+        !services.is_empty() && !buckets.is_empty(),
+        "the walk found {} backend services and {} buckets; it is not reading the module",
+        services.len(),
+        buckets.len()
+    );
+    for (name, body) in &services {
+        assert!(
+            body.contains("security_policy = google_compute_security_policy.edge["),
+            "backend service `{name}` sits behind the edge with no Cloud Armor policy"
+        );
+    }
+    for (name, body) in &buckets {
+        assert!(
+            body.contains("edge_security_policy = google_compute_security_policy."),
+            "backend bucket `{name}` sits behind the edge with no Cloud Armor edge policy"
+        );
+    }
 }
 
 #[test]

@@ -155,6 +155,20 @@ resource "google_compute_router" "egress" {
   network = var.network_id
 }
 
+# A fixed outbound address, because a counterparty that allow-lists us can only
+# allow-list an address that stays put. AUTO_ONLY lets Google pick and replace
+# addresses as the gateway scales, so a venue or data vendor that pinned one
+# would silently lose us (SEC-013). MANUAL_ONLY with reserved addresses is the
+# only allocation that makes the egress address a fact the desk can hand over.
+resource "google_compute_address" "nat" {
+  count = var.create_egress_nat ? 1 : 0
+
+  project      = var.project_id
+  name         = "${local.name}-nat-ip"
+  region       = var.region
+  address_type = "EXTERNAL"
+}
+
 resource "google_compute_router_nat" "egress" {
   count = var.create_egress_nat ? 1 : 0
 
@@ -163,7 +177,8 @@ resource "google_compute_router_nat" "egress" {
   router  = google_compute_router.egress[0].name
   region  = var.region
 
-  nat_ip_allocate_option = "AUTO_ONLY"
+  nat_ip_allocate_option = "MANUAL_ONLY"
+  nat_ips                = [google_compute_address.nat[0].self_link]
 
   # This subnetwork and no other. `ALL_SUBNETWORKS_ALL_IP_RANGES` would make
   # this NAT the egress path for anything else that later lands in the region,
@@ -302,6 +317,37 @@ resource "google_compute_health_check" "node" {
   }
 }
 
+# FINOPS-001: the Reflex VM's capacity is held, not hoped for. A zonal
+# on-demand request for a dedicated C-series shape can fail with a stockout at
+# the moment a blue-green replacement needs it, and a replacement that cannot
+# start leaves the old node as the only one, exactly when it was being
+# replaced for cause. A specific reservation sized to the group's target makes
+# the capacity exist before the instance is asked for. It is declared only when
+# the group holds an instance: Compute refuses a reservation of zero, and a
+# node "provisioned, not running" has nothing to hold capacity for, so a
+# reviewable zero-node plan costs nothing. The surge instance of the update
+# policy is deliberately not reserved here; that is a cost decision for the
+# owner (ADR 0099 C8), and sizing to target_size is what the requirement names.
+resource "google_compute_reservation" "node" {
+  count = var.node_count > 0 ? 1 : 0
+
+  project = var.project_id
+  name    = "${local.name}-capacity"
+  zone    = var.zone
+
+  # Only an instance that names this reservation may consume it, so no other
+  # workload in the project quietly spends the capacity this node is meant to own.
+  specific_reservation_required = true
+
+  specific_reservation {
+    count = var.node_count
+
+    instance_properties {
+      machine_type = var.machine_type
+    }
+  }
+}
+
 resource "google_compute_instance_template" "node" {
   project = var.project_id
 
@@ -314,6 +360,19 @@ resource "google_compute_instance_template" "node" {
   machine_type = var.machine_type
   labels       = var.labels
   tags         = [local.node_tag]
+
+  # Consume the reservation above, by name. Without this block a specific
+  # reservation is never used and is billed for nothing.
+  dynamic "reservation_affinity" {
+    for_each = google_compute_reservation.node
+    content {
+      type = "SPECIFIC_RESERVATION"
+      specific_reservation {
+        key    = "compute.googleapis.com/reservation-name"
+        values = [reservation_affinity.value.name]
+      }
+    }
+  }
 
   lifecycle {
     create_before_destroy = true
@@ -611,6 +670,30 @@ resource "google_compute_firewall" "health_checks" {
 
   # The documented ranges Google health checks originate from.
   source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
+  target_tags   = [local.node_tag]
+}
+
+# A shell reaches the node only through Identity-Aware Proxy (GCP-057). IAP
+# TCP forwarding originates from one documented range; admitting that range on
+# port 22 and nothing else means the door is open to the holders of
+# roles/iap.tunnelResourceAccessor who also pass OS Login (enable-oslogin
+# above), and still closed to the internet, which cannot source from it. Without
+# the rule "no public SSH" is true only because nobody can open a shell at all,
+# and the first operator who needed one would be tempted to widen the deny.
+resource "google_compute_firewall" "iap_ssh" {
+  project = var.project_id
+  name    = "${local.name}-iap-ssh"
+  network = var.network_id
+
+  direction = "INGRESS"
+  priority  = 1000
+
+  allow {
+    protocol = "tcp"
+    ports    = ["22"]
+  }
+
+  source_ranges = ["35.235.240.0/20"]
   target_tags   = [local.node_tag]
 }
 

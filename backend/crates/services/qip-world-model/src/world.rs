@@ -19,7 +19,7 @@ use crate::causal::{
     CausalEdge, CausalGraph, Mechanism, PropagationResult, Reestimation, SupportingClaim,
 };
 use crate::features::{Feature, FeatureStore, FeatureValue};
-use crate::graph::{Fact, KnowledgeGraph, Node, NodeKind};
+use crate::graph::{Fact, KnowledgeGraph, Node, NodeKind, refuse_a_body};
 use crate::relationship::{Relationship, RelationshipKind};
 use crate::resolution_source::ResolutionSourceClaim;
 use crate::state::{Change, ChangeKind, WorldDiff, WorldState};
@@ -211,15 +211,18 @@ impl WorldModel {
     }
 
     /// Register an entity and add it to the graph.
-    pub fn add_entity(&mut self, entity: Entity) {
-        let node = Node::new(
+    ///
+    /// Refused, before the journal or the resolver sees it, where the graph
+    /// refuses the node: an entity whose name is long enough to be a
+    /// document is not an entity (WORLD-057).
+    pub fn add_entity(&mut self, entity: Entity) -> Result<()> {
+        let node = Node::entity(
             entity.entity_id.as_str(),
-            NodeKind::Entity,
+            entity.kind,
             &entity.canonical_name,
             entity.created_at,
-        )
-        .with_attribute("kind", entity.kind.as_str());
-        self.graph.add_node(node);
+        );
+        self.graph.add_node(node)?;
         self.journal.push(Change::new(
             ChangeKind::EntityAdded,
             entity.entity_id.as_str(),
@@ -228,6 +231,7 @@ impl WorldModel {
             entity.created_at,
         ));
         self.resolver.insert(entity);
+        Ok(())
     }
 
     /// Assert a relationship, adding it to the graph.
@@ -237,7 +241,7 @@ impl WorldModel {
         valid_from: Timestamp,
         recorded_at: Timestamp,
         confidence: f64,
-    ) {
+    ) -> Result<()> {
         let description = format!(
             "{} {} {}",
             relationship.from,
@@ -245,9 +249,14 @@ impl WorldModel {
             relationship.to
         );
         let subject = relationship.key();
-        self.graph.assert_fact(
-            Fact::new(relationship, valid_from, recorded_at).with_confidence(confidence),
-        );
+        // Refused before anything is written: a fact with no valid confidence
+        // or source must leave neither a graph row nor a journal entry.
+        self.graph.assert_fact(Fact::new(
+            relationship,
+            valid_from,
+            recorded_at,
+            confidence,
+        )?);
         self.journal.push(Change::new(
             ChangeKind::RelationshipAdded,
             subject,
@@ -255,6 +264,7 @@ impl WorldModel {
             0.4,
             recorded_at,
         ));
+        Ok(())
     }
 
     /// Record the authority a thesis is settled against, and the edge from
@@ -280,7 +290,7 @@ impl WorldModel {
     /// so the attribute keeps what was known then and the *edge* carries what
     /// this settlement used. The thesis end is ensured too, so the edge runs
     /// between two nodes rather than out of nothing.
-    pub fn record_resolution_source(&mut self, claim: &ResolutionSourceClaim) -> String {
+    pub fn record_resolution_source(&mut self, claim: &ResolutionSourceClaim) -> Result<String> {
         let id = claim.node_id();
         if self.graph.node(&id).is_none() {
             self.graph.add_node(
@@ -292,7 +302,7 @@ impl WorldModel {
                 )
                 .with_attribute("authority", claim.authority())
                 .with_attribute("publishes", claim.published_list()),
-            );
+            )?;
         }
         if self.graph.node(claim.settles()).is_none() {
             self.graph.add_node(Node::new(
@@ -300,7 +310,7 @@ impl WorldModel {
                 NodeKind::Thesis,
                 claim.settles(),
                 claim.knowable_at(),
-            ));
+            ))?;
         }
         self.relate(
             Relationship::new(
@@ -313,8 +323,8 @@ impl WorldModel {
             claim.authoritative_from(),
             claim.knowable_at(),
             1.0,
-        );
-        id
+        )?;
+        Ok(id)
     }
 
     /// Record a causal claim.
@@ -522,7 +532,28 @@ impl WorldModel {
     }
 
     /// Absorb a news item: resolve its entities, index it, update sentiment.
-    pub fn absorb_news(&mut self, item: &NewsItem, context: &Context) -> Vec<String> {
+    ///
+    /// # What is refused, and why whole (WORLD-057)
+    ///
+    /// The headline becomes an event node's label, the item id its node id,
+    /// the provenance source every fact's source and every mention possibly
+    /// an entity's name, so each is held to [`crate::graph::EXCERPT_LIMIT`]
+    /// here, in the form the graph will see it, before the resolver, the
+    /// graph, the index or the journal has seen the item. An item carrying a
+    /// body in any of them is refused whole rather than truncated: a
+    /// truncated article is still a copied excerpt, and an item half-written
+    /// (the index entry kept, the facts dropped) is a record nobody can
+    /// reason about. The caller reports the refusal; a dropped item looks
+    /// exactly like a feed that never published.
+    pub fn absorb_news(&mut self, item: &NewsItem, context: &Context) -> Result<Vec<String>> {
+        let event_id = format!("news:{}", item.item_id);
+        refuse_a_body("a news item", "headline", &item.headline)?;
+        refuse_a_body("a news item", "item id", &event_id)?;
+        refuse_a_body("a news item", "provenance source", &item.provenance.source)?;
+        for mention in &item.entities {
+            refuse_a_body("a news item", "entity mention", &mention.text)?;
+        }
+
         let now = context.now();
         let mut resolved = Vec::new();
 
@@ -537,24 +568,11 @@ impl WorldModel {
             let (decision, _) = self.resolver.resolve(&record, context);
             if let Some(entity_id) = decision.entity_id() {
                 let id = entity_id.as_str().to_string();
-                if self.graph.node(&id).is_none()
-                    && let Some(entity) = self.resolver.get(entity_id)
-                {
-                    let node = Node::new(&id, NodeKind::Entity, &entity.canonical_name, now)
-                        .with_attribute("kind", entity.kind.as_str());
-                    self.graph.add_node(node);
-                }
-                resolved.push(id.clone());
-
-                // The item becomes an evidence node linked to the entity.
-                let event_id = format!("news:{}", item.item_id);
-                if self.graph.node(&event_id).is_none() {
-                    self.graph.add_node(
-                        Node::new(&event_id, NodeKind::Event, &item.headline, now)
-                            .with_attribute("source", item.source.as_str()),
-                    );
-                }
-                self.graph.assert_fact(Fact::new(
+                // The mention's own confidence is the claim's confidence. A
+                // mention whose confidence or provenance source the graph
+                // refuses (out of range, NaN, no source) is dropped whole,
+                // before any node is written: it used to be stored at 1.0.
+                let Ok(concerns) = Fact::new(
                     Relationship::new(
                         &event_id,
                         &id,
@@ -564,7 +582,28 @@ impl WorldModel {
                     ),
                     item.published_at,
                     now,
-                ));
+                    mention.confidence,
+                ) else {
+                    continue;
+                };
+                if self.graph.node(&id).is_none()
+                    && let Some(entity) = self.resolver.get(entity_id)
+                {
+                    let node = Node::entity(&id, entity.kind, &entity.canonical_name, now);
+                    self.graph.add_node(node)?;
+                }
+                resolved.push(id.clone());
+
+                // The item becomes an event node linked to the entity: it
+                // happened when it was published and was learned now, and
+                // the node carries both (WORLD-003).
+                if self.graph.node(&event_id).is_none() {
+                    self.graph.add_node(
+                        Node::event(&event_id, &item.headline, item.published_at, now)
+                            .with_attribute("source", item.source.as_str()),
+                    )?;
+                }
+                self.graph.assert_fact(concerns);
 
                 // Sentiment is a feature of the entity, available when the item
                 // was published rather than when it was written.
@@ -617,7 +656,7 @@ impl WorldModel {
             ));
         }
 
-        resolved
+        Ok(resolved)
     }
 
     /// Absorb a reported fundamental as point-in-time features.
@@ -934,6 +973,7 @@ impl WorldModel {
                 .iter()
                 .filter(|e| e.recorded_at <= known_at)
                 .count(),
+            contradiction_count: self.graph.contradictions_at(known_at).len(),
             features,
             hubs: self
                 .graph
@@ -1060,7 +1100,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         )
         .with_country(country)
         .with_attribute("sector", sector);
-        model.add_entity(entity);
+        model.add_entity(entity)?;
     }
 
     for (entity_id, name) in [("ctry-us", "United States"), ("ctry-gb", "United Kingdom")] {
@@ -1069,7 +1109,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
             EntityKind::Country,
             name,
             known_from,
-        ));
+        ))?;
     }
 
     // The supply chain: Kestrel supplies Northwind, which supplies Vantage.
@@ -1084,7 +1124,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         known_from,
         known_from,
         0.9,
-    );
+    )?;
     model.relate(
         Relationship::new(
             "ent-northwind",
@@ -1096,7 +1136,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         known_from,
         known_from,
         0.92,
-    );
+    )?;
     model.relate(
         Relationship::new(
             "ent-northwind",
@@ -1108,7 +1148,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
         known_from,
         known_from,
         0.4,
-    );
+    )?;
     for (entity, country) in [
         ("ent-northwind", "ctry-us"),
         ("ent-vantage", "ctry-us"),
@@ -1127,7 +1167,7 @@ pub fn seed_demo_world(model: &mut WorldModel, context: &Context) -> Result<()> 
             known_from,
             known_from,
             1.0,
-        );
+        )?;
     }
 
     // Causal claims. Each carries a mechanism, a lag and evidence.

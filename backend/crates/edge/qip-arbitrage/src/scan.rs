@@ -3,7 +3,8 @@
 //! The stages run in a fixed order, cheapest first, and each one can only
 //! remove paths:
 //!
-//! 1. [`crate::search`] proposes cycles in log space.
+//! 1. [`crate::search`] proposes cycles in log space, and hands back the
+//!    ones longer than the maximum in force to be refused by name.
 //! 2. Exact arithmetic re-multiplies the quoted rates and drops what was
 //!    rounding.
 //! 3. [`crate::pricing`] walks the book at the stated size.
@@ -19,9 +20,7 @@ use crate::liquidity::LiquiditySource;
 use crate::netedge::{EdgeAssumptions, NetEdgeCalculator};
 use crate::plan::{LegPlanner, PlanSettings, PlannedTrade};
 use crate::pricing::{PathPricing, price_path};
-use crate::search::{
-    ExactConfirmation, PathCandidate, SearchSettings, confirm_exact, search_candidates,
-};
+use crate::search::{ExactConfirmation, PathCandidate, SearchSettings, confirm_exact, search};
 use qip_contracts::edge::NetEdge;
 use qip_core::{Decimal, ObjectId, Timestamp};
 use std::collections::BTreeMap;
@@ -64,6 +63,8 @@ impl SizePolicy {
 /// Which stage threw a candidate out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RejectionStage {
+    /// The cycle has more legs than the maximum in force (MESH-010).
+    Length,
     /// No size was stated for the instrument the cycle starts from.
     Unsized,
     /// The exact product of the quoted rates does not exceed one.
@@ -83,6 +84,7 @@ pub enum RejectionStage {
 impl RejectionStage {
     pub const fn as_str(&self) -> &'static str {
         match self {
+            Self::Length => "length",
             Self::Unsized => "unsized",
             Self::ExactArithmetic => "exact_arithmetic",
             Self::Unpriceable => "unpriceable",
@@ -178,7 +180,32 @@ impl OpportunityScanner {
         now: Timestamp,
     ) -> ScanReport {
         let mut report = ScanReport::default();
-        for candidate in search_candidates(graph, &self.search) {
+        let found = search(graph, &self.search);
+        // A cycle longer than the maximum in force is refused before it is
+        // priced, whole: pricing its first few legs would value a different
+        // trade from the one the search found. The refusal names the limit,
+        // because "nothing found" and "found, and too long" call for
+        // different responses from whoever set the maximum.
+        for candidate in found.over_length {
+            let detail = match self.search.admit_length(candidate.len()) {
+                Err(error) => error.message().to_string(),
+                // The search's own comparison and `admit_length` are the same
+                // rule; if they ever disagree the cycle is still refused,
+                // and says so rather than passing unpriced.
+                Ok(()) => format!(
+                    "a cycle of {} legs was withheld by the search as over the maximum of {} \
+                     in force",
+                    candidate.len(),
+                    self.search.max_cycle_edges
+                ),
+            };
+            report.rejections.push(Rejection {
+                candidate,
+                stage: RejectionStage::Length,
+                detail,
+            });
+        }
+        for candidate in found.candidates {
             match self.evaluate(graph, source, sizes, &candidate, now) {
                 Ok(opportunity) => report.opportunities.push(opportunity),
                 Err(rejection) => report.rejections.push(rejection),

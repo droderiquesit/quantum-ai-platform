@@ -37,6 +37,8 @@ pub mod mesh;
 pub mod mirror;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+/// Each venue's own message limits, as the deployment states them.
+pub mod quote_limits;
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
@@ -156,9 +158,38 @@ pub fn assemble(
     if let Some(mirror) = &mirror {
         config.venue_regions = mirror.venue_regions().clone();
     }
-    let telemetry = Telemetry::new("qip-edge-node", clock);
+    // The fourth instance. `qip_routing::health` could quarantine a venue
+    // that rejects orders, was tested, and no cell held one: a venue that
+    // was down failed every pass it was sent to, and with it every other
+    // venue's orders in that pass. Armed here with the routing crate's own
+    // defaults, so a deployed cell stops sending to a venue rejecting a
+    // fifth of at least ten orders and tries it again five minutes later.
+    config = config.with_venue_health(qip_routing::health::HealthPolicy::default());
+    // EXEC-020: the node enables only the two modes its paper path actually
+    // performs, order taking and routing, and only at the venues the cell may
+    // trade. The other six modes (quoting, liquidity provision, derivatives,
+    // event contracts, decentralised venues, physical marketplaces) stay
+    // refused at `Cell::send` until someone records legal and operational
+    // support for them. "Paper" is the recorded jurisdiction because the
+    // simulated venues are the only ones a node can reach (ADR 0003).
+    let mut mode_gate = qip_execution_engine::modes::ModeGate::new();
+    let paper = qip_execution_engine::modes::ModeSupport {
+        jurisdiction: "paper".to_string(),
+        legally_permitted: true,
+        operationally_supported: true,
+    };
+    for venue in &config.venues {
+        for mode in [
+            qip_execution_engine::modes::ExecutionMode::OrderTaking,
+            qip_execution_engine::modes::ExecutionMode::Routing,
+        ] {
+            mode_gate.enable(venue.as_str(), mode, &paper)?;
+        }
+    }
+    let telemetry = Telemetry::foreground("qip-edge-node", clock);
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
     let mut cell = Cell::new(config, features)?
+        .with_mode_gate(mode_gate)
         .with_metrics(Arc::clone(&metrics))
         .with_unfunded_region(allocation.amount())?;
     if let Some(mirror) = mirror {

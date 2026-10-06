@@ -74,6 +74,7 @@ pub mod catalogue;
 pub mod category;
 pub mod coverage;
 pub mod decision;
+pub mod discovery_targets;
 pub mod endpoint;
 pub mod finder;
 pub mod freshness;
@@ -81,6 +82,8 @@ pub mod health;
 pub mod ingestion;
 pub mod ledger;
 pub mod legal;
+pub mod lifecycle;
+pub mod manipulation;
 pub mod personal_data;
 pub mod probe;
 pub mod quality;
@@ -92,6 +95,7 @@ pub mod robots;
 pub mod schema;
 pub mod scoring;
 pub mod source;
+pub mod source_alpha;
 pub mod tier;
 
 pub use admission::AdmittedSource;
@@ -106,6 +110,7 @@ pub use category::{ApprovedCategories, CategoryApproval, ContentSignal, SourceCa
 pub use coverage::{CoverageGap, CoverageMatch, SourceCoverage, SourceRegion, UpdateFrequency};
 pub use decision::{
     DecisionOutcome, LifecycleStage, ReasonStep, Reasoning, RegisteredSource, RegistrationDecision,
+    SourceRegistryEntry,
 };
 pub use endpoint::{
     AccessMechanism, AuthRequirement, Delivery, FeedFormat, FileFormat, McpTarget, PollPlan,
@@ -114,10 +119,12 @@ pub use endpoint::{
 pub use finder::{DataFinder, FinderConfig, MonitorOutcome};
 pub use health::{HealthObservation, ObservationOutcome, SourceHealth};
 pub use ingestion::{IngestionPlan, descriptor_for, plan_for};
-pub use ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord};
+pub use ledger::{LedgerOutcome, ReferenceLedger, RevisionRecord, Unretrievable};
 pub use legal::{
     HostRules, LegalAssessment, Legality, LicensingPosture, RateLimit, SourceLicense, SourcePolicy,
 };
+pub use lifecycle::{LifecycleAction, LifecycleTransition};
+pub use manipulation::ManipulationRisk;
 pub use personal_data::{PersonalDataFinding, PersonalDataScreen, PersonalIdentifier};
 pub use probe::{
     HeadResponse, InMemoryProbe, NetworkProbe, PayloadSample, ProbeEvidence, RobotsFetch,

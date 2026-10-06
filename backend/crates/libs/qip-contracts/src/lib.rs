@@ -27,21 +27,30 @@
 //!   reached the decision at all — and refuses to report a net figure that its
 //!   parts do not sum to.
 
+pub mod action;
+pub mod ambient;
 pub mod capital;
 pub mod degradation;
 pub mod edge;
+pub mod expansion;
+pub mod fabric_envelope;
 pub mod feasibility;
 pub mod feature;
 pub mod gate;
 pub mod governance;
 pub mod intent;
+pub mod knowledge_pack;
 pub mod ledger;
 pub mod market_event;
+pub mod market_state;
 pub mod message;
 pub mod policy;
 pub mod reflex;
+pub mod reflex_journal;
 pub mod replay;
+pub mod schema;
 pub mod signal;
+pub mod stream_policy;
 pub mod time;
 pub mod venue;
 pub mod wire;
@@ -49,6 +58,7 @@ pub mod wire;
 pub use capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};
 pub use edge::{Deduction, DeductionKind, LegPlan, LegStep, NetEdge};
+pub use fabric_envelope::{AuthContext, FabricEnvelope, QoSClass};
 pub use feature::{FeatureKey, FeatureValue, FeatureVector, Revision};
 pub use gate::{GateOutcome, GateStage, Promotion};
 pub use governance::{Approval, Control, Entitlement, Provenance, Severity, Usage};
@@ -57,6 +67,9 @@ pub use intent::{
 };
 pub use message::{BookSide, MarketMessage, MessageBody, TradeCondition};
 pub use policy::{PolicyItem, PolicyPayload, Slot};
+pub use reflex_journal::{DecisionOutcome, DecisionReason, ReflexDecision, ReflexJournalSummary};
+pub use schema::{CompatibilityPolicy, SchemaDefinition, SchemaRegistry};
 pub use signal::{Conviction, Signal, SignalKind, StrategyId};
+pub use stream_policy::{AckPolicy, OverloadBehavior, StreamPolicy};
 pub use time::{Stamped, Watermark};
 pub use venue::{Origin, VenueClass, VenueId, VenueStatus};

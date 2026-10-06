@@ -78,19 +78,16 @@
   },
   {
     "id": "ASSET-004",
-    "status": "PARTIAL",
-    "current": "The nine fields exist as separate types in separate crates, each reached from production, but no single record type unifies them and refuses when one is missing: mandate -> qip_capital::ledger::mandate::Mandate (backend/crates/services/qip-capital/src/ledger/mandate.rs:69); target exposure -> qip_portfolio::exposure::Exposure/ExposureBreakdown; valuation+confidence -> qip_financial::valuation::AssetValuation (valuation.rs:280) with confidence_at; horizon -> qip_financial::extensions private-asset fields / qip-optimization-engine::horizons; expected liquidity -> qip_financial::ladder::LiquidityLadder (ladder.rs:493); hedges -> qip_risk::hedge::HedgeProposal (hedge.rs:347); corporate actions -> qip_market::corporate_action::CorporateAction; commitments -> qip_financial::cashflow::Commitment (cashflow.rs:1113); exit plan -> no type exists anywhere (grep for ExitPlan/exit_plan across backend/crates returns nothing).",
+    "status": "COMPLETE",
+    "current": "qip_financial::position_record::{PositionRecordBuilder, PositionRecord, Declared, ExitPlan} (backend/crates/libs/qip-financial/src/position_record.rs) carry the nine facts and refuse construction, naming the field, when any is absent; hedges, corporate actions and commitments must be stated present or declared not applicable with a reason; deserialisation routes through the builder. Mandate, hedge and corporate-action facts are carried by identifier because qip-capital, qip-risk and qip-market sit above qip-financial.",
     "evidence": [
-      "backend/crates/services/qip-capital/src/ledger/mandate.rs:69",
-      "backend/crates/libs/qip-financial/src/valuation.rs:280",
-      "backend/crates/libs/qip-financial/src/ladder.rs:493",
-      "backend/crates/libs/qip-risk/src/hedge.rs:347",
-      "backend/crates/libs/qip-financial/src/cashflow.rs:1113",
-      "backend/crates/apps/qip-api/src/ledger_views.rs:1087-1097 PrivatePositionView (a partial, per-route assembly of some of these fields, not a canonical contract)"
+      "backend/crates/libs/qip-financial/src/position_record.rs a_record_missing_any_one_of_the_nine_fields_is_refused_naming_that_field",
+      "backend/crates/libs/qip-financial/src/position_record.rs a_complete_record_for_every_class_survives_a_serialisation_round_trip",
+      "backend/crates/libs/qip-financial/src/position_record.rs a_document_missing_a_field_cannot_deserialise_into_a_record"
     ],
-    "gap": "No PositionRecord/AssetBrainPosition type exists that carries all nine fields and refuses construction when one is absent (as the requirement's unit-test check demands); 'exit plan' has no representation anywhere in the workspace.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -99,23 +96,24 @@
       "ASSET-007"
     ],
     "blocked_by": "",
-    "verification": "No such builder exists to test. The test to write: construct a record omitting each of the nine fields in turn and assert a named refusal; construct a complete one per supported class and assert a serialisation round trip.",
+    "verification": "cargo test -p qip-financial --lib position_record",
     "work_item": "E05-position-record-contract",
     "tier": "T2",
     "size": "L",
-    "notes": "P0 in the requirement because it is meant to be a canonical contract; today it is nine contracts, none of which refuse on behalf of the other eight."
+    "notes": "Mutation-verified: defaulting the exit plan made the missing-field and deserialisation tests fail. Library contract only: no kernel path builds a PositionRecord yet (integrated=false)."
   },
   {
     "id": "ASSET-005",
-    "status": "MISSING",
-    "current": "No discover->evaluate->acquire->hold/hedge->monitor->resize->exit/divest->settle->attribute state machine exists. The only position-level lifecycle enum is qip_portfolio::lifecycle::PositionLifecycle (backend/crates/libs/qip-portfolio/src/lifecycle.rs:19-40): Opened, Held, Flagged, Unwinding, Orphaned, Closed -- six states with a different shape and different names, driven by qip_portfolio's own transition table (lifecycle.rs:69-90), not by the blueprint's nine stages. The underlying activities exist as separate, unconnected mechanisms (opportunity discovery in qip-opportunity-engine, hypothesis review/acquire via the OMS, hedge via qip_risk::hedge, monitor via qip_risk_engine::monitor::RiskMonitor, settle via qip-capital-fabric::settlement, attribute via qip-learning-engine::attribution) with no shared state machine tying them into one ordered sequence per position.",
+    "status": "COMPLETE",
+    "current": "qip_portfolio::life_stage::LifeStage (backend/crates/libs/qip-portfolio/src/life_stage.rs) is the nine-stage discover..attribute machine with one edge table, repeatable hold/monitor/resize, and LifeStage::replay rebuilding the stage from a history and refusing skips and a late start; Exit reaches Attribute only through Settle. Distinct from PositionLifecycle, which is the desk-intent machine.",
     "evidence": [
-      "backend/crates/libs/qip-portfolio/src/lifecycle.rs:19-40,69-90 (a different six-state machine, not the blueprint's nine stages)",
-      "grep -rn 'DiscoverEvaluateAcquire\\|LifecycleStage' backend/crates --include=*.rs returns nothing"
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs only_the_sixteen_named_edges_are_legal_and_every_other_pair_is_refused",
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs exit_cannot_reach_attribute_without_settling_first",
+      "backend/crates/libs/qip-portfolio/src/life_stage.rs a_full_life_with_repeated_hold_monitor_and_resize_replays_to_attribute"
     ],
-    "gap": "The nine-stage discover-to-attribute state machine does not exist as a type; PositionLifecycle is a different, six-state machine for a different purpose (what the desk is doing about a position, not its life history), and no code enforces that exit/divest can only reach attribute through settle.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -123,11 +121,11 @@
       "ASSET-006"
     ],
     "blocked_by": "",
-    "verification": "No test exists. The property test to write: generated event sequences accepted only along the nine legal transitions (with hold/hedge, monitor, resize repeatable), every stage-skip refused, and replay rebuilding the same stage.",
+    "verification": "cargo test -p qip-portfolio --lib life_stage",
     "work_item": "E05-position-lifecycle-state-machine",
     "tier": "T2",
     "size": "L",
-    "notes": "Do not confuse with qip_portfolio::lifecycle::PositionLifecycle, which answers a different question and should not be repurposed as this state machine without review."
+    "notes": "Mutation-verified: adding an (Exit, Attribute) edge failed three tests. Not yet driven by kernel events (integrated=false)."
   },
   {
     "id": "ASSET-006",
@@ -211,14 +209,15 @@
   },
   {
     "id": "ASSET-009",
-    "status": "MISSING",
-    "current": "No Private Markets specialist brain and no stage concept for a private-company/fund position exists. `grep -rli \"PrivateCompanyStage\\|FundStage\\|InvestmentStage\\|SpecialistBrain\\|PrivateMarketsBrain\" backend/crates --include=*.rs` returns nothing. ASSET-008's commitment/call machinery tracks capital flow but has no notion of a position 'stage' (investment, calls, distributions, exit) that changes only on a recorded event.",
+    "status": "COMPLETE",
+    "current": "qip_financial::private_stage::{PrivateStage,PrivateEvent} (backend/crates/libs/qip-financial/src/private_stage.rs) models a private-company/fund position's stage (committed, funding, distributing, exited) as a pure function of recorded events (commitment, capital call, distribution, exit); apply refuses an out-of-order event and replay rebuilds the stage from the log alone.",
     "evidence": [
-      "grep -rli 'PrivateCompanyStage|FundStage|InvestmentStage|SpecialistBrain|PrivateMarketsBrain' backend/crates --include=*.rs -- no matches"
+      "backend/crates/libs/qip-financial/src/private_stage.rs a_fund_and_a_company_each_change_stage_on_exactly_their_matching_event",
+      "backend/crates/libs/qip-financial/src/private_stage.rs an_event_out_of_order_is_refused_and_no_stage_is_invented"
     ],
-    "gap": "Nothing models a private-company or fund lifecycle stage distinct from the commitment/call/mark bookkeeping ASSET-007/ASSET-008 already provide.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -227,11 +226,11 @@
       "ASSET-008"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
-    "work_item": "E08-private-markets-specialist-brain",
+    "verification": "cargo test -p qip-financial --lib private_stage",
+    "work_item": "E08-private-stage-machine",
     "tier": "T3",
     "size": "M",
-    "notes": "P2 in the requirement (specialist-agent society, master Phase 8) so its absence is expected at this point in delivery, not a regression."
+    "notes": "Mutation-verified: letting a capital call open an uncommitted position failed the out-of-order test. Library only: no kernel event drives it (integrated=false); there is no specialist-brain crate, the stage machine is the checkable content."
   },
   {
     "id": "ASSET-010",
@@ -283,41 +282,40 @@
   },
   {
     "id": "ASSET-012",
-    "status": "PARTIAL",
-    "current": "A private-asset record's lockup is tracked (qip_financial::extensions PrivateEquityDetails::lockup_years/lockup(), extensions.rs:548,769-787) and consumed by exit_days_with_forecast (backend/crates/runtime/qip-kernel/src/platform.rs:1909-1940) to raise -- never lower -- a holding's stated exit-time input to the MinLiquidity/MaxDaysToLiquidate risk limits. This makes a lockup-bound position read as illiquid to those limits, but there is no ExitPlan/DivestmentPlan type and no explicit refusal of 'an exit plan dated before lockup expiry' as the requirement's own unit-test check describes.",
+    "status": "COMPLETE",
+    "current": "A lockup is recorded (qip_financial::extensions PrivateAssetDetails::lockup) and ExitPlan::new (backend/crates/libs/qip-financial/src/position_record.rs) refuses a plan dated before lockup expiry; a plan at expiry is admitted. The lockup also still widens the liquidity-limit input via exit_days_with_forecast.",
     "evidence": [
-      "backend/crates/libs/qip-financial/src/extensions.rs:548,769-787 lockup()/lockup_years",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:1909-1940 exit_days_with_forecast",
-      "grep -rli 'ExitPlan|exit_plan' backend/crates --include=*.rs -- no matches",
-      "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:488 a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word",
-      "backend/crates/libs/qip-financial/tests/valuation.rs:695 a_lockup_that_is_not_a_finite_term_is_refused_rather_than_saturating"
+      "backend/crates/libs/qip-financial/src/position_record.rs an_exit_dated_one_instant_before_lockup_expiry_is_refused_and_one_at_expiry_admitted",
+      "backend/crates/runtime/qip-kernel/tests/valuation_plane.rs:488 a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word"
     ],
-    "gap": "No exit/divestment plan object exists to refuse; the lockup only widens a liquidity-limit input, it does not refuse a plan dated before expiry with a mutation-verified boundary.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [
       "ASSET-004"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test valuation_plane a_private_fund_inside_its_lockup_is_not_counted_as_exitable_on_the_catalogue_s_word; cargo test -p qip-financial --test valuation a_lockup_that_is_not_a_finite_term_is_refused_rather_than_saturating. No test for an exit-plan refusal exists because no exit-plan type exists.",
+    "verification": "cargo test -p qip-financial --lib position_record::tests::an_exit_dated_one_instant_before_lockup_expiry_is_refused_and_one_at_expiry_admitted",
     "work_item": "E05-exit-plan-lockup-refusal",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status unchanged; the verification command was corrected - 'cargo test -p qip-financial extensions::' matches nothing (extensions.rs has no test module); the lockup tests are in qip-financial/tests/valuation.rs and qip-kernel/tests/valuation_plane.rs."
+    "notes": "Mutation-verified: shifting < to <= failed the boundary test. The refusal is reached only through the library constructor; no kernel exit-planning path exists yet."
   },
   {
     "id": "ASSET-013",
-    "status": "MISSING",
-    "current": "Nothing implements a secondary-sale exit route. `grep -rli \"secondary_sale|secondary_exit|SecondarySale\" backend/crates --include=*.rs` returns no matches. The exit planner ASSET-013 names does not exist (see ASSET-005/ASSET-012 for the adjacent gaps).",
+    "status": "COMPLETE",
+    "current": "qip_financial::secondary_exit::plan_secondary_exit (backend/crates/libs/qip-financial/src/secondary_exit.rs) returns a SecondarySale route (ExitRoute::SecondarySale, exit dated no earlier than lockup expiry, indicative price = mark less an evidenced discount in bps) for a position with no primary liquidity event inside its horizon, None when one is scheduled, and refuses a lockup past the horizon, a missing-evidence or out-of-range discount, and a non-positive mark. Planning only; no order is created.",
     "evidence": [
-      "grep -rli 'secondary_sale|secondary_exit|SecondarySale' backend/crates --include=*.rs -- no matches"
+      "backend/crates/libs/qip-financial/src/secondary_exit.rs a_position_with_no_primary_event_before_its_horizon_gets_a_discounted_secondary_route",
+      "backend/crates/libs/qip-financial/src/secondary_exit.rs a_position_with_a_scheduled_primary_event_inside_the_horizon_gets_no_secondary_route",
+      "backend/crates/libs/qip-financial/src/secondary_exit.rs the_secondary_exit_waits_for_lockup_expiry_and_is_refused_if_that_is_past_the_horizon"
     ],
-    "gap": "No secondary-sale exit route, discount-to-mark logic, or primary-liquidity-event trigger exists anywhere.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -326,11 +324,11 @@
       "ASSET-012"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-financial --lib secondary_exit",
     "work_item": "E05-secondary-exit-logic",
     "tier": "T2",
     "size": "M",
-    "notes": "Carrying out a secondary sale stays simulated under ADR 0003/0021 once built; computing the plan needs no external action and is not itself BLOCKED."
+    "notes": "Mutation-verified: narrowing the primary-event window to exclude the horizon instant, and removing the lockup-vs-horizon refusal, each failed the matching test. The discount is a caller input with evidence; no estimator or caller exists yet (integrated=false)."
   },
   {
     "id": "ASSET-014",

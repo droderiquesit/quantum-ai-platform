@@ -44,8 +44,64 @@ pub enum Decision {
         decoded: usize,
         skipped: usize,
     },
-    /// A sequence gap was detected and the affected books reset.
+    /// Something the sequencer observed on a feed: a hole opening, a hole
+    /// filling late, a delivery repeated, or a hole given up on — the last
+    /// of which resets every book at the venue. `detail` leads with which:
+    /// `gap:`, `reorder:`, `duplicate:` or `abandoned:`.
     GapDetected { stream: String, detail: String },
+    /// A venue's feed has said nothing for longer than the cell lets a book
+    /// go unrefreshed, so every order bound for that venue is now refused.
+    ///
+    /// The incident record for a stall. A sequence gap announces itself; a
+    /// feed that simply stops produces no message to hang a record on, and
+    /// before this entry existed a cell blinded that way went quiet with
+    /// nothing in the chain saying why. `last_heard` is the cell's own
+    /// receipt instant, not the venue's clock, and `limit_ms` is the bound
+    /// it was judged against, so the entry can be checked from itself.
+    FeedSilent {
+        venue: String,
+        last_heard: Timestamp,
+        limit_ms: i64,
+    },
+    /// A feed that had gone silent was heard again, and this is what the
+    /// cell was holding at that venue across the interval it could not see.
+    ///
+    /// The reconciliation record for a stall. `silent_from` and the entry's
+    /// own instant bound the blind interval; `resting_orders` is how many
+    /// orders the cell still had open at the venue when sight returned —
+    /// exposure a market it was not watching could have filled — and
+    /// `stale_books` how many of the venue's books are still awaiting a
+    /// resynchronisation, because being heard again is not being whole again.
+    FeedReconciled {
+        venue: String,
+        silent_from: Timestamp,
+        resting_orders: usize,
+        stale_books: usize,
+    },
+    /// One book was discarded as unreliable and nothing is priced from it
+    /// until it is rebuilt.
+    ///
+    /// The start of an unreliable interval, per instrument. `GapDetected`
+    /// names a stream; this names each book the gap took with it, and it is
+    /// also the only record of a book discarded for crossing while the
+    /// venue said it was trading, which no gap announces.
+    BookReset {
+        venue: String,
+        object: String,
+        reason: String,
+    },
+    /// A discarded book was rebuilt from a snapshot and is priced from again.
+    ///
+    /// The end of the interval [`Self::BookReset`] opened. `unreliable_from`
+    /// repeats where it began, so one entry bounds the interval a replay
+    /// must not train or price on; `None` is a book that was handed to the
+    /// cell already discarded. `levels` is how many edits rebuilt it.
+    BookResynchronised {
+        venue: String,
+        object: String,
+        unreliable_from: Option<Timestamp>,
+        levels: usize,
+    },
     /// A strategy emitted a signal.
     SignalRaised {
         strategy: String,
@@ -142,6 +198,23 @@ pub enum Decision {
         order_id: String,
         venue: String,
         withdrawn: String,
+    },
+    /// A resting order was withdrawn because its venue failed — the feed
+    /// went silent, or the venue was quarantined for rejecting orders —
+    /// while the cell itself kept running.
+    ///
+    /// The third cause of the same action, kept apart from
+    /// [`Self::OrderExpired`] and [`Self::MassCancelled`] for the reason
+    /// those two are kept apart from each other: a review of one venue's
+    /// outage has to be able to find the orders that outage pulled without
+    /// reading them off a chain of routine expiries, and nothing halted.
+    /// `reason` is the venue's fault as the cell stated it; `withdrawn` is
+    /// the venue's own answer to the cancel.
+    VenueWithdrawn {
+        order_id: String,
+        venue: String,
+        withdrawn: String,
+        reason: String,
     },
     /// Something was refused, with the gate that refused it.
     Refused { gate: String, reason: String },
@@ -408,6 +481,73 @@ pub enum Decision {
         held: String,
         signed_size: String,
     },
+    /// A newer payload replaced the cell's copy of long-horizon knowledge
+    /// whose value had diverged from the centre's (ARCH-009).
+    ///
+    /// Global state is the authority, so the resolution is always the same
+    /// one — the centre's version, by the swap `PolicyApplied` records — and
+    /// what this adds is the fact that the two had disagreed and about what.
+    /// `sequence` is the payload that resolved it, `replaced` the payload
+    /// whose copy the cell had been serving, and `items` the knowledge slots
+    /// whose value differed, in §41.5's order. Without it a cell that sized
+    /// on a belief the centre had already abandoned leaves a journal that
+    /// reads as two unremarkable policy applications.
+    KnowledgeReconciled {
+        sequence: u64,
+        replaced: u64,
+        items: Vec<String>,
+    },
+    /// §29.2's requote, first half: the venue acknowledged withdrawing a
+    /// resting order so its remainder could be re-sent.
+    ///
+    /// Its own kind rather than an `OrderExpired`, because the cell has not
+    /// finished with the order: the intention stays open, and what follows is
+    /// either an [`Decision::OrderReplaced`] or nothing — and "nothing" is
+    /// the case this entry exists for. A cancel the venue acknowledged whose
+    /// replacement was then refused leaves an order the cell holds open and
+    /// no venue holds at all, and until this was recorded the chain could
+    /// not say so. `withdrawn` is the venue-level id cancelled, which is the
+    /// cell's own id until the first replacement; `acknowledged` is the
+    /// unfilled remainder the venue said it withdrew, a `Decimal` as text.
+    RequoteWithdrawn {
+        order_id: String,
+        venue: String,
+        withdrawn: String,
+        acknowledged: String,
+    },
+    /// §29.2's requote, second half: the venue accepted the remainder under
+    /// a fresh venue-level id at a new limit.
+    ///
+    /// `order_id` is the cell's id for the intention, which does not change;
+    /// `replacement` is the id the venue now holds it under. `quantity` and
+    /// `price` are what rests there now — the remainder the cancel
+    /// acknowledged, at the touch it was re-sent to — so a reader of a fill
+    /// at a price the `OrderSent` entry never named can find where the
+    /// price came from without leaving the chain.
+    OrderReplaced {
+        order_id: String,
+        venue: String,
+        replacement: String,
+        quantity: String,
+        price: String,
+    },
+    /// The narrowing the cell sizes under moved with no payload arriving:
+    /// the applied payload's slots aged on the cell's own clock.
+    ///
+    /// `PolicyApplied` states the narrowing at the instant a payload lands.
+    /// A cell cut off from its centre receives no further payload, and it
+    /// is exactly then that its slots go stale — so the entry that would
+    /// have said "this cell is now running degraded" was the one entry that
+    /// could never be written. `sequence` is the payload that aged, `None`
+    /// for a cell holding none; `narrowed` is every capability less than
+    /// fresh, as `PolicyApplied` names them; `sizing_multiplier` is what the
+    /// cell multiplies a strategy's size by from this pass on, a `Decimal`
+    /// as text.
+    DegradationChanged {
+        sequence: Option<u64>,
+        narrowed: Vec<String>,
+        sizing_multiplier: String,
+    },
 }
 
 impl Decision {
@@ -416,12 +556,17 @@ impl Decision {
         match self {
             Self::Ingested { .. } => "ingested",
             Self::GapDetected { .. } => "gap_detected",
+            Self::FeedSilent { .. } => "feed_silent",
+            Self::FeedReconciled { .. } => "feed_reconciled",
+            Self::BookReset { .. } => "book_reset",
+            Self::BookResynchronised { .. } => "book_resynchronised",
             Self::SignalRaised { .. } => "signal_raised",
             Self::EdgePriced { .. } => "edge_priced",
             Self::OrderSent { .. } => "order_sent",
             Self::Filled { .. } => "filled",
             Self::OrderExpired { .. } => "order_expired",
             Self::MassCancelled { .. } => "mass_cancelled",
+            Self::VenueWithdrawn { .. } => "venue_withdrawn",
             Self::Refused { .. } => "refused",
             Self::ReconciliationBreak { .. } => "reconciliation_break",
             Self::HaltChanged { .. } => "halt_changed",
@@ -441,6 +586,10 @@ impl Decision {
             Self::VenueReconciled { .. } => "venue_reconciled",
             Self::VenueChosen { .. } => "venue_chosen",
             Self::DispositionIntent { .. } => "disposition_intent",
+            Self::KnowledgeReconciled { .. } => "knowledge_reconciled",
+            Self::RequoteWithdrawn { .. } => "requote_withdrawn",
+            Self::OrderReplaced { .. } => "order_replaced",
+            Self::DegradationChanged { .. } => "degradation_changed",
         }
     }
 }

@@ -21,6 +21,7 @@
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_arbitrage::{
     ArbitrageGraph, EdgeAssumptions, Node, OpportunityScanner, PlanSettings, SearchSettings,
@@ -624,19 +625,27 @@ fn a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reach
     // shape: a control that reads as protection and cannot. This is the one
     // input a cell's own configuration can present that §30.2 assigns no
     // path to — a cycle past `MAX_COMPOSITION_EDGES`, which a desk reaches
-    // by setting the search's `max_cycle_edges` above eight.
+    // by setting the search's `max_cycle_edges` above twenty.
     //
-    // Nine edges rather than eight, and the eight-edge ring below is the
-    // other half: a bound that refused everything would pass the first half
-    // of this test and mean nothing.
+    // The bound was eight when this test was written and is twenty since
+    // MESH-010 made the maximum in force configuration: the router's bound
+    // is now the engine's ceiling, the layer that still holds when a desk
+    // was built past the ceiling by something that skipped the composition
+    // root's validation — which is exactly what this desk is. The property
+    // is the one it always was, one edge past the bound and the bound
+    // itself, at the new figure.
+    //
+    // Twenty-one edges rather than twenty, and the twenty-edge ring below is
+    // the other half: a bound that refused everything would pass the first
+    // half of this test and mean nothing.
     let venues = vec![venue()];
-    let (graph, books) = ring(9)?;
-    let (mut cell, metrics) = cell_with(books, desk(graph, venues.clone(), 9)?, venues.clone())?;
+    let (graph, books) = ring(21)?;
+    let (mut cell, metrics) = cell_with(books, desk(graph, venues.clone(), 21)?, venues.clone())?;
     let mut gateway = RecordingGateway::default();
     let report = cell.work(t(10), &mut gateway)?;
 
-    // Premise: the scan really surfaced the nine-edge cycle, so the refusal
-    // below is the router's and not the scanner finding nothing.
+    // Premise: the scan really surfaced the twenty-one-edge cycle, so the
+    // refusal below is the router's and not the scanner finding nothing.
     let scanned = cell
         .arbitrage()
         .expect("the desk was installed")
@@ -644,10 +653,10 @@ fn a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reach
     assert_eq!(
         scanned.opportunities.len(),
         1,
-        "the premise failed: the nine-hop ring produced {} opportunities",
+        "the premise failed: the twenty-one-hop ring produced {} opportunities",
         scanned.opportunities.len()
     );
-    assert_eq!(scanned.opportunities[0].candidate.edges.len(), 9);
+    assert_eq!(scanned.opportunities[0].candidate.edges.len(), 21);
 
     let refused = refusals_under(&report, GATE_PATH_ROUTER);
     assert_eq!(
@@ -658,7 +667,7 @@ fn a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reach
         report.refusals
     );
     assert!(
-        refused[0].contains("exceeds the 8"),
+        refused[0].contains("exceeds the 20"),
         "the refusal does not say what was wrong: {}",
         refused[0]
     );
@@ -687,22 +696,125 @@ fn a_cycle_longer_than_the_routers_bound_is_refused_whole_and_no_leg_of_it_reach
         1
     );
 
-    // The other half of the gate: eight edges is admitted. Without this the
-    // test above would pass against a router that refused every cycle.
-    let (graph, books) = ring(8)?;
-    let (mut cell, _) = cell_with(books, desk(graph, venues.clone(), 8)?, venues)?;
+    // The other half of the gate: twenty edges is admitted. Without this
+    // the test above would pass against a router that refused every cycle.
+    let (graph, books) = ring(20)?;
+    let (mut cell, _) = cell_with(books, desk(graph, venues.clone(), 20)?, venues)?;
     let report = cell.work(t(10), &mut RecordingGateway::default())?;
     assert!(
         refusals_under(&report, GATE_PATH_ROUTER).is_empty(),
-        "an eight-edge cycle was refused by a router bounded at eight: {:?}",
+        "a twenty-edge cycle was refused by a router bounded at twenty: {:?}",
         report.refusals
     );
     assert_eq!(
         report.paths.len(),
         1,
-        "an eight-edge ring at one venue was assigned no path: {:?}",
+        "a twenty-edge ring at one venue was assigned no path: {:?}",
         report.refusals
     );
     assert_eq!(report.paths[0].path(), ExecutionPath::IntraVenue);
+    Ok(())
+}
+
+#[test]
+fn with_the_maximum_at_five_a_six_leg_cycle_is_refused_by_the_scan_naming_the_limit_and_no_leg_reaches_the_gateway()
+-> Result<()> {
+    // MESH-010. The maximum leg count in force is the desk's
+    // `max_cycle_edges`, and until this test the search dropped a longer
+    // cycle without a word: nothing was sent, which is right, and nothing
+    // was said, so a cell whose only cycle was one leg over its limit
+    // reported exactly what a cell with no cycle reports.
+    const GATE_SCAN_LENGTH: &str = "arbitrage_scan_length";
+    let venues = vec![venue()];
+
+    // Premise: the six-hop ring is a real opportunity the moment the
+    // maximum admits it, so the refusal below is the limit's and not the
+    // market's.
+    let (graph, books) = ring(6)?;
+    let (mut cell, _) = cell_with(books, desk(graph, venues.clone(), 6)?, venues.clone())?;
+    // A pass first: the desk's rates are placeholders until a pass re-quotes
+    // them from the cell's books.
+    let mut sent = RecordingGateway::default();
+    cell.work(t(10), &mut sent)?;
+    assert_eq!(
+        sent.placed.len(),
+        6,
+        "the premise failed: at a maximum of six the six-leg ring is not sent, so an empty \
+         gateway below would prove nothing"
+    );
+    let admitted = cell
+        .arbitrage()
+        .expect("the desk was installed")
+        .scan(cell.liquidity(), t(10));
+    assert_eq!(
+        admitted.opportunities.len(),
+        1,
+        "the premise failed: {:?}",
+        admitted.rejections
+    );
+    assert_eq!(admitted.opportunities[0].candidate.edges.len(), 6);
+
+    let (graph, books) = ring(6)?;
+    let (mut cell, metrics) = cell_with(books, desk(graph, venues.clone(), 5)?, venues.clone())?;
+    let mut gateway = RecordingGateway::default();
+    let report = cell.work(t(10), &mut gateway)?;
+
+    let refused = refusals_under(&report, GATE_SCAN_LENGTH);
+    assert_eq!(
+        refused.len(),
+        1,
+        "a six-leg cycle at a maximum of five was not refused under {GATE_SCAN_LENGTH}: {:?}",
+        report.refusals
+    );
+    assert!(
+        refused[0].contains("6 legs") && refused[0].contains("maximum of 5"),
+        "the refusal does not name the limit: {}",
+        refused[0]
+    );
+    // Whole, not shortened: the refusal names all six edges of the ring.
+    assert!(
+        (0..6).all(|edge| refused[0].contains(&edge.to_string())),
+        "the refusal does not carry the whole cycle: {}",
+        refused[0]
+    );
+    assert!(
+        report.paths.is_empty(),
+        "an over-length cycle was assigned a path"
+    );
+    // The consequence, which is the point: nothing of that cycle was sent.
+    assert!(
+        gateway.placed.is_empty(),
+        "legs of an over-length cycle reached the venue: {:?}",
+        gateway.placed
+    );
+    assert_eq!(
+        metrics.snapshot().counter(
+            names::EDGE_REFUSALS,
+            &labels([
+                ("cell", CELL),
+                ("region", REGION),
+                ("gate", GATE_SCAN_LENGTH)
+            ])
+        ),
+        1
+    );
+
+    // The other half: five legs at a maximum of five is not refused for its
+    // length and is assigned a path. Without this the test above would pass
+    // against a scan that refused every cycle as too long.
+    let (graph, books) = ring(5)?;
+    let (mut cell, _) = cell_with(books, desk(graph, venues.clone(), 5)?, venues)?;
+    let report = cell.work(t(10), &mut RecordingGateway::default())?;
+    assert!(
+        refusals_under(&report, GATE_SCAN_LENGTH).is_empty(),
+        "a five-leg cycle was refused as too long at a maximum of five: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        report.paths.len(),
+        1,
+        "a five-leg ring was assigned no path: {:?}",
+        report.refusals
+    );
     Ok(())
 }

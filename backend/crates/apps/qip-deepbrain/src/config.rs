@@ -307,6 +307,7 @@ impl DeepBrainConfig {
         // read by it, so a managed target's credential is resolved here, in
         // the composition root, through `qip_core::secret`.
         let storage = StorageSettings::from_env(&|name| text(vars, name))
+            .and_then(StorageSettings::require_authoritative)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
         let event_log = event_log_destination(vars, &storage)?;
@@ -626,6 +627,21 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
             .collect()
+    }
+
+    #[test]
+    fn a_node_configured_to_keep_its_state_in_memorystore_refuses_to_start() {
+        let refusal = DeepBrainConfig::parse(&vars(&[(TARGET_VARIABLE, "memorystore")]))
+            .expect_err("a restart-volatile cache must not be the store of record");
+        assert!(
+            refusal.message().contains("memorystore"),
+            "{}",
+            refusal.message()
+        );
+        assert!(
+            DeepBrainConfig::parse(&vars(&[])).is_ok(),
+            "the default configuration still starts, so the refusal is specific to the cache"
+        );
     }
 
     #[test]

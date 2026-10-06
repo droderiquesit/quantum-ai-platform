@@ -221,14 +221,15 @@
   },
   {
     "id": "AMBIENT-010",
-    "status": "MISSING",
-    "current": "nothing. No 'Attention Router' or 'Ambient Attention Brain' type exists anywhere in the workspace.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/ambient.rs: AttentionRouter with RoutingPolicy (materiality, a route for every one of the four SignalClass values onto the five Pathway outcomes). A signal below materiality produces no event; a material one produces exactly its class pathway, recorded as an AttentionEvent.",
     "evidence": [
-      "rg -i 'AttentionRouter|Attention Router|AmbientAttention' backend/crates --glob '*.rs': no hits"
+      "backend/crates/libs/qip-contracts/src/ambient.rs",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway"
     ],
-    "gap": "No component combines surprise, opportunity, risk and assumption signals and routes a material deviation to one of the five named outcomes. Its inputs now exist only partially: AMBIENT-006, -007 and -009 are PARTIAL and AMBIENT-008 is MISSING.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The router is a pure library type. No running loop feeds it detector output yet (AMBIENT-001) and the specialist, research and reflex lanes do not consume its events, so it is not integrated into the cycle. The router must NOT be wired into qip-kernel: qip-kernel is on the order path and no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped_but_by_promote forbids any ambient type there. A first attempt (2da9d809) did, and was reverted on 2026-10-05; the wiring has to sit outside the order path and cross only `promote`.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -240,11 +241,11 @@
       "AMBIENT-019"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-contracts --test ambient a_deviation_below_materiality_wakes_nothing_and_a_material_one_takes_its_classes_pathway (400 generated cases, premise asserts both sides of the bar were hit). Mutation-verified: <= on materiality and a swapped route each failed it.",
     "work_item": "E09-attention-router",
     "tier": "T3",
     "size": "L",
-    "notes": "The core of the mesh; nothing else in AMBIENT can wake anything until this exists. verify: status kept MISSING; the gap no longer says none of the four inputs exists. The nearest analogue is reason_about_the_queue plus qip-cost-router (platform.rs:10839-10960). That judges materiality for one input class (a DISCOVER opportunity) and one outcome (convening the panel). It is credited under AMBIENT-005, not here."
+    "notes": "The core of the mesh; nothing else in AMBIENT can wake anything until this exists. verify: status kept MISSING; the gap no longer says none of the four inputs exists. The nearest analogue is reason_about_the_queue plus qip-cost-router (platform.rs:10839-10960). That judges materiality for one input class (a DISCOVER opportunity) and one outcome (convening the panel). It is credited under AMBIENT-005, not here. Closed 2026-10-04 as library contracts; runtime wiring tracked under AMBIENT-001."
   },
   {
     "id": "AMBIENT-011",
@@ -377,15 +378,16 @@
   },
   {
     "id": "AMBIENT-016",
-    "status": "MISSING",
-    "current": "no ambient output type exists to gate, so the invariant has nothing to hold over. The platform does have an analogous promotion-gate pattern elsewhere -- qip_ai::registry::{ModelCard, ModelStage} gates a model's promotion, and stage_decide gates every order on compliance.report().require_fully_enforced() (platform.rs:13435) -- which a future ambient-promotion gate could follow structurally.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/ambient.rs: an ambient output is Advisory<T>, readable by reference only. The sole road to Promoted<T> is promote(), which refuses without evaluation evidence, a passing evaluation, a named approver and held deterministic controls. No order-path crate names an ambient type.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:13435 (compliance sign-off gate pattern, an analogous structural precedent)",
-      "rg -i 'AmbientSignal|AttentionEvent' backend/crates --glob '*.rs': no hits, confirming there is no ambient output to gate"
+      "backend/crates/libs/qip-contracts/src/ambient.rs",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::an_ambient_output_without_evidence_a_pass_an_approver_and_held_controls_is_refused",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs::no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped_but_by_promote"
     ],
-    "gap": "No ambient output type exists at all (AMBIENT-005/008/010/013 are the candidate sources), so there is nothing for a promotion boundary to intercept, and no such boundary has been built.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No ambient producer yet emits an Advisory, and Promoted is not yet consumed by the order, risk or registry paths; the fence is a type plus a source scan, and the scan covers the named order-path directories only.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -395,11 +397,11 @@
       "AMBIENT-010"
     ],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-contracts --test ambient an_ambient_output_without_evidence_a_pass_an_approver_and_held_controls_is_refused; cargo test -p qip-acceptance --test ambient_attention no_order_path_crate_names_an_ambient_type_and_an_advisory_cannot_be_unwrapped_but_by_promote. Mutation-verified: removing the evidence check, naming Advisory in qip-execution-engine, and making the output field pub each failed.",
     "work_item": "E09-ambient-promotion-gate",
     "tier": "T2",
     "size": "M",
-    "notes": "A P0 invariant that is vacuously unviolated today only because nothing ambient exists to violate it; must land in the same slice as whatever first produces an ambient output. verify: status kept MISSING, two findings added. (1) One ambient-class output already reaches the order path with no promotion gate. Counterfactual declined scores (the AMBIENT-012 shadow model) feed counterfactual_sizing_multiplier (platform.rs:11795), which narrows position size directly. It can only return values in (0, 1] and so only restricts, which the fail-closed principle tolerates, but a promotion gate must account for it. (2) Pre-positioning recommendations (AMBIENT-013) are structurally advisory: they are only journaled and scored, and have no execution path."
+    "notes": "A P0 invariant that is vacuously unviolated today only because nothing ambient exists to violate it; must land in the same slice as whatever first produces an ambient output. verify: status kept MISSING, two findings added. (1) One ambient-class output already reaches the order path with no promotion gate. Counterfactual declined scores (the AMBIENT-012 shadow model) feed counterfactual_sizing_multiplier (platform.rs:11795), which narrows position size directly. It can only return values in (0, 1] and so only restricts, which the fail-closed principle tolerates, but a promotion gate must account for it. (2) Pre-positioning recommendations (AMBIENT-013) are structurally advisory: they are only journaled and scored, and have no execution path. Closed 2026-10-04 as library contracts; runtime wiring tracked under AMBIENT-001."
   },
   {
     "id": "AMBIENT-017",
@@ -453,24 +455,26 @@
   },
   {
     "id": "AMBIENT-019",
-    "status": "MISSING",
-    "current": "nothing. Neither AmbientSignal nor AttentionEvent exists as a type anywhere in the workspace.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/ambient.rs: AmbientSignal (class, subject, severity in bp, a named Schedule or Event trigger, detected_at; refuses an unnamed trigger or severity above 10000) and AttentionEvent (references its signal_id, pathway, disposition). Both round-trip unchanged through the hash-chained EventLog.",
     "evidence": [
-      "rg 'AmbientSignal|AttentionEvent' backend/crates --glob '*.rs': no hits"
+      "backend/crates/libs/qip-contracts/src/ambient.rs",
+      "backend/crates/tests/qip-acceptance/tests/ambient_attention.rs::an_ambient_signal_and_the_attention_event_it_caused_round_trip_through_the_event_log_unchanged",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::a_signal_without_a_named_trigger_or_with_an_out_of_range_severity_is_refused"
     ],
-    "gap": "No contract type exists for either record, so nothing produced by any (missing) AMBIENT component has a defined, serialisable, journal-round-tripping shape.",
-    "implemented": false,
-    "tested": false,
+    "gap": "None for the contract. The test bodies borrow the existing SignalGenerated and AgentRunCompleted topics; dedicated ambient topics are not registered in qip-events and no producer emits these records yet (see AMBIENT-001).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists.",
+    "verification": "cargo test -p qip-acceptance --test ambient_attention an_ambient_signal_and_the_attention_event_it_caused_round_trip_through_the_event_log_unchanged; cargo test -p qip-contracts --test ambient. Mutation-verified: skipping severity_bp in serde, and corrupting the signal_id reference, each failed the round-trip test.",
     "work_item": "E02-ambient-signal-attention-event-contracts",
     "tier": "T1",
     "size": "M",
-    "notes": "Foundational contract work (CONTRACT domain); nearly every other AMBIENT requirement depends on these two types existing first."
+    "notes": "Foundational contract work (CONTRACT domain); nearly every other AMBIENT requirement depends on these two types existing first. Closed 2026-10-04 as library contracts; runtime wiring tracked under AMBIENT-001."
   },
   {
     "id": "AMBIENT-020",
@@ -545,16 +549,14 @@
   },
   {
     "id": "AMBIENT-023",
-    "status": "PARTIAL",
-    "current": "The existing detection-to-activation path has a hard per-cycle bound. OpportunityEngine::scan truncates candidates to EngineConfig::max_per_cycle (default 12; backend/crates/services/qip-opportunity-engine/src/engine.rs:38, :122-124) and counts the rest in suppressed_count, which DISCOVER reports each cycle ('{suppressed} suppressed this run', backend/crates/runtime/qip-kernel/src/platform.rs:10413-10432). What is surfaced waits in the queue until it expires (:10421-10426). REASON considers only the queue head, so it convenes the panel at most once per cycle (:10840).",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/ambient.rs: RoutingPolicy carries a budget per window and a bounded hold queue. AttentionRouter activates at most the budget per window, drains held signals oldest-first on the next window, and records the excess as Deferred or Shed AttentionEvents. A clock stepping back is refused so it cannot refill a spent budget.",
     "evidence": [
-      "backend/crates/services/qip-opportunity-engine/src/engine.rs:122-124 (candidates.truncate(max_per_cycle); suppressed += excess)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10412-10432 (scan, suppressed_count, expiry, stage detail)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:10840 (let Some(opportunity) = self.queue.first() ...)",
-      "backend/crates/services/qip-opportunity-engine/tests/discovery.rs:490 the_queue_is_capped_and_the_suppressed_count_is_visible",
-      "rg -i 'attention.?budget' backend/crates --glob '*.rs': no hits"
+      "backend/crates/libs/qip-contracts/src/ambient.rs",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferred_or_shed",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs::a_clock_that_steps_back_cannot_refill_a_spent_budget"
     ],
-    "gap": "No Attention Router exists (AMBIENT-010), so there is no budget over the five activation classes. The bound is a per-cycle cap on surfaced opportunities plus one convening per cycle, not a configured attention budget per window. The excess is a cumulative count and queue expiry, not a per-signal deferred or shed record. No storm test asserts activations per window never exceed a configured budget.",
+    "gap": "The budget bounds the router type. It is not yet wired to a live feed (AMBIENT-001), and the older per-cycle opportunity cap in qip-opportunity-engine is a separate, unchanged bound.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -564,11 +566,11 @@
       "AMBIENT-010"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-opportunity-engine --test discovery the_queue_is_capped_and_the_suppressed_count_is_visible proves the cap is hard and the excess is counted. The requirement's storm property over the Attention Router is not implemented.",
+    "verification": "cargo test -p qip-contracts --test ambient a_storm_never_exceeds_the_attention_budget_and_every_excess_signal_is_deferred_or_shed (12 generated windows, conservation of every material signal asserted). Mutation-verified: <= on the budget and an unbounded hold queue each failed it.",
     "work_item": "E09-ambient-attention-budget",
     "tier": "T2",
     "size": "M",
-    "notes": "P0 invariant; cannot be built before AMBIENT-010's router exists to bound. verify: upgraded MISSING -> PARTIAL. The only activation path that exists today (detection -> opportunity -> panel, AMBIENT-005) is already bounded by max_per_cycle with a visible suppressed count (engine.rs:122-124, platform.rs:10413-10432) and one convening per cycle."
+    "notes": "P0 invariant; cannot be built before AMBIENT-010's router exists to bound. verify: upgraded MISSING -> PARTIAL. The only activation path that exists today (detection -> opportunity -> panel, AMBIENT-005) is already bounded by max_per_cycle with a visible suppressed count (engine.rs:122-124, platform.rs:10413-10432) and one convening per cycle. Closed 2026-10-04 as library contracts; runtime wiring tracked under AMBIENT-001."
   },
   {
     "id": "AMBIENT-024",

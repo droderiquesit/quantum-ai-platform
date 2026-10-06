@@ -48,6 +48,7 @@
 //! week of evidence would be recorded in rather than a week of evidence.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;

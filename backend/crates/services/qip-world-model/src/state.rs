@@ -72,6 +72,12 @@ pub struct WorldState {
     pub object_count: usize,
     pub relationship_count: usize,
     pub causal_claim_count: usize,
+    /// Conflicts between sources knowable at `known_at` (WORLD-009). Counted
+    /// beside the relationships because a relationship count alone reads the
+    /// same whether the sources agree or not. Defaulted so a state written
+    /// before the field existed reads back rather than refusing to load.
+    #[serde(default)]
+    pub contradiction_count: usize,
     /// Feature values keyed by `feature/subject`.
     pub features: BTreeMap<String, f64>,
     /// The most connected nodes, with their degrees.

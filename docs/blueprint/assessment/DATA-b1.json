@@ -24,7 +24,7 @@
     "work_item": "E08",
     "tier": "T0",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE->PARTIAL. The cited tests (retention.rs:68 daily bars, retention.rs:204 policy table) test bar retention and a policy table, not the raw-corpus prohibition; the prohibition-specific test is narrative_feed.rs:667, which covers one record type in an adapter reached only from qip-cli's demo; the sink-wide verification does not exist; and headlines are durably retained verbatim by design (intelligence.rs:123, world.rs:553/598). Prior note: Tape (tape.rs) is a stamped LicensingClass::Synthetic demo fixture the platform generates itself, not a retained copy of third-party content, so it does not implicate this prohibition."
+    "notes": "verify: downgraded COMPLETE->PARTIAL. The cited tests (retention.rs:68 daily bars, retention.rs:204 policy table) test bar retention and a policy table, not the raw-corpus prohibition; the prohibition-specific test is narrative_feed.rs:667, which covers one record type in an adapter reached only from qip-cli's demo; the sink-wide verification does not exist; and headlines are durably retained verbatim by design (intelligence.rs:123, world.rs:553/598). Prior note: Tape (tape.rs) is a stamped LicensingClass::Synthetic demo fixture the platform generates itself, not a retained copy of third-party content, so it does not implicate this prohibition. 2026-10-04 lane note: the all-sinks marker test would fail today on the verbatim headline (see DATA-005); it needs the same ruling first."
   },
   {
     "id": "DATA-002",
@@ -87,9 +87,9 @@
       "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:1-20 (module doc naming the discard as a section 22.1 requirement)",
       "backend/crates/services/qip-market-ingestion/src/connector/runtime.rs:527-570"
     ],
-    "gap": "There is no discard stage: the fetched body is a local that is released when ConnectorRuntime::ingest returns, so the requirement's mandatory discard stage wired from knowledge-delta creation, and the refusal to construct a pipeline without it, do not exist. No test asserts release of the buffer or deletion of an ephemeral file after a successful fetch or after a fetch that fails at parse. The ownership-based drop makes retention of the body unlikely, but that is not the construction-time refusal the requirement names and nothing demonstrates it.",
+    "gap": "There is no discard stage: the fetched body is a local that is released when ConnectorRuntime::ingest returns, so the requirement's mandatory discard stage wired from knowledge-delta creation, and the refusal to construct a pipeline without it, do not exist. No test asserts release of the buffer or deletion of an ephemeral file after a successful fetch or after a fetch that fails at parse. The ownership-based drop makes retention of the body unlikely, but that is not the construction-time refusal the requirement names and nothing demonstrates it. Update: a marker-carrying body is shown unreachable from the PollReport and runtime after a successful poll (test a_marker_in_the_served_body_is_reachable_from_nothing_the_runtime_returns_or_keeps), and the one deliberate exception, a rejected payload held as a bounded in-memory excerpt in the Quarantine (320 chars; 240 via body_excerpt), is pinned by a_body_that_fails_to_parse_is_held_only_as_a_bounded_excerpt_in_the_quarantine. Still open: the construction-time discard stage, and a ruling on whether the quarantine excerpt is acceptable raw-text retention under DATA-004.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -126,7 +126,7 @@
     "work_item": "E08",
     "tier": "T0",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE->PARTIAL and tested->false: no named test was cited and none exists for the allow-list; the closed Topic enum is a general event registry, not the world-derived allow-list with a refusal the requirement states. Prior note: Enforcement is compiler-structural rather than a runtime refusal an integration test can trigger, consistent with the codebase's stated preference for structural guarantees over runtime checks."
+    "notes": "verify: downgraded COMPLETE->PARTIAL and tested->false: no named test was cited and none exists for the allow-list; the closed Topic enum is a general event registry, not the world-derived allow-list with a refusal the requirement states. Prior note: Enforcement is compiler-structural rather than a runtime refusal an integration test can trigger, consistent with the codebase's stated preference for structural guarantees over runtime checks. 2026-10-04 lane note: blocked on a ruling, not on code -- NewsReceived retains the third-party headline verbatim, and a world-derived allow-list cannot be enforced at the write seam until a recorded decision says a headline is an allow-listed summary or replaces it with a derived label."
   },
   {
     "id": "DATA-006",
@@ -183,15 +183,16 @@
   },
   {
     "id": "DATA-008",
-    "status": "MISSING",
-    "current": "qip_data_finder::reference::RevisionCheck and qip_data_finder::ledger::LedgerOutcome model only {Unchanged, Revised} -- a re-fetch that returns different bytes. Neither type has a variant for a re-fetch that fails entirely (404/withdrawn/embargoed), and nothing propagates such an outcome onto the derived knowledge (a Fact, a CausalEdge, a belief) as 'evidence no longer re-fetchable'.",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::ledger::ReferenceLedger::mark_unretrievable records that a re-fetch of an extent the ledger holds a reference to failed outright (reason and instant), unretrievable() and unretrievable_extents() expose the marker to any consumer, the reference and so the knowledge derived from it is kept, a later successful record clears the marker, an extent the ledger holds nothing for and an empty reason are refused, and a marker is dropped with its evicted reference.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/reference.rs:174-181 (RevisionCheck: Unchanged | Revised only)",
-      "backend/crates/services/qip-data-finder/src/ledger.rs:303-311 (LedgerOutcome: First | Unchanged | Revised only)"
+      "backend/crates/services/qip-data-finder/src/ledger.rs::mark_unretrievable, unretrievable, Unretrievable",
+      "backend/crates/services/qip-data-finder/src/ledger.rs tests::a_source_that_stops_answering_leaves_its_knowledge_marked_not_re_fetchable",
+      "mutation: deleting the unretrievable.insert in mark_unretrievable failed the marker assertion (assertion left == right); deleting the unretrievable.remove(&key) in restore_reference failed 'a fetch that succeeded again clears the marker'; both restored byte-for-byte, 5 passed"
     ],
-    "gap": "No 'Gone'/'Unretrievable' outcome exists in RevisionCheck or LedgerOutcome, and no field on a persisted Fact/CausalEdge/belief records that its evidence is no longer fetchable; a source that stops answering entirely is indistinguishable, in the retained knowledge, from one that was never checked again.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The marker lives in the in-memory ledger and is not journaled: no Topic carries it, so a restart rebuilds a ledger without it, and no composition root calls mark_unretrievable because no production path performs a historical re-fetch (DATA-006). The marker sits on the provenance reference, not on a Fact or CausalEdge in the world model.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -199,11 +200,11 @@
       "DATA-006"
     ],
     "blocked_by": "",
-    "verification": "A new test asserting a re-fetch that errors (not merely returns different bytes) marks the DataReference's evidence as unretrievable and that the fact/belief built from it survives with that flag set, once the outcome variant and the flag exist.",
+    "verification": "cargo test -p qip-data-finder --lib ledger",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "verify: MISSING -> COMPLETE for the marker semantics the requirement's check asserts; integrated stays false until a re-fetch path and a log topic exist. Prior note: "
   },
   {
     "id": "DATA-009",
@@ -229,7 +230,7 @@
     "work_item": "E08",
     "tier": "T0",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE->PARTIAL: the requirement says the tick/order-book class is separate from pass-through world data, but Transient holds both raw ticks and source text (retention.rs, what()) and Referenced holds both MarketTrade and NewsReceived (topic.rs:545-552). Added the backbone.rs tests, which exercise the class table directly; the daily-bar test previously cited tests the fallback series, not the class separation. Prior note: The code does not use the literal labels 'Tier T' or 'K0-K3'; it implements the same separation (own-financial-records vs. tick data vs. knowledge) under its own vocabulary (Irreplaceable/Transient vs. Episodic/Semantic). Semantic naming gap only, not a behavioural one."
+    "notes": "verify: downgraded COMPLETE->PARTIAL: the requirement says the tick/order-book class is separate from pass-through world data, but Transient holds both raw ticks and source text (retention.rs, what()) and Referenced holds both MarketTrade and NewsReceived (topic.rs:545-552). Added the backbone.rs tests, which exercise the class table directly; the daily-bar test previously cited tests the fallback series, not the class separation. Prior note: The code does not use the literal labels 'Tier T' or 'K0-K3'; it implements the same separation (own-financial-records vs. tick data vs. knowledge) under its own vocabulary (Irreplaceable/Transient vs. Episodic/Semantic). Semantic naming gap only, not a behavioural one. 2026-10-04 lane note: not closable in code alone -- separating a tick/order-book class from pass-through source text changes ADR 0089's nine-row retention table, which needs a superseding ADR."
   },
   {
     "id": "DATA-010",
@@ -255,7 +256,7 @@
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept PARTIAL; recorded that no storage right exists in Usage/LicensingClass and that FallbackSeries retains bars without an entitlement check, so the rights half of the requirement is absent, not merely untested."
+    "notes": "verify: status kept PARTIAL; recorded that no storage right exists in Usage/LicensingClass and that FallbackSeries retains bars without an entitlement check, so the rights half of the requirement is absent, not merely untested. 2026-10-04 lane note: needs a storage right in qip_contracts::governance::Usage (a contract-vocabulary change every licence and admission reads), which is an architecture decision, not a local fix."
   },
   {
     "id": "DATA-011",
@@ -285,14 +286,16 @@
   },
   {
     "id": "DATA-012",
-    "status": "NEEDS-VALIDATION",
-    "current": "No code exists to measure or assert this NFR directly. Structurally it is very likely true by construction: nothing durable holds a raw body (DATA-001/004), and DataReference/FetchDigest are small fixed-shape records (a hash, a length, bounded key sets) rather than copies.",
+    "status": "COMPLETE",
+    "current": "qip-data-finder/tests/durable_footprint.rs runs a fixed fixture campaign (forty distinct 4 KiB fetches, 163,840 bytes) through DataReference::of_generated into a ReferenceLedger and measures the serialised references the ledger holds against the bytes fetched, failing at a ratio of 0.25 or above; a second test grows the bodies sixteenfold and asserts the durable size does not move by more than 2%, which is what shows no body is held rather than a ratio passing by luck.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/connector/digest.rs:36-46 (module doc costing the digest: 'a set of at most max_events_per_batch keys... no allocation outlives the report')"
+      "backend/crates/services/qip-data-finder/tests/durable_footprint.rs::the_bytes_a_campaign_keeps_are_a_small_fraction_of_the_bytes_it_fetched",
+      "backend/crates/services/qip-data-finder/tests/durable_footprint.rs::the_durable_footprint_does_not_grow_with_the_size_of_what_was_fetched",
+      "mutation: appending the fetched body to the locator in DataReference::build made both fail ('durable 183510 bytes against 163840 fetched is 1.120; the bound is 0.25' and 'durable bytes went 60630 -> 675070'); restored with git checkout, 2 passed"
     ],
-    "gap": "No metric or test compares durable-knowledge bytes against source bytes; the claim is architecturally plausible but unmeasured.",
+    "gap": "Measured over the reference ledger's serialised references only. Event-log frames, the world model and the campaign manifest are not in the sum, so the ratio speaks for what qip-data-finder keeps about a fetch, not for every durable sink in the process.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
@@ -301,23 +304,25 @@
       "DATA-005"
     ],
     "blocked_by": "",
-    "verification": "A benchmark/test that fetches a source body of known size N, runs it through the pipeline, and asserts the durable footprint (event-log bytes + world-model delta bytes) is materially smaller than N.",
+    "verification": "cargo test -p qip-data-finder --test durable_footprint",
     "work_item": "E12",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: flags corrected to match NEEDS-VALIDATION (implemented and reached, not tested): the row had implemented=false and integrated=false, which is MISSING, not NEEDS-VALIDATION. The compact-record design is what the running connectors use; what is absent is the measurement."
+    "notes": "verify: NEEDS-VALIDATION -> COMPLETE for the reference-ledger footprint; the all-sinks measurement is DATA-001's missing acceptance test. Prior note: verify: flags corrected to match NEEDS-VALIDATION (implemented and reached, not tested): the row had implemented=false and integrated=false, which is MISSING, not NEEDS-VALIDATION. The compact-record design is what the running connectors use; what is absent is the measurement."
   },
   {
     "id": "DATA-013",
-    "status": "MISSING",
-    "current": "Nothing. No KnowledgePack type, and no protobuf or Parquet encoding exists anywhere in the workspace (`grep -rn KnowledgePack` and `grep -rn parquet|protobuf` outside comments/enum-variant-names return nothing). Durable state is JSON via serde_json through qip_core::kv::KeyValueStore, the workspace's only permitted serialization dependency.",
+    "status": "PARTIAL",
+    "current": "qip_contracts::knowledge_pack::{KnowledgePack,PackBody,SCHEMA_VERSION} (backend/crates/libs/qip-contracts/src/knowledge_pack.rs): a versioned pack with one typed body per content kind (summary, embedding, world-state snapshot, world-model delta, model artifact, episodic memory), canonical serde_json encoding, deny_unknown_fields at both levels and a refusal of any other schema version.",
     "evidence": [
-      "grep -rn 'KnowledgePack' backend/crates -> no results",
-      "backend/crates/services/qip-data-finder/src/endpoint.rs:127 (the only 'Parquet' hit in the tree, an AccessMechanism/FileFormat enum variant describing a vendor's own file format, not the platform's output)"
+      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs",
+      "test: a_pack_of_each_content_type_round_trips_byte_for_byte_and_carries_its_schema_version (backend/crates/libs/qip-contracts/tests/knowledge_pack.rs)",
+      "test: a_pack_carrying_a_field_outside_its_schema_is_refused_at_every_level",
+      "mutation: removing deny_unknown_fields from the pack, from the body enum, and the version check each made the second test fail at the matching assertion; restored"
     ],
-    "gap": "No KnowledgePack type exists in any form. The permitted form (a versioned, schema-checked pack type on serde/serde_json, with round-trip and refusal of out-of-schema fields) can be built in-tree today and has not been; only the literal protobuf/Parquet encoding would need a dependency record (ADR 0099 C2 names prost), and a protobuf wire encoding could also be written in-tree without a client stack.",
-    "implemented": false,
-    "tested": false,
+    "gap": "The pack type and its schema checks exist and are tested, but the encoding is uncompressed JSON, not the protobuf/Parquet the requirement names, and no producer builds a pack and no store (K2, DATA-044) holds one. A protobuf or Parquet encoding and compression need a dependency record (ADR 0099 C2) or an in-tree wire codec.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -326,11 +331,11 @@
       "DATA-012"
     ],
     "blocked_by": "",
-    "verification": "Missing: a pack type per content kind with a schema version, a byte-for-byte round-trip test, and a test that a pack carrying a field outside its schema is refused.",
+    "verification": "cargo test -p qip-contracts --test knowledge_pack (2 tests)",
     "work_item": "E08",
     "tier": "T4",
     "size": "L",
-    "notes": "verify: changed BLOCKED(C2)->MISSING. C2 is not the reason nothing exists: the requirement's own notes name an in-tree serde pack as the permitted form, and that form is buildable and absent. The dependency question applies only to the protobuf/Parquet encoding. Prior note: Permitted form today: JSON documents via qip_core::kv::KeyValueStore, which is what every durable structure in the platform (world model, ledgers, journal) actually uses."
+    "notes": "verify: MISSING -> PARTIAL. The requirement's unit check (round trip, schema version, out-of-schema refusal) is demonstrated for the in-tree serde form; the statement's protobuf/Parquet + compressed wording is not, so it is not marked COMPLETE. 2026-10-04 lane note: blocked on a dependency record -- protobuf/Parquet encoding needs either a new crate (ADR 0002/0009) or an in-tree wire codec nobody has decided to write."
   },
   {
     "id": "DATA-014",
@@ -361,26 +366,27 @@
   },
   {
     "id": "DATA-015",
-    "status": "PARTIAL",
-    "current": "qip_data_finder::scoring::SourceScores{reliability, freshness, uniqueness, historical_value, cost_efficiency} with fixed WEIGHTS, computed in DataFinder::assess and reached from production via DiscoveryDesk.",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::source_alpha adds the two evidence-based dimensions SourceScores lacked: incremental_information_gain (1 - r^2 against the incumbent series, so a rescaled duplicate scores near zero) and realised_contribution (information coefficient of the source's signal against the outcome that followed, signed), and SourceAlphaHistory records each source's scores over time, bounded at 256 per source. Series that are constant, misaligned, non-finite or shorter than 8 observations are refused rather than scored.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/scoring.rs:22-39 (SourceScores, WEIGHTS)",
-      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:90 a_duplicate_of_a_registered_source_scores_no_uniqueness",
-      "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs:136 an_expensive_source_scores_worse_on_cost_than_a_free_one"
+      "backend/crates/services/qip-data-finder/src/source_alpha.rs",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs::a_duplicate_source_adds_no_information_and_an_informative_one_earns_a_positive_contribution",
+      "backend/crates/services/qip-data-finder/tests/source_alpha.rs::a_sources_scores_are_recorded_over_time_within_a_bound",
+      "mutation: replacing 1 - r*r with a constant 1 failed 'a rescaled copy must score near zero, got 1'; deleting the history pop_front failed the bound assertion (left: 259); both restored byte-for-byte, 3 passed"
     ],
-    "gap": "Three of the four required dimensions are present (uniqueness maps to information gain, freshness to timeliness, reliability to reliability); 'realized strategy contribution (source alpha)' -- a closed-loop feedback score from actual trading/decision outcomes attributable to a source -- has no field anywhere in SourceScores or elsewhere, so a source's score is never fed by whether it actually helped.",
+    "gap": "No composition root feeds the scorer: the outcome series must come from the LEARN stage's per-source attribution and that join is not built, and SourceScores::composite does not yet include these two dimensions, so routing is unchanged by them.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A new SourceScores field (e.g. realized_contribution) populated from qip-kernel's attribution/learning path (the same LEARN-stage machinery that already produces per-strategy attribution) and a test that a source behind a strategy's realised gain scores higher on it than one behind a loss.",
+    "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "verify: PARTIAL -> COMPLETE on the replay check (duplicate near-zero gain, informative source positive contribution); integrated false. Prior note: "
   },
   {
     "id": "DATA-016",
@@ -394,7 +400,7 @@
       "backend/crates/services/qip-data-finder/src/finder.rs:324-480 (assess_one: classify, tier, host rules, robots, probe, scores; no manipulation-risk attribute)",
       "backend/crates/apps/qip-deepbrain/src/main.rs:1057-1073 (discovery candidates come only from QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH; empty when unset)"
     ],
-    "gap": "Manipulation risk is not inspected anywhere; no non-test code in backend/crates mentions it, so one of the seven required inspection attributes is absent. And the seven connectors actually polled in production never pass DataFinder::assess: they are admitted from the committed code catalogue (admit_registered / StandingAdmission), which evaluates licensing posture only. Schema, freshness, cost and uniqueness inspection applies only to discovery candidates, which reach assess only from qip-deepbrain's DiscoveryDesk over an operator-supplied candidate file.",
+    "gap": "Manipulation risk is now inspected: qip_data_finder::manipulation::ManipulationRisk::inspect reads the probe's evidence before the score and refuses a source whose newest record or last-modified time is dated after the fetch (beyond a five-minute skew tolerance), naming the attribute; plaintext transport is recorded as elevated and does not refuse (test a_candidate_whose_records_are_dated_after_the_probe_is_refused_on_manipulation_risk, qip-data-finder/tests/lifecycle_policy.rs, mutation-verified). Still open: the seven connectors actually polled in production never pass DataFinder::assess -- they are admitted from the committed code catalogue (admit_registered / StandingAdmission), which evaluates licensing posture only -- and there is no single inspection record whose completeness is checked, so 'refused naming the missing attribute' holds per gate (probe, personal data, manipulation, legality, score) rather than as one completeness test. The manipulation inspection reads one probing only: forward-dated timestamps and plaintext, nothing cross-probe.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -406,7 +412,7 @@
     "work_item": "E08",
     "tier": "T0",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE->PARTIAL: manipulation risk, one of the seven attributes the requirement lists, has no implementation; the production connectors bypass the full inspection and pass only the licensing gate."
+    "notes": "status kept PARTIAL. The seventh inspection attribute exists and refuses; the connector path and the single inspection record remain."
   },
   {
     "id": "DATA-017",
@@ -436,32 +442,37 @@
   },
   {
     "id": "DATA-018",
-    "status": "PARTIAL",
-    "current": "Two overlapping mechanisms: qip_data_finder::scoring::RoutingClass{Hot,Warm,Cold,Rejected} decides a candidate's tier at assessment time, and qip_data_finder::finder::MonitorOutcome{Healthy,Degraded,Quarantined,Dead} decides a registered source's fate on monitoring (schema drift -> Quarantined; needs_replacement() true for Quarantined|Dead). replacement.rs ranks a replacement, never outranking a source with worse legality regardless of score.",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::lifecycle::policy is the one pure function: what the registry held, what a pass found, and the action that follows -- Promoted (re-scored into a more eagerly polled RoutingClass), Throttled (a less eager one), Quarantined (refused for anything but its score: terms, robots, host, personal data, manipulation, lost access, standing; the registration is kept, marked, and never probed again) or Retired (use permitted, composite under Routing::COLD_THRESHOLD; the registration is removed). DataFinder::assess applies it to every candidate the registry already holds (finder.rs assess_held) and carries the LifecycleTransition on the RegistrationDecision; Platform::assess_sources journals each one as qip_kernel::source_lifecycle::SourceLifecycleChanged under the new Topic::SourceLifecycleChanged (Learn group, Episodic), and quarantines a stopped source's dataset in the mesh catalogue so Catalog::usable_for refuses it. qip-deepbrain's DiscoveryDesk reaches it on its cadence. Two defects found on the way are fixed: a re-assessed source was scored as redundant with its own registration (uniqueness 0 on every second pass), and a rejection of a registered candidate wrote nothing, so the registration stood.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/scoring.rs:130-139 (RoutingClass)",
-      "backend/crates/services/qip-data-finder/src/finder.rs:206-248 (MonitorOutcome, needs_replacement)",
-      "backend/crates/services/qip-data-finder/src/finder.rs:1085-1150 (monitor(): schema-drift quarantine, dead on silence)",
-      "backend/crates/services/qip-data-finder/tests/schema_drift.rs:113 a_source_whose_schema_drifted_is_quarantined_rather_than_consumed",
-      "backend/crates/services/qip-data-finder/tests/replacement.rs:86 a_dead_source_is_reported_dead_and_triggers_a_replacement_search",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs:548,2827 a_lapsed_standing_admission_withdraws_the_source_from_the_platform"
+      "backend/crates/services/qip-data-finder/src/lifecycle.rs (LifecycleAction, LifecycleTransition, Reassessment, policy)",
+      "backend/crates/services/qip-data-finder/src/finder.rs (assess_held; the self-overlap filter in score)",
+      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs (SourceLifecycleChanged, journal_source_transitions)",
+      "backend/crates/libs/qip-events/src/topic.rs (Topic::SourceLifecycleChanged, learning.source_lifecycle)",
+      "test: three_registered_sources_are_retired_quarantined_and_promoted_by_policy_alone (backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs)",
+      "test: a_source_that_goes_stale_is_throttled_to_a_slower_class_and_stays_registered (same file)",
+      "test: a_registered_source_reassessed_on_unchanged_evidence_scores_the_same_and_moves_nothing (same file)",
+      "test: a_registered_source_the_probe_cannot_reach_keeps_its_registration (same file)",
+      "test: each_transition_policy_makes_to_a_registered_source_appears_in_the_event_log (backend/crates/runtime/qip-kernel/tests/source_lifecycle.rs)",
+      "test: a_source_policy_quarantines_or_retires_is_no_longer_offered_by_the_mesh_catalogue (same file)",
+      "mutation: removing the self-overlap filter failed the unchanged-evidence test ('scored 0.820 and then 0.620'); swapping promotion and throttling, quarantining a below-floor source, treating an unreachable source as refused, dropping the journal call, and leaving a stopped source's catalogue entry usable each failed the matching test for that reason; all restored byte-for-byte"
     ],
-    "gap": "'Promoted'/'throttled' are not distinct lifecycle actions on an already-registered source the way 'quarantined'/replaced are -- RoutingClass is decided once at assessment, and no code was found that moves a registered source between Hot/Warm/Cold in response to its evolving score or MonitorOutcome history. Throttling exists only as a runtime rate limiter (ratelimit.rs), not as a policy action taken because a source's score fell. DataFinder::monitor, the only code that quarantines or declares a source dead, has no caller in any composition root (backend/crates/apps/*/src or qip-kernel/src); it runs only from qip-data-finder's tests. The one automated retirement reached in production is the deep brain withdrawing a source whose standing admission lapsed. No transition is recorded on the event log.",
+    "gap": "Closed by the requirement's own check. Three limits stay true and are not hidden by the status: (1) throttling is the routing class falling, and no poller reads RoutingClass yet (DATA-017: nothing instantiates an adapter from a PollPlan), so a throttled source is recorded as slower, not yet polled slower; (2) a quarantine holds for the life of the process's in-memory registry and no operator release path exists; (3) DataFinder::monitor (schema drift, dead source) still has no composition-root caller, so those two findings reach no transition. The registry is rebuilt by re-assessment after a restart, not from the log.",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [
       "DATA-015",
       "DATA-021"
     ],
     "blocked_by": "",
-    "verification": "A test that re-runs DataFinder::assess for an already-registered source whose score has since dropped and asserts its RoutingClass moves from Hot to Warm/Cold, once that re-evaluation path exists.",
+    "verification": "cargo test -p qip-data-finder --test lifecycle_policy (7 tests); cargo test -p qip-kernel --test source_lifecycle (2 tests: the three transitions on the journal, none before, none after an unchanged pass; a stopped source no longer offered by the mesh catalogue)",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept PARTIAL; evidence corrected: lifecycle.rs holds no monitor test (the monitor tests are schema_drift.rs:113 and replacement.rs:86), monitor() is reached only from tests, and the deep brain's lapsed-admission withdrawal was added as the one production-reached transition."
+    "notes": "PARTIAL -> COMPLETE on the three-fixture check, through Platform::assess_sources and on the event log. deployable true -> false for the reason DATA-033 records: DiscoveryConfig defaults to every_cycles=0 and no environment sets the cadence or a candidate file, so no deployed process runs a pass."
   },
   {
     "id": "DATA-019",
@@ -515,32 +526,34 @@
   },
   {
     "id": "DATA-021",
-    "status": "PARTIAL",
-    "current": "Two mechanisms. qip_data_finder::admission::StandingAdmission re-asks the whole licensing gate (catalogue posture, class agreement, both usages, registration standing) before every poll of an adopted connector, and refuses the poll before any socket opens once the terms stop granting. It is reached from qip-fastbrain, qip-api and qip-deepbrain feed/connector wiring, and in the deep brain a lapse withdraws the source from the platform. Separately, DataFinder::monitor re-checks a registered discovery source's schema (drift -> Quarantined) and availability (Dead), but nothing outside qip-data-finder's tests calls it.",
+    "status": "COMPLETE",
+    "current": "Three mechanisms, two of them new. (1) Every discovery pass re-reads an adopted source's robots.txt, licence, host rules and reachability (DataFinder::assess_one), and since the lifecycle policy a 'no' moves the standing registration instead of being discarded: forbidden terms or a revoked endpoint (HTTP 401/403) quarantine it, the transition is journaled as SourceLifecycleChanged, and a quarantined source is answered without the probe on every later pass and its dataset is refused by the mesh catalogue. The monitoring interval is DiscoveryDesk's cadence. (2) Unchanged: qip_data_finder::admission::StandingAdmission re-asks the licensing gate before every poll of a shipped connector and refuses the poll once the catalogue's terms stop granting; the deep brain withdraws the source on a lapse. (3) DataFinder::monitor (schema drift, dead) is still reached only from tests.",
     "evidence": [
-      "backend/crates/services/qip-data-finder/src/admission.rs:991-1019,1110 (StandingAdmission, check)",
-      "backend/crates/apps/qip-fastbrain/src/feed.rs:231,249 (StandingAdmission opened per connector)",
-      "backend/crates/apps/qip-fastbrain/tests/registrations.rs:505 a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_restart",
-      "backend/crates/apps/qip-api/tests/feed.rs:917 a_licence_that_expires_mid_run_stops_the_next_cycle_rather_than_the_next_restart",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs:2827 a_lapsed_standing_admission_withdraws_the_source_from_the_platform",
-      "backend/crates/services/qip-data-finder/src/finder.rs:1085-1150 (monitor; test-only callers)"
+      "backend/crates/services/qip-data-finder/src/finder.rs (assess_held: quarantine on refusal, no probe once quarantined)",
+      "backend/crates/apps/qip-deepbrain/src/discovery.rs (DiscoveryDesk::maybe_run -> Platform::assess_sources)",
+      "test: a_provider_whose_terms_turn_against_use_is_quarantined_within_one_cadence_and_never_fetched_again (backend/crates/apps/qip-deepbrain/src/discovery.rs)",
+      "test: a_source_whose_robots_txt_turns_against_the_path_is_quarantined_and_never_contacted_again (backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs)",
+      "test: a_source_that_starts_turning_the_probe_away_is_quarantined_naming_the_refusal (same file)",
+      "backend/crates/services/qip-data-finder/src/admission.rs (StandingAdmission, existing)",
+      "backend/crates/apps/qip-fastbrain/tests/registrations.rs a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_restart (existing)",
+      "mutation: making a refusal of a held source move nothing failed the desk test ('forbidden terms moved nothing'); letting a quarantined source be probed failed it ('a quarantined source was contacted again', 9 calls against 6); both restored byte-for-byte"
     ],
-    "gap": "The terms re-checked each poll are the committed catalogue's (licence effective/expiry instants, registration standing). Nothing observes the provider's own terms or robots.txt changing after adoption; a change reaches the platform only as a reviewed code change to the catalogue. DataFinder::monitor (schema and availability) is not reached from any composition root, and neither path moves the source through DATA-018's quarantine/retire lifecycle on the event log.",
+    "gap": "Closed by the requirement's own check, for sources the discovery path adopted. Still true: the seven shipped connectors' terms are the committed catalogue's, so a provider-side change reaches them only as a reviewed catalogue change, and their licence-lapse withdrawal is not journaled as a lifecycle transition; DataFinder::monitor has no composition-root caller; a quarantined source is not re-read to see whether its terms relaxed, by design, and release needs a person and has no path yet.",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [
       "DATA-016",
       "DATA-018"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-fastbrain --test registrations a_licence_that_expires_mid_run_stops_the_next_poll_rather_than_the_next_restart (existing). Missing: a fixture provider that changes its served terms/robots between polls, with the source quarantined or retired within the monitoring interval and no further fetch made.",
+    "verification": "cargo test -p qip-deepbrain --lib discovery::tests::a_provider_whose_terms_turn_against_use_is_quarantined_within_one_cadence_and_never_fetched_again; cargo test -p qip-data-finder --test lifecycle_policy",
     "work_item": "E08",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status kept PARTIAL; 'current' and evidence rewritten. The assessor missed StandingAdmission, the production-reached per-poll licence re-check with tests in qip-fastbrain, qip-api and qip-deepbrain. The cited lifecycle.rs:104 test is about crawl-delay pacing, and monitor() has no production caller."
+    "notes": "PARTIAL -> COMPLETE: the fixture provider changes its robots.txt between passes and the source is quarantined on the next cadence, on the log, with no further fetch. deployable true -> false: no environment sets the discovery cadence or a candidate file (see DATA-033)."
   },
   {
     "id": "DATA-022",

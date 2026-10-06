@@ -15,6 +15,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_capital::ledger::{
     DecidedBy, Eligibility, EligibilityDecision, EligibilityTerms, InvestmentRequest, Jurisdiction,
@@ -3222,6 +3223,508 @@ fn a_log_declaring_an_inflow_for_a_user_this_configuration_no_longer_enrols_stop
             && refused.message().contains("wire-0001"),
         "the refusal names the record and the remedy: {}",
         refused.message()
+    );
+    let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
+    Ok(())
+}
+
+// --- the desk's book is the fold of the log (LEDGER-005, -007, -023, -046) ----
+
+use qip_execution_engine::order::Side;
+use qip_kernel::platform::{FillBooked, LotAdjusted};
+use qip_market::bar::{Bar, Interval};
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
+use qip_market_ingestion::adapter::SensedRecord;
+use qip_streaming::envelope::StreamEnvelope;
+
+/// The producer both of the book's records carry.
+const BOOK_PRODUCER: &str = "kernel/book";
+
+/// Every fill the log holds for the desk's book, oldest first.
+fn booked_fills(platform: &Platform) -> Result<Vec<FillBooked>> {
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|record| {
+            record.event.lineage.producer == BOOK_PRODUCER
+                && record.event.topic == Topic::OrderFilled
+        })
+        .map(|record| {
+            StreamEnvelope::from_frame(&record.event)?
+                .decode::<FillBooked>()
+                .map(|envelope| envelope.body)
+        })
+        .collect()
+}
+
+/// Send one desk order down the path the ACT stage takes.
+fn trade(
+    platform: &mut Platform,
+    side: Side,
+    quantity: Decimal,
+    price: Decimal,
+    at: Timestamp,
+) -> Result<()> {
+    let order = platform.order_from(
+        ObjectId::from_string(INSTRUMENT),
+        side,
+        quantity,
+        price,
+        "prop-book",
+        vec!["hyp-book".to_string()],
+        at,
+    );
+    platform.submit_order(order, at)
+}
+
+/// What the book holds, to the unit: cash, positions at cost, equity,
+/// realised P&L and fees paid.
+type Book = (
+    Decimal,
+    std::collections::BTreeMap<String, (Decimal, Decimal)>,
+    Decimal,
+    Decimal,
+    Decimal,
+);
+
+fn book(platform: &Platform) -> Book {
+    (
+        platform.cash(),
+        platform.positions_at_cost(),
+        platform.equity(),
+        platform.realised_pnl(),
+        platform.trading_costs(),
+    )
+}
+
+/// What the risk stack reads off the book and the aggregate beside it. The
+/// two statistics are compared as bits: they are the same arithmetic over
+/// the same decimals in both processes, and "close" would hide a replay
+/// that anchored the day somewhere else.
+fn risk_reading(platform: &Platform) -> String {
+    let state = platform.risk_state_from(platform.risk_figures());
+    format!(
+        "equity {} cash {} gross {} net {} positions {:?} axes {:?} drawdown {:x} daily_loss {:x}",
+        state.equity,
+        state.cash,
+        state.gross_exposure,
+        state.net_exposure,
+        state.position_notionals,
+        state.axis_exposures,
+        state.drawdown.to_bits(),
+        state.daily_loss.to_bits(),
+    )
+}
+
+/// Copy the log's first lines, up to and including its `through`-th book
+/// record, into a file of their own: the log as it stood at that event.
+fn log_prefix(path: &std::path::Path, through: usize, tag: &str) -> std::path::PathBuf {
+    let text = std::fs::read_to_string(path).expect("the log is readable once its process is gone");
+    let marker = format!("\"producer\":\"{BOOK_PRODUCER}\"");
+    let mut seen = 0;
+    let mut kept = String::new();
+    for line in text.lines() {
+        kept.push_str(line);
+        kept.push('\n');
+        if line.contains(&marker) {
+            seen += 1;
+            if seen == through {
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        seen, through,
+        "the log holds {seen} book records, so there is no prefix through the {through}th"
+    );
+    let prefix = log_path(tag);
+    std::fs::create_dir_all(prefix.parent().expect("the prefix has a directory"))
+        .expect("the prefix directory is creatable");
+    std::fs::write(&prefix, kept).expect("the prefix is writable");
+    prefix
+}
+
+#[test]
+fn a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill()
+-> Result<()> {
+    // The failure this closes: the desk's book was the one book of record no
+    // log could rebuild. Every process opened it flat at the configured
+    // equity, so a restart forgot the positions, the fees, the drawdown's
+    // peak and the day's loss — and with them lifted any halt the last two
+    // had tripped. Two days of trading, a restart on the second, and then
+    // the log cut at each fill in turn.
+    let path = log_path("book");
+    let day_two = start().saturating_add(Duration::from_days(1));
+    let mut snapshots: Vec<(usize, Book)> = Vec::new();
+    let (before, read_before) = {
+        let mut first = platform_over(&path, start())?;
+        let opening = first.config().initial_equity;
+        assert_eq!(first.cash(), opening, "premise: the book opens all cash");
+        assert!(first.positions_at_cost().is_empty());
+        assert!(
+            booked_fills(&first)?.is_empty(),
+            "premise: nothing is booked yet"
+        );
+
+        // Day one: open a position. Day two: close part of it well below
+        // cost, so the day has a loss of its own that is not day one's.
+        for (side, quantity, price, at) in [
+            (Side::Buy, dec!("1000"), dec!("100"), start()),
+            (Side::Buy, dec!("500"), dec!("104"), start()),
+            (Side::Sell, dec!("400"), dec!("90"), day_two),
+        ] {
+            trade(&mut first, side, quantity, price, at)?;
+            snapshots.push((booked_fills(&first)?.len(), book(&first)));
+        }
+
+        // The premise of everything below: fills happened, cost something,
+        // left a position, realised a loss, and each is on the log.
+        let fills = booked_fills(&first)?;
+        assert_eq!(
+            fills.len(),
+            first.orders().fills().len(),
+            "every fill the order manager holds is a record on the log, and no other"
+        );
+        assert!(fills.len() >= 3, "three orders filled: {fills:?}");
+        assert!(
+            fills.iter().all(|fill| fill.simulated),
+            "a paper desk books paper fills"
+        );
+        assert!(
+            first.trading_costs().is_positive(),
+            "premise: the venue charged fees"
+        );
+        assert!(
+            first.realised_pnl().is_negative(),
+            "premise: day two realised a loss"
+        );
+        assert_eq!(
+            first.positions_at_cost().len(),
+            1,
+            "premise: a position is open"
+        );
+        assert_ne!(first.cash(), opening, "premise: the book moved");
+        let state = first.risk_state_from(first.risk_figures());
+        assert!(
+            state.daily_loss > 0.0,
+            "premise: day two has a loss of its own"
+        );
+        assert!(state.drawdown > 0.0, "premise: the book is off its peak");
+        // The fees are discrete, per fill, and sum to the book's figure —
+        // which is what makes each one attributable to the fill it was on.
+        assert_eq!(
+            fills
+                .iter()
+                .fold(Decimal::ZERO, |sum, fill| sum + fill.costs),
+            first.trading_costs(),
+            "the fees on the journalled fills are not the fees the book says it paid"
+        );
+        (book(&first), risk_reading(&first))
+    };
+
+    // The same day, an hour on: a second process, holding nothing but the log.
+    let later = day_two.saturating_add(Duration::from_hours(1));
+    let second = platform_over(&path, later)?;
+    assert_eq!(
+        book(&second),
+        before,
+        "the restarted book is not the book the first process held"
+    );
+    assert_eq!(
+        risk_reading(&second),
+        read_before,
+        "the risk stack reads a different book after the restart — exposure, drawdown or the \
+         day's loss was not rebuilt"
+    );
+    drop(second);
+
+    // And any prefix: the log cut after each order's last fill rebuilds the
+    // book exactly as it stood then.
+    for (index, (through, expected)) in snapshots.iter().enumerate() {
+        let prefix = log_prefix(&path, *through, &format!("book-prefix-{index}"));
+        let rebuilt = platform_over(&prefix, later)?;
+        assert_eq!(
+            &book(&rebuilt),
+            expected,
+            "the log's first {through} book record(s) rebuild a different book from the one \
+             held after them"
+        );
+        drop(rebuilt);
+        let _ = std::fs::remove_dir_all(prefix.parent().expect("the prefix has a directory"));
+    }
+    let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
+    Ok(())
+}
+
+/// A daily bar on [`INSTRUMENT`] closing at `close`, `day` days after [`start`].
+fn daily_bar(close: &str, day: i64) -> SensedRecord {
+    let close = Decimal::parse(close).expect("the fixture's close parses");
+    SensedRecord::Bar(Box::new(Bar {
+        object_id: ObjectId::from_string(INSTRUMENT),
+        venue: "XNYS".to_string(),
+        interval: Interval::Day,
+        open_time: start()
+            .saturating_add(Duration::from_days(day))
+            .saturating_sub(Interval::Day.duration()),
+        open: close,
+        high: close + dec!("2"),
+        low: close - dec!("2"),
+        close,
+        volume: Decimal::from_int(1_000),
+        trade_count: 100,
+        vwap: Some(close),
+        quality: qip_financial::quality::DataQuality::default(),
+    }))
+}
+
+/// Three bars, a two-for-one split ex on day three, and the first bar ex.
+fn tape_across_a_split() -> Vec<SensedRecord> {
+    vec![
+        daily_bar("100", 0),
+        daily_bar("102", 1),
+        daily_bar("104", 2),
+        SensedRecord::CorporateAction(Box::new(CorporateAction {
+            object_id: ObjectId::from_string(INSTRUMENT),
+            ex_date: start().saturating_add(Duration::from_days(3)),
+            record_date: None,
+            payment_date: None,
+            kind: CorporateActionKind::Split {
+                ratio: Decimal::from_int(2),
+            },
+            announced_at: start(),
+        })),
+        daily_bar("52", 3),
+    ]
+}
+
+#[test]
+fn a_split_the_book_took_before_a_restart_is_on_the_log_and_is_not_taken_again_when_the_tape_is_fed_to_the_new_process()
+-> Result<()> {
+    // The hazard resuming the book creates, and the reason the adjustment
+    // is journalled at all: bars live in memory, so a restarted process is
+    // fed the tape again, the split comes due against it again, and a lot
+    // the log rebuilt would be doubled a second time.
+    let path = log_path("book-split");
+    let ex_day = start().saturating_add(Duration::from_days(3));
+    let split_lot = {
+        let mut first = platform_over(&path, start())?;
+        trade(&mut first, Side::Buy, dec!("100"), dec!("100"), start())?;
+        let (bought, cost) = *first
+            .positions_at_cost()
+            .get(INSTRUMENT)
+            .expect("premise: the desk holds the instrument before the split");
+        assert!(bought.is_positive(), "premise: the venue filled something");
+
+        first.observe(tape_across_a_split());
+        first.run_cycle(ex_day);
+        let held = first.positions_at_cost();
+        let (quantity, average) = *held
+            .get(INSTRUMENT)
+            .expect("the holding survives the split");
+        assert_eq!(
+            quantity,
+            bought * dec!("2"),
+            "premise: the split doubled the holding"
+        );
+        assert_eq!(
+            quantity * average,
+            bought * cost,
+            "premise: and left what it cost unchanged"
+        );
+        let adjustments: Vec<LotAdjusted> = first
+            .event_log()
+            .records()
+            .iter()
+            .filter(|record| {
+                record.event.lineage.producer == BOOK_PRODUCER
+                    && record.event.topic == Topic::PositionUpdated
+            })
+            .map(|record| {
+                StreamEnvelope::from_frame(&record.event)?
+                    .decode::<LotAdjusted>()
+                    .map(|envelope| envelope.body)
+            })
+            .collect::<Result<_>>()?;
+        assert_eq!(adjustments.len(), 1, "the split is one record on the log");
+        assert_eq!(adjustments[0].quantity_factor, dec!("2"));
+        held
+    };
+
+    let later = ex_day.saturating_add(Duration::from_hours(1));
+    let mut second = platform_over(&path, later)?;
+    assert_eq!(
+        second.positions_at_cost(),
+        split_lot,
+        "the restarted book holds the pre-split lot: the fill was replayed and the split was not"
+    );
+    // The tape again, as a feed hands it to every new process.
+    second.observe(tape_across_a_split());
+    second.run_cycle(later);
+    assert_eq!(
+        second.positions_at_cost(),
+        split_lot,
+        "the split reached the rebuilt lot a second time"
+    );
+    drop(second);
+    let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
+    Ok(())
+}
+
+#[test]
+fn with_every_derived_store_gone_the_log_and_the_statements_alone_rebuild_and_verify_the_desks_cash_and_positions()
+-> Result<()> {
+    // LEDGER-046. A second process holds none of the first's memory: every
+    // registry, aggregate and view it has was rebuilt or is empty. From the
+    // log it must reach the same cash and the same positions, and the
+    // statements must then agree with it exactly as they agreed with the
+    // first — for the position as well as the cash, which until the book's
+    // positions were handed to the wallet were compared with nothing.
+    let path = log_path("book-rebuild");
+    let desk = desk_cash()?;
+    let holding = qip_capital_fabric::wallet::VenueAsset {
+        venue: desk.venue.clone(),
+        asset: qip_capital_fabric::wallet::Asset::new(INSTRUMENT)?,
+    };
+    let after_trading = start().saturating_add(Duration::from_secs(60));
+    let (cash, quantity, filled) = {
+        let mut first = platform_over(&path, start())?;
+        trade(&mut first, Side::Buy, dec!("1000"), dec!("100"), start())?;
+        let cash = first.cash();
+        let (quantity, _) = *first
+            .positions_at_cost()
+            .get(INSTRUMENT)
+            .expect("premise: the desk holds a position to verify");
+        assert_ne!(cash, first.config().initial_equity, "premise: cash moved");
+
+        // The venue's statement of both, as the first process's book has them.
+        first.observe_statement(desk.venue.clone(), "USD", cash, dec!("1"), after_trading)?;
+        first.observe_statement(
+            desk.venue.clone(),
+            INSTRUMENT,
+            quantity,
+            dec!("0.5"),
+            after_trading,
+        )?;
+        first.run_cycle(after_trading);
+        for key in [&desk, &holding] {
+            let outcome = first
+                .fabric_state()
+                .reconciliations()
+                .get(key)
+                .unwrap_or_else(|| panic!("premise: {key} was reconciled"));
+            assert!(
+                !outcome.is_break(),
+                "premise: the statement agrees with the first process's book at {key}: {outcome:?}"
+            );
+        }
+        assert_eq!(
+            first.cash(),
+            cash,
+            "premise: the cycle itself traded nothing"
+        );
+        let filled = booked_fills(&first)?
+            .first()
+            .expect("premise: the fill is on the log")
+            .quantity;
+        (cash, quantity, filled)
+    };
+
+    // A new process: nothing carried over but the log.
+    let later = start().saturating_add(Duration::from_hours(1));
+    let mut second = platform_over(&path, later)?;
+    assert_eq!(
+        second.cash(),
+        cash,
+        "the log rebuilt a different cash balance"
+    );
+    assert_eq!(
+        second.positions_at_cost().get(INSTRUMENT).map(|lot| lot.0),
+        Some(quantity),
+        "the log rebuilt a different position"
+    );
+    second.observe_statement(desk.venue.clone(), "USD", cash, dec!("1"), later)?;
+    second.observe_statement(desk.venue.clone(), INSTRUMENT, quantity, dec!("0.5"), later)?;
+    second.run_cycle(later.saturating_add(Duration::from_secs(60)));
+    for key in [&desk, &holding] {
+        let outcome = second
+            .fabric_state()
+            .reconciliations()
+            .get(key)
+            .unwrap_or_else(|| panic!("{key} was not reconciled by the restarted process"));
+        assert!(
+            !outcome.is_break(),
+            "the rebuilt book does not agree with the statement at {key}: {outcome:?}"
+        );
+    }
+
+    // The verification can fail: a statement ten shares short of the book
+    // halts that holding and names the gap, and leaves the cash alone.
+    let short = later.saturating_add(Duration::from_secs(120));
+    second.observe_statement(
+        desk.venue.clone(),
+        INSTRUMENT,
+        quantity - dec!("10"),
+        dec!("0.5"),
+        short,
+    )?;
+    second.run_cycle(short);
+    let outcome = second
+        .fabric_state()
+        .reconciliations()
+        .get(&holding)
+        .expect("the holding was reconciled again");
+    assert!(
+        outcome.is_halt(),
+        "ten shares missing did not halt: {outcome:?}"
+    );
+    assert_eq!(outcome.delta(), dec!("-10"));
+    assert_eq!(outcome.direction(), Some(Divergence::Shortfall));
+    assert!(
+        !second
+            .fabric_state()
+            .reconciliations()
+            .get(&desk)
+            .expect("the cash was reconciled again")
+            .is_halt(),
+        "a break in one holding halted the desk's cash"
+    );
+    drop(second);
+
+    // And a poisoned log rebuilds nothing: one digit of one fill's quantity
+    // changed on disk, and assembly refuses rather than opening a book at a
+    // figure nobody booked.
+    let text = std::fs::read_to_string(&path).expect("the log is readable");
+    let marker = format!("\"producer\":\"{BOOK_PRODUCER}\"");
+    let honest = format!("\"quantity\":\"{filled}\"");
+    let altered = format!("\"quantity\":\"{}\"", filled + dec!("9000"));
+    let mut poisoned = false;
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| {
+            if !poisoned && line.contains(&marker) && line.contains(&honest) {
+                poisoned = true;
+                line.replacen(&honest, &altered, 1)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    assert!(
+        poisoned,
+        "premise: a booked fill's quantity was found on disk to poison"
+    );
+    std::fs::write(&path, lines.join("\n") + "\n").expect("the log is writable");
+    let refused = match platform_over(&path, later.saturating_add(Duration::from_hours(1))) {
+        Ok(opened) => panic!(
+            "a poisoned log assembled, with a position of {:?}",
+            opened.positions_at_cost()
+        ),
+        Err(refused) => refused,
+    };
+    assert!(
+        !refused.message().is_empty(),
+        "the refusal names nothing an operator could act on"
     );
     let _ = std::fs::remove_dir_all(path.parent().expect("the log has a directory"));
     Ok(())

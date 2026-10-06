@@ -2341,6 +2341,24 @@ impl CentralPlane {
         known
     }
 
+    /// Gauge the sent-but-unfilled orders. Called before `settle`'s early
+    /// return, not only on the settling path, because a report that settled nothing is
+    /// exactly the one that must still bring a stalled value back to zero.
+    fn record_outcome_backlog(&self) {
+        let Some(metrics) = &self.metrics else {
+            return;
+        };
+        // Each cell's register is bounded, so the sum fits a u32 and the
+        // saturation is only a type's formality.
+        let backlog: usize = self.sent.values().map(|sent| sent.by_id.len()).sum();
+        let backlog = u32::try_from(backlog).unwrap_or(u32::MAX);
+        metrics.gauge(
+            names::CENTRAL_OUTCOME_BACKLOG,
+            labels([]),
+            f64::from(backlog),
+        );
+    }
+
     /// Register the interval's orders as sent, bill its fills to their
     /// contributors and settle the crosses, exactly, or say which entries
     /// could not be.
@@ -2575,6 +2593,7 @@ impl CentralPlane {
             }
         }
 
+        self.record_outcome_backlog();
         if periods.is_empty() {
             return settlement;
         }

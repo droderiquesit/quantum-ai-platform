@@ -9,6 +9,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_api::auth::{Authenticator, Credential, Principal, RateLimiter, Role};
 use qip_api::cells::CellRegistry;
@@ -1905,6 +1906,42 @@ fn the_execution_page_renders_the_settlement_the_platform_counted_and_not_a_zero
 }
 
 #[test]
+fn the_mesh_status_the_api_serves_never_names_a_cells_endpoint() -> Result<()> {
+    use qip_api::mesh::{CellAddress, MeshBackbone, MeshSettings};
+
+    let assembled = assemble()?;
+    let settings = MeshSettings {
+        cells: vec![CellAddress {
+            cell: "eu-west".to_string(),
+            address: "127.0.0.1:0".to_string(),
+        }],
+        inbox_capacity: 8,
+        spool_capacity: 8,
+        regions: None,
+    };
+    let mesh = MeshBackbone::open(
+        &settings,
+        Arc::new(qip_storage::kv::MemoryKeyValueStore::new()),
+        assembled.clock.clone() as Arc<dyn qip_core::Clock>,
+        None,
+    )?;
+    let status = mesh.status();
+    // Premise: the cell is served, so an absent address is not an absent cell.
+    assert_eq!(status.cells.len(), 1);
+    let body = serde_json::to_string(&status).unwrap();
+    assert!(body.contains(r#""cell":"eu-west""#), "{body}");
+    assert!(
+        !body.contains("\"address\""),
+        "a cell's address is served: {body}"
+    );
+    assert!(
+        !body.contains("127.0.0.1"),
+        "a cell's host is served: {body}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_router_with_a_mesh_lends_it_to_the_page_and_the_page_says_no_delta_was_decoded() -> Result<()>
 {
     use qip_api::mesh::{CellAddress, MeshBackbone, MeshSettings};
@@ -3042,4 +3079,137 @@ fn the_private_positions_surface_renders_a_paced_draw_under_a_field_that_does_no
          carrying capital calls in it: {body}"
     );
     Ok(())
+}
+
+// --- OBS-018: the API's own four golden signals ----------------------------
+
+/// The API records latency, traffic, errors and saturation for its own
+/// requests, driven over a real socket through the real router.
+///
+/// Until `qip_api::golden` this crate recorded nothing about a request, so an
+/// API refusing every caller scraped exactly like a healthy one. The mix is
+/// one served request, one the caller got wrong, one the service could not
+/// serve, and a scrape — whose own body is where saturation is read, because
+/// a gauge of requests in flight reads zero from anywhere outside a request.
+#[test]
+fn a_request_mix_with_failures_moves_all_four_of_the_apis_golden_signals() -> Result<()> {
+    use qip_api::golden::GoldenHandler;
+    use qip_observability::metrics::{Labels, labels, names};
+
+    let assembled = assemble()?;
+    let metrics = assembled
+        .platform
+        .lock()
+        .expect("the platform lock")
+        .telemetry()
+        .metrics
+        .clone();
+    // No console attached, as a deployment without one: `/console/...` is
+    // then a route the service cannot serve, which is the 503 in the mix.
+    let router = Router::new(assembled.api.clone(), assembled.web.clone());
+    let limits = ServerLimits::default();
+    let handler = Arc::new(GoldenHandler::new(
+        Arc::new(router),
+        metrics.clone(),
+        limits.max_concurrent,
+    )?);
+
+    // The premise: nothing has been asked, so none of the four exists.
+    let before = metrics.snapshot();
+    assert_eq!(before.counter_total(names::SERVICE_REQUESTS), 0);
+    assert_eq!(before.counter_total(names::SERVICE_ERRORS), 0);
+    assert!(
+        before
+            .gauge(names::SERVICE_SATURATION, &Labels::new())
+            .is_none()
+    );
+
+    let server = Server::bind("127.0.0.1:0", handler, limits)?;
+    let address = server.local_address()?;
+    let serving = std::thread::spawn(move || {
+        for _ in 0..4 {
+            let _ = server.serve_once();
+        }
+    });
+    let ask = |path: &str, token: Option<&str>| {
+        let authorization = token
+            .map(|token| format!("Authorization: Bearer {token}\r\n"))
+            .unwrap_or_default();
+        send(
+            &address,
+            &format!("GET {path} HTTP/1.1\r\nHost: test\r\n{authorization}\r\n"),
+        )
+    };
+
+    let served = ask("/api/v1", None);
+    assert!(served.starts_with("HTTP/1.1 200"), "{served}");
+    let refused = ask("/api/v1/portfolio", None);
+    assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+    let unserved = ask("/console/risk", Some("viewer-token"));
+    assert!(unserved.starts_with("HTTP/1.1 503"), "{unserved}");
+    let scrape = ask("/api/v1/metrics", Some("viewer-token"));
+    assert!(scrape.starts_with("HTTP/1.1 200"), "{scrape}");
+    serving.join().expect("the server thread");
+
+    // Saturation, read where it is true: the scrape rendered itself in
+    // flight, one request of the sixty-four the server admits.
+    assert_eq!(limits.max_concurrent, 64, "the premise of the figure below");
+    let saturation_line = scrape
+        .lines()
+        .find(|line| line.starts_with(names::SERVICE_SATURATION))
+        .unwrap_or_else(|| panic!("the scrape carries no saturation series: {scrape}"));
+    assert!(
+        saturation_line.ends_with(" 0.015625"),
+        "one request in flight of 64 is not what the scrape reported: {saturation_line}"
+    );
+
+    let after = metrics.snapshot();
+    assert_eq!(after.counter_total(names::SERVICE_REQUESTS), 4, "traffic");
+    assert_eq!(
+        after.counter(names::SERVICE_ERRORS, &labels([("class", "caller")])),
+        1,
+        "the 401"
+    );
+    assert_eq!(
+        after.counter(names::SERVICE_ERRORS, &labels([("class", "service")])),
+        1,
+        "the 503"
+    );
+    let latency = after
+        .histogram(names::SERVICE_LATENCY_MS, &Labels::new())
+        .expect("the latency histogram");
+    assert_eq!(latency.count, 4, "latency");
+    assert_eq!(
+        after.gauge(names::SERVICE_SATURATION, &Labels::new()),
+        Some(0.0),
+        "with nothing in flight the gauge did not come back down"
+    );
+    Ok(())
+}
+
+/// The binary serves through the wrapper, on the platform's own registry and
+/// under the limits it reports saturation against. A source scan, because
+/// `main.rs` is a binary and no test can call its assembly: a wrapper the
+/// root never installs would pass the test above and record nothing deployed.
+#[test]
+fn the_api_binary_serves_through_the_golden_signal_wrapper_under_the_limits_it_binds_with() {
+    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+        .expect("the API's main.rs is readable");
+    assert!(
+        main.contains("Server::bind(") && main.contains("Router::new("),
+        "the scan is not reading the composition root"
+    );
+    assert!(
+        main.contains("let request_metrics = telemetry.metrics.clone();"),
+        "the wrapper's registry is no longer the one the platform records into"
+    );
+    assert!(
+        main.contains("qip_api::golden::GoldenHandler::new(")
+            && main.contains("server_limits.max_concurrent"),
+        "the handler is no longer wrapped, or not against the server's own connection limit"
+    );
+    assert!(
+        main.contains("Server::bind(&address, handler, server_limits)"),
+        "the server is bound with limits other than the ones saturation is reported against"
+    );
 }

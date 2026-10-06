@@ -12,6 +12,7 @@
 //! No test here reads the process environment or opens a socket. The key and
 //! token are written to scratch files at run time and reached through a
 //! lookup the test supplies, and the broker is a recording transport.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_cli::event_fabric::grant::{self, FIXTURE_KEY_LABEL, KEY_VARIABLE, TOKEN_VARIABLE};
 use qip_cli::event_fabric::{Environment, SUBCOMMANDS};
@@ -115,6 +116,7 @@ impl FabricTransport for RecordingBroker {
         match request {
             Request::ProducerInit(_) => Ok(Response::ProducerInit(ProducerInitResponse {
                 producer_epoch: 1,
+                next_sequence: 0,
             })),
             Request::Produce(produce) => {
                 let base = self.written;

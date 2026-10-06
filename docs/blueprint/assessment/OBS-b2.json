@@ -1,29 +1,22 @@
 [
   {
     "id": "OBS-022",
-    "status": "INCORRECT",
-    "current": "The prohibition does not hold. qip-fastbrain's composition root prints a multi-line cycle report to stdout on every cycle: main.rs:346-359 passes node::run a callback that does `println!(\"{}\", outcome.report.summarise())` (CycleReport::summarise, qip-kernel/src/cycle.rs:159, one line per stage plus one per problem) and then one `println!` per rejected feed record (`for rejection in &outcome.rejections`). node::run (qip-fastbrain/src/node.rs:173-243) calls that callback once per cycle. The cycle runs every QIP_FASTBRAIN_CYCLE_INTERVAL_MS, default 100 ms (config.rs:30), and on a tape feed once per knowable tick instant (feed.rs:422-429, `Self::Tape(adapter) => adapter.advance()`). qip-fastbrain is a Cloud Run service pinned to one always-on instance (infrastructure/terraform/catalogue.tf:390-414, min_instances = max_instances = 1). Cloud Run ingests container stdout into Cloud Logging, and no logging exclusion or sink exists in infrastructure/terraform (grep for google_logging_project_exclusion/_sink -> 0). So a deployed fast brain writes about ten per-decision-cycle records a second into general-purpose log ingestion, and under tape replay the volume scales with tick count. qip-deepbrain prints the same per-cycle summary (main.rs:614-615), at its slower learning cadence. qip-edge-node writes one stderr line per requote and per reconciliation break inside the pass loop (main.rs:906,909). It is not deployed. What does hold: qip_observability::Logger is never called from qip-kernel's platform.rs (`grep -c 'logger\\.' platform.rs` -> 0, against 127 `metrics.` sites), and qip_events::EventLog (log.rs:164, append at :698) with qip_storage::ChainArchive is the history record. Raw ticks themselves stay Transient under ADR 0089 (restated in ADR 0100 section 5), so the 'journal holds every tick' half belongs to TICK/FABRIC.",
+    "status": "COMPLETE",
+    "current": "qip-fastbrain no longer prints a per-cycle report or per-record rejection: node::run feeds qip_fastbrain::cycle_log::CycleLog, which releases at most one summary line per 10 s interval carrying counts of what it swallowed. The event log and metrics still hold every cycle. qip-deepbrain still prints a per-round summary, at its 300 s default cadence, which is a learning round and not a decision. qip-edge-node is not deployed.",
     "evidence": [
-      "backend/crates/apps/qip-fastbrain/src/main.rs:346-359 (per-cycle println! of report.summarise() and of every rejection)",
-      "backend/crates/apps/qip-fastbrain/src/node.rs:173-243 (node::run calls on_cycle once per cycle)",
-      "backend/crates/apps/qip-fastbrain/src/config.rs:30 (DEFAULT_CYCLE_INTERVAL = 100 ms)",
-      "backend/crates/apps/qip-fastbrain/src/feed.rs:422-429 (a tape feed advances one knowable instant per cycle)",
-      "backend/crates/runtime/qip-kernel/src/cycle.rs:159-182 (CycleReport::summarise: one line per stage and per problem)",
-      "infrastructure/terraform/catalogue.tf:390-414 (fastbrain on Cloud Run, min_instances = max_instances = 1, always on)",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:614-615 (same per-cycle summary on stdout)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:906,909 (per-requote and per-break stderr lines in the pass loop)",
-      "grep -c 'logger\\.' backend/crates/runtime/qip-kernel/src/platform.rs -> 0 (measured 2026-09-25)",
-      "backend/crates/libs/qip-events/src/log.rs:164,698 (EventLog, append)"
+      "backend/crates/apps/qip-fastbrain/src/cycle_log.rs",
+      "backend/crates/apps/qip-fastbrain/src/main.rs (node::run callback)",
+      "backend/crates/apps/qip-fastbrain/tests/cycle_log.rs::the_log_volume_for_a_span_of_time_is_the_same_whether_it_held_a_hundred_cycles_or_ten_thousand"
     ],
-    "gap": "A per-cycle (per-decision) record goes to stdout, and so to Cloud Logging, from a deployed always-on service at up to 10 Hz and at tick rate on a tape. The requirement forbids exactly this. Fix: stop printing per-cycle reports and per-record rejections on the service path. Keep them in the event log and metrics, print a bounded periodic summary or only on state change, and pin it with a test that drives N cycles through node::run and asserts stdout/log output does not grow with N.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Run qip-fastbrain on a tape of N instants and count stdout lines: today they grow linearly with N (one summarise() block per cycle). Pass condition: a test drives many cycles through node::run and asserts the emitted log/stdout volume is independent of cycle and tick count, while the event log holds every decision.",
+    "verification": "cargo test -p qip-fastbrain --test cycle_log (mutation-verified: emitting on every cycle fails both tests; dropping breach counting fails the second)",
     "work_item": "E12-remove-per-cycle-stdout-reports",
     "tier": "T1",
     "size": "S",
@@ -87,26 +80,25 @@
   },
   {
     "id": "OBS-025",
-    "status": "NEEDS-VALIDATION",
-    "current": "qip-edge (backend/crates/edge/qip-edge) and qip-edge-node (backend/crates/apps/qip-edge-node) construct no trace exporter and contain no openobserve drain. `rg -n -i 'openobserve|tracer|otlp|traces_url' backend/crates/apps/qip-edge-node/src backend/crates/edge` returns one hit, a doc comment at qip-edge-node/src/lib.rs:72: 'the tracer and the logger reach nothing in this node'. The node does build a qip_observability::Telemetry, which contains a Tracer, but only the metric registry has a consumer. qip-edge-node's qip-transport dependency serves the mesh link to the central plane, not trace export. Correlation/trace metadata would travel as struct fields, costing bytes rather than a call. No Fabric component exists yet (ADR 0100 decides one, unbuilt), so the Fabric half of the prohibition holds vacuously.",
+    "status": "COMPLETE",
+    "current": "No source file under backend/crates/edge or backend/crates/apps/qip-edge-node/src starts a span, drains the tracer, constructs a Tracer or names the OpenObserve drain, and an architecture test now holds that. The node builds a Telemetry (which contains a Tracer) and depends on qip-transport for the mesh link, so the absence was one copied module away from an HTTP POST beside the decision thread; it is now a refusal. No Fabric component runs (qip-fabricd refuses to start), so the Fabric half holds vacuously.",
     "evidence": [
-      "rg -n -i 'openobserve|tracer|otlp|traces_url' backend/crates/apps/qip-edge-node/src backend/crates/edge -> only the lib.rs:72 doc comment (measured 2026-09-25)",
-      "backend/crates/apps/qip-edge-node/src/lib.rs:70-74 (NodeAssembly: 'the tracer and the logger reach nothing in this node')",
-      "backend/crates/apps/qip-edge-node/Cargo.toml (qip-transport dependency is for the mesh, not tracing)"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_reflex_crate_and_no_part_of_its_node_can_start_export_or_drain_a_trace",
+      "backend/crates/apps/qip-edge-node/src/lib.rs (NodeAssembly: 'the tracer and the logger reach nothing in this node')"
     ],
-    "gap": "No named test asserts 'in a harness with no network route to any trace endpoint, a Reflex cell's decision path completes at its benchmarked latency and opens no socket to a trace endpoint.' The absence is structural (no dependency is ever wired for this purpose), not pinned by a regression test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "grep -rn 'openobserve\\|Tracer' backend/crates/edge -> 0; an architecture.rs/resilience.rs test forbidding qip-edge* from ever depending on trace-export machinery would close this",
+    "verification": "cargo test -p qip-acceptance --test architecture no_reflex_crate. The test asserts its premise first: each central root's drain contains tracer.export( and traces_url, so the scan recognises the machinery where it exists. Mutation-verified: adding `let _ = telemetry.tracer.export();` to qip-edge-node's assemble fails it.",
     "work_item": "E12-edge-no-trace-call-regression-test",
     "tier": "T1",
     "size": "S",
-    "notes": "deployable=false because execution_nodes={} in every environment (qip-edge-node is not deployed anywhere), independent of this prohibition holding in the code that exists.\n\nverify: status and flags kept. Fixed the evidence path: the assessor searched backend/crates/edge/qip-edge-node/src, which does not exist (the binary is under apps/). Re-ran against the real paths, with the same result. Added lib.rs:72 as positive evidence and noted that the Fabric half is vacuous because no Fabric exists."
+    "notes": "deployable=false because execution_nodes={} in every environment (qip-edge-node is not deployed anywhere), independent of this prohibition holding in the code that exists.\n\nverify: status and flags kept. Fixed the evidence path: the assessor searched backend/crates/edge/qip-edge-node/src, which does not exist (the binary is under apps/). Re-ran against the real paths, with the same result. Added lib.rs:72 as positive evidence and noted that the Fabric half is vacuous because no Fabric exists.\n\n2026-10-05: NEEDS-VALIDATION -> COMPLETE by the structural guard this row named as its closure. The check's 'at its benchmarked latency' clause is not measured: the cell has no benchmarked latency (blueprint_objectives files the three p99 targets under NeedsReleaseTiming). What is proven is that no trace call exists to wait on."
   },
   {
     "id": "OBS-026",
@@ -119,21 +111,22 @@
       "grep -rn 'connectivity_test\\|network_management' infrastructure/terraform -> 0 matches",
       "docs/architecture/current-state/infrastructure.json (modules/connectivity: enable_partner_interconnect=false in every environment)",
       "infrastructure/terraform/modules/iap-edge/main.tf:207-235 (second LB, log_config enable=true)",
-      "infrastructure/environments/dev/terraform.tfvars:491-499 (public_edge block commented out: no LB is applied in dev)"
+      "infrastructure/environments/dev/terraform.tfvars:491-499 (public_edge block commented out: no LB is applied in dev)",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs::every_subnet_keeps_flow_logs_and_every_load_balancer_backend_logs_its_requests"
     ],
-    "gap": "Connectivity Tests / Network Intelligence Center tooling is entirely absent (0 google_network_management_connectivity_test resources). No test file asserts flow logs cover every Reflex/Fabric/mesh-carrying subnet. Interconnect/VPN metrics do not apply yet (module built, gated off -- GCP Phase 7).",
+    "gap": "Connectivity Tests / Network Intelligence Center tooling is entirely absent (0 google_network_management_connectivity_test resources). Interconnect/VPN metrics do not apply yet (module built, gated off -- GCP Phase 7). Flow logs on every subnet and request logging on every load-balancer backend are now held by a test.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "grep -c flow_sampling infrastructure/terraform/modules/*/main.tf (currently 4 modules); no terraform_contract.rs assertion exists for flow-log coverage or Connectivity Tests today",
+    "verification": "cargo test -p qip-acceptance --test manifest_wiring every_subnet_keeps_flow_logs (every google_compute_subnetwork declares log_config.flow_sampling above zero and every backend service log_config.enable = true; mutation-verified by zeroing one subnet's sampling and by disabling the public edge's log_config). No assertion exists for Connectivity Tests, which nothing declares.",
     "work_item": "E14-network-intelligence-connectivity-tests",
     "tier": "T2",
     "size": "M",
-    "notes": "Trust-zone flow logs are applied in dev today (trust-zones production_evidence). LB logging is declared but no LB exists in any environment. The gap is entirely Connectivity Tests / NIC, which nothing declares.\n\nverify: status and flags kept (trust-zone flow logs are applied in dev). Corrected the claim that LB logging is applied in dev: public_edge is commented out in dev tfvars and iap-edge is instantiated nowhere. Added the second LB module's log_config."
+    "notes": "Trust-zone flow logs are applied in dev today (trust-zones production_evidence). LB logging is declared but no LB exists in any environment. The gap is entirely Connectivity Tests / NIC, which nothing declares.\n\nverify: status and flags kept (trust-zone flow logs are applied in dev). Corrected the claim that LB logging is applied in dev: public_edge is commented out in dev tfvars and iap-edge is instantiated nowhere. Added the second LB module's log_config.\n\n2026-10-05: two of the four instruments are now pinned for every resource of the kind. Stays PARTIAL: Connectivity Tests need a resource type this lane could not prove against the pinned provider, and they are a plan-level decision."
   },
   {
     "id": "OBS-027",
@@ -170,24 +163,24 @@
   },
   {
     "id": "OBS-028",
-    "status": "MISSING",
-    "current": "Slo::error_budget()/evaluate() (slo.rs:118,123) compute budget_consumed; SloStatus::is_page_worthy() (slo.rs:167, >=90% budget consumed over >=20 observations) is the one consumer, read from qip-kernel's blueprint_objectives::review() (platform.rs-adjacent, backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs:377) which raises a LEARN-stage 'problem' string -- an internal cycle alarm, not a release-pipeline gate. No workflow reads any SLO/budget value: `grep -i budget .github/workflows/deploy.yml` and `ci.yml` both return nothing.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs release_gate(plane, statuses): refuses a promotion to a plane with an observed objective whose error budget is spent, naming the objective; other planes and unmeasured objectives never block. No CI/CD workflow calls it yet. Library logic only: no production seam calls it yet, so integrated and deployable stay false. Wired: Platform::release_decision and blueprint_objectives::fold put a 'release to <plane> is refused' problem on the LEARN stage while a page-worthy observed objective of that plane has spent its budget. No CI/deploy step reads it yet, so deployable stays false.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:118 (error_budget), :123 (evaluate), :167 (is_page_worthy)",
-      "backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs:372-377 (review() raises a problem on a page-worthy miss)",
-      "rg -i 'error.budget|budget_consumed|slo' .github scripts Makefile -> no release-gate use (measured 2026-09-25)"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::an_exhausted_budget_refuses_a_promotion_to_its_plane_and_remaining_budget_lets_it_through",
+      "backend/crates/runtime/qip-kernel/tests/self_observation.rs::a_plane_whose_error_budget_is_spent_refuses_a_release_and_other_planes_proceed"
     ],
-    "gap": "Nothing gates a promotion or deployment on error-budget state; the only consumer of budget_consumed is an internal LEARN-stage alarm string, never read by any CI/CD workflow or release mechanism.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "OBS-027"
     ],
     "blocked_by": "",
-    "verification": "a fixture plane with an exhausted error budget must cause a release-pipeline job to refuse promotion and name the budget as the reason; no such job or test exists today (grep -i budget .github/workflows/*.yml -> 0)",
+    "verification": "cargo test -p qip-observability --test aiops an_exhausted_budget_refuses_a_promotion_to_its_plane_and_remaining_budget_lets_it_through (mutation-verified: raising the exhaustion threshold fails it)",
     "work_item": "E01-error-budget-release-gate",
     "tier": "T2",
     "size": "M",
@@ -218,25 +211,25 @@
     "work_item": "E05-product-slo-catalogue",
     "tier": "T2",
     "size": "M",
-    "notes": "The Fabric-backlog half is additionally constrained by C2 (see OBS-032): it cannot be a genuine consumer-lag figure until a real broker exists. The reconciliation-age half is unbuilt but not architecturally blocked."
+    "notes": "The Fabric-backlog half is additionally constrained by C2 (see OBS-032): it cannot be a genuine consumer-lag figure until a real broker exists. The reconciliation-age half is unbuilt but not architecturally blocked.\n\n2026-10-05: not closable by code alone. The source states no target for either objective, so a product catalogue would carry two numbers nobody decided; the backlog series has no running broker (qip-fabricd refuses to start); and no desk-facing route reports any objective yet."
   },
   {
     "id": "OBS-030",
-    "status": "MISSING",
-    "current": "No autonomous SRE/AIOps remediation agent exists anywhere in the workspace. `grep -rln 'AIOps\\|SreAgent\\|sre_agent\\|remediat' backend/crates --include=*.rs` returns only backend/crates/apps/qip-cli/src/blueprint.rs, which is a text listing of blueprint capability codes, not an implementation. The general audit substrate this requirement would need is real and ready -- qip_events::EventLog is hash-chained and append-only (log.rs) -- but there is no runbook-execution code (rollback/restart/drain/scale) to audit in the first place.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs AuditTrail: every executed or refused remediation appends a hash-chained record naming runbook, incident, target and result. The trail has no public append, remove or rewrite; Remediator hands out only a shared reference. verify() detects an altered record. The trail is in memory: persisting it to the event log is not wired. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "grep -rln 'AIOps\\|SreAgent\\|remediat' backend/crates --include=*.rs -> only backend/crates/apps/qip-cli/src/blueprint.rs (a text listing, not code)",
-      "backend/crates/libs/qip-events/src/log.rs (the hash-chained substrate that would record such actions once they exist)"
+      "backend/crates/libs/qip-observability/src/aiops.rs aiops::tests::an_altered_audit_record_no_longer_verifies",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::the_audit_record_names_runbook_incident_target_and_result"
     ],
-    "gap": "No autonomous remediation agent, and no runbook-execution path, exists to be audited. This is the OBS-030 half of a wider gap shared with OBS-004/005/007 (diagnosis, action bounds, incident/PR opening), none of which are implemented either.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "after the agent executes a runbook action in a fixture, an append-only audit record must exist naming the runbook, triggering incident, target resource and result -- no agent and no such record-producing code exists today",
+    "verification": "cargo test -p qip-observability aiops (mutation-verified: verify() ignoring the record hash fails an_altered_audit_record_no_longer_verifies)",
     "work_item": "E12-sre-agent-and-audit-trail",
     "tier": "T3",
     "size": "L",
@@ -293,18 +286,19 @@
   },
   {
     "id": "OBS-033",
-    "status": "MISSING",
-    "current": "No warm-service SLO or series exists. qip_observability::slo::default_slos() declares an 'api-availability' Slo (slo.rs:242, target 0.999), but nothing outside tests calls default_slos(), so it is a declaration nothing evaluates or serves. qip-api records no request metric: its only `metrics.count` calls are the OpenObserve drain's own post counters (openobserve.rs:422,436). qip-observability's metric names contain no request-latency, error-rate, saturation, restart or warm-service circuit name. The one circuit series is qip_edge_mesh_circuit (metrics.rs:948), the edge node's uplink, and qip_transport::breaker is used only by qip-edge-node/src/mesh.rs. No Terraform declares an SLO, uptime check or dashboard on Cloud Run's built-in run.googleapis.com/request_* metrics (`rg 'google_monitoring_slo|uptime_check|request_latenc' infrastructure/terraform` -> 0). The warm plane is Cloud Run (ADR 0024, C3). The requirement's notes map 'pod disruption' to instance restarts, and the other four signals apply unchanged.",
+    "status": "PARTIAL",
+    "current": "Three of the five signals now exist as series on the one warm HTTP service: qip-api records request latency, request and error counts by class, and saturation against its connection limit for every request (qip_service_*; see OBS-018), and the two brains record the same four per cycle. No Slo object reads any of them: qip_observability::slo::default_slos() still declares an 'api-availability' Slo nothing outside tests calls. No instance-restart (the Cloud Run reading of 'pod disruption') or warm-service circuit-open series exists; the one circuit series is qip_edge_mesh_circuit, the edge node's uplink. No Terraform declares an SLO, uptime check or dashboard on Cloud Run's built-in request metrics. The warm plane is Cloud Run (ADR 0024, C3).",
     "evidence": [
       "backend/crates/libs/qip-observability/src/slo.rs:242 (api-availability, declared; default_slos has no production caller)",
-      "backend/crates/apps/qip-api/src/openobserve.rs:422,436 (the only metrics.count calls in qip-api, the drain's own counters)",
       "backend/crates/libs/qip-observability/src/metrics.rs:948 (EDGE_MESH_CIRCUIT is edge-only)",
       "rg 'BreakerPolicy' backend/crates/apps -> only qip-edge-node/src/mesh.rs",
-      "rg 'google_monitoring_slo|google_monitoring_uptime_check_config|request_latenc|request_count' infrastructure/terraform -> 0 matches"
+      "rg 'google_monitoring_slo|google_monitoring_uptime_check_config|request_latenc|request_count' infrastructure/terraform -> 0 matches",
+      "backend/crates/apps/qip-api/src/golden.rs",
+      "backend/crates/apps/qip-api/tests/api.rs::a_request_mix_with_failures_moves_all_four_of_the_apis_golden_signals"
     ],
-    "gap": "The one declared SLO is never read by anything; no per-warm-service request-latency/error-rate/saturation/circuit-open series exists; 'pod disruption' has no Cloud Run analogue implemented (only the GKE-shaped name survives from the source table).",
-    "implemented": false,
-    "tested": false,
+    "gap": "No SLO object evaluates the request series that now exist, so p99 and error rate are recorded per service and not reported against a target. No disruption (instance restart) series and no warm-service circuit-open series exists.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -314,7 +308,7 @@
     "work_item": "E12-cloud-run-slo-wireup",
     "tier": "T2",
     "size": "M",
-    "notes": "C3 (GKE retired for Cloud Run) blocks the literal 'pod disruption' framing specifically; the rest (latency, errors, saturation, circuit opens) is simply unbuilt for Cloud Run, not architecturally blocked.\n\nverify: downgraded PARTIAL -> MISSING and cleared implemented/tested/deployable. The only artefact was an uncalled Slo literal (a type existing is never enough), and the 'test' is a declaration check. qip-api records no request series, and no Terraform SLO or uptime check covers Cloud Run. blocked_by C3 kept only for the literal 'pod disruption' framing; the requirement's notes map it to instance restarts, so nothing here is actually blocked."
+    "notes": "C3 (GKE retired for Cloud Run) blocks the literal 'pod disruption' framing specifically; the rest (latency, errors, saturation, circuit opens) is simply unbuilt for Cloud Run, not architecturally blocked.\n\nverify: downgraded PARTIAL -> MISSING and cleared implemented/tested/deployable. The only artefact was an uncalled Slo literal (a type existing is never enough), and the 'test' is a declaration check. qip-api records no request series, and no Terraform SLO or uptime check covers Cloud Run. blocked_by C3 kept only for the literal 'pod disruption' framing; the requirement's notes map it to instance restarts, so nothing here is actually blocked.\n\n2026-10-05: MISSING -> PARTIAL. Not worked as a row (it carries blocked_by C3); re-scored because OBS-018 made its 'qip-api records no request metric' sentence false. tested covers the series, not an SLO."
   },
   {
     "id": "OBS-034",

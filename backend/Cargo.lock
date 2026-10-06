@@ -58,6 +58,7 @@ dependencies = [
  "qip-orderbook",
  "qip-portfolio",
  "qip-portfolio-engine",
+ "qip-protocols",
  "qip-quantum",
  "qip-reasoning-engine",
  "qip-risk",
@@ -72,6 +73,15 @@ dependencies = [
  "qip-transport",
  "qip-twin",
  "qip-world-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "qip-agency"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
  "serde",
  "serde_json",
 ]
@@ -103,6 +113,7 @@ dependencies = [
  "qip-agents",
  "qip-ai",
  "qip-capital",
+ "qip-capital-fabric",
  "qip-compliance",
  "qip-contracts",
  "qip-core",
@@ -196,6 +207,7 @@ dependencies = [
 name = "qip-cli"
 version = "0.1.0"
 dependencies = [
+ "qip-agency",
  "qip-agents",
  "qip-api",
  "qip-brokers",
@@ -410,6 +422,16 @@ dependencies = [
  "qip-risk-engine",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "qip-expansion"
+version = "0.1.0"
+dependencies = [
+ "qip-agents",
+ "qip-contracts",
+ "qip-core",
+ "serde",
 ]
 
 [[package]]
@@ -739,6 +761,7 @@ dependencies = [
  "qip-agents",
  "qip-ai",
  "qip-core",
+ "qip-numerics",
  "qip-transport",
  "qip-world-model",
  "serde",

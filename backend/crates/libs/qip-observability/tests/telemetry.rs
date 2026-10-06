@@ -800,3 +800,30 @@ fn a_label_value_from_configuration_cannot_forge_or_break_an_exposition_line() {
         "a bucket label forged or split a line:\n{text}"
     );
 }
+
+/// OBS-020: the surface a deployed process is built on writes its log records
+/// to stderr, which is what Cloud Logging ingests from a workload.
+///
+/// The default surface stays quiet — the premise, asserted first — because a
+/// test suite that echoed every record would bury its own failures. Until
+/// `Telemetry::foreground` no composition root turned echo on, so the
+/// structured logger's records never left process memory in any deployment.
+#[test]
+fn the_foreground_telemetry_surface_echoes_its_log_records_and_the_default_one_does_not() {
+    let clock: Arc<dyn qip_core::Clock> = Arc::new(ManualClock::new(Timestamp::from_secs(0)));
+
+    let default = qip_observability::Telemetry::new("quiet", clock.clone());
+    assert!(
+        !default.logger.echoes(),
+        "the premise is a default surface that keeps its records in memory only"
+    );
+
+    let foreground = qip_observability::Telemetry::foreground("deployed", clock);
+    assert!(
+        foreground.logger.echoes(),
+        "a foreground surface whose records stay in memory reaches no log store"
+    );
+    // And it is still the same surface otherwise: the record is kept too.
+    foreground.logger.warn("the drain could not post");
+    assert_eq!(foreground.logger.records().len(), 1);
+}

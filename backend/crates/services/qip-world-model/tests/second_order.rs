@@ -15,6 +15,7 @@
 // fails the test rather than being unwrapped past; the assertions inside are
 // the point of the test and are not a panic in production code.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::BTreeSet;
 
@@ -23,7 +24,7 @@ use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism};
 use qip_world_model::exposure::{
     MAX_EXPOSURE_HOPS, MAX_SECOND_ORDER_DEPENDENCIES, second_order_exposure,
 };
-use qip_world_model::graph::{Fact, KnowledgeGraph, Node, NodeKind};
+use qip_world_model::graph::{EntityKind, Fact, KnowledgeGraph, Node, NodeKind};
 use qip_world_model::relationship::{Relationship, RelationshipKind};
 
 fn at(secs: i64) -> Timestamp {
@@ -52,15 +53,19 @@ fn drives(causal: &mut CausalGraph, cause: &str, effect: &str, recorded: i64) ->
 fn supply_chain() -> KnowledgeGraph {
     let mut graph = KnowledgeGraph::new();
     for entity in ["KESTREL", "NORTHWIND", "HOLLOWAY"] {
-        graph.add_node(Node::new(entity, NodeKind::Entity, entity, at(0)));
+        graph
+            .add_node(Node::entity(entity, EntityKind::Company, entity, at(0)))
+            .unwrap();
     }
     for instrument in ["NWD", "HWY"] {
-        graph.add_node(Node::new(
-            instrument,
-            NodeKind::FinancialObject,
-            instrument,
-            at(0),
-        ));
+        graph
+            .add_node(Node::new(
+                instrument,
+                NodeKind::FinancialObject,
+                instrument,
+                at(0),
+            ))
+            .unwrap();
     }
     for (from, to, kind) in [
         ("KESTREL", "NORTHWIND", RelationshipKind::Supplies),
@@ -73,8 +78,9 @@ fn supply_chain() -> KnowledgeGraph {
                 Relationship::new(from, to, kind, 1.0, "fixture"),
                 at(0),
                 at(0),
+                0.9,
             )
-            .with_confidence(0.9),
+            .unwrap(),
         );
     }
     graph

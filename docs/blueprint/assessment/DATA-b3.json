@@ -127,28 +127,29 @@
   },
   {
     "id": "DATA-058",
-    "status": "PARTIAL",
-    "current": "The runtime half holds, vacuously: qip_storage::gcp::bigquery::BigQueryWarehouse is referenced nowhere outside qip-storage itself (rg BigQueryWarehouse backend/crates, excluding crates/libs/qip-storage, finds nothing), so no reflex or order decision can wait on a BigQuery read or write. The structural half the acceptance check names does NOT hold: the gcp module (BigQuery client included) is compiled unconditionally into qip-storage (backend/crates/libs/qip-storage/src/lib.rs:58, no cargo feature), and the reflex deployable qip-edge-node depends on qip-storage directly (backend/crates/apps/qip-edge-node/Cargo.toml:24) for its journal target; qip-fastbrain does too (Cargo.toml:24). qip-edge itself does not reach qip-storage (cargo metadata normal-dependency reachability, 2026-09-25). backend/crates/tests/qip-acceptance/tests/architecture.rs has the dependency_graph()/reachable_from() harness (:72, :360) used for similar properties (no_edge_cell_can_reach_a_language_model at :715) but no assertion names BigQuery or qip-storage.",
+    "status": "COMPLETE",
+    "current": "The BigQuery client is no longer in a crate the reflex cell links. It was qip_storage::gcp::bigquery, compiled unconditionally into qip-storage, which qip-edge-node depends on for its journal; it is now qip_mesh::bigquery (backend/crates/services/qip-mesh/src/bigquery.rs), the analytical port's crate (MeshTarget::BigQuery), which is outside qip-edge-node's normal-dependency closure -- the set docs/architecture/lane-placement.md defines as Lane 0. qip-storage keeps what the Cloud Storage adapter and the warehouse share (GcpAccess, the token sources, the status and encoding rules, now public) and ManagedSettings::big_query_target; BigQueryConfig::from_managed pairs it with the access. The architecture suite finds the crate that defines `pub struct BigQueryWarehouse` from the source, requires exactly one, and asserts no edge crate (crates/edge/* and qip-edge-node) is it or can reach it. The 16 warehouse tests moved with the client; the 36 Cloud Storage and credential tests stayed (52 before, 52 after).",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/lib.rs:58 (pub mod gcp; unconditional)",
-      "backend/crates/libs/qip-storage/Cargo.toml (no [features]; qip-transport dependency exists for the gcp adapters)",
-      "backend/crates/apps/qip-edge-node/Cargo.toml:24 (qip-storage)",
-      "backend/crates/apps/qip-fastbrain/Cargo.toml:24 (qip-storage)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:72,360,715 (harness to extend; no BigQuery-specific assertion)"
+      "backend/crates/services/qip-mesh/src/bigquery.rs (moved from backend/crates/libs/qip-storage/src/gcp/bigquery.rs)",
+      "backend/crates/libs/qip-storage/src/gcp/mod.rs (no bigquery module; GcpAccess::request, status_refusal, percent_encode public)",
+      "backend/crates/libs/qip-storage/src/managed.rs (big_query_target)",
+      "test: no_crate_on_the_reflex_path_can_reach_the_bigquery_client (backend/crates/tests/qip-acceptance/tests/architecture.rs)",
+      "backend/crates/services/qip-mesh/tests/bigquery.rs (16 tests, moved) / backend/crates/libs/qip-storage/tests/gcp.rs (36 tests, kept)",
+      "mutation: re-adding the edge (qip-mesh as a dependency of qip-edge-node) failed the test ('the reflex crate qip-edge-node can reach qip-mesh, which holds the BigQuery client'); defining a second BigQueryWarehouse in qip-storage failed its premise ('expected exactly one crate ... found {qip-mesh, qip-storage}'); Cargo.toml, Cargo.lock and the source restored byte-for-byte"
     ],
-    "gap": "No named test asserts the isolation, and the test the requirement's verification describes would FAIL today rather than pass: at crate granularity qip-edge-node (and qip-fastbrain) reach qip-storage, which unconditionally contains the BigQuery client. Closing it needs the gcp adapters moved behind a boundary the reflex crates do not reach (a separate crate or a cargo feature the edge node does not enable) and then an architecture.rs reachability assertion; the runtime property itself holds only because nothing constructs BigQueryWarehouse.",
+    "gap": "Closed by the requirement's acceptance check. Stated limits: the reflex path is qip-edge-node's closure, as the lane register defines it; qip-fastbrain (Lane 3, the central cycle) still reaches qip-mesh through the kernel, so the central order path's isolation from BigQuery remains the runtime fact that nothing constructs a BigQueryWarehouse in any composition root, not a graph property. Rows in other domains that cite backend/crates/libs/qip-storage/src/gcp/bigquery.rs as evidence now point at a path that moved.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Would add, after separating the gcp adapters from what qip-edge-node links: an architecture.rs test asserting reachable_from(&graph, \"qip-edge-node\") and reachable_from(&graph, \"qip-edge\") exclude the crate that holds the BigQuery client, mutation-verified by re-adding the edge",
+    "verification": "cargo test -p qip-acceptance --test architecture no_crate_on_the_reflex_path_can_reach_the_bigquery_client; cargo test -p qip-mesh --test bigquery; cargo test -p qip-storage --test gcp",
     "work_item": "E01",
     "tier": "T1",
     "size": "M",
-    "notes": "P0 invariant; cheapest and highest-value gap to close of the whole DATA-053..076 set, since the code to prove is already correct. verify: NEEDS-VALIDATION -> PARTIAL, deployable true -> false, size S -> M. The row said the code to prove is already correct; it is not at the granularity the acceptance check names -- qip-edge-node/Cargo.toml:24 depends on qip-storage, whose gcp::bigquery module is compiled unconditionally (lib.rs:58), so the proposed reachability test fails today. Only the runtime half (nothing constructs BigQueryWarehouse) holds. deployable false because the reflex path runs only in qip-edge-node and execution_nodes = {} everywhere."
+    "notes": "PARTIAL -> COMPLETE: the client moved behind a boundary the reflex crates do not reach and the reachability assertion the row asked for exists, mutation-verified by re-adding the edge. No crate was added: qip-mesh already depended on qip-storage and qip-transport. deployable stays false because the reflex path runs only in qip-edge-node and execution_nodes = {} everywhere."
   },
   {
     "id": "DATA-059",
@@ -248,27 +249,27 @@
   },
   {
     "id": "DATA-063",
-    "status": "MISSING",
-    "current": "Vacuously true, and unguarded. No Fabric (no broker/topic/partition/offset type anywhere in the workspace) and no Dataflow/Dataproc job exist, so there is no live consumer of any kind for either to be. No acceptance test or Terraform check asserts the prohibition.",
+    "status": "COMPLETE",
+    "current": "A structural guard, not a Fabric consumer check: no .tf file under infrastructure/terraform declares a google_dataflow* or google_dataproc* resource, and the fabric binaries and event library (qip-fabricd, qip-ledgerd, qip-events sources) name neither outside a comment. The property still holds because nothing of either kind exists; the guard is what makes a later addition fail loudly.",
     "evidence": [
-      "rg -n 'struct Broker|struct Partition|struct Topic|ConsumerOffset' backend/crates -- zero hits",
-      "rg -n 'dataflow|dataproc' backend/crates/tests/qip-acceptance/tests -- zero hits"
+      "backend/crates/tests/qip-acceptance/tests/data_infrastructure_guards.rs::no_dataflow_or_dataproc_resource_is_declared_so_none_can_be_a_live_fabric_consumer",
+      "mutation: a google_dataproc_cluster resource added to the evidence module made the test fail naming the file; removed, test passes"
     ],
-    "gap": "No test or infra-plan check enforces this; the property holds only because neither side of the prohibited relationship has been built yet, so a future Fabric or Dataflow addition could violate it silently.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
-    "deployable": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "DATA-054"
     ],
     "blocked_by": "",
-    "verification": "Would add an infra-plan/acceptance check once a Fabric exists: no declared Fabric consumer group is a Dataflow/Dataproc job",
+    "verification": "cargo test -p qip-acceptance --test data_infrastructure_guards",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Cheap to guard now with a placeholder acceptance test that documents the current absence, ahead of E03's Fabric MVP landing."
+    "notes": "verify: COMPLETE as a prohibition guard. The requirement's literal check (no declared Fabric consumer group is a Dataflow or Dataproc job) is satisfied vacuously because no declared consumer group of that kind can exist while no such resource exists; if a managed Fabric consumer-group declaration is ever added, this guard should be extended to read it."
   },
   {
     "id": "DATA-064",
@@ -420,26 +421,27 @@
   },
   {
     "id": "DATA-070",
-    "status": "MISSING",
-    "current": "Nothing. No row-key construction function exists anywhere in the repository, because no Bigtable writer of any kind exists (DATA-053).",
+    "status": "COMPLETE",
+    "current": "qip_storage::rowkey::{row_key,parse_row_key} (backend/crates/libs/qip-storage/src/rowkey.rs): the key is entity#reversed-time (16 hex digits of u64::MAX minus ms), so the high-cardinality entity leads and the newest row of an entity sorts first. A pure naming function; no Bigtable client exists (DATA-053), so nothing writes with it yet.",
     "evidence": [
-      "rg -in 'row.key|rowkey' backend/crates/libs/qip-storage backend/crates/services/qip-mesh -- no row-key builder found"
+      "backend/crates/libs/qip-storage/src/rowkey.rs",
+      "test: no_generated_row_key_begins_with_a_time_component_and_keys_sort_by_entity_first (backend/crates/libs/qip-storage/tests/archive_and_rowkey.rs) -- 500 seeded keys over six entities incl. all-digit ones, asserts entity-leading, parse round trip and sort order",
+      "test: a_row_key_entity_containing_the_separator_or_empty_is_refused",
+      "mutation: building the key time-first made the property test fail at its entity-prefix assertion; restored"
     ],
-    "gap": "No row-key scheme is designed or tested, even as a transport-agnostic pure function.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "DATA-053"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "Would add a pure row-key builder (e.g. fn row_key(entity, ts)) plus an in-tree generated-input property test -- a seeded loop over generated entities and timestamps, not the proptest crate, which ADR 0002/0009 refuse -- asserting no key begins with a time component",
+    "verification": "cargo test -p qip-storage --test archive_and_rowkey (4 tests)",
     "work_item": "E06",
     "tier": "T2",
     "size": "S",
-    "notes": "Genuinely not blocked by C2/C4: a row-key naming scheme can be designed and property-tested in pure Rust today, ahead of the gRPC client landing, and would de-risk DATA-053 when it does. verify: status unchanged (no row-key builder exists; qip-mesh HotSeries keys by opaque series name). Corrected the proposed verification, which named proptest -- a third-party crate the dependency policy refuses."
+    "notes": "verify: COMPLETE by the requirement's own check (builder places the entity before time; generated-key property test). integrated=false: no Bigtable writer exists, so no table uses the scheme until DATA-053 is unblocked."
   },
   {
     "id": "DATA-071",
@@ -467,24 +469,27 @@
   },
   {
     "id": "DATA-072",
-    "status": "MISSING",
-    "current": "Nothing. qip_storage::gcp::CloudStorageBlobStore (backend/crates/libs/qip-storage/src/gcp/storage.rs) is a generic BlobStore over Cloud Storage -- put/get/delete/list keyed by an opaque key under a namespace prefix -- with no source/date/instrument partitioning scheme and no immutability/overwrite-refusal behaviour beyond what the generic port offers.",
+    "status": "COMPLETE",
+    "current": "qip_storage::archive_names::{object_name,SegmentWriter} (backend/crates/libs/qip-storage/src/archive_names.rs): names are source=S/date=YYYY-MM-DD/instrument=I/segment-NNNNNNNNNNNN.seg with the date UTC from the timestamp, components restricted to [A-Za-z0-9._-] and . / .. refused; SegmentWriter over any BlobStore refuses a segment outside the configured inclusive size band and refuses to overwrite an existing object.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs:1-50 (generic key-prefix blob store, no partitioning scheme)"
+      "backend/crates/libs/qip-storage/src/archive_names.rs",
+      "test: object_names_are_partitioned_by_source_then_utc_date_then_instrument (leap day, month ends, year boundary)",
+      "test: a_segment_is_written_once_and_never_overwritten_and_stays_within_its_size_band",
+      "mutation: disabling the existence check, and shifting the month arithmetic, each made the named test fail; restored"
     ],
-    "gap": "No archive-writer object-naming function partitioned by source/date/instrument exists, and no 'never overwrite' or segment-size-band behaviour is implemented on top of the generic blob store.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Would add a unit test on a new archive-writer naming function, per the requirement's own verification method",
+    "verification": "cargo test -p qip-storage --test archive_and_rowkey (4 tests)",
     "work_item": "E06",
     "tier": "T2",
     "size": "M",
-    "notes": "Buildable in pure Rust against the existing BlobStore port (Memory/File adapters suffice for the unit test); not blocked by C4."
+    "notes": "verify: COMPLETE by the requirement's check on the naming function and writer. integrated=false: no archive writer composes SegmentWriter yet (DATA-047), and the check-then-put overwrite refusal is not atomic; the Cloud Storage adapter should send ifGenerationMatch=0 when it is wired. Async compaction is DATA-073."
   },
   {
     "id": "DATA-073",

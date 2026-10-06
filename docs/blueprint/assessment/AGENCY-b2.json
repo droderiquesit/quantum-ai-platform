@@ -31,7 +31,7 @@
     "work_item": "E09-precedence-edges-not-established-uncontrolled",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: PARTIAL -> INCORRECT, tested true -> false. The assessor graded the world-model half 'COMPLETE on its own', but the Suggestive/named-confounder path it cites is reached only from tests; the one production writer (discover_temporal_precedence) passes an empty ConfounderSet, so every edge it writes reads Established, and the kernel's own causal_review doc and test premise establish that those edges include pure common-driver artefacts. That is the requirement's verification scenario failing on code that ships, not merely unbuilt code, hence INCORRECT rather than PARTIAL. is_established was cited as a reader of the standing; it has no caller. Mitigating and recorded above: confidence on these edges is capped at 0.5, so the platform does not claim certainty numerically — the defect is the Established standing and the unretracted write. The EffectAttribution/action-policy half remains MISSING (AGENCY-048)."
+    "notes": "verify: PARTIAL -> INCORRECT, tested true -> false. The assessor graded the world-model half 'COMPLETE on its own', but the Suggestive/named-confounder path it cites is reached only from tests; the one production writer (discover_temporal_precedence) passes an empty ConfounderSet, so every edge it writes reads Established, and the kernel's own causal_review doc and test premise establish that those edges include pure common-driver artefacts. That is the requirement's verification scenario failing on code that ships, not merely unbuilt code, hence INCORRECT rather than PARTIAL. is_established was cited as a reader of the standing; it has no caller. Mitigating and recorded above: confidence on these edges is capped at 0.5, so the platform does not claim certainty numerically — the defect is the Established standing and the unretracted write. The EffectAttribution/action-policy half remains MISSING (AGENCY-048). | 2026-10-05: the attribution half now has a marker. qip_agency::attribution::Identification is a required field of EffectAttribution, and ActionPolicy::widen refuses one marked NotIdentified (autonomy_widens_only_on_an_identified_attribution_and_operator_authority_together). The defect in the causal-graph writer, which is what makes this row INCORRECT, is untouched."
   },
   {
     "id": "AGENCY-031",
@@ -100,15 +100,17 @@
   },
   {
     "id": "AGENCY-034",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::engine::StageLog admits a stage only when it is the next of the eleven in ORDER and nothing before it failed. engine::execute, the only caller of an Adapter in the crate, asks the log for Act before it does anything, so an adapter call with Simulate or Gate missing or failed is refused; a shadow pass leaves Act unrecorded, so ObserveEffect and Attribute cannot be recorded for an action that never happened. engine::run drives Observe through Act in that order. Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/cycle.rs (pub enum Stage { Sense, Understand, Discover, Reason, Simulate, Decide, Act, Learn })"
+      "backend/crates/services/qip-agency/src/engine.rs (Stage, ORDER, StageLog::expect/pass/fail, execute, run)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_stage_is_admitted_only_in_the_declared_order_and_never_after_a_failure; over_generated_passes_an_adapter_is_called_only_after_simulation_and_the_gate_passed",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (the binary prints the stages passed in order and `stage failed: Gate`)"
     ],
-    "gap": "No GoalSpec, causal-lever identification, candidate-intervention generation, or authority/conduct gate sequence exists. The kernel's own SENSE->UNDERSTAND->DISCOVER->REASON->SIMULATE->DECIDE->ACT->LEARN cycle (qip_kernel::cycle::Stage) already enforces 'simulate and gate before act' for trading decisions, and is the nearest structural precedent, but it has no goal/lever/intervention semantics and does not run an attribution stage keyed to an action's own record.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -117,20 +119,23 @@
       "AGENCY-040"
     ],
     "blocked_by": "",
-    "verification": "None exists for the agency loop. The kernel cycle's own stage-order guarantee is proven by the cycle/stage tests in qip-kernel, but that is a different property over a different object.",
+    "verification": "cargo test -p qip-agency --test agency -- a_stage_is_admitted_only over_generated_passes ; cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (mutation-verified: admitting Act out of order, forgetting a failure, and deleting the Act check in execute each fail a named test).",
     "work_item": "E16-agency-loop-state-machine",
     "tier": "T4",
     "size": "XL",
-    "notes": "The SENSE..LEARN cycle is a genuine structural precedent worth reusing (simulate-then-gate-then-act is already a first-class kernel property for trades), but it is not evidence of this requirement, which is about goals, levers and interventions."
+    "notes": "The SENSE..LEARN cycle is a genuine structural precedent worth reusing (simulate-then-gate-then-act is already a first-class kernel property for trades), but it is not evidence of this requirement, which is about goals, levers and interventions. | 2026-10-05: What is closed is the order. ObserveEffect, Attribute and Update are ordered by the log but nothing performs them (AGENCY-002, AGENCY-014). In engine::run the Observe stage checks that every target is an observable variable and the Predict stage that every proposal carries a complete nine-axis comparison; neither senses or forecasts anything itself. Simulate is the plan's own branch simulation over the observed facts, not competing world models (AGENCY-006)."
   },
   {
     "id": "AGENCY-035",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No Causal Agency Brain and no GoalSpec type exist anywhere in backend/crates (zero matches for 'GoalSpec'). qip-investment-agents (backend/crates/agents/qip-investment-agents) is a panel of trading-recommendation agents with a chief/manifest/reasoning model, not a goal-decomposition brain, and it emits no sub-goal object.",
-    "implemented": false,
-    "tested": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::goal::GoalSpec::decompose emits each sub-goal as a GoalSpec built by the same constructor. A child inherits the parent's acting identity when it declares none and the parent's prohibited methods and side effects always; one that names another identity, a jurisdiction the parent does not, or a longer horizon is refused, and so is a split whose budgets or risk envelopes sum past the parent's.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/goal.rs (GoalSpec::decompose)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_decomposition_yields_child_goals_none_of_which_steps_outside_the_parent"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -138,35 +143,36 @@
       "AGENCY-041"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: decomposing a composite goal yields child GoalSpecs, none of which declares a budget, risk envelope or acting identity outside its parent's.",
+    "verification": "cargo test -p qip-agency --test agency -- a_decomposition_yields_child_goals_none_of_which_steps_outside_the_parent (mutation-verified: disabling the budget-sum, envelope-sum or identity check each fails it).",
     "work_item": "E16-goal-decomposition",
     "tier": "T3",
     "size": "L",
-    "notes": ""
+    "notes": "2026-10-05: Library-level, integrated=false: no composition root calls decompose. The split is supplied by the caller; there is no Causal Agency Brain that proposes one. What the function guarantees is that no emitted child sits outside its parent."
   },
   {
     "id": "AGENCY-036",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::ComparisonDraft::build (backend/crates/services/qip-agency/src/comparison.rs) refuses at construction as the requirement states.",
     "evidence": [
-      "backend/crates/services/qip-opportunity-engine/src/opportunity.rs:67-77 (OpportunityRank: score, importance, novelty, confidence, cost — four axes, for research opportunities, not intervention candidates)",
-      "backend/crates/services/qip-twin/src/counterfactual.rs:48-71 (Alternative::DoNotTrade among nine priced alternatives — the in-tree precedent for carrying a no-action baseline beside candidates, compared on realised value only, not on the nine axes)"
+      "backend/crates/services/qip-agency/src/comparison.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_comparison_missing_any_of_the_nine_axes_is_refused_before_ranking",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
-    "gap": "No structure compares intervention candidates (or a no-action baseline) on the nine named axes (expected causal effect, confidence, cost, capital usage, time-to-effect, reversibility, legal eligibility, conduct risk, downside). qip-opportunity-engine's OpportunityRank ranks research opportunities on four axes and has no reversibility, legal-eligibility or conduct-risk field, and it ranks what to investigate, not what intervention to take.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "AGENCY-034"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: each candidate's comparison record carries all nine axes, and a record missing any axis is refused before ranking.",
+    "verification": "cargo test -p qip-agency --test agency -- a_comparison_missing_any_of_the_nine_axes_is_refused_before_ranking (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16-candidate-comparison-record",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status unchanged (MISSING). Added qip-twin's DoNotTrade alternative as the precedent for the 'no-action baseline included' clause; it prices alternatives on value/regret alone and has no reversibility, legal-eligibility or conduct-risk axis."
+    "notes": "verify: status unchanged (MISSING). Added qip-twin's DoNotTrade alternative as the precedent for the 'no-action baseline included' clause; it prices alternatives on value/regret alone and has no reversibility, legal-eligibility or conduct-risk axis. | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-037",
@@ -256,62 +262,62 @@
   },
   {
     "id": "AGENCY-041",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No GoalSpec type exists (zero matches for 'GoalSpec' in backend/crates).",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "COMPLETE",
+    "current": "qip_agency::GoalClass (eight variants) (backend/crates/services/qip-agency/src/goal.rs) refuses at construction as the requirement states.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/goal.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_goal_of_each_of_the_eight_classes_round_trips_through_serde_unchanged",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "None exists. Once built: a GoalSpec of each of the eight classes (financial, operational, research, product, liquidity, risk-reduction, information-acquisition, communications) constructs and round-trips through serde unchanged.",
+    "verification": "cargo test -p qip-agency --test agency -- a_goal_of_each_of_the_eight_classes_round_trips_through_serde_unchanged (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16-goalspec-contract",
     "tier": "T2",
     "size": "M",
-    "notes": "A pure-data contract type; buildable with serde/serde_json alone, no new dependency needed."
+    "notes": "A pure-data contract type; buildable with serde/serde_json alone, no new dependency needed. | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-042",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::InterventionPlan::plan authority check (backend/crates/services/qip-agency/src/plan.rs) refuses at construction as the requirement states.",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/runtime.rs:331-346 (AgentRuntime::authorise: the single per-identity capability check — an agent may use a facility only if its manifest independently grants it; nearest in-tree precedent for 'a lever is usable only if the acting identity holds that lever's authority', but agents carry no goal/outcome object for the permission to be separated from)",
-      "backend/crates/libs/qip-compliance/src/approval.rs (ApprovalChain::grant: human capital approvals — capital is granted only by named, freshly-credentialed humans, never by code; precedent for authority held independently of what the requester wants)"
+      "backend/crates/services/qip-agency/src/plan.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_plan_never_uses_a_lever_whose_authority_the_acting_identity_does_not_hold; a_prohibited_method_or_side_effect_makes_the_plan_infeasible",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
-    "gap": "No lever, no acting-identity-authority record and no GoalSpec exist, so there is nothing that could separate 'wants an outcome' from 'may use this lever'. The nearest existing mechanism (qip_risk_engine::autonomy::AutonomyController::request_change) gates the platform's own autonomy level by operator identity, not a per-lever authority independent of goal utility.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "AGENCY-041"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: for generated GoalSpecs of arbitrarily high utility, the planner never emits a step using a lever whose recorded authority requirement the GoalSpec's acting identity does not hold.",
+    "verification": "cargo test -p qip-agency --test agency -- a_plan_never_uses_a_lever_whose_authority_the_acting_identity_does_not_hold a_prohibited_method_or_side_effect_makes_the_plan_infeasible (mutation-verified: breaking the check fails the named test). Reached from the shipped binary: cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal.",
     "work_item": "E16-lever-authority-separation",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: status unchanged (MISSING). Evidence corrected: approval.rs was described as 'AutonomyController-adjacent operator authority checks for the autonomy ladder'; it is Control 4, the human capital-approval chain. Added the agent capability runtime as the closer structural precedent. Neither involves a GoalSpec, a lever or a planner, so no upgrade."
+    "notes": "verify: status unchanged (MISSING). Evidence corrected: approval.rs was described as 'AutonomyController-adjacent operator authority checks for the autonomy ladder'; it is Control 4, the human capital-approval chain. Added the agent capability runtime as the closer structural precedent. Neither involves a GoalSpec, a lever or a planner, so no upgrade. | 2026-10-05, integrated: Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. It is a shadow pass over an operator-supplied document; no service builds a request on its own."
   },
   {
     "id": "AGENCY-043",
-    "status": "PARTIAL",
-    "current": "The general pattern — a hard, symbolic constraint that no learned estimate can override — holds today for trading risk limits rather than an action-affordance/causal-lever graph, and it holds structurally: qip_risk_engine::pretrade::PreTradeChecker::check (backend/crates/services/qip-risk-engine/src/pretrade.rs:186) evaluates qip_risk::limits (e.g. MaxExpectedShortfall at backend/crates/libs/qip-risk/src/limits.rs:161) against a ProposedOrder (pretrade.rs:23-41) that has no field for an expected return, a confidence or any model output, so no estimate can reach the check to buy a breach out. The kernel constructs the checker for its order path (backend/crates/runtime/qip-kernel/src/platform.rs:4528) and every central binary builds a Platform. qip_cost_router::context::Determinism::Required (backend/crates/services/qip-cost-router/src/context.rs:27-31) expresses the same rule as a type, but no production code constructs a Required decision: the kernel's only DecisionContext uses Determinism::NotRequired (platform.rs:10560), so that type is not what holds the guarantee in production.",
+    "status": "COMPLETE",
+    "current": "qip_agency::plan::select is the only ranker and it ranks InterventionPlan values, which exist only after every hard constraint held (budget, risk envelope, acting identity, per-tool authority, prohibited methods and side effects, deceptive methods), plus lever membership and legal eligibility. The learned effect estimate arrives beside the raw plan and is read only after the refusal, so no value of it is ever weighed against a constraint. Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call.",
     "evidence": [
-      "backend/crates/services/qip-risk-engine/src/pretrade.rs:23-41 (ProposedOrder: no estimate/confidence field) and :186 (PreTradeChecker::check)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4528 (OrderManager::new(PreTradeChecker::new(limits)) in Platform construction)",
-      "backend/crates/libs/qip-risk/src/limits.rs:161 (RiskLimits::MaxExpectedShortfall)",
-      "test an_oversized_single_order_is_refused — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:366 (ran 2026-09-25 with the whole file: 'test result: ok. 41 passed')",
-      "test the_expected_shortfall_limit_can_actually_fire — backend/crates/runtime/qip-kernel/src/platform.rs:18759",
-      "analog test an_infeasible_quantum_answer_is_rejected_however_good_its_objective — backend/crates/services/qip-optimization-engine/tests/optimization.rs:431 (a hard constraint refuses a plan however dominant its objective)",
-      "backend/crates/services/qip-cost-router/src/context.rs:27-31 (Determinism::Required — type only; constructed by no production caller, see platform.rs:10560)",
-      "backend/crates/tests/qip-acceptance/tests/compliance_proof.rs"
+      "backend/crates/services/qip-agency/src/plan.rs (InterventionPlan::plan, Proposal, select)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- no_learned_effect_estimate_however_large_gets_a_plan_past_a_hard_constraint",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal"
     ],
-    "gap": "No action-affordance graph or causal-lever graph exists at all, so there are no 'hard constraints' on it for a learned effect estimate to (correctly) fail to override. The evidence cited is for a structurally analogous but different graph (trade risk limits, not causal levers).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -321,11 +327,11 @@
       "AGENCY-044"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test compliance_proof; cargo test -p qip-risk-engine risk_engine (the specific limit tests); a new property test is needed once an action-affordance graph exists: for generated plans that violate a declared hard constraint, the planner refuses them for every value of the learned effect estimate.",
+    "verification": "cargo test -p qip-agency --test agency -- no_learned_effect_estimate_however_large_gets_a_plan_past_a_hard_constraint ; cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (seven violation kinds, each at estimates 0, 1, 1e9 and Decimal::MAX; mutation-verified: disabling the eligibility check, the lever check or the budget bound each fails it, and so does a ranker that ignores the estimate).",
     "work_item": "E16-action-affordance-graph",
     "tier": "T3",
     "size": "L",
-    "notes": "The requirement's own notes name this exact repository rule as the intended analog; graded PARTIAL rather than MISSING on that basis, but the object the requirement is actually about (the causal-lever graph) does not exist. verify: status and flags unchanged (PARTIAL). Corrected the mechanism: Determinism::Required was presented as what makes the guarantee structural, but nothing in production constructs it (the kernel's only DecisionContext is NotRequired); the structural hold is PreTradeChecker's ProposedOrder carrying no estimate. Named the tests actually exercising the refusal."
+    "notes": "The requirement's own notes name this exact repository rule as the intended analog; graded PARTIAL rather than MISSING on that basis, but the object the requirement is actually about (the causal-lever graph) does not exist. verify: status and flags unchanged (PARTIAL). Corrected the mechanism: Determinism::Required was presented as what makes the guarantee structural, but nothing in production constructs it (the kernel's only DecisionContext is NotRequired); the structural hold is PreTradeChecker's ProposedOrder carrying no estimate. Named the tests actually exercising the refusal. | 2026-10-05: The estimate is a number supplied on the proposal (Comparison.expected_causal_effect); no learned model produces it yet (AGENCY-044). The earlier evidence for this row, trade risk limits, is a different graph and is no longer what closes it."
   },
   {
     "id": "AGENCY-044",
@@ -352,15 +358,17 @@
   },
   {
     "id": "AGENCY-045",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::engine::decide returns a plan for execution only when every lever it pulls is identified at or above 1 - GoalSpec.acceptable_uncertainty. Otherwise it returns Abstain (weak, no experiment permitted), GatherEvidence (nothing measured) or ProposeExperiment (weak, experimentable), and never the plan. A lever with no evidence is unmeasured, not identified at zero. engine::run fails the Gate stage on any of the three, so execute refuses. Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/causal_review.rs:546-555 (concentration_rests_on_unaudited_edges, is_established — a review-time flag on market exposure, not an abstain/gather-evidence/propose-experiment decision by an acting engine)"
+      "backend/crates/services/qip-agency/src/engine.rs (LeverEvidence, Decision, decide, the Gate stage in run)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_plan_whose_levers_are_weakly_identified_is_never_returned_for_execution; over_generated_passes_an_adapter_is_called_only_after_simulation_and_the_gate_passed",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (unmeasured lever: exit 3, `stage failed: Gate`, `gather evidence`)"
     ],
-    "gap": "No engine plans or proposes interventions, so nothing can abstain, gather evidence or propose an experiment in place of acting on a weakly-identified lever. The nearest existing behaviour is causal_review's flag that a concentration finding rests on a Suggestive (not Established) edge — an advisory read for a human, not an engine refusing to act.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -368,11 +376,11 @@
       "AGENCY-043"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: for generated goals whose only candidate levers have identifiability below the declared threshold, the planner's output is always abstain, gather-evidence or an experiment proposal, and never an executable action.",
+    "verification": "cargo test -p qip-agency --test agency -- a_plan_whose_levers_are_weakly_identified_is_never_returned_for_execution ; cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (600 generated cases plus the exact floor; mutation-verified: lowering the floor to zero or dropping the unmeasured arm fails it).",
     "work_item": "E16-weak-identification-abstention",
     "tier": "T3",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-05: Identifiability is a score supplied per lever in the request. Nothing estimates it (AGENCY-028, AGENCY-044); the engine only refuses to act below the goal's floor."
   },
   {
     "id": "AGENCY-046",
@@ -399,13 +407,18 @@
   },
   {
     "id": "AGENCY-047",
-    "status": "MISSING",
-    "current": "nothing",
-    "evidence": [],
-    "gap": "No plan-feasibility check of any kind exists for deception-dependent plans, because no plan, planner or InterventionPlan type exists. grep for 'deception' and 'manipulat' across backend/crates returns zero matches.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "status": "COMPLETE",
+    "current": "Every tool edge declares a qip_agency::affordance::Method. Method::is_deceptive is true of everything outside the six lawful action domains, so a variant added later is prohibited by default. InterventionPlan::plan refuses a plan with a deceptive step on any branch, including one that would not fire, before any estimate is read, so no InterventionPlan value exists for select or execute to receive. Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call.",
+    "evidence": [
+      "backend/crates/services/qip-agency/src/affordance.rs (Method, Method::is_deceptive)",
+      "backend/crates/services/qip-agency/src/plan.rs (the refusal in InterventionPlan::plan; select)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- a_plan_with_a_deceptive_step_anywhere_in_it_is_infeasible_whatever_its_expected_effect",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (a `spoofing` edge with an estimate of 1e9: exit 3, refused by name)"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -413,23 +426,23 @@
       "AGENCY-039"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: for generated plans that contain a deception-dependent step, the planner marks the plan infeasible and it never reaches the orchestrator, whatever its expected effect.",
+    "verification": "cargo test -p qip-agency --test agency -- a_plan_with_a_deceptive_step_anywhere_in_it_is_infeasible_whatever_its_expected_effect ; cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (300 generated plans in four shapes, nine deceptive methods, four estimates; mutation-verified: disabling the check fails both tests).",
     "work_item": "E16-deception-infeasibility",
     "tier": "T3",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-05: The classification is the method the tool edge declares. Nothing infers deception from a message's content or from a pattern of individually lawful steps; that is the conduct gate (AGENCY-037, AGENCY-039), which does not exist."
   },
   {
     "id": "AGENCY-048",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::EffectAttributionDraft::build (backend/crates/services/qip-agency/src/attribution.rs) refuses at construction as the requirement states.",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src/hypothesis.rs:301 and backend/crates/services/qip-reasoning-engine/src/redteam.rs:525 (a 'competing explanation' concept exists for investment hypotheses — the closest naming precedent in the tree — but it is not attached to any causal-effect attribution of an executed action)",
-      "backend/crates/services/qip-twin/src/counterfactual.rs (CounterfactualEngine plans/settles trade-decision alternatives against a no-action-like control, the closest structural precedent for a no-action counterfactual, but scoped to trades, not interventions)"
+      "backend/crates/services/qip-agency/src/attribution.rs",
+      "backend/crates/services/qip-agency/tests/agency.rs -- an_attribution_without_a_chain_confounders_rivals_or_confidence_is_refused"
     ],
-    "gap": "No EffectAttribution type exists anywhere in the tree (zero matches for 'EffectAttribution'). Nothing keeps a causal chain, confounder list, competing-explanations list and per-estimate confidence together as one contract.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -437,11 +450,11 @@
       "AGENCY-030"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: constructing an EffectAttribution without a causal chain, a confounder list, a competing-explanations list or a confidence value is refused.",
+    "verification": "cargo test -p qip-agency --test agency -- an_attribution_without_a_chain_confounders_rivals_or_confidence_is_refused (mutation-verified: breaking the check fails the named test).",
     "work_item": "E16-effect-attribution-contract",
     "tier": "T2",
     "size": "M",
-    "notes": "Same work item as AGENCY-030's gap: this is the contract AGENCY-030's invariant is stated over."
+    "notes": "Same work item as AGENCY-030's gap: this is the contract AGENCY-030's invariant is stated over. | Library-level, integrated=false: Carries the four fields the check names; goal/intervention/action ids and per-horizon observations (notes) are not modelled; nothing produces one yet."
   },
   {
     "id": "AGENCY-049",
@@ -467,15 +480,15 @@
   },
   {
     "id": "AGENCY-050",
-    "status": "MISSING",
-    "current": "nothing",
+    "status": "COMPLETE",
+    "current": "qip_agency::memory::ActionOutcomeDraft::build refuses a record missing any of the nine fields, naming it, and ActionOutcomeMemory::record keeps nothing it refused. The memory is a bounded working set that drops its oldest record when full.",
     "evidence": [
-      "backend/crates/libs/qip-ai/src/memory/episode.rs (Episode: a fixed-vector record of a reasoned trading situation — instrument, regime, claim, causal in-edges — the closest existing outcome-memory precedent, but for trade reasoning, not interventions)",
-      "backend/crates/services/qip-twin/src/counterfactual.rs (CounterfactualEngine's plan/settle split — predicted vs. realised, with a no-action-like alternative — the closest existing predicted/observed/counterfactual precedent)"
+      "backend/crates/services/qip-agency/src/memory.rs (ActionOutcomeDraft, ActionOutcome, ActionOutcomeMemory)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- an_action_outcome_missing_any_of_its_nine_fields_is_refused_and_not_remembered"
     ],
-    "gap": "No Action Outcome Memory type exists. Neither Episode nor the twin's counterfactual records carry the nine specific fields (intervention context, audience/environment state, action sequence, causal hypothesis, predicted effect, actual observations, attribution confidence, side effects, no-action counterfactual) as one record.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -483,11 +496,11 @@
       "AGENCY-048"
     ],
     "blocked_by": "",
-    "verification": "None exists. Once built: an Action Outcome Memory record missing any of the nine fields is refused.",
+    "verification": "cargo test -p qip-agency --test agency -- an_action_outcome_missing_any_of_its_nine_fields_is_refused_and_not_remembered (mutation-verified: defaulting one field instead of requiring it, and removing the eviction, each fails it).",
     "work_item": "E16-action-outcome-memory",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "2026-10-05: Library-level, integrated=false: no intervention executes, so nothing writes a record. The memory is in-process and is not journaled to the event log."
   },
   {
     "id": "AGENCY-051",
@@ -558,23 +571,16 @@
   },
   {
     "id": "AGENCY-054",
-    "status": "PARTIAL",
-    "current": "The invariant is implemented, tested and wired for the only action policies the platform has — trading strategies — though not for intervention policies, which do not exist. qip_lifecycle::DemotionMonitor::enforce (backend/crates/services/qip-lifecycle/src/demotion.rs:370-498) compares a strategy's live observation with the baseline it was promoted on and demotes it with no approver when realised performance leaves the holdout band (DemotionTrigger::OutsideHoldoutBand, demotion.rs:172) or decays past the pilot baseline; qip_kernel::central::learning (backend/crates/runtime/qip-kernel/src/central/learning.rs:1-31) wires it and adds that the allocator's standard error ratchets up to the realised miss and never down (resize, learning.rs:651-668): 'Scaling down happens here, automatically ... Scaling up does not.' It is reached every cycle from the LEARN stage (platform.rs:14140 review_strategies -> :14283 CentralPlane::live_outcomes -> :14287 learn_from_cells -> central.learn). Its only input is cell-reported sessions (central/plane.rs:1504), and every environment has execution_nodes = {}, so in a deployed process it runs over nothing. qip_contracts::degradation::DegradationState::sizing_multiplier (backend/crates/libs/qip-contracts/src/degradation.rs:776) is a second, weaker instance (narrowing on capability staleness).",
+    "status": "COMPLETE",
+    "current": "qip_agency::autonomy::ActionPolicy carries its predicted uplift interval and predicted side effects. ActionPolicy::observe returns the policy to Shadow, with no operator involved, when an observed effect falls outside the interval on either side or a side effect it did not predict appears; an in-range effect leaves it unchanged, and a later in-range effect does not restore it. engine::execute then calls no adapter for that policy.",
     "evidence": [
-      "backend/crates/services/qip-lifecycle/src/demotion.rs:370 (DemotionMonitor), :484 (enforce), :172 (DemotionTrigger::OutsideHoldoutBand)",
-      "backend/crates/runtime/qip-kernel/src/central/learning.rs:1-31 (automatic scale-down, no automatic scale-up) and :651-668 (resize: standard error ratchets up to the realised miss)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14140 (stage_learn -> review_strategies), :14281-14287 (live_outcomes -> learn_from_cells), :8109 (learn_from_cells)",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs:1504 (live_outcomes: derived from cell sessions only)",
-      "test live_performance_outside_the_holdout_band_is_demoted_and_counted — backend/crates/services/qip-lifecycle/tests/lifecycle.rs:2209",
-      "test live_performance_inside_the_holdout_band_is_not_demoted — backend/crates/services/qip-lifecycle/tests/lifecycle.rs:2177 (ran 2026-09-25 with the band filter: 'test result: ok. 4 passed')",
-      "test performance_decay_against_the_pilot_baseline_demotes_without_a_human — backend/crates/services/qip-lifecycle/tests/lifecycle.rs:924",
-      "test a_demotion_succeeds_with_no_approver_at_all — backend/crates/services/qip-lifecycle/tests/lifecycle.rs:693",
-      "backend/crates/libs/qip-contracts/src/degradation.rs:776,797 (DegradationState::sizing_multiplier / central_sizing_multiplier)"
+      "backend/crates/services/qip-agency/src/autonomy.rs (ActionPolicy::observe)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- an_effect_outside_the_predicted_interval_or_an_unpredicted_side_effect_returns_a_policy_to_shadow"
     ],
-    "gap": "No 'action policy' over interventions and no 'intervention effect' with a predicted uplift interval or side-effect assumptions exist, so the trading-strategy mechanism has nothing agency-shaped to apply to, and there is no side-effect trigger at all (the strategy monitor watches returns, not unpredicted side effects). The strategy instance is also not deployable today: its input is cell-reported sessions and no environment runs a cell.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -582,28 +588,23 @@
       "AGENCY-056"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-lifecycle --test lifecycle holdout_band (in-tree strategy instance). Still needed once action policies exist: an acceptance test feeding an action policy observed effects outside its predicted uplift interval, or an unpredicted side effect, and asserting its autonomy falls with no operator action while in-range effects leave it unchanged — the two holdout-band tests are the template.",
+    "verification": "cargo test -p qip-agency --test agency -- an_effect_outside_the_predicted_interval (mutation-verified: disabling the shrink, the side-effect clause or the upper bound each fails it).",
     "work_item": "E16-causal-policy-drift-autonomy",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: MISSING -> PARTIAL (upgrade) with implemented/tested/integrated true, deployable false. The assessor cited only DegradationState and missed the strategy lifecycle, which implements this exact invariant — observed effect outside the predicted band lowers authority with no operator, in-range leaves it unchanged — for trading strategies, reached from the LEARN stage and proven by paired tests that match the requirement's own check shape. PARTIAL, not COMPLETE, because the requirement is stated over intervention action policies and side effects, which do not exist. deployable false because the only input is cell sessions and execution_nodes = {} everywhere."
+    "notes": "verify: MISSING -> PARTIAL (upgrade) with implemented/tested/integrated true, deployable false. The assessor cited only DegradationState and missed the strategy lifecycle, which implements this exact invariant — observed effect outside the predicted band lowers authority with no operator, in-range leaves it unchanged — for trading strategies, reached from the LEARN stage and proven by paired tests that match the requirement's own check shape. PARTIAL, not COMPLETE, because the requirement is stated over intervention action policies and side effects, which do not exist. deployable false because the only input is cell sessions and execution_nodes = {} everywhere. | 2026-10-05: integrated=false for the agency form: no intervention executes, so no production path feeds observe an effect. The trading-strategy drift monitor this row was first scored on is a separate mechanism and is unchanged."
   },
   {
     "id": "AGENCY-055",
-    "status": "PARTIAL",
-    "current": "No Causal Agency & Intervention Engine exists to have an authority ladder, but two staged-authority ladders with the requirement's shape exist and are wired. (1) Platform-wide: qip_risk_engine::autonomy::AutonomyLevel (backend/crates/services/qip-risk-engine/src/autonomy.rs:30) defaults to PaperTrading (AutonomyLevel::DEFAULT, autonomy.rs:52), AutonomyLevel::deployable (autonomy.rs:110) refuses the three live levels and is called at the qip-api, qip-fastbrain and qip-deepbrain composition roots, and Terraform independently refuses them at plan time (infrastructure/terraform/variables.tf) — so nothing in this repository can take a live or irreversible market action. (2) Per strategy: qip_contracts::gate::GateStage (backend/crates/libs/qip-contracts/src/gate.rs:14-31) is Candidate -> Holdout -> Paper -> Shadow ('orders computed and discarded') -> Pilot ('deliberately limited') -> Scaled, with exactly one route and no way around Shadow. Neither ladder has a reversibility dimension.",
+    "status": "COMPLETE",
+    "current": "qip_agency::autonomy::Authority defaults to Shadow and every ActionPolicy is built at Shadow. engine::execute with no policy, or one at Shadow, returns the steps that would have run and calls no adapter. At NarrowReversible it checks every step before sending the first: a tool not declared reversible, or of another action class, refuses the whole plan with no call made. No rung above NarrowReversible exists. Reached from a composition root: `qip agency shadow --request <path>` (backend/crates/apps/qip-cli/src/agency.rs) runs qip_agency::engine::run with no action policy and an adapter that refuses every call. That path can only ever be shadow.",
     "evidence": [
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:30 (AutonomyLevel), :52 (DEFAULT = PaperTrading), :110 (deployable)",
-      "backend/crates/apps/qip-api/src/main.rs:97, backend/crates/apps/qip-fastbrain/src/main.rs:111, backend/crates/apps/qip-deepbrain/src/main.rs:165 (AutonomyLevel::deployable at each composition root)",
-      "infrastructure/terraform/variables.tf (refuses supervised_live/limited_autonomous_live/autonomous_live at plan time)",
-      "test the_platform_starts_in_paper_trading — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:41",
-      "test a_default_deployment_cannot_reach_a_live_level_at_all — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:51 (both ran 2026-09-25: 'test result: ok. 41 passed')",
-      "backend/crates/libs/qip-contracts/src/gate.rs:14-31 (GateStage ladder: Shadow before Pilot before Scaled)",
-      "test every_path_from_candidate_to_scaled_passes_through_shadow — backend/crates/services/qip-lifecycle/tests/lifecycle.rs:346 (ran 2026-09-25: ok)",
-      "backend/crates/tests/qip-acceptance/tests/compliance_proof.rs",
-      "backend/crates/tests/qip-acceptance/tests/security.rs"
+      "backend/crates/services/qip-agency/src/autonomy.rs (Authority, ActionPolicy)",
+      "backend/crates/services/qip-agency/src/engine.rs (Adapter, execute)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- the_default_authority_is_shadow_and_narrow_reversible_refuses_an_irreversible_tool",
+      "backend/crates/apps/qip-cli/tests/agency.rs -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (`outcome: shadowed`, Act absent from the stages passed)"
     ],
-    "gap": "There is no Agency-engine-specific authority ladder ('shadow' as a named state, then narrow reversible action classes, then broader authority). No action class of any kind has ever been allowed past paper/simulated, so the second stage this requirement describes ('may then be allowed only narrow, reversible actions') has never been exercised for anything, agency-related or not.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -614,26 +615,23 @@
       "AGENCY-051"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test compliance_proof; cargo test -p qip-acceptance --test security; a new acceptance test is needed once the engine exists, asserting its default authority is shadow (no adapter call executes) and that an irreversible action class is refused at the narrow-reversible stage.",
+    "verification": "cargo test -p qip-agency --test agency -- the_default_authority_is_shadow_and_narrow_reversible_refuses_an_irreversible_tool ; cargo test -p qip-cli --test agency -- the_shipped_binary_shadows_a_bounded_plan_and_declines_one_outside_its_goal (mutation-verified: letting a Shadow policy execute, and disabling the reversibility or class check, each fails it).",
     "work_item": "E16-agency-authority-ladder",
     "tier": "T3",
     "size": "M",
-    "notes": "Graded PARTIAL on the requirement's own note: the paper-trading boundary keeps every capital and market action shadow or simulated at every stage in this repository, which is the strongest possible reading of 'starts shadow-only' — but it is a platform-wide invariant, not an agency-engine authority ladder, and the staged-widening half is untested because nothing has ever widened. verify: status and flags unchanged (PARTIAL). Corrected line citations (autonomy.rs:30-46 did not contain DEFAULT or deployable; they are :52 and :110), named the tests instead of whole suites, and added the strategy GateStage ladder, which is the closer in-tree instance of 'shadow first, then narrow, then broader'. The 'irreversible action class refused at the narrow stage' half is still absent: no ladder carries reversibility."
+    "notes": "Graded PARTIAL on the requirement's own note: the paper-trading boundary keeps every capital and market action shadow or simulated at every stage in this repository, which is the strongest possible reading of 'starts shadow-only' — but it is a platform-wide invariant, not an agency-engine authority ladder, and the staged-widening half is untested because nothing has ever widened. verify: status and flags unchanged (PARTIAL). Corrected line citations (autonomy.rs:30-46 did not contain DEFAULT or deployable; they are :52 and :110), named the tests instead of whole suites, and added the strategy GateStage ladder, which is the closer in-tree instance of 'shadow first, then narrow, then broader'. The 'irreversible action class refused at the narrow stage' half is still absent: no ladder carries reversibility. | 2026-10-05: The narrow-reversible stage is exercised only by a test adapter: no adapter is implemented anywhere in the workspace and no composition root widens a policy. Broader authority has no representation at all; adding one needs an ADR. This is the agency engine's own ladder and cannot reach the trading AutonomyController."
   },
   {
     "id": "AGENCY-056",
     "status": "PARTIAL",
-    "current": "qip_risk_engine::autonomy::AutonomyController::request_change (backend/crates/services/qip-risk-engine/src/autonomy.rs:567-622) is the only function that raises an autonomy level, and it requires an authenticated, freshly-credentialed operator, a stated reason of at least 10 characters, the deployment ceiling, and a second approver before any live level. It has no caller in any composition root or in any non-test source file: the only production mutations of the controller are kill-switch trip/clear (qip-api routes.rs:2344, :2408; console.rs:123). So in a deployed process autonomy cannot be widened at all — the 'never automatic, never from a model' half holds because no widening path exists, not because an evidence check runs. The per-strategy analog is closer to the requirement: a strategy's authority widens only through qip_lifecycle gates that demand measured pilot evidence and fresh approvals (e.g. scaling needs a new decision, not the pilot's approval).",
+    "current": "For the agency engine's own ladder the precondition exists: qip_agency::autonomy::ActionPolicy::widen refuses an EffectAttribution marked NotIdentified (correlation, or a forecast that came true, at any confidence), refuses evidence for a different action class, and with identified evidence still refuses an approver who does not hold `agency:widen-autonomy`. The trading ladder is unchanged: AutonomyController::request_change (qip-risk-engine/src/autonomy.rs) takes a reason string and operator authority and asks for no evidence.",
     "evidence": [
-      "backend/crates/services/qip-risk-engine/src/autonomy.rs:567-622 (AutonomyController::request_change — no evidence precondition)",
-      "no production caller: rg 'request_change(' outside tests returns only the definition; production uses of autonomy_mut() are kill-switch only (backend/crates/apps/qip-api/src/routes.rs:2344,2408; console.rs:123)",
-      "test one_operator_cannot_enable_live_trading_alone — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:75",
-      "test a_change_without_a_stated_reason_is_refused — backend/crates/services/qip-risk-engine/tests/risk_engine.rs:144",
-      "test a_default_platform_is_in_paper_trading_and_cannot_go_live — backend/crates/runtime/qip-kernel/tests/kernel.rs:325",
-      "test scaling_on_the_pilots_own_approval_is_refused_because_scaling_is_a_new_decision — backend/crates/services/qip-lifecycle/tests/lifecycle.rs:645",
-      "backend/crates/tests/qip-acceptance/tests/compliance_proof.rs"
+      "backend/crates/services/qip-agency/src/autonomy.rs (ActionPolicy::widen, WIDEN_AUTHORITY)",
+      "backend/crates/services/qip-agency/src/attribution.rs (Identification)",
+      "backend/crates/services/qip-agency/tests/agency.rs -- autonomy_widens_only_on_an_identified_attribution_and_operator_authority_together",
+      "backend/crates/services/qip-risk-engine/src/autonomy.rs (request_change: no evidence precondition)"
     ],
-    "gap": "request_change has no evidence precondition at all: it accepts any stated reason string and grants the raise on operator authority alone, with no check for identifiable causal structure or a measured EffectAttribution. It would equally accept a raise justified only by predictive accuracy or correlation, because it never asks what justified it.",
+    "gap": "AutonomyController::request_change, the only autonomy ladder a composition root reaches, still grants a raise on operator authority and a free-text reason with no check for identified causal evidence. Closing it means an evidence type in a lane-0 crate (qip-risk-engine cannot depend on qip-agency) and a change to a risk-domain signature. The agency ladder's own widen has no production caller, and its operator authority is an authority string a composition root would have to authenticate.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -643,11 +641,11 @@
       "AGENCY-048"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test autonomy_ceiling; a new test is needed once EffectAttribution exists: a request to widen autonomy for an action class supported only by predictive-accuracy or correlational evidence is refused, while one carrying an identified EffectAttribution passes this precondition and still requires operator authority.",
+    "verification": "cargo test -p qip-agency --test agency -- autonomy_widens_only_on_an_identified_attribution_and_operator_authority_together (mutation-verified: disabling the identification, class or operator check each fails it). Covers the agency ladder only.",
     "work_item": "E16-evidence-gated-autonomy-widening",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own note names AutonomyController::request_change as the mechanism this adds an evidence precondition to, which is the basis for PARTIAL rather than MISSING. verify: status kept PARTIAL; integrated true -> false and deployable true -> false. request_change is reached only from tests (kernel.rs, risk_engine.rs, edge tests); no composition root calls it. The previously cited proof, qip-kernel/tests/autonomy_ceiling.rs, tests that a stored live ceiling is refused on load — a different property — and was replaced with the tests that exercise the operator requirement. The evidence precondition the requirement adds remains wholly absent."
+    "notes": "The requirement's own note names AutonomyController::request_change as the mechanism this adds an evidence precondition to, which is the basis for PARTIAL rather than MISSING. verify: status kept PARTIAL; integrated true -> false and deployable true -> false. request_change is reached only from tests (kernel.rs, risk_engine.rs, edge tests); no composition root calls it. The previously cited proof, qip-kernel/tests/autonomy_ceiling.rs, tests that a stored live ceiling is refused on load — a different property — and was replaced with the tests that exercise the operator requirement. The evidence precondition the requirement adds remains wholly absent. | 2026-10-05: Advanced, not closed: the verification check passes on the agency ladder; the trading ladder is the open half."
   },
   {
     "id": "AGENCY-057",

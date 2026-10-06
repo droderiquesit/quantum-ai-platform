@@ -31,8 +31,10 @@
 //!   known later than the platform's probability, because scoring against a
 //!   quote the platform could not have seen is leakage dressed as skill.
 
+pub mod access;
 pub mod adapter;
 pub mod arbitrage;
+pub mod belief;
 pub mod cross;
 pub mod market;
 pub mod oracle;

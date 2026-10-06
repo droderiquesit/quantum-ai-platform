@@ -25,9 +25,11 @@
 //!   REST API. Object storage is the natural second managed target: log
 //!   archives and model artifacts are written once and read rarely, which is
 //!   what a bucket is for. It never falls back to local disk.
-//! * [`gcp::BigQueryWarehouse`] — the research warehouse: stream rows in, run
-//!   a query, over the same transport. Not a [`KeyValueStore`] and not a
-//!   [`BlobStore`]; a warehouse is a third shape and is reached directly.
+//! * `qip_mesh::bigquery::BigQueryWarehouse` — the research warehouse: stream
+//!   rows in, run a query, over the same transport and the same [`gcp`]
+//!   access. Not a [`KeyValueStore`] and not a [`BlobStore`]; a warehouse is
+//!   a third shape, and its client is kept out of this crate so the reflex
+//!   cell, which links this one, cannot reach it (DATA-058).
 //!
 //! The two GCP adapters need what [`gcp`] sets out in full: a TLS-terminating
 //! proxy, because [`qip_transport::http`] has no TLS stack and refuses `https`
@@ -51,16 +53,19 @@
 //! misconfigured deployment fails loudly at start-up rather than silently
 //! writing nowhere. See `docs/operations/external-dependencies.md`.
 
+pub mod archive_names;
 pub mod blob;
 pub mod chain;
 pub mod engine;
 mod fsio;
 pub mod gcp;
 pub mod kv;
+pub mod lake;
 pub mod managed;
 pub mod provider;
 pub mod redis;
 pub mod repository;
+pub mod rowkey;
 pub mod segment;
 pub mod settings;
 
@@ -71,9 +76,8 @@ pub use engine::{
     WriteBatch,
 };
 pub use gcp::{
-    AccessToken, BigQueryConfig, BigQueryWarehouse, CloudStorageBlobStore, CloudStorageConfig,
-    GcpAccess, InsertOutcome, InsertRow, MetadataServerTokens, QueryPage, QueryParameter,
-    QueryRequest, StaticToken, TokenFile, TokenSource,
+    AccessToken, CloudStorageBlobStore, CloudStorageConfig, GcpAccess, MetadataServerTokens,
+    StaticToken, TokenFile, TokenSource,
 };
 pub use kv::{FileKeyValueStore, KeyValueStore, KeyValueStoreExt, MemoryKeyValueStore};
 pub use managed::ManagedSettings;

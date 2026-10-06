@@ -10,6 +10,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_arbitrage::graph::{
     ArbitrageGraph, EdgeKind, Node, PathKind, SyntheticComponent, VenueFacts,
@@ -1121,6 +1122,46 @@ fn scanning_the_same_market_twice_produces_the_same_answer() -> Result<()> {
     let first = scanner("50000").scan(&graph, &depth, &sizes, at());
     let second = scanner("50000").scan(&graph, &depth, &sizes, at());
     assert_eq!(first, second, "a replay must reproduce the run exactly");
+    Ok(())
+}
+
+/// REFLEX-027: the after-cost half of "executable expected value, not
+/// theoretical spread". `a_path_that_pays_on_mid_prices_is_refused_once_the_book_is_walked`
+/// stops at the Book stage, ahead of the net-edge veto, so deleting that veto
+/// once left every test green.
+#[test]
+fn a_cycle_that_pays_on_the_walked_book_is_refused_when_the_nine_deductions_consume_it()
+-> Result<()> {
+    let (graph, depth) = liquid_triangular()?;
+    let sizes = SizePolicy::uniform(d("10000"));
+
+    // Premise: under the default assumptions this very market is an
+    // opportunity, so the refusal below is caused by the deductions alone.
+    let baseline = scanner("50000").scan(&graph, &depth, &sizes, at());
+    assert_eq!(baseline.opportunities.len(), 1);
+    assert!(
+        baseline.opportunities[0].pricing.is_profitable_on_book(),
+        "the cycle must pay on the walked book for the net-edge stage to be the one refusing it"
+    );
+
+    // Funding priced at 100x a year over the same holding period: the book
+    // is unchanged, only the cost of carrying the capital moves.
+    let costly = EdgeAssumptions {
+        funding_rate_annual_f64: 100.0,
+        holding_period: Duration::from_hours(24),
+        ..EdgeAssumptions::default()
+    };
+    let scanner = OpportunityScanner::new(
+        SearchSettings::default(),
+        costly,
+        PlanSettings::with_budget(d("50000")),
+    );
+    let report = scanner.scan(&graph, &depth, &sizes, at());
+    assert!(report.opportunities.is_empty());
+    assert!(report.rejected_at(RejectionStage::Book).is_empty());
+    let refused = report.rejected_at(RejectionStage::NetEdge);
+    assert_eq!(refused.len(), 1, "{:?}", report.rejections);
+    assert!(refused[0].detail.contains("net -"), "{}", refused[0].detail);
     Ok(())
 }
 

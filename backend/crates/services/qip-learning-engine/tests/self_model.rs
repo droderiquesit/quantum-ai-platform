@@ -9,6 +9,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::error::Result;
 use qip_core::testing::approx_eq;
@@ -35,6 +36,7 @@ fn evaluation(id: &str, verdict: Verdict, confidence: f64) -> Evaluation {
     Evaluation {
         hypothesis_id: id.to_string(),
         class: "price_dislocation".to_string(),
+        subject: String::new(),
         verdict,
         expected_move_bps: 100.0,
         realised_move_bps: 90.0,

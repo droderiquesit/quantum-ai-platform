@@ -101,6 +101,18 @@ pub struct L3Book {
     orders: BTreeMap<u64, RestingOrder>,
 }
 
+/// Every resting order of an [`L3Book`], in the order that rebuilds it.
+///
+/// A level snapshot cannot be a checkpoint: it has forgotten which order is
+/// where in each queue, and a book restored from sizes alone would answer every
+/// queue-position question wrongly and say nothing about it. This keeps the
+/// orders themselves, bids then asks, each level in ascending price and each
+/// queue front first, so that [`L3Book::restore`] is a sequence of adds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct L3Checkpoint {
+    pub orders: Vec<RestingOrder>,
+}
+
 impl Default for L3Book {
     fn default() -> Self {
         Self::new()
@@ -290,6 +302,35 @@ impl L3Book {
             resting.quantity = quantity;
         }
         Ok(())
+    }
+
+    /// Capture every resting order so a replay can start from here.
+    pub fn checkpoint(&self) -> L3Checkpoint {
+        let mut orders = Vec::with_capacity(self.orders.len());
+        for ladder in [&self.bids, &self.asks] {
+            for (_, level) in ladder.levels() {
+                orders.extend(
+                    level
+                        .queue
+                        .iter()
+                        .filter_map(|r| self.orders.get(r).copied()),
+                );
+            }
+        }
+        L3Checkpoint { orders }
+    }
+
+    /// Rebuild a book from a checkpoint.
+    ///
+    /// Refuses a checkpoint that repeats a reference or holds a non-positive
+    /// size rather than repairing it: a restored book that differs from the
+    /// one captured is a replay that diverges silently.
+    pub fn restore(checkpoint: &L3Checkpoint) -> Result<Self> {
+        let mut book = Self::new();
+        for o in &checkpoint.orders {
+            book.add(o.order_ref, o.side, o.price, o.quantity)?;
+        }
+        Ok(book)
     }
 
     /// Discard everything.

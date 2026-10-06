@@ -9,6 +9,7 @@
 //! future, and nothing downstream can see it. A vendor's interpolated value
 //! arriving indistinguishable from a measured one is a model fitted on data
 //! that was never observed, and nothing downstream can see that either.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 mod server;
 

@@ -57,6 +57,73 @@ readonly EXCLUDE_PATHS=(
   ':(exclude)*/tests/*'
 )
 
+# --history: every line any commit reachable from HEAD ever added.
+#
+# The scan below reads the tree as it stands, so a credential committed on
+# Monday and deleted on Tuesday passes it from Tuesday onwards while every
+# clone still carries Monday's blob. This mode reads what each commit *added*
+# instead, with the same patterns and the same exclusions, so deleting the
+# line does not make the finding go away. That is the point: the fix for a
+# committed secret is rotation, and the scan keeps saying so until somebody
+# records that it happened.
+#
+# The record is scripts/secrets-reviewed.txt, one `<commit> <path> <what it
+# was>` per line. Without it this mode would be the build ci.yml's comment
+# used to warn about, one that fails for ever on an old commit and that
+# people learn to ignore. A line with no third field acknowledges nothing:
+# the reason is what makes it a record rather than a mute button.
+#
+# Reports the commit and the path, never the matched line: this output lands
+# in a CI log, and a scanner that reprints the secret it found has published
+# it a second time.
+case "${1:-}" in
+  '') ;;
+  --history)
+    # A shallow clone holds one commit and would report the whole history
+    # clean having read none of it.
+    if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+      echo "this is a shallow clone, so there is no history here to scan;" >&2
+      echo "fetch it first: git fetch --unshallow (fetch-depth: 0 in a workflow)" >&2
+      exit 2
+    fi
+    reviewed="$(git rev-parse --show-toplevel)/scripts/secrets-reviewed.txt"
+    alternation=$(IFS='|'; echo "${PATTERNS[*]}")
+    commit='' path='' found=0
+    # --cc so a line that exists only in a merge's own resolution is read too;
+    # a plain `log -p` shows no diff at all for a merge.
+    # ponytail: an added line whose own text starts with "++ " reads as a file
+    # header and is skipped; parse `--raw -z` if that ever hides a finding.
+    while IFS= read -r line; do
+      case "$line" in
+        'commit '*) commit=${line#commit } ;;
+        '+++ '*) path=${line#+++ b/} ;;
+        *'cert-manager.io/inject-ca-from-secret:'*) ;;
+        *)
+          if [[ -f $reviewed ]] && grep -qF -- "$commit $path " "$reviewed"; then
+            continue
+          fi
+          echo "possible secret added by $commit in $path" >&2
+          found=1
+          ;;
+      esac
+    done < <(git log --no-color --cc --format='commit %H' HEAD -- . "${EXCLUDE_PATHS[@]}" \
+      | grep -a -E "^(commit [0-9a-f]{40}\$|\+\+\+ |\+.*(${alternation}))")
+    if [[ $found -eq 1 ]]; then
+      echo >&2
+      echo "read each with: git show <commit> -- <path>" >&2
+      echo "a real one needs rotating, then a line in scripts/secrets-reviewed.txt;" >&2
+      echo "deleting it changes nothing, because it is already in the history." >&2
+      exit 1
+    fi
+    echo "secret scan: nothing found in $(git rev-list --count HEAD) commits of history"
+    exit 0
+    ;;
+  *)
+    echo "unknown argument '$1'; run with no argument to scan the tree, or --history" >&2
+    exit 2
+    ;;
+esac
+
 found=0
 for pattern in "${PATTERNS[@]}"; do
   # One known non-secret shaped like one: cert-manager's cainjector

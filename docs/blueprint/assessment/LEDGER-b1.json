@@ -26,31 +26,30 @@
     "work_item": "E05-ledger-writer-enumeration",
     "tier": "T2",
     "size": "L",
-    "notes": "The event log itself (qip_events::EventLog) is arguably the one physical store everything replays from, which is a defensible reading of the invariant's spirit, but the requirement's own verification method asks for an architecture test naming exactly one writer, and none exists. verify: status PARTIAL -> INCORRECT and all flags false. The assessor treated qip_portfolio::Portfolio as the kernel's book; it is not -- the kernel books into TrackedCapital (platform.rs:3721), and the desk's Portfolio is a never-written copy that agents still read, which is the second-authority failure this invariant forbids. Also added qip-brokers AccountLedger to the store list."
+    "notes": "The event log itself (qip_events::EventLog) is arguably the one physical store everything replays from, which is a defensible reading of the invariant's spirit, but the requirement's own verification method asks for an architecture test naming exactly one writer, and none exists. verify: status PARTIAL -> INCORRECT and all flags false. The assessor treated qip_portfolio::Portfolio as the kernel's book; it is not -- the kernel books into TrackedCapital (platform.rs:3721), and the desk's Portfolio is a never-written copy that agents still read, which is the second-authority failure this invariant forbids. Also added qip-brokers AccountLedger to the store list. | 2026-10-05 not closed: needs one book: the agents' BookView Portfolio is still a frozen copy and cell fills are booked to UserLedger rather than the desk's book; unifying them is the qip-ledgerd writer (SLICE-31) plus a Desk change in qip-investment-agents, not a guard. The desk's book itself is now the fold of the log (LEDGER-005)."
   },
   {
     "id": "LEDGER-002",
-    "status": "PARTIAL",
-    "current": "The kernel's book of record, TrackedCapital (backend/crates/runtime/qip-kernel/src/platform.rs:3721), holds one currency-less cash: Decimal and books every fill into it with no unit (apply_fill, platform.rs:3834-3857). qip_portfolio::Portfolio likewise holds a single cash in one base_currency (portfolio.rs:46-59). qip_capital::ledger::StrategyBook keys CashBalance by Currency (book.rs:108-114), but UserLedger refuses to enrol a mandate or admit a request in any currency other than the desk's (user_ledger.rs:432-446, 709-716), so that per-unit keying never holds a second unit. qip_capital_fabric::wallet keys observed holdings by VenueAsset (venue, asset), e.g. USD and BTC in one statement.",
+    "status": "COMPLETE",
+    "current": "qip_portfolio::Portfolio::apply_fill now refuses a fill whose instrument is priced in a unit other than the book's base_currency (backend/crates/libs/qip-portfolio/src/portfolio.rs), so no cross-unit netting enters cash; the simulated clearing account (qip-brokers ledger.rs) propagates the refusal and the backtest records it as a rejected order. The ledger's posting path balances per unit under a property test.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:3721-3746,3834-3857 (TrackedCapital: one cash figure, apply_fill takes no currency)",
-      "backend/crates/libs/qip-portfolio/src/portfolio.rs:46-59,103-140 (single cash, single base_currency, apply_fill has no currency parameter)",
-      "backend/crates/services/qip-capital/src/ledger/book.rs:108-114 (StrategyBook cash: BTreeMap<Currency, CashBalance>)",
-      "backend/crates/services/qip-capital/tests/user_ledger.rs:432-446 (a mandate in EUR is refused -- the desk is single-currency)"
+      "backend/crates/libs/qip-portfolio/src/portfolio.rs (apply_fill returns Result, refuses object.currency != base_currency)",
+      "backend/crates/libs/qip-portfolio/tests/accounting.rs a_fill_priced_in_another_unit_is_refused_and_leaves_the_book_untouched",
+      "backend/crates/libs/qip-portfolio/tests/ledger_postings.rs every_ledger_event_balances_in_every_unit_for_any_side_quantity_price_and_share_split"
     ],
-    "gap": "The trading subledger (Portfolio) assumes every fill's price is already denominated in one base currency and has no explicit exchange-entry mechanism; a fill in an instrument priced in a currency other than base_currency would be added to base-currency cash with no conversion entry and no refusal, which is exactly the implicit cross-unit netting the invariant forbids. Only the per-user capital ledger side is genuinely multi-unit.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. The cited 'cargo test -p qip-capital ledger:: proves per-currency CashBalance isolation' matches no test: qip-capital has no test posting two currencies to one book, and the only EUR cases in user_ledger.rs assert a refusal at enrolment/admission. The property test the requirement names (per-unit debits = credits; cross-unit offset refused) does not exist.",
+    "verification": "cargo test -p qip-portfolio --test accounting -- a_fill_priced_in_another_unit_is_refused_and_leaves_the_book_untouched; cargo test -p qip-portfolio --test ledger_postings -- every_ledger_event_balances_in_every_unit_for_any_side_quantity_price_and_share_split. Mutation: disabling the currency check made the first fail with 'a EUR fill into a USD book must be refused'.",
     "work_item": "E05-portfolio-multi-currency",
     "tier": "T2",
     "size": "M",
-    "notes": "Low practical exposure today because every configured paper universe trades in USD, but the gap is structural, not incidental. verify: tested true -> false (no test exercises multi-unit balances; the cited test filter matches nothing that does). Current rewritten: the kernel's real book is TrackedCapital, which has no currency at all; UserLedger's per-currency keying is structurally present but refuses every non-desk currency."
+    "notes": "Low practical exposure today because every configured paper universe trades in USD, but the gap is structural, not incidental. verify: tested true -> false (no test exercises multi-unit balances; the cited test filter matches nothing that does). Current rewritten: the kernel's real book is TrackedCapital, which has no currency at all; UserLedger's per-currency keying is structurally present but refuses every non-desk currency. | COMPLETE: Portfolio side closed. Not claimed: qip_kernel TrackedCapital (the desk's book of record) is still one currency-less cash figure; that is tracked under LEDGER-001/LEDGER-007."
   },
   {
     "id": "LEDGER-003",
@@ -72,7 +71,7 @@
     "work_item": "E05-ledger-brain-crate",
     "tier": "T3",
     "size": "XL",
-    "notes": "The functional pieces this domain would need (Portfolio, UserLedger, CashBalance, TaxLot) already exist and are hardened; the gap is the missing contract boundary around them, not the arithmetic. verify: MISSING confirmed. rg for LedgerEvent|Posting|TrialBalance across backend finds nothing; qip-contracts has no ledger module. ADR 0100 (accepted 2026-09-25) decides a separate qip-ledgerd binary with posting logic in qip-portfolio, but states 'Nothing is built by this record', and no qip-ledgerd crate exists."
+    "notes": "The functional pieces this domain would need (Portfolio, UserLedger, CashBalance, TaxLot) already exist and are hardened; the gap is the missing contract boundary around them, not the arithmetic. verify: MISSING confirmed. rg for LedgerEvent|Posting|TrialBalance across backend finds nothing; qip-contracts has no ledger module. ADR 0100 (accepted 2026-09-25) decides a separate qip-ledgerd binary with posting logic in qip-portfolio, but states 'Nothing is built by this record', and no qip-ledgerd crate exists. | 2026-10-05 not closed: the contract (qip_contracts::ledger), the posting logic (qip_portfolio::ledger) and the store (qip-ledgerd's LedgerStore) exist since SLICE-23 and SLICE-29, but qip-ledgerd's main refuses to start until SLICE-31 fills its config, consumer and read API, so no production path records through the contract; SLICE-31 owns those files."
   },
   {
     "id": "LEDGER-004",
@@ -98,21 +97,21 @@
     "work_item": "E05-settlement-brain",
     "tier": "T3",
     "size": "XL",
-    "notes": "P1 in the blueprint; this build has not reached the point where the two could even disagree, because neither is a first-class domain yet. verify: MISSING confirmed; added the qip-capital-fabric settlement calendar the assessor did not cite -- it is also timing-only and does not change the status."
+    "notes": "P1 in the blueprint; this build has not reached the point where the two could even disagree, because neither is a first-class domain yet. verify: MISSING confirmed; added the qip-capital-fabric settlement calendar the assessor did not cite -- it is also timing-only and does not change the status. | 2026-10-05 not closed: needs a Settlement Brain crate with its own contract that issues settlement events; nothing in a paper-only build issues one (qip_contracts::ledger::Settlement has the single variant Simulated by design) and real settlement instructions are external action (C1)."
   },
   {
     "id": "LEDGER-005",
     "status": "PARTIAL",
-    "current": "qip_events::EventLog (backend/crates/libs/qip-events/src/log.rs) is append-only and hash-chained. qip-kernel replays several ledger-adjacent structures from it at boot: Platform::resume_ledger (platform.rs:6327, called at 4643) rebuilds UserLedger, resume_capital_calls (platform.rs:6744, called at 4651) rebuilds the commitment book, resume_fabric (platform.rs:7455, called at 4424) rebuilds FabricJournal. The kernel's actual trading book, TrackedCapital, is constructed fresh by TrackedCapital::new(initial_equity, now) (platform.rs:4577) with no resume path, and the desk's Portfolio is likewise built fresh (platform.rs:4253) and never written.",
+    "current": "qip_events::EventLog is append-only and hash-chained, and qip-kernel replays from it at assembly: Platform::resume_ledger (declared inflows), resume_capital_calls (the commitment book), resume_fabric (FabricJournal) and, since 2026-10-05, Platform::resume_book. Every desk fill is journalled as a FillBooked record (Topic::OrderFilled, producer kernel/book) before TrackedCapital::apply_fill books it, and every corporate action that changes share counts as a LotAdjusted record (Topic::PositionUpdated, same producer) before TrackedCapital::adjust_lot takes it. resume_book folds both in log order through those same two functions, reopens the book at the first fill's own instant so the day anchor replays, carries each fill into RiskAggregates through Platform::aggregate_fill, and stops assembly on a book record it cannot decode or apply. Reached from qip-api, qip-fastbrain and qip-deepbrain through Platform assembly.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4643,6327 (resume_ledger)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4651,6744 (resume_capital_calls)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4577 (capital: TrackedCapital::new(initial_equity, now) -- always fresh)",
-      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs:475 (a_filed_capital_call_survives_a_restart_and_a_withdrawn_one_does_not)",
-      "backend/crates/runtime/qip-kernel/tests/ledger.rs:3096 (a_declared_inflow_survives_a_restart_and_a_cancelled_one_does_not)",
-      "rg -n 'fn resume' backend/crates/runtime/qip-kernel/src (no resume for TrackedCapital or positions)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs (struct FillBooked, struct LotAdjusted, BOOK_ORIGIN; fn resume_book, called from Platform assembly after resume_capital_calls)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (capture_submission journals FillBooked before capital.apply_fill; apply_corporate_action journals LotAdjusted before capital.adjust_lot)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_split_the_book_took_before_a_restart_is_on_the_log_and_is_not_taken_again_when_the_tape_is_fed_to_the_new_process",
+      "backend/crates/runtime/qip-kernel/tests/capital_calls.rs a_filed_capital_call_survives_a_restart_and_a_withdrawn_one_does_not",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_declared_inflow_survives_a_restart_and_a_cancelled_one_does_not"
     ],
-    "gap": "The trading book -- TrackedCapital's cash, costs and positions, the part LEDGER-007 names as authoritative -- is not rebuilt from the journal at restart; it starts flat at initial_equity every process start. The event-sourcing invariant holds for capital calls, the fabric journal and the user/mandate ledger, and fails for the platform's own book of record.",
+    "gap": "The desk's trading book now rebuilds, to the unit, from the log and from any prefix of it. What still does not: (1) the per-user ledger's fundings and cell-fill bookings -- resume_ledger replays InflowExpected and InflowCancelled and passes over Funded, Booked and FundingRefused by design (its doc comment and ADR 0085 give the reason: a funding re-run would be re-decided against an eligibility registry and a product catalogue this boot builds from configuration), so a restarted process holds the declarations and not the funded balances; (2) the book's opening equity is this boot's configuration, not a journalled opening entry; (3) a fill whose record the log refuses is still booked and is reported as a capture problem, and that one state is not rebuilt; (4) obligations and settlement state do not exist as ledger records at all (LEDGER-008).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -120,11 +119,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel --test capital_calls a_filed_capital_call_survives_a_restart_and_a_withdrawn_one_does_not; cargo test -p qip-kernel --test ledger a_declared_inflow_survives_a_restart_and_a_cancelled_one_does_not. No test proves TrackedCapital replays from the log, because it does not.",
+    "verification": "cargo test -p qip-kernel --test ledger -- a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill a_split_the_book_took_before_a_restart_is_on_the_log_and_is_not_taken_again_when_the_tape_is_fed_to_the_new_process. Mutations, each restored byte-for-byte: removing the resume_book call left the restarted book at cash 10000000 with no positions ('the restarted book is not the book the first process held'); not reopening the book at the first fill changed daily_loss ('the risk stack reads a different book after the restart'); replaying a fill with zero costs left trading costs at 0 against 11.282088; skipping aggregate_fill on replay left gross exposure 0; ignoring LotAdjusted on replay rebuilt 60 @ 100.03 against 120 @ 50.015; removing the actions_taken check split the rebuilt lot to 240.",
     "work_item": "E05-portfolio-replay",
     "tier": "T2",
     "size": "L",
-    "notes": "Directly connects to the LEDGER-007 gap below; the two are the same missing resume path. verify: status and flags kept. Corrected the unreplayed book from Portfolio to TrackedCapital (platform.rs:4577) and replaced the non-existent 'resume_ledger' test filter with the named restart tests."
+    "notes": "Directly connects to the LEDGER-007 gap below; the two are the same missing resume path. verify: status and flags kept. Corrected the unreplayed book from Portfolio to TrackedCapital (platform.rs:4577) and replaced the non-existent 'resume_ledger' test filter with the named restart tests. | 2026-10-05: PARTIAL kept: the named gap (the desk's book starts flat) is closed and proven by replay of the whole log and of every prefix; the per-user ledger's fundings are the remaining half, and replaying them needs ADR 0085's accepted asymmetry reopened in a superseding ADR."
   },
   {
     "id": "LEDGER-006",
@@ -150,20 +149,19 @@
     "work_item": "E05-generic-posting-type",
     "tier": "T3",
     "size": "XL",
-    "notes": "The narrower guarantee that exists (structurally-balanced-by-construction for one subledger) is arguably stronger engineering than a validated-and-refused generic entry would be, but it does not cover the subledgers the requirement names. verify: status and flags kept. Corrected current: the balanced-by-construction Portfolio path is not the kernel's book; the kernel's TrackedCapital has no double-entry structure or balance check."
+    "notes": "The narrower guarantee that exists (structurally-balanced-by-construction for one subledger) is arguably stronger engineering than a validated-and-refused generic entry would be, but it does not cover the subledgers the requirement names. verify: status and flags kept. Corrected current: the balanced-by-construction Portfolio path is not the kernel's book; the kernel's TrackedCapital has no double-entry structure or balance check. | 2026-10-05 not closed: LedgerEvent::new (qip-contracts) refuses a set unbalanced in any unit and is property-tested through qip_portfolio::ledger::post, but its only writer is qip-ledgerd, which does not start until SLICE-31; the kernel's book is journalled (FillBooked) and still single-entry."
   },
   {
     "id": "LEDGER-007",
     "status": "PARTIAL",
-    "current": "The kernel's trading book is TrackedCapital (backend/crates/runtime/qip-kernel/src/platform.rs:3721): TrackedCapital::apply_fill (platform.rs:3834) moves cash and the instrument's average-price PositionLot together for each desk fill (called at platform.rs:15652), and Platform::risk_state_from (platform.rs:15119) builds RiskState from the aggregates and self.capital, so the pre-trade veto and the monitor read that book. Reached from qip-api, qip-fastbrain and qip-deepbrain through qip-kernel. It is not qip_portfolio::Portfolio: the desk's BookView Portfolio (platform.rs:4252-4259) is built once and never written, and agents with ReadPortfolio read it. Cell fills are booked to UserLedger and the aggregates, not to TrackedCapital (platform.rs:5653-5704, 8076-8094).",
+    "current": "The kernel's trading book is TrackedCapital: TrackedCapital::apply_fill moves cash and the instrument's average-cost PositionLot together for each desk fill, and Platform::risk_state_from builds RiskState from the aggregates that fill is carried into, so the pre-trade veto and the monitor read that book. Since 2026-10-05 each desk fill is journalled as a FillBooked record before it is booked and Platform::resume_book rebuilds the book and the aggregate from the log at assembly, so the positions, cash, fees, drawdown and day's loss the risk stack reads after a restart are the ones it read before. Reached from qip-api, qip-fastbrain and qip-deepbrain through qip-kernel. It is not qip_portfolio::Portfolio: the desk's BookView Portfolio is built once at assembly and never written, and agents with ReadPortfolio read it. Cell fills are booked to UserLedger and the aggregates, not to TrackedCapital.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:3721,3834-3900 (TrackedCapital and apply_fill: cash and position moved in one call)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15652 (desk fill capture calls capital.apply_fill)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:15119-15136 (risk_state_from reads self.capital)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:19505 (the_daily_loss_limit_can_actually_fire, booking through TrackedCapital::apply_fill and reading risk_state)",
-      "backend/crates/agents/qip-investment-agents/src/review.rs:113-117 (agents read the never-written desk Portfolio)"
+      "backend/crates/runtime/qip-kernel/src/platform.rs (struct TrackedCapital, fn apply_fill, fn resume_book, struct FillBooked)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs (risk_state_from reads the aggregate aggregate_fill feeds)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill",
+      "backend/crates/agents/qip-investment-agents/src/review.rs (agents read the never-written desk Portfolio)"
     ],
-    "gap": "Three gaps. (1) 'Every other domain reads positions and cash from the ledger' fails: the agent desk reads a Portfolio frozen at initial equity with no positions, so e.g. review.rs's 'the book already holds' objection can never fire. (2) Cell fills never reach TrackedCapital, so the book holds only the desk's own fills. (3) No replay path from the event log (LEDGER-005); a redeployed process starts flat.",
+    "gap": "Two gaps remain of three. (1) 'Every other domain reads positions and cash from the ledger' fails: the agent desk reads a BookView Portfolio frozen at initial equity with no positions, so review.rs's 'the book already holds' objection can never fire. (2) Cell fills never reach TrackedCapital, so the book holds only the desk's own fills. Closed on 2026-10-05: the replay path -- a restarted process no longer starts flat. The postings are also not double-entry: FillBooked is one record carrying the position, cash and fee of a fill, not balanced legs.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -173,11 +171,11 @@
       "LEDGER-005"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-kernel the_daily_loss_limit_can_actually_fire proves a fill booked through TrackedCapital::apply_fill moves the risk state the monitor reads. No test proves the agents' book equals TrackedCapital (it does not), or that positions/cash survive a restart.",
+    "verification": "cargo test -p qip-kernel --test ledger -- a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill proves the risk reading (equity, cash, gross, net, position notionals, axis exposures, drawdown, daily loss) is identical before and after a restart; mutation: skipping aggregate_fill on replay failed it with gross 0 against 66900.06399978. cargo test -p qip-kernel the_daily_loss_limit_can_actually_fire proves a fill booked through TrackedCapital::apply_fill moves the risk state the monitor reads. No test proves the agents' book equals TrackedCapital, because it does not.",
     "work_item": "E05-portfolio-replay",
     "tier": "T2",
     "size": "M",
-    "notes": "Same underlying gap as LEDGER-005; closing that resume path closes this one too. verify: status and flags kept; current/evidence/gap/verification rewritten. The assessor's claim that Portfolio is the kernel's book and feeds RiskState each cycle is false -- TrackedCapital is the book and the desk Portfolio has no writer. The cited qip-portfolio accounting tests prove the library type, not the kernel's book."
+    "notes": "Same underlying gap as LEDGER-005; closing that resume path closes this one too. verify: status and flags kept; current/evidence/gap/verification rewritten. The assessor's claim that Portfolio is the kernel's book and feeds RiskState each cycle is false -- TrackedCapital is the book and the desk Portfolio has no writer. The cited qip-portfolio accounting tests prove the library type, not the kernel's book. | 2026-10-05: gap (3) closed with LEDGER-005's resume path. Not closed: re-pointing the agents' BookView at the book needs Desk.book to become an Upstream in qip-investment-agents and a Portfolio built from the same fills, and cell fills reaching one book is the qip-ledgerd writer (SLICE-31)."
   },
   {
     "id": "LEDGER-008",
@@ -201,7 +199,7 @@
     "work_item": "E05-trade-obligations",
     "tier": "T2",
     "size": "L",
-    "notes": "The reflex cell's dropcopy reconciler (LEDGER-023) and settlement.rs together answer 'did the trade happen' and 'when is the money usable', but neither answers 'what do we still owe or is still owed to us'."
+    "notes": "The reflex cell's dropcopy reconciler (LEDGER-023) and settlement.rs together answer 'did the trade happen' and 'when is the money usable', but neither answers 'what do we still owe or is still owed to us'. | 2026-10-05 not closed: needs an obligation record opened at fill time and closed by a settlement event; no settlement event has a source (LEDGER-004), so an obligation could be opened and never closed."
   },
   {
     "id": "LEDGER-009",
@@ -223,7 +221,7 @@
     "work_item": "E17-physical-inventory-ledger",
     "tier": "T3",
     "size": "L",
-    "notes": "Consistent with the blueprint's own phasing -- physical commerce is master Phase 7 and this repository has not reached it."
+    "notes": "Consistent with the blueprint's own phasing -- physical commerce is master Phase 7 and this repository has not reached it. | 2026-10-05 not closed: needs a physical inventory subledger fed by acquisition, disposal and return events; nothing in the tree produces those events to post."
   },
   {
     "id": "LEDGER-010",
@@ -236,7 +234,7 @@
       "backend/crates/libs/qip-portfolio/tests/accounting.rs:91 (the_lot_method_changes_the_realised_gain)",
       "backend/crates/libs/qip-portfolio/tests/tax_lots.rs:262,294 (long/short-term-first selection tests)"
     ],
-    "gap": "The requirement says each disposal records the relief method that was applied; RealisedTrade carries no method (only a holding term), so a disposal cannot say which method relieved it. And the platform's ledger does not maintain lots at all: TrackedCapital averages the price, so lot relief exists only in backtests and the undeployed edge-node clearing account. No property test covers 'open-lot quantities sum to the position; relieved plus open basis equals total acquisition cost'.",
+    "gap": "Lot relief method is now recorded on every RealisedTrade (RealisedTrade::relief, set by close_lots_under) and a property test proves open plus relieved quantity and basis equal what was held and paid, per method. Still open: the platform's book of record (qip_kernel TrackedCapital) averages price and keeps no lots, so lot relief exists only in Portfolio-backed paths (backtests, the undeployed edge-node clearing account).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -244,22 +242,23 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-portfolio --test accounting the_lot_method_changes_the_realised_gain; cargo test -p qip-portfolio --test tax_lots. These prove the library type. grep -rn 'declare_selection' backend/crates --include=*.rs shows no production caller outside qip-portfolio.",
+    "verification": "cargo test -p qip-portfolio --test accounting -- every_disposal_names_its_relief_method_and_open_plus_relieved_basis_is_what_was_paid. Mutation: relief None and a shifted open_price each made it fail.",
     "work_item": "E05-ledger-tax-lots",
     "tier": "T2",
     "size": "M",
-    "notes": "Note the naming split the code itself documents: qip_portfolio::lot::Lot (a security acquisition, sold under a declared method -- this requirement) is a deliberately different type from qip_capital::ledger::TaxLot (a user's capital contribution basis -- feeds LEDGER-022, not this one). verify: status COMPLETE -> PARTIAL; integrated and deployable -> false. The relief method is not recorded on the disposal (RealisedTrade has no method field), and the kernel's book (TrackedCapital) holds average-price positions, not lots. The lot code is reached only from a backtester and the undeployed simulated-exchange clearing account."
+    "notes": "Note the naming split the code itself documents: qip_portfolio::lot::Lot (a security acquisition, sold under a declared method -- this requirement) is a deliberately different type from qip_capital::ledger::TaxLot (a user's capital contribution basis -- feeds LEDGER-022, not this one). verify: status COMPLETE -> PARTIAL; integrated and deployable -> false. The relief method is not recorded on the disposal (RealisedTrade has no method field), and the kernel's book (TrackedCapital) holds average-price positions, not lots. The lot code is reached only from a backtester and the undeployed simulated-exchange clearing account. | 2026-10-05 not closed: the desk's book carries one average-cost lot per instrument; keeping tax lots there means replacing TrackedCapital's PositionLot with qip_portfolio lots, which changes realised P&L on the risk path (lot relief against average cost) -- a design decision, not a wiring."
   },
   {
     "id": "LEDGER-011",
     "status": "PARTIAL",
-    "current": "The kernel's book, TrackedCapital, adds each fill's costs to a running costs_paid scalar and folds them into cash (backend/crates/runtime/qip-kernel/src/platform.rs:3850-3857). qip_portfolio::Portfolio does the same with cumulative_costs (portfolio.rs:56,135-137), but that path runs only in backtests and the simulated exchange's clearing account. Fees are therefore kept apart from the fill price, but only as a running total.",
+    "current": "Each desk fill's fee is a discrete figure on its own journalled record: FillBooked.costs, beside the fill's price and never netted into it, on a hash-chained record that names the order_id and fill_id that incurred it. TrackedCapital's running costs_paid is the sum of that field over the log and Platform::resume_book rebuilds it from the records. For cell fills the fee posts to a fees:<venue> account inside the fill's balanced LedgerEvent (qip_portfolio::ledger::post, FeeReport::Reported), which qip-ledgerd's LedgerStore books -- a library path, because qip-ledgerd's main refuses to start.",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:3850-3857 (costs_paid += costs; cash -= costs)",
-      "backend/crates/libs/qip-portfolio/src/portfolio.rs:56,135-137 (cumulative_costs)",
-      "rg -n 'struct.*Fee|FeeEntry|fee_amount' backend --include=*.rs finds qip_capital::compounding::FeeVolumeLedger (venue fee-tier volume tracking, not a fee posting) and no fee-entry type"
+      "backend/crates/runtime/qip-kernel/src/platform.rs (struct FillBooked: costs, order_id, fill_id; capture_submission)",
+      "backend/crates/runtime/qip-kernel/tests/ledger.rs a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill (asserts the journalled fees sum to trading_costs)",
+      "backend/crates/libs/qip-portfolio/src/ledger.rs (post: Dr fees:venue, Cr trading, per share)",
+      "backend/crates/libs/qip-portfolio/tests/ledger_postings.rs an_unreported_fee_is_marked_unreported_and_never_estimated"
     ],
-    "gap": "cumulative_costs is a single running scalar, not a fees/taxes subledger of discrete entries each referencing the fill's event ID; the requirement's verification ('the subledger total equals the sum of fees on the fills') cannot be demonstrated because there is no list of fee entries to sum, only the running total itself.",
+    "gap": "The desk's fees are now discrete entries, each tied to the fill that incurred it, and their total is proven equal to the book's figure -- but they are a field on the fill's record, not a posting to a fees account inside a balanced double-entry entry, which is what the verification asks. The path that does post fees to a fees subledger (cell fills through LedgerEvent) has no production caller until qip-ledgerd starts. Taxes are not recorded anywhere.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -267,11 +266,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-portfolio --test accounting proves cumulative_costs accrues on fills. No test demonstrates a per-entry fees/taxes subledger because none exists.",
+    "verification": "cargo test -p qip-kernel --test ledger -- a_restarted_platform_rebuilds_the_desks_book_from_the_log_alone_and_any_prefix_of_the_log_rebuilds_it_as_of_that_fill (the fold of FillBooked.costs equals Platform::trading_costs, and survives a restart; mutation: replaying fills with zero costs failed with trading costs 0 against 11.282088). cargo test -p qip-portfolio --test ledger_postings proves the fees:<venue> posting for a cell fill.",
     "work_item": "E05-fees-subledger",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags kept; current corrected to name TrackedCapital::costs_paid as the kernel's actual fee accumulator rather than Portfolio::cumulative_costs."
+    "notes": "verify: status and flags kept; current corrected to name TrackedCapital::costs_paid as the kernel's actual fee accumulator rather than Portfolio::cumulative_costs. | 2026-10-05: not closed: the fees-account posting needs the qip-ledgerd writer running (SLICE-31 owns its config, consumer and read API), or the desk's book made double-entry."
   },
   {
     "id": "LEDGER-012",
@@ -293,7 +292,7 @@
     "work_item": "E05-accrual-ledger",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": " | 2026-10-05 not closed: needs accrual entries posted on a schedule and cleared by a cash event; no cash-settlement event exists to clear one (LEDGER-008), so only the accruing half could be built and it would never clear."
   },
   {
     "id": "LEDGER-013",
@@ -316,7 +315,7 @@
     "work_item": "E07-collateral-ledger",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: status and flags kept; removed a garbled 'struct n, renamed at extraction' phrase from current. Citations cross_margin.rs:82,228 and platform.rs:15007 checked; kernel tests/collateral.rs (e.g. a_thin_statement_is_a_margin_call_naming_its_own_venue_rather_than_an_unread_one) exercise it."
+    "notes": "verify: status and flags kept; removed a garbled 'struct n, renamed at extraction' phrase from current. Citations cross_margin.rs:82,228 and platform.rs:15007 checked; kernel tests/collateral.rs (e.g. a_thin_statement_is_a_margin_call_naming_its_own_venue_rather_than_an_unread_one) exercise it. | 2026-10-05 not closed: needs journalled collateral-post and collateral-release events and a read route; no production path posts or releases collateral, so the events would have no producer."
   },
   {
     "id": "LEDGER-014",
@@ -342,7 +341,7 @@
     "work_item": "E05-commitment-drawdown-settlement",
     "tier": "T2",
     "size": "M",
-    "notes": "The commitment/drawdown mechanics are solid; what is not proven end-to-end is a settlement event actually posting the drawn cash into Portfolio (see LEDGER-008). verify: status COMPLETE -> PARTIAL. Commitment::settle_call, the drawdown that reduces unfunded, has no production caller, and the repository's own api_boundary.rs states there is no settlement seam; no cash leg is posted anywhere. The refusal and notice-tracking halves are real, reached and tested."
+    "notes": "The commitment/drawdown mechanics are solid; what is not proven end-to-end is a settlement event actually posting the drawn cash into Portfolio (see LEDGER-008). verify: status COMPLETE -> PARTIAL. Commitment::settle_call, the drawdown that reduces unfunded, has no production caller, and the repository's own api_boundary.rs states there is no settlement seam; no cash leg is posted anywhere. The refusal and notice-tracking halves are real, reached and tested. | 2026-10-05 not closed: settle_call stays unreachable by decision: Platform::record_capital_call's doc comment and ADR 0085 section 2 refuse an operator-asserted settlement as a person's claim about the bank's fact; it needs a bank statement feed (external) or a superseding ADR."
   },
   {
     "id": "LEDGER-015",
@@ -371,7 +370,7 @@
     "work_item": "E03-fabric-mvp",
     "tier": "T3",
     "size": "XL",
-    "notes": "Also blocked by C8 in practice: qip-edge-node is never deployed, so even the in-process form never runs outside a single test/demo binary today. verify: status BLOCKED(C2) -> PARTIAL, blocked_by cleared, implemented/tested/integrated -> true. ADR 0100 decides this path is built in-tree on std TCP and explicitly rejects waiting for C2, so C2 is not the reason it is missing. The assessor also called cell ingestion 'in-process'; it crosses the qip_mesh wire into qip-api (mesh.rs:1621), and a named test proves the fills reach central books. Not deployable: qip-edge-node is never deployed."
+    "notes": "Also blocked by C8 in practice: qip-edge-node is never deployed, so even the in-process form never runs outside a single test/demo binary today. verify: status BLOCKED(C2) -> PARTIAL, blocked_by cleared, implemented/tested/integrated -> true. ADR 0100 decides this path is built in-tree on std TCP and explicitly rejects waiting for C2, so C2 is not the reason it is missing. The assessor also called cell ingestion 'in-process'; it crosses the qip_mesh wire into qip-api (mesh.rs:1621), and a named test proves the fills reach central books. Not deployable: qip-edge-node is never deployed. | 2026-10-05 not closed: blocked on SLICE-31 (qip-ledgerd composition root) with SLICE-36 and SLICE-38: the P1 path's ledger writer exists as a library (LedgerStore) and its binary refuses to start."
   },
   {
     "id": "LEDGER-016",
@@ -397,7 +396,7 @@
     "work_item": "E05-fills-fanout",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags kept; current corrected. The assessor said fills reaching the centre via CentralPlane::ingest drive wallet reconciliation. They do not: reconcile_wallet reads TrackedCapital cash, which cell fills never reach."
+    "notes": "verify: status and flags kept; current corrected. The assessor said fills reaching the centre via CentralPlane::ingest drive wallet reconciliation. They do not: reconcile_wallet reads TrackedCapital cash, which cell fills never reach. | 2026-10-05 not closed: needs one fill event consumed by treasury, settlement and inventory; the settlement and inventory domains do not exist (LEDGER-004, LEDGER-009)."
   },
   {
     "id": "LEDGER-017",
@@ -424,7 +423,7 @@
     "work_item": "E05-ledger-correction-entries",
     "tier": "T2",
     "size": "M",
-    "notes": "This is the event log generically, which every ledger-adjacent structure is journalled through -- it is the substrate LEDGER-001's 'one ledger' argument rests on. verify: status COMPLETE -> PARTIAL. The requirement's second clause (corrections are new entries that reference the original) has no implementation and no test. Fixed the cited test names: 'a_hash_chain_verifies...' and 'a_retained_chain_verifies...' do not exist; the real names begin 'the_'. e2e kept true on the strength of the truth_loop acceptance replay."
+    "notes": "This is the event log generically, which every ledger-adjacent structure is journalled through -- it is the substrate LEDGER-001's 'one ledger' argument rests on. verify: status COMPLETE -> PARTIAL. The requirement's second clause (corrections are new entries that reference the original) has no implementation and no test. Fixed the cited test names: 'a_hash_chain_verifies...' and 'a_retained_chain_verifies...' do not exist; the real names begin 'the_'. e2e kept true on the strength of the truth_loop acceptance replay. | 2026-10-05 not closed: nothing in the tree issues a correction of a booked fill (no venue bust or fill amendment is modelled), so a reversal record would have no caller. The append-only half now covers the desk's book too: its only writers append FillBooked and LotAdjusted records."
   },
   {
     "id": "LEDGER-018",
@@ -448,7 +447,7 @@
     "work_item": "E05-transfer-corridor-wiring",
     "tier": "T2",
     "size": "M",
-    "notes": "Matches the current-state map's own finding for qip-capital-fabric::gate+journal+tolerance: the transfer gate is structurally wired but has no production emitter. verify: status and flags kept; evidence corrected. The claim 'transfer.rs has zero non-test callers' was false: platform.rs:4394 constructs TransferCostModel. It is a cost model, though, so the status stands. Added the test-only BridgeLedger and the zero in-flight LedgerView."
+    "notes": "Matches the current-state map's own finding for qip-capital-fabric::gate+journal+tolerance: the transfer gate is structurally wired but has no production emitter. verify: status and flags kept; evidence corrected. The claim 'transfer.rs has zero non-test callers' was false: platform.rs:4394 constructs TransferCostModel. It is a cost model, though, so the status stands. Added the test-only BridgeLedger and the zero in-flight LedgerView. | 2026-10-05 not closed: needs a transfer that moves a balance through an in-transit account; ADR 0021 says this process instructs no transfer, so a production caller needs that ADR superseded."
   },
   {
     "id": "LEDGER-019",
@@ -472,7 +471,7 @@
     "work_item": "E05-generic-posting-type",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status and flags kept; current now names TrackedCapital, the kernel's actual book, and states that entries carry no source-event reference (the requirement's 'every stored entry resolves to exactly one source event' is not met)."
+    "notes": "verify: status and flags kept; current now names TrackedCapital, the kernel's actual book, and states that entries carry no source-event reference (the requirement's 'every stored entry resolves to exactly one source event' is not met). | 2026-10-05 not closed: the general refusal exists in LedgerEvent::new (an empty source cell, digest or order id is refused; no test names that refusal yet) and its writer is not running (SLICE-31); the kernel's FillBooked is built only from a venue Fill and has no entry request to refuse."
   },
   {
     "id": "LEDGER-020",
@@ -500,7 +499,7 @@
     "work_item": "E05-ledger-writer-enumeration",
     "tier": "T2",
     "size": "L",
-    "notes": "verify: status and flags kept; added the qip-api mesh dedupe tests the assessor did not cite. They show redelivered cell reports are ingested once, but still per-subsystem, with no single ledger commit keyed by event_id."
+    "notes": "verify: status and flags kept; added the qip-api mesh dedupe tests the assessor did not cite. They show redelivered cell reports are ingested once, but still per-subsystem, with no single ledger commit keyed by event_id. | 2026-10-05 not closed: the single-transaction commit exists in LedgerStore::apply (one WriteBatch per delivery, SLICE-29, proven by for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery) and has no production caller until SLICE-31."
   },
   {
     "id": "LEDGER-021",
@@ -524,7 +523,7 @@
     "work_item": "E05-lineage-replay-proof",
     "tier": "T2",
     "size": "M",
-    "notes": "This is a case where the mechanism is almost certainly sufficient (Lineage is used platform-wide) but the specific ledger-lineage-walking test this requirement needs was not located. verify: status NEEDS-VALIDATION -> PARTIAL. NEEDS-VALIDATION requires code that appears to implement the behaviour; here the Lineage type exists, but production records are lineage roots and the fill-to-order-to-intent causal link is never set, so the behaviour is only partly present. Tier/size raised from T1/S to T2/M: this needs new linking, not just a test."
+    "notes": "This is a case where the mechanism is almost certainly sufficient (Lineage is used platform-wide) but the specific ledger-lineage-walking test this requirement needs was not located. verify: status NEEDS-VALIDATION -> PARTIAL. NEEDS-VALIDATION requires code that appears to implement the behaviour; here the Lineage type exists, but production records are lineage roots and the fill-to-order-to-intent causal link is never set, so the behaviour is only partly present. Tier/size raised from T1/S to T2/M: this needs new linking, not just a test. | 2026-10-05 not closed: FillBooked now ties each desk cash and position change to its fill_id and order_id on the hash chain; the intent and settlement links need journalled intents and a settlement event, neither of which exists."
   },
   {
     "id": "LEDGER-022",
@@ -547,12 +546,12 @@
     "work_item": "E05-ownership-subledger-coverage",
     "tier": "T2",
     "size": "M",
-    "notes": "P3 in the blueprint and named as a non-goal candidate in the requirement's own notes (no external customers today); scored PARTIAL rather than OBSOLETE because UserLedger's mandate/desk-attribution behaviour already exists and is exercised. verify: status and flags kept; the gap now names TrackedCapital, not Portfolio, as the unattributed book, and evidence cites the exact refusal test in place of the whole file."
+    "notes": "P3 in the blueprint and named as a non-goal candidate in the requirement's own notes (no external customers today); scored PARTIAL rather than OBSOLETE because UserLedger's mandate/desk-attribution behaviour already exists and is exercised. verify: status and flags kept; the gap now names TrackedCapital, not Portfolio, as the unattributed book, and evidence cites the exact refusal test in place of the whole file. | 2026-10-05 not closed: needs the desk's fills attributed to owners in UserLedger, or UserLedger's totals proven equal to the book's; a desk fill carries no owner attribution today."
   },
   {
     "id": "LEDGER-023",
     "status": "PARTIAL",
-    "current": "At the edge, qip_edge::dropcopy::DropCopyReconciler (backend/crates/edge/qip-edge/src/dropcopy.rs) compares a cell's own fill record with the venue's drop copy on every pass, and a break halts the cell. A restarted cell waits for a VenueAccount of open orders and quotes (qip-edge resume.rs:59-72). CentralPlane records the breaks a cell reports, plus its own unsent_fill finding, by direction (central/plane.rs). All venue-side comparison runs in qip-edge-node, which is never deployed. The venue's own position view (gateway.rs:451 positions()) has no non-test caller. The central desk's book, TrackedCapital, is compared against no venue record except an operator-supplied cash statement (LEDGER-024).",
+    "current": "At the edge, qip_edge::dropcopy::DropCopyReconciler (backend/crates/edge/qip-edge/src/dropcopy.rs) compares a cell's own fill record with the venue's drop copy on every pass, and a break halts the cell. A restarted cell waits for a VenueAccount of open orders and quotes (qip-edge resume.rs:59-72). CentralPlane records the breaks a cell reports, plus its own unsent_fill finding, by direction (central/plane.rs). All venue-side comparison runs in qip-edge-node, which is never deployed. The venue's own position view (gateway.rs:451 positions()) has no non-test caller. The central desk's book, TrackedCapital, is compared against an operator-supplied statement and nothing else: its cash (LEDGER-024) and, since 2026-10-05, each position the book holds at the desk's venue that the statement names (Platform::reconcile_wallet).",
     "evidence": [
       "backend/crates/edge/qip-edge/src/dropcopy.rs:19-50 (DropCopyFill / Discrepancy: order_id, venue, quantity -- no instrument field)",
       "backend/crates/edge/qip-edge/src/resume.rs:59-72 (VenueAccount: open orders and a quote count, no positions)",
@@ -562,7 +561,7 @@
       "backend/crates/runtime/qip-kernel/tests/central.rs:681,737 (a_reconciliation_break_halts_that_cell_and_only_that_cell; a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause)",
       "backend/crates/apps/qip-api/tests/mesh.rs:475 (a_reconciliation_break_crossing_the_wire_halts_that_cell_and_only_that_cell)"
     ],
-    "gap": "Position drift is not reconciled: the venue's position snapshot is never compared with the cell's or the centre's positions. The central desk's own fills and positions are never reconciled against a venue record. A discrepancy is attributed to order and venue but not to instrument. And the whole mechanism runs only in the undeployed qip-edge-node.",
+    "gap": "Narrowed on 2026-10-05: the central desk's positions are now reconciled against a venue statement on every cycle -- Platform::reconcile_wallet hands the wallet a LedgerView for each instrument the book holds at the desk's venue that a statement names, so a difference halts that venue-asset by name and an instrument the statement names that the book does not hold halts as unrecorded. Still open: a cell's venue position snapshot is never compared with the cell's positions; the desk's fills (as opposed to its resulting positions) are not matched against a venue's record of them; a cell-side discrepancy is attributed to order and venue but not to instrument; the statement is one an operator supplies, and no environment mounts one; and the cell mechanism runs only in the undeployed qip-edge-node.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -570,11 +569,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test failure_isolation a_venue_that_says_a_different_quantity_is_open_is_a_break_rather_than_an_agreement; cargo test -p qip-kernel --test central a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause. grep -rn '\\.positions()' backend/crates/apps/qip-edge-node/src returns only the definition.",
+    "verification": "cargo test -p qip-edge --test failure_isolation a_venue_that_says_a_different_quantity_is_open_is_a_break_rather_than_an_agreement; cargo test -p qip-kernel --test central a_reconciliation_break_is_recorded_by_direction_and_the_halt_by_cause. grep -rn '\\.positions()' backend/crates/apps/qip-edge-node/src returns only the definition. Desk positions against a statement: cargo test -p qip-kernel --test ledger -- with_every_derived_store_gone_the_log_and_the_statements_alone_rebuild_and_verify_the_desks_cash_and_positions (a statement ten shares short halts the holding with delta -10 and leaves the cash alone; mutation: withholding the position LedgerViews halted the agreeing statement as unrecorded_by_ledger).",
     "work_item": "E05-venue-position-reconciliation",
     "tier": "T1",
     "size": "M",
-    "notes": "qip-edge-node is not deployed anywhere (execution_nodes = {}), so this runs in tests and the qip-cli demo, not in a live paper process today -- deployable is scored false for that reason even though the behaviour itself is proven. verify: status COMPLETE -> PARTIAL; deployable and e2e -> false. Position drift (one of the requirement's three injected divergences) is never compared, and the central desk book is not reconciled against the venue. The deployable flag contradicted this row's own note (qip-edge-node is undeployed). No single test carries a drop-copy detection across processes to the centre; the mesh test injects a break the test built itself."
+    "notes": "qip-edge-node is not deployed anywhere (execution_nodes = {}), so this runs in tests and the qip-cli demo, not in a live paper process today -- deployable is scored false for that reason even though the behaviour itself is proven. verify: status COMPLETE -> PARTIAL; deployable and e2e -> false. Position drift (one of the requirement's three injected divergences) is never compared, and the central desk book is not reconciled against the venue. The deployable flag contradicted this row's own note (qip-edge-node is undeployed). No single test carries a drop-copy detection across processes to the centre; the mesh test injects a break the test built itself. | 2026-10-05: not closed: comparing a venue's position snapshot with a cell's positions is cell-side work on the order path in qip-edge, and no cell is deployed."
   },
   {
     "id": "LEDGER-024",
@@ -601,7 +600,7 @@
     "work_item": "E05-counterparty-class-reconciliation",
     "tier": "T2",
     "size": "M",
-    "notes": "Reconciling a live bank/custodian/wallet statement (as opposed to a sandbox or recorded one) is BLOCKED by ADR 0021 (paper-trading boundary), named here per the requirement's own LIVE_CAPITAL flag, not because the sandbox form is blocked. verify: status kept; deployable true -> false. Every environment leaves wallet_statement_file null (dev terraform.tfvars:315-319), so no deployed process receives a statement to reconcile. Added the kernel test that actually injects a balance difference."
+    "notes": "Reconciling a live bank/custodian/wallet statement (as opposed to a sandbox or recorded one) is BLOCKED by ADR 0021 (paper-trading boundary), named here per the requirement's own LIVE_CAPITAL flag, not because the sandbox form is blocked. verify: status kept; deployable true -> false. Every environment leaves wallet_statement_file null (dev terraform.tfvars:315-319), so no deployed process receives a statement to reconcile. Added the kernel test that actually injects a balance difference. | 2026-10-05 not closed: needs statements typed by counterparty class and obligation records to compare a settlement status against (LEDGER-008); real bank and custodian feeds are LIVE_CAPITAL (ADR 0021). Position rows on a statement are now reconciled for the desk's venue (LEDGER-023)."
   },
   {
     "id": "LEDGER-025",
@@ -625,6 +624,6 @@
     "work_item": "E17-physical-inventory-ledger",
     "tier": "T3",
     "size": "L",
-    "notes": "Consistent with the blueprint's own phasing (physical commerce is master Phase 7); not scored BLOCKED because nothing prevents building a simulated warehouse/marketplace reconciliation today -- it simply has not been reached."
+    "notes": "Consistent with the blueprint's own phasing (physical commerce is master Phase 7); not scored BLOCKED because nothing prevents building a simulated warehouse/marketplace reconciliation today -- it simply has not been reached. | 2026-10-05 not closed: depends on LEDGER-009 (no inventory subledger) and on warehouse and marketplace reports, which are external."
   }
 ]

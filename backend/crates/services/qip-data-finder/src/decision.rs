@@ -12,7 +12,10 @@
 //! lifecycle.
 
 use crate::category::SourceCategory;
-use crate::legal::{LegalAssessment, SourcePolicy};
+use crate::coverage::UpdateFrequency;
+use crate::legal::{LegalAssessment, LicensingPosture, SourcePolicy};
+use crate::lifecycle::LifecycleTransition;
+use crate::quality::SourceCost;
 use crate::schema::SchemaDrift;
 use crate::scoring::{Routing, RoutingClass, SourceScores};
 use crate::source::{Source, SourceLineage};
@@ -240,6 +243,11 @@ pub struct RegistrationDecision {
     lineage: Option<SourceLineage>,
     reasoning: Reasoning,
     decided_at: Timestamp,
+    /// What this decision did to a registration already standing, where it
+    /// moved one. Absent for a first assessment and for a pass that changed
+    /// nothing.
+    #[serde(default)]
+    transition: Option<LifecycleTransition>,
 }
 
 impl RegistrationDecision {
@@ -271,6 +279,7 @@ impl RegistrationDecision {
             lineage: None,
             reasoning,
             decided_at,
+            transition: None,
         })
     }
 
@@ -337,6 +346,17 @@ impl RegistrationDecision {
     pub fn with_lineage(mut self, lineage: SourceLineage) -> Self {
         self.lineage = Some(lineage);
         self
+    }
+
+    pub(crate) fn with_transition(mut self, transition: LifecycleTransition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
+
+    /// The move this decision made to a standing registration, if it made
+    /// one (see [`crate::lifecycle`]).
+    pub fn transition(&self) -> Option<&LifecycleTransition> {
+        self.transition.as_ref()
     }
 
     pub fn source_id(&self) -> &str {
@@ -428,6 +448,25 @@ impl RegistrationDecision {
     }
 }
 
+/// The five things the Source Registry holds about a source (EXPAND-033),
+/// read together from the one record the finder stores.
+///
+/// A view, not a second record: every field borrows from the
+/// [`RegisteredSource`], so the registry cannot say one thing about a
+/// source's licence while its entry says another.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceRegistryEntry<'a> {
+    /// Where the source was found, and when it was found, probed and decided.
+    pub provenance: &'a SourceLineage,
+    pub cost: &'a SourceCost,
+    /// The licensing posture the registration was decided on.
+    pub licence: &'a LicensingPosture,
+    /// How often the source says it updates.
+    pub freshness: UpdateFrequency,
+    /// The class it was routed to and the composite score behind it.
+    pub utility: &'a Routing,
+}
+
 /// A source the finder is currently collecting.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RegisteredSource {
@@ -494,6 +533,18 @@ impl RegisteredSource {
 
     pub fn lineage(&self) -> &SourceLineage {
         &self.lineage
+    }
+
+    /// Provenance, cost, licence, freshness and utility, together.
+    pub fn entry(&self) -> SourceRegistryEntry<'_> {
+        let candidate = self.source.candidate();
+        SourceRegistryEntry {
+            provenance: &self.lineage,
+            cost: candidate.cost(),
+            licence: candidate.declared_licensing(),
+            freshness: candidate.declared_coverage().update_frequency(),
+            utility: &self.routing,
+        }
     }
 
     pub fn entitlements(&self) -> &[Entitlement] {

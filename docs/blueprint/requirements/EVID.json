@@ -916,5 +916,53 @@
       "REASON"
     ],
     "notes": "Split from the same H edge list as EVID-030. This belongs mainly to the ambient/causal-agent domain and is kept here because the raw item was assigned to this domain. P2 because the Ambient Model Mesh is master Phase 8. M p18 \u00a79.5 makes ambient outputs advisory until promoted 'through the same evidence, evaluation, authority and deterministic-control boundaries as any other model output'."
+  },
+  {
+    "id": "EVID-032",
+    "domain": "EVID",
+    "title": "Every important forecast is attacked by independent adversarial agents and gains authority only by surviving",
+    "statement": "Independent bull, bear, structural-break, manipulation, tail-risk, model-risk, data-poisoning and missing-variable agents challenge each important forecast; a conclusion gains authority only by surviving independent challenge and maintaining calibration.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "20",
+        "section": "\u00a79.11 Adversarial Intelligence & Independent Verification Society"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each named role runs against a sample forecast and its challenge is recorded in the log."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ]
+  },
+  {
+    "id": "EVID-033",
+    "domain": "EVID",
+    "title": "Every forecast, world model, specialist and ensemble is scored after resolution and attributed economically",
+    "statement": "Each is scored on calibration, quantile and tail accuracy, incremental information value, economic contribution and downstream capital impact. Synthetic reputation determines model influence and compute allocation, never real capital.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "32",
+        "section": "\u00a722.1 Forecast Scoreboard, Internal Prediction Market & Economic Attribution"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A resolved forecast produces every listed score and the scores replay from the log."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ]
   }
 ]

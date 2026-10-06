@@ -100,6 +100,14 @@ impl Portfolio {
     ///
     /// Returns the resulting position quantity. Cash moves by exactly the fill
     /// value plus costs, which is what keeps the accounting identity exact.
+    ///
+    /// **Refuses an instrument priced in a unit other than the book's.** Cash
+    /// here is one number in `base_currency`; a fill priced in another unit
+    /// would be added to it with no conversion entry, which is the implicit
+    /// cross-unit netting LEDGER-002 forbids (a EUR price booked as dollars
+    /// misstates cash by the whole exchange rate and the identity still
+    /// balances, so nothing downstream would notice). The caller converts
+    /// through an explicit entry or books the fill elsewhere.
     pub fn apply_fill(
         &mut self,
         object: &FinancialObject,
@@ -108,7 +116,17 @@ impl Portfolio {
         costs: Decimal,
         at: Timestamp,
         order_id: Option<String>,
-    ) -> Decimal {
+    ) -> Result<Decimal> {
+        if object.currency != self.base_currency {
+            return Err(Error::invalid(format!(
+                "{} is priced in {} but this book holds cash in {}; a fill would be netted \
+                 across units with no conversion entry. Convert the price through an explicit \
+                 exchange entry first",
+                object.object_id.as_str(),
+                object.currency.as_str(),
+                self.base_currency.as_str()
+            )));
+        }
         let position = self
             .positions
             .entry(object.object_id.as_str().to_string())
@@ -136,7 +154,7 @@ impl Portfolio {
         self.cash += cash_flow;
         self.cumulative_costs += costs;
         self.updated_at = at;
-        position.quantity()
+        Ok(position.quantity())
     }
 
     /// Raise the desk's concern against a held position: blueprint §35.1's

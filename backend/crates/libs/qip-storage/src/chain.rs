@@ -29,7 +29,9 @@
 //!   deleting the evidence it exists to hold. Retention is an operator's
 //!   decision about the underlying store, not a default in this code.
 
+use crate::blob::BlobStore;
 use crate::kv::{KeyValueStore, KeyValueStoreExt};
+use crate::lake::Lake;
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
 use qip_events::envelope::canonical_json;
@@ -84,6 +86,9 @@ pub struct ArchivedRecord {
 pub struct ChainArchive {
     store: Arc<dyn KeyValueStore>,
     state: Mutex<ArchiveState>,
+    /// Where the platform's own outcomes are sealed as internal history at
+    /// every hand-over (blueprint TICK-065), when a composition root gave one.
+    outcome_lake: Option<Arc<dyn BlobStore>>,
 }
 
 #[derive(Debug)]
@@ -126,7 +131,24 @@ impl ChainArchive {
         Ok(Self {
             store,
             state: Mutex::new(state),
+            outcome_lake: None,
         })
+    }
+
+    /// Also seal the platform's own outcomes into the Tick/Internal Lake over
+    /// `blobs`, at the same hand-over that archives them.
+    ///
+    /// On the archive rather than beside it in each binary's loop, because
+    /// the archive is the one seam every composition root already hands its
+    /// log to: an order or a fill that reached the chain and not the lake
+    /// would need a second call somebody remembered in every binary. What
+    /// goes to the lake is decided by the topic's own permanent-retention
+    /// declaration, in [`Lake::seal_internal_outcomes`], and nothing on this
+    /// path passes through the world-data reference/discard pipeline.
+    #[must_use]
+    pub fn with_outcome_lake(mut self, blobs: Arc<dyn BlobStore>) -> Self {
+        self.outcome_lake = Some(blobs);
+        self
     }
 
     /// How many records the archive holds, without reading the store.
@@ -177,11 +199,39 @@ impl ChainArchive {
     /// exactly the set not yet archived.
     pub fn absorb(&self, records: &[LogRecord]) -> Result<usize> {
         let mut state = self.locked();
+        let mut watermark = state.absorbed_through;
+        let fresh: Vec<&LogRecord> = records
+            .iter()
+            .filter(|record| {
+                let unseen = record.sequence > watermark;
+                if unseen {
+                    watermark = record.sequence;
+                }
+                unseen
+            })
+            .collect();
+        // The lake first, the chain second. A lake write that fails leaves
+        // the chain where it was, and the retry seals the same records under
+        // the same id. The other order would let a failed lake write return
+        // an error after the watermark had moved past its records, and the
+        // next hand-over would skip them: in the chain, never in the lake.
+        // What this order costs is a duplicate, not a loss: a chain write
+        // that fails part way is retried from a later position, under a new
+        // segment id that repeats the records the first segment already
+        // holds. Each line carries its record hash, so a reader can tell.
+        if let (Some(blobs), false) = (&self.outcome_lake, fresh.is_empty()) {
+            let first = state.next_position;
+            let last = first.saturating_add(fresh.len() as u64 - 1);
+            Lake::new(blobs.as_ref()).seal_internal_outcomes(
+                &format!(
+                    "chain-{first:0width$}-{last:0width$}",
+                    width = POSITION_WIDTH
+                ),
+                &fresh,
+            )?;
+        }
         let mut written = 0;
-        for record in records {
-            if record.sequence <= state.absorbed_through {
-                continue;
-            }
+        for record in fresh {
             let position = state.next_position;
             let digest = entry_digest(&state.tail_digest, position, record)?;
             let entry = ArchivedRecord {

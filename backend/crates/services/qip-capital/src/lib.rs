@@ -66,6 +66,16 @@
 //! * [`recall`] withdraws capital mid-flight, and is explicit that a recall is
 //!   a request. The reliable bound on a cell nobody can reach is the envelope
 //!   expiry, which the cell enforces locally against its own clock.
+//! * [`funding`] names the source of every unit a grant or placement
+//!   requires — the platform's own capital, or a financing function it holds
+//!   a recorded permission for — and refuses a requirement it cannot fund
+//!   whole rather than funding the part that fits.
+//! * [`dated_ladder`] dates liquidity: every balance, inflow, outflow and
+//!   encumbrance in the rung at which it becomes available or falls due, read
+//!   only once the rung has closed.
+//! * [`bank`] is the Capital Bank's paper record of three things it would do
+//!   with real money and here does only as records: collateral posted and
+//!   recalled, currency converted, idle cash routed to yield.
 //!
 //! Nothing here reads a wall clock or draws a random number: every entry point
 //! takes the [`qip_core::Timestamp`] it is reasoning about, so a replay
@@ -129,16 +139,20 @@
 //! ```
 
 pub mod allocation;
+pub mod bank;
 pub mod capacity;
 pub mod collateral;
 pub mod compounding;
+pub mod dated_ladder;
 pub mod envelope;
 pub mod exploration;
 pub mod exposure;
+pub mod funding;
 pub mod ledger;
 pub mod margin;
 pub mod recall;
 pub mod reservation;
+pub mod treasury;
 
 pub use allocation::{
     Allocation, AllocationLimits, AllocationPlan, CapitalAllocator, DrawdownSchedule,

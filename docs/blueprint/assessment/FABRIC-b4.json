@@ -45,7 +45,7 @@
     "work_item": "E99",
     "tier": "T4",
     "size": "XL",
-    "notes": "verify: MISSING -> BLOCKED(C2), work_item E03 -> E99. ADR 0100 §3 (the architecture of record for the fabric's first build) names this requirement BLOCKED(C2) explicitly and forbids in-tree replication before C2's consensus record, and FABRIC-077 (FABRIC-b3) is BLOCKED(C2) on the same ground. Flags unchanged (all false). Original note: P0 safety invariant with no partial credit available; requires a real replication/consensus discipline, not merely a second copy."
+    "notes": "verify: MISSING -> BLOCKED(C2), work_item E03 -> E99. ADR 0100 \u00a73 (the architecture of record for the fabric's first build) names this requirement BLOCKED(C2) explicitly and forbids in-tree replication before C2's consensus record, and FABRIC-077 (FABRIC-b3) is BLOCKED(C2) on the same ground. Flags unchanged (all false). Original note: P0 safety invariant with no partial credit available; requires a real replication/consensus discipline, not merely a second copy."
   },
   {
     "id": "FABRIC-087",
@@ -89,7 +89,7 @@
     "work_item": "E03",
     "tier": "T3",
     "size": "L",
-    "notes": ""
+    "notes": "fabricd pass: the broker now answers a metadata route (leader epoch, high watermark, archived_through per partition) from a serving process. There is still one broker at a configured address and no leader map to refresh."
   },
   {
     "id": "FABRIC-089",
@@ -115,32 +115,30 @@
   },
   {
     "id": "FABRIC-090",
-    "status": "MISSING",
-    "current": "infrastructure/terraform/modules/data declares google_storage_bucket.archive (an 'event-archive' bucket, versioned, KMS-encrypted, with a retention policy that is not locked: is_locked = false) gated behind var.enable_cloud_storage, which is false in every environment (infrastructure/environments/{dev,stage,prod,test}/terraform.tfvars). backend/crates/libs/qip-storage/src/gcp/storage.rs's CloudStorageBlobStore is a generic BlobStore adapter over this kind of bucket, reached only from qip-storage's own tests (backend/crates/libs/qip-storage/tests/gcp.rs, 52 tests). qip-storage::chain::ChainArchive (src/chain.rs) is a real hash-chained archive, but it is keyed by dense sequential position in a KeyValueStore, not by the content hash of a closed segment, and it is not a Cloud Storage object at all.",
+    "status": "COMPLETE",
+    "current": "Archiver::archive stores each sealed segment under segments/sha256/<hex sha256 of its bytes>, re-archiving an archived segment is a no-op returning the stored manifest, and ArchiveReader::read refuses an object that no longer matches its name even when the batch requested is intact.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:115-155 (google_storage_bucket 'archive', lifecycle_rule blocks at age 90/365)",
-      "infrastructure/environments/dev/terraform.tfvars:253 enable_cloud_storage = false (same in stage:107, prod:110, test:107)",
-      "backend/crates/libs/qip-storage/src/chain.rs:1-60 (ArchivedRecord keyed by position + previous_digest, not content hash)",
-      "backend/crates/libs/qip-storage/src/provider.rs:14-35 (StorageTarget::CloudStorage exists as a variant)"
+      "backend/crates/libs/qip-storage/tests/segment_archive.rs a_tampered_archived_object_is_refused_on_read_even_when_the_requested_batch_is_intact (ran: ok; mutation: the manifest.verify call in hydrate deleted, test failed, restored)",
+      "backend/crates/libs/qip-storage/tests/segment_archive.rs re_archiving_is_a_no_op_and_an_object_whose_name_is_not_its_hash_fails_verification (object name asserted equal to the bytes hash; one put across two archives)"
     ],
-    "gap": "No code path names a Cloud Storage object after the hash of its bytes; ChainArchive addresses by position, and CloudStorageBlobStore is a generic key/value blob adapter with no segment-closing or content-addressing logic layered on it. The bucket that would hold it is disabled in every environment, and there is no broker fleet producing 'closed segments' to archive in the first place.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an integration test archiving segments to a landing-bucket fake and asserting object names equal the SHA-256 of their bytes.",
+    "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "E03",
     "tier": "T3",
     "size": "L",
-    "notes": "verify: PARTIAL -> MISSING. None of the required behaviour exists: nothing names an object after the hash of its bytes, there are no closed segments, and the archive bucket is disabled in every environment. A disabled bucket and a generic key/value blob adapter are building blocks, not partial content-addressing; the same finding scores FABRIC-068 and FABRIC-069 MISSING. Also corrected 'locked retention': the bucket's retention_policy has is_locked = false (modules/data/main.tf:139-142). Flags unchanged (all false). Original note: Marked PARTIAL because adjacent GCS bucket and blob-store infrastructure exist and are tested in isolation; the specific content-addressing behaviour this requirement names does not."
+    "notes": "verify: PARTIAL -> MISSING. None of the required behaviour exists: nothing names an object after the hash of its bytes, there are no closed segments, and the archive bucket is disabled in every environment. A disabled bucket and a generic key/value blob adapter are building blocks, not partial content-addressing; the same finding scores FABRIC-068 and FABRIC-069 MISSING. Also corrected 'locked retention': the bucket's retention_policy has is_locked = false (modules/data/main.tf:139-142). Flags unchanged (all false). Original note: Marked PARTIAL because adjacent GCS bucket and blob-store infrastructure exist and are tested in isolation; the specific content-addressing behaviour this requirement names does not. | closed in the FABRIC pass: Proven against the in-memory BlobStore. The regional landing bucket is google_storage_bucket.archive behind enable_cloud_storage, false in every environment, so nothing is written to a real bucket (deployable=false)."
   },
   {
     "id": "FABRIC-091",
     "status": "MISSING",
-    "current": "infrastructure/terraform/modules/data's archive bucket has age-based lifecycle_rule blocks (Nearline at 90 days, Coldline at 365) inside one region/bucket — a storage-class transition, not a residency-conditioned copy or lifecycle to a different research/archive location. No residency-policy input exists anywhere in the module.",
+    "current": "infrastructure/terraform/modules/data's archive bucket has age-based lifecycle_rule blocks (Nearline at 90 days, Coldline at 365) inside one region/bucket \u2014 a storage-class transition, not a residency-conditioned copy or lifecycle to a different research/archive location. No residency-policy input exists anywhere in the module.",
     "evidence": [
       "infrastructure/terraform/modules/data/main.tf:144-160 (lifecycle_rule is SetStorageClass only, same bucket, same location)",
       "grep -n residency infrastructure/terraform/modules/data/*.tf -> no hits"
@@ -277,7 +275,7 @@
   {
     "id": "FABRIC-097",
     "status": "BLOCKED",
-    "current": "No sink exists: nothing in the workspace consumes a stream at its own offset and writes to a destination, so there is no per-sink consumer, backpressure or failure boundary to isolate (FABRIC-069 is MISSING on the same finding). backend/crates/libs/qip-storage/src/gcp/{storage.rs,bigquery.rs} (CloudStorageBlobStore, BigQueryWarehouse) and src/redis.rs are destination clients, each with its own qip_transport::HttpClient or RESP connection and timeouts; that is a building block a sink would use, not sink isolation, and none of them is constructed outside qip-storage's own tests and provider plumbing that no environment selects. Three of the four named destinations are C4 managed data services: Spanner and Bigtable have no adapter at all (StorageTarget::is_implemented excludes them, src/provider.rs:62-72) and BigQuery's sink is FABRIC-108. ADR 0100 §1 records the managed sinks as not built, BLOCKED(C4, C2).",
+    "current": "No sink exists: nothing in the workspace consumes a stream at its own offset and writes to a destination, so there is no per-sink consumer, backpressure or failure boundary to isolate (FABRIC-069 is MISSING on the same finding). backend/crates/libs/qip-storage/src/gcp/{storage.rs,bigquery.rs} (CloudStorageBlobStore, BigQueryWarehouse) and src/redis.rs are destination clients, each with its own qip_transport::HttpClient or RESP connection and timeouts; that is a building block a sink would use, not sink isolation, and none of them is constructed outside qip-storage's own tests and provider plumbing that no environment selects. Three of the four named destinations are C4 managed data services: Spanner and Bigtable have no adapter at all (StorageTarget::is_implemented excludes them, src/provider.rs:62-72) and BigQuery's sink is FABRIC-108. ADR 0100 \u00a71 records the managed sinks as not built, BLOCKED(C4, C2).",
     "evidence": [
       "backend/crates/libs/qip-storage/src/provider.rs:62-72 (Bigtable/Spanner/AlloyDb excluded from is_implemented)",
       "backend/crates/libs/qip-storage/src/gcp/mod.rs:1-15 (the two REST adapters; Spanner/Bigtable need gRPC)",
@@ -300,7 +298,7 @@
     "work_item": "E99",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: PARTIAL -> BLOCKED(C4); implemented true -> false; work_item E03 -> E99; depends_on += FABRIC-069, FABRIC-108. Separate destination clients are not sinks: nothing consumes a stream, so no isolation behaviour exists to credit. Three of the four named sinks are C4 managed services (ADR 0100 §1: managed sinks BLOCKED(C4, C2)), so the requirement cannot be completed without C4; the buildable in-tree isolation discipline is carried by FABRIC-069 (MISSING). Original note: KUBERNETES flag removed by the requirement's own notes as inapplicable to this isolation property, so C3 does not block it; the gap is purely software."
+    "notes": "verify: PARTIAL -> BLOCKED(C4); implemented true -> false; work_item E03 -> E99; depends_on += FABRIC-069, FABRIC-108. Separate destination clients are not sinks: nothing consumes a stream, so no isolation behaviour exists to credit. Three of the four named sinks are C4 managed services (ADR 0100 \u00a71: managed sinks BLOCKED(C4, C2)), so the requirement cannot be completed without C4; the buildable in-tree isolation discipline is carried by FABRIC-069 (MISSING). Original note: KUBERNETES flag removed by the requirement's own notes as inapplicable to this isolation property, so C3 does not block it; the gap is purely software."
   },
   {
     "id": "FABRIC-098",
@@ -332,7 +330,7 @@
     "status": "BLOCKED",
     "current": "nothing implements fabric-topic mirroring for regional loss. backend/crates/apps/qip-edge-node/src/cross_region.rs exists but mirrors instrument quotes for cross-region arbitrage strategy (qip_edge::mirror::MirrorArrangement), not control/outcome fabric topics, and no environment deploys an execution node at all (execution_nodes = {} everywhere) so even that mirror never runs in production.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/cross_region.rs:1-30 (§31.1 instrument mirror for arbitrage, not fabric-topic mirror)",
+      "backend/crates/apps/qip-edge-node/src/cross_region.rs:1-30 (\u00a731.1 instrument mirror for arbitrage, not fabric-topic mirror)",
       "grep -rln execution_nodes infrastructure/environments/*/terraform.tfvars -> execution_nodes = {} in every file"
     ],
     "gap": "No fabric mirroring of control/outcome topics exists, and its verification (a multi-region game day) cannot run because no region deploys an execution node and the conflict register's C8 blocks provisioning one on cost, with billing itself disabled on the dev project today.",
@@ -398,46 +396,45 @@
   },
   {
     "id": "FABRIC-102",
-    "status": "MISSING",
-    "current": "No Eventarc trigger exists anywhere in Terraform (grep -rn Eventarc infrastructure -> no hits), so the prohibition is not currently violated, but no acceptance test guards the invariant against a future addition.",
+    "status": "COMPLETE",
+    "current": "No Terraform, tfvars or workflow file names a google_eventarc_ resource or eventarc.googleapis.com, and an acceptance scan now fails the build if one appears.",
     "evidence": [
-      "grep -rn 'Eventarc\\|eventarc' infrastructure backend/crates/tests -i -> no hits at all",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs: no function named for Eventarc"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs no_terraform_or_workflow_file_provisions_eventarc_or_cloud_tasks (ran: ok; mutation: a google_cloud_tasks_queue resource added under infrastructure/terraform, test failed naming the file and the requirement, removed); the_scan_names_eventarc_and_cloud_tasks_and_ignores_comments proves the scan fires and skips prose"
     ],
-    "gap": "No architecture/infrastructure acceptance test fails a workspace service target of an Eventarc trigger; the guardrail this requirement's verification names does not exist.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an acceptance test scanning Terraform for google_eventarc_trigger resources and failing if any targets a workspace service.",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_core_path_exclusions",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Currently true by absence, but unguarded; cheap to close."
+    "notes": "Guards Terraform and workflows only; an Eventarc or Cloud Tasks call made from application code through a Google API client would need a client crate, which the two-dependency policy already refuses."
   },
   {
     "id": "FABRIC-103",
-    "status": "MISSING",
-    "current": "No Cloud Tasks queue or handler exists anywhere in the workspace (grep -rn 'Cloud Tasks|cloud_tasks|CloudTasks' -> no hits), so the prohibition is not currently violated, but nothing guards it.",
+    "status": "COMPLETE",
+    "current": "No Terraform, tfvars or workflow file names a google_cloud_tasks_ resource or cloudtasks.googleapis.com, and an acceptance scan now fails the build if one appears.",
     "evidence": [
-      "grep -rn 'Cloud Tasks\\|cloud_tasks\\|CloudTasks' infrastructure backend/crates/tests -i -> no hits"
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_core_path_exclusions.rs no_terraform_or_workflow_file_provisions_eventarc_or_cloud_tasks (ran: ok; mutation: a google_cloud_tasks_queue resource added under infrastructure/terraform, test failed with 'FABRIC-103 (Cloud Tasks) forbids on the internal path', removed)"
     ],
-    "gap": "No acceptance test fails an internal service enqueuing to, or invoked by, Cloud Tasks.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an acceptance test scanning for google_cloud_tasks_queue resources and any non-allow-listed internal caller.",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_core_path_exclusions",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "Currently true by absence, but unguarded; cheap to close."
+    "notes": "Same scan as FABRIC-102; an allow-list for a justified external-facing queue does not exist and would need a person's decision."
   },
   {
     "id": "FABRIC-104",
@@ -545,7 +542,7 @@
   {
     "id": "FABRIC-108",
     "status": "BLOCKED",
-    "current": "Permitted form, write half only: backend/crates/libs/qip-storage/src/gcp/bigquery.rs's BigQueryWarehouse streams rows through the legacy tabledata.insertAll REST endpoint (line 557), not the Storage Write API the requirement names, which is gRPC-only (C2). It is a synchronous client, not a sink: nothing consumes a stream into it, it is constructed only in qip-storage's own tests, and no environment enables BigQuery (storage_target excludes it; enable_bigquery gates the dataset). BigQuery is one of C4's managed data services, and ADR 0100 §1 records the managed sinks as not built, BLOCKED(C4, C2).",
+    "current": "Permitted form, write half only: backend/crates/libs/qip-storage/src/gcp/bigquery.rs's BigQueryWarehouse streams rows through the legacy tabledata.insertAll REST endpoint (line 557), not the Storage Write API the requirement names, which is gRPC-only (C2). It is a synchronous client, not a sink: nothing consumes a stream into it, it is constructed only in qip-storage's own tests, and no environment enables BigQuery (storage_target excludes it; enable_bigquery gates the dataset). BigQuery is one of C4's managed data services, and ADR 0100 \u00a71 records the managed sinks as not built, BLOCKED(C4, C2).",
     "evidence": [
       "backend/crates/libs/qip-storage/src/gcp/bigquery.rs:556-557 (insertAll REST path)",
       "backend/crates/libs/qip-storage/tests/gcp.rs:984 a_bigquery_insert_sends_each_row_with_its_id_and_refuses_to_skip_invalid_rows (the REST write half)",
@@ -564,7 +561,7 @@
     "work_item": "E99",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: PARTIAL -> BLOCKED(C4), work_item E03 -> E99. BigQuery is named in C4's managed data services and the Storage Write API is gRPC-only (C2); ADR 0100 §1 scores managed sinks BLOCKED(C4, C2), consistent with FABRIC-107. implemented/tested kept true for the permitted-form write half (the REST insertAll client and its tests) only; they do not demonstrate a sink, asynchrony, or lag isolation. Original note: The REST/insertAll choice is a reasonable in-tree substitute for the gRPC-only Storage Write API C2 blocks, but it is a documented deviation from the letter of the requirement, not the named mechanism."
+    "notes": "verify: PARTIAL -> BLOCKED(C4), work_item E03 -> E99. BigQuery is named in C4's managed data services and the Storage Write API is gRPC-only (C2); ADR 0100 \u00a71 scores managed sinks BLOCKED(C4, C2), consistent with FABRIC-107. implemented/tested kept true for the permitted-form write half (the REST insertAll client and its tests) only; they do not demonstrate a sink, asynchrony, or lag isolation. Original note: The REST/insertAll choice is a reasonable in-tree substitute for the gRPC-only Storage Write API C2 blocks, but it is a documented deviation from the letter of the requirement, not the named mechanism."
   },
   {
     "id": "FABRIC-109",
@@ -594,25 +591,27 @@
   },
   {
     "id": "FABRIC-110",
-    "status": "MISSING",
-    "current": "nothing. No ambient-agent module exists in the workspace at all (find backend/crates -iname '*ambient*' -> no results), so there is no publisher to classify and no ACL to refuse it P0/P1.",
+    "status": "COMPLETE",
+    "current": "The grant schema holds an identity under the `agent:` prefix to research and telemetry: Catalogue::parse refuses a produce or admin grant to such an identity on any stream that is not p3_research or p4_telemetry, so a catalogue carrying one starts no broker and, written under a running broker, is refused whole and reported while the grants in force stay in force. The broker's ACL (FABRIC-018) then refuses the agent every stream it holds no grant on. An agent identity granted P3 and P4 publishes to both through the serving broker and is answered AclDenied on P0 and P1.",
     "evidence": [
+      "backend/crates/apps/qip-fabricd/tests/broker.rs an_agent_identity_publishes_research_and_telemetry_and_is_refused_control_and_outcomes (ran: ok; mutation: the catalogue's agent rule admitting P1Outcomes -> a broker starts on the catalogue that grants the agent an outcome stream, restored; mutation: Service::refuse_unless_granted answering Ok(None) -> the agent's P0 and P1 requests are admitted, restored)",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs an_agent_identity_is_granted_produce_or_admin_on_research_and_telemetry_streams_only (ran: ok; same catalogue mutation, failed, restored)",
       "find backend/crates -iname '*ambient*' -> no results",
       "grep -rln 'topic.*acl\\|TopicAcl\\|producer.*identity' backend/crates --include=*.rs -i -> no hits"
     ],
-    "gap": "No ambient/dev agent producer, no P3/P4-only publish path, and no per-identity topic ACL exist anywhere.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Not written. Would be an integration test publishing as an agent identity to P3/P4 (admitted) and P0/P1 (refused by ACL at every broker).",
+    "verification": "cargo test -p qip-fabricd --test broker an_agent_identity_publishes; cargo test -p qip-events --test event_fabric_policy an_agent_identity_is_granted",
     "work_item": "E13",
     "tier": "T3",
     "size": "L",
-    "notes": "Depends on ambient/development agents existing at all (E09), which the requirement's own notes place at master Phases 5-8."
+    "notes": "Depends on ambient/development agents existing at all (E09), which the requirement's own notes place at master Phases 5-8. | closed in the fabricd pass: integrated=false because no ambient or development agent produces to the fabric yet. The rule binds by name: it holds an identity provisioned under `agent:` and says nothing about an agent somebody provisions under another name, which the broker's ACL still refuses everything not granted but which a catalogue could grant more. Consume is deliberately not restricted. One broker; not deployed."
   },
   {
     "id": "FABRIC-111",

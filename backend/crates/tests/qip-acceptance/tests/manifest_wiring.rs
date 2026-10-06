@@ -55,6 +55,7 @@
 //! never a deployment it wrongly rejects. Each rule therefore asserts it
 //! contributed something, so a rule that silently stops resolving anything
 //! fails here instead of quietly widening the test.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 // The workspace denies `panic_in_result_fn` because an assertion that aborts a
 // `Result`-returning function is a bug in production code. These tests return
@@ -1145,6 +1146,21 @@ const REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT: &str = "Absent, a resting 
      replacement of an order no venue holds. Setting it is the runbook's \
      per-node act when a node is brought up against a book whose tick is known.";
 
+/// Each venue's own message limits, which no environment can state.
+const A_VENUES_LIMITS_ARE_THE_VENUES_NOT_AN_ENVIRONMENTS: &str = "Absent, every \
+     venue a node holds runs the cell's default message ceiling with a \
+     message-to-trade monitor that narrows and does not refuse, and the node \
+     says so venue by venue at start-up. `QIP_VENUE_QUOTE_LIMITS` is \
+     `<venue>=<burst>:<per second>:<withdrawal reserve>:<narrowed reserve>:\
+     <messages per trade>:<window>:<ratio interval ms>` — a venue's own rate \
+     and ratio, which are that venue's rule and not a property of an \
+     environment: one figure in every node's template would be too loose for \
+     the strict venue and too tight for the lenient one, which is the defect \
+     the per-venue form exists to remove. The only order entry any node \
+     reaches is the in-process simulator, which enforces no limit of its own, \
+     so there is no figure to write yet. Setting it is the runbook's per-node \
+     act when a node is brought up against a venue whose limits are known.";
+
 /// A seed, whose default is derived and whose override is for reproduction.
 const A_SEED_IS_DERIVED_NOT_DEPLOYED: &str = "The seed is derived from the \
      node's own identity so that two cells do not retry in lockstep, and the \
@@ -1487,6 +1503,11 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "qip-edge-node",
         "QIP_REPRICE",
         REPRICING_IS_A_PER_NODE_DECISION_NOT_A_DEFAULT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_VENUE_QUOTE_LIMITS",
+        A_VENUES_LIMITS_ARE_THE_VENUES_NOT_AN_ENVIRONMENTS,
     ),
     (
         "qip-fastbrain",
@@ -2855,8 +2876,575 @@ fn every_metric_name_the_platform_declares_is_one_something_records() {
 fn production_records(sources: &[std::path::PathBuf], name: &str) -> bool {
     sources.iter().any(|path| {
         let is_test = path.components().any(|c| c.as_os_str() == "tests");
+        // `critical_paths.rs` names the series each objective *reads*; its own
+        // doc says "where nothing emits it yet, this is the name it must be
+        // emitted under". Counting that mention as a recording site made a
+        // fixtures-only series look published the moment an objective was
+        // pointed at it, and an objective over a series nothing records is the
+        // opposite of a recording site: it is a control that cannot fire.
+        let names_a_source_series_only = path.ends_with("qip-observability/src/critical_paths.rs");
         !is_test
+            && !names_a_source_series_only
             && std::fs::read_to_string(path)
                 .is_ok_and(|text| text.contains(&format!("names::{name}")))
     })
+}
+
+// ---------------------------------------------------------------------------
+// ARCH-070: the workload register
+// ---------------------------------------------------------------------------
+
+/// The machine-readable register of every workload the infrastructure
+/// declares: who owns its state, what it speaks to, how it scales, and what
+/// it does when a dependency is gone.
+const WORKLOAD_REGISTER: &str = "infrastructure/workload-register.json";
+const TERRAFORM_MODULES: &str = "infrastructure/terraform/modules";
+
+/// The resource types that *are* a running workload rather than something a
+/// workload uses: a service, a machine, a cluster, a serving endpoint. Each
+/// is a type this tree already declares or once declared; a new kind of
+/// runtime is added here in the change that introduces it, and until it is,
+/// the root-level check below is what keeps one from arriving unregistered
+/// by the side door.
+const WORKLOAD_RESOURCES: [&str; 5] = [
+    "google_cloud_run_v2_service",
+    "google_compute_instance_template",
+    "google_compute_instance_group_manager",
+    "google_container_cluster",
+    "google_vertex_ai_endpoint",
+];
+
+/// The scaling models an entry may name. Two of them are claims about a
+/// Cloud Run service's instance bounds, which the manifests carry, so those
+/// two are held to the manifests below and not taken on the register's word.
+const SCALING_MODELS: [&str; 5] = [
+    "request-scaled",
+    "singleton",
+    "fixed-per-cell",
+    "managed-autopilot",
+    "disabled",
+];
+
+/// Whether `text` declares a resource that is itself a running workload.
+fn declares_a_workload(text: &str) -> bool {
+    without_comments(text).lines().any(|line| {
+        WORKLOAD_RESOURCES
+            .iter()
+            .any(|kind| line.starts_with(&format!("resource \"{kind}\" ")))
+    })
+}
+
+/// The workload a `RunService` document deploys: its `metadata.name` with
+/// the `qip-<env>-` prefix every manifest here carries removed.
+fn run_service_workload(environment: &str, file: &str, document: &str) -> String {
+    let prefix = format!("  name: qip-{environment}-");
+    document
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .unwrap_or_else(|| {
+            panic!("{file} holds a RunService not named qip-{environment}-<workload>")
+        })
+        .trim()
+        .to_string()
+}
+
+/// Every workload the tree declares, with the file or directory that
+/// declares it. Three sources, because a workload reaches this repository
+/// three ways: an entry in the Cloud Run catalogue, a `RunService` manifest
+/// (the portal and OpenObserve have one and no catalogue entry), and a
+/// Terraform module that declares a machine, a cluster or an endpoint.
+fn declared_workloads() -> BTreeMap<String, String> {
+    let mut declared = BTreeMap::new();
+    for (name, _) in catalogue_workloads() {
+        declared.insert(name, CATALOGUE.to_string());
+    }
+    for environment in ENVIRONMENTS {
+        for (file, document) in run_service_documents(environment) {
+            let name = run_service_workload(environment, &file, &document);
+            declared.entry(name).or_insert(file);
+        }
+    }
+    let modules = repository_root().join(TERRAFORM_MODULES);
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let text = std::fs::read_to_string(&path).expect("readable");
+        if !declares_a_workload(&text) {
+            continue;
+        }
+        let module = path
+            .strip_prefix(&modules)
+            .ok()
+            .and_then(|inside| inside.components().next())
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} declares a workload resource outside {TERRAFORM_MODULES}; this walk \
+                     names a workload by its module, so a root-level one has no name to be \
+                     registered under. Move it into a module, or teach this walk its name",
+                    path.display()
+                )
+            });
+        declared
+            .entry(module.clone())
+            .or_insert(format!("{TERRAFORM_MODULES}/{module}"));
+    }
+    declared
+}
+
+/// A field of a register entry as trimmed text; empty when absent or not a
+/// string, so one assertion covers "missing", "blank" and "the wrong type".
+fn stated<'a>(entry: &'a serde_json::Value, field: &str) -> &'a str {
+    entry[field].as_str().map_or("", str::trim)
+}
+
+#[test]
+fn every_workload_the_infrastructure_declares_has_a_complete_entry_in_the_workload_register() {
+    // v2.1 §27 (ARCH-070): every workload documents its state owner, its
+    // upstream and downstream protocol, its scaling model and its degraded
+    // mode. The failure this prevents is the one the catalogue could not see:
+    // it recorded scaling and ingress for three Cloud Run entries, said
+    // nothing about state or degradation, and left the execution node, the
+    // control-plane cluster, the portal and OpenObserve out entirely — so
+    // the workloads an incident is most likely to be about were the ones
+    // with nothing written down.
+    let declared = declared_workloads();
+    // Premise: each of the three sources was actually reached. A walk that
+    // found nothing would leave an empty register "complete".
+    for (expected, source) in [
+        ("api", "the Cloud Run catalogue"),
+        ("portal", "a RunService manifest with no catalogue entry"),
+        ("execution-node", "a Terraform module declaring a machine"),
+    ] {
+        assert!(
+            declared.contains_key(expected),
+            "the walk did not find `{expected}` through {source}; it is not reaching that \
+             source, and every check below would pass on what is left: {declared:?}"
+        );
+    }
+
+    let register: serde_json::Value =
+        serde_json::from_str(&read(WORKLOAD_REGISTER)).expect("the register is JSON");
+    let entries = register["workloads"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{WORKLOAD_REGISTER} has no `workloads` list"));
+    let mut registered: BTreeMap<String, &serde_json::Value> = BTreeMap::new();
+    for entry in entries {
+        let name = stated(entry, "workload").to_string();
+        assert!(
+            !name.is_empty(),
+            "{WORKLOAD_REGISTER} has an entry with no `workload` name"
+        );
+        assert!(
+            registered.insert(name.clone(), entry).is_none(),
+            "{WORKLOAD_REGISTER} registers `{name}` twice; two entries for one workload are \
+             two answers to who owns its state"
+        );
+    }
+
+    for (name, source) in &declared {
+        assert!(
+            registered.contains_key(name),
+            "{source} declares the workload `{name}` and {WORKLOAD_REGISTER} has no entry for \
+             it. Add one stating its state owner, its upstream and downstream protocol, its \
+             scaling model and its degraded mode"
+        );
+    }
+    for name in registered.keys() {
+        assert!(
+            declared.contains_key(name),
+            "{WORKLOAD_REGISTER} registers `{name}`, which nothing under infrastructure/ \
+             declares; an entry for a workload that does not exist is documentation of nothing"
+        );
+    }
+
+    for (name, entry) in &registered {
+        for field in ["runtime", "declared_by", "state_owner", "degraded_mode"] {
+            assert!(
+                !stated(entry, field).is_empty(),
+                "the register entry for `{name}` does not state its `{field}`"
+            );
+        }
+        let declared_by = stated(entry, "declared_by");
+        assert!(
+            repository_root().join(declared_by).exists(),
+            "the register entry for `{name}` says it is declared by {declared_by}, which does \
+             not exist"
+        );
+        for direction in ["upstream", "downstream"] {
+            let peers = entry[direction].as_array().map_or(&[][..], Vec::as_slice);
+            assert!(
+                !peers.is_empty(),
+                "the register entry for `{name}` states no `{direction}`; a workload with \
+                 none says so in an entry whose peer and protocol are `none`, so that silence \
+                 is never mistaken for an answer"
+            );
+            for peer in peers {
+                assert!(
+                    !stated(peer, "peer").is_empty() && !stated(peer, "protocol").is_empty(),
+                    "the register entry for `{name}` has an `{direction}` entry missing its \
+                     peer or its protocol: {peer}"
+                );
+            }
+        }
+        let model = stated(&entry["scaling"], "model");
+        assert!(
+            SCALING_MODELS.contains(&model),
+            "the register entry for `{name}` names the scaling model `{model}`, which is not \
+             one of {SCALING_MODELS:?}"
+        );
+        assert!(
+            !stated(&entry["scaling"], "detail").is_empty(),
+            "the register entry for `{name}` names a scaling model and does not say why"
+        );
+    }
+
+    // The two Cloud Run models are claims about instance bounds, and the
+    // manifests are where the bounds live. Held to every environment's
+    // manifest, so the register cannot call a service a singleton that a
+    // reconciler would run four of.
+    let mut on_cloud_run = BTreeSet::new();
+    for environment in ENVIRONMENTS {
+        for (file, document) in run_service_documents(environment) {
+            let name = run_service_workload(environment, &file, &document);
+            let bound = |key: &str| -> u64 {
+                document
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix(key))
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or_else(|| panic!("{file} carries no numeric `{key}`"))
+            };
+            let (floor, ceiling) = (bound("minInstanceCount:"), bound("maxInstanceCount:"));
+            let expected = match (floor, ceiling) {
+                (1, 1) => "singleton",
+                (0, _) => "request-scaled",
+                _ => panic!(
+                    "{file} carries instance bounds {floor} to {ceiling}, which is neither a \
+                     singleton nor scaled from zero; the register has no model for that, and \
+                     one is added deliberately rather than inferred here"
+                ),
+            };
+            assert_eq!(
+                stated(&registered[&name]["scaling"], "model"),
+                expected,
+                "{file} runs `{name}` between {floor} and {ceiling} instances, and the \
+                 register calls its scaling something else"
+            );
+            on_cloud_run.insert(name);
+        }
+    }
+    assert!(
+        on_cloud_run.len() >= 3,
+        "only {} workloads had a manifest to hold their scaling model to; the walk is not \
+         reaching the manifests",
+        on_cloud_run.len()
+    );
+    for (name, entry) in &registered {
+        let model = stated(&entry["scaling"], "model");
+        assert!(
+            on_cloud_run.contains(name) || !["singleton", "request-scaled"].contains(&model),
+            "the register calls `{name}` {model}, which is a claim about a Cloud Run \
+             service's instance bounds, and no RunService manifest exists to hold it to"
+        );
+    }
+}
+
+// --- OBS-020: application and control logs go to Cloud Logging --------------
+
+/// Every `resource "<type>" "<name>" { … }` block in one Terraform file, as
+/// `(type, name, body)`, comments stripped.
+///
+/// A block opens at a line beginning `resource "` and closes at the first
+/// line that is exactly `}`. Brittle on purpose, like the catalogue scan
+/// above: a reformatted module makes this return nothing, and every caller
+/// asserts it found blocks before asserting anything about them.
+fn terraform_resources(text: &str) -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    let mut open: Option<(String, String, Vec<&str>)> = None;
+    let stripped = without_comments(text);
+    for line in stripped.lines() {
+        if let Some((kind, name, body)) = open.as_mut() {
+            if line == "}" {
+                found.push((kind.clone(), name.clone(), body.join("\n")));
+                open = None;
+            } else {
+                body.push(line);
+            }
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("resource \"") {
+            let mut parts = rest.split('"');
+            let kind = parts.next().unwrap_or_default().to_string();
+            let name = parts.nth(1).unwrap_or_default().to_string();
+            open = Some((kind, name, Vec::new()));
+        }
+    }
+    found
+}
+
+/// The quoted or bare value of `argument` in a resource body, trimmed.
+fn terraform_argument(body: &str, argument: &str) -> Option<String> {
+    body.lines().find_map(|line| {
+        let (name, value) = line.trim().split_once('=')?;
+        (name.trim() == argument).then(|| value.trim().to_string())
+    })
+}
+
+/// The identity each module that creates a workload runs it as, and where.
+/// `(file, the service accounts the file may declare, the member the grant
+/// must name)`. The portal's identity is created in `modules/secrets` beside
+/// the landing's and granted in the catalogue, so its row lists no accounts.
+const WORKLOAD_LOG_WRITERS: [(&str, &[&str], &str); 3] = [
+    (
+        "infrastructure/terraform/modules/cloudrun/main.tf",
+        &["workload"],
+        "google_service_account.workload.email",
+    ),
+    (
+        "infrastructure/terraform/modules/execution-node/main.tf",
+        &["node"],
+        "google_service_account.node.email",
+    ),
+    (
+        "infrastructure/terraform/catalogue.tf",
+        &[],
+        "module.secrets.console_service_account_email",
+    ),
+];
+
+#[test]
+fn every_workload_identity_may_write_to_cloud_logging_in_its_own_project_and_no_sink_routes_logs_elsewhere()
+ {
+    // OBS-020, and until this test the placement was declared and unchecked:
+    // the grants existed, `grep logWriter` over this crate found nothing, and
+    // a refactor that dropped one would have produced a workload whose every
+    // line was refused at the Logging API with nobody told — the failure the
+    // catalogue's own comment calls "a workload nobody can operate".
+    //
+    // What is deliberately not claimed. The landing's identity holds no grant
+    // of any kind, on purpose (`modules/secrets`: "an identity with a
+    // credential it has no way to use is a standing grant with no purpose");
+    // it is a static site and is not in the table above. And nothing here
+    // shows a line arriving: no environment runs a workload under these
+    // grants today.
+    for (file, accounts, member) in WORKLOAD_LOG_WRITERS {
+        let resources = terraform_resources(&read(file));
+        let grants: Vec<&(String, String, String)> = resources
+            .iter()
+            .filter(|(kind, _, _)| kind == "google_project_iam_member")
+            .collect();
+        // The premise: the scan reads this file's grants at all.
+        assert!(
+            !grants.is_empty(),
+            "{file}: no google_project_iam_member block was parsed, so nothing below is checked"
+        );
+        let declared: BTreeSet<&str> = resources
+            .iter()
+            .filter(|(kind, _, _)| kind == "google_service_account")
+            .map(|(_, name, _)| name.as_str())
+            .collect();
+        assert_eq!(
+            declared,
+            accounts.iter().copied().collect::<BTreeSet<&str>>(),
+            "{file} declares a different set of workload identities than this test covers; a new \
+             identity needs its own log-writer grant and its own row here"
+        );
+        let writers: Vec<&&(String, String, String)> = grants
+            .iter()
+            .filter(|(_, _, body)| {
+                terraform_argument(body, "role").as_deref() == Some("\"roles/logging.logWriter\"")
+            })
+            .collect();
+        assert_eq!(
+            writers.len(),
+            1,
+            "{file}: expected exactly one roles/logging.logWriter grant, found {}",
+            writers.len()
+        );
+        let (_, name, body) = writers[0];
+        assert_eq!(
+            terraform_argument(body, "project").as_deref(),
+            Some("var.project_id"),
+            "{file}: `{name}` grants log writing somewhere other than the workload's own project"
+        );
+        assert_eq!(
+            terraform_argument(body, "member"),
+            Some(format!("\"serviceAccount:${{{member}}}\"")),
+            "{file}: `{name}` does not grant log writing to the workload's own identity"
+        );
+    }
+
+    // No sink routes logs anywhere but a Cloud Logging bucket. Zero sinks
+    // exist today, so the premise is the scan itself: it reads the committed
+    // tree and sees resources in it.
+    let files: Vec<std::path::PathBuf> = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .filter(|path| !path.components().any(|c| c.as_os_str() == ".terraform"))
+        .collect();
+    assert!(
+        files.len() > 20,
+        "only {} Terraform file(s) were found to scan for sinks",
+        files.len()
+    );
+    let mut scanned = 0usize;
+    for path in &files {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        for (kind, name, body) in terraform_resources(&text) {
+            scanned += 1;
+            if kind.starts_with("google_logging_") && kind.ends_with("_sink") {
+                let destination = terraform_argument(&body, "destination").unwrap_or_default();
+                assert!(
+                    destination.starts_with("\"logging.googleapis.com/"),
+                    "{}: sink `{name}` routes logs to {destination}; application and control \
+                     logs go to Cloud Logging buckets and nowhere else (OBS-020)",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        scanned > 50,
+        "only {scanned} resource block(s) were parsed out of the Terraform tree; the sink scan \
+         is not reading it"
+    );
+}
+
+/// The four deployed composition roots, and where each builds its telemetry.
+const DEPLOYED_TELEMETRY_ROOTS: [&str; 4] = [
+    "backend/crates/apps/qip-api/src/main.rs",
+    "backend/crates/apps/qip-fastbrain/src/main.rs",
+    "backend/crates/apps/qip-deepbrain/src/main.rs",
+    "backend/crates/apps/qip-edge-node/src/lib.rs",
+];
+
+#[test]
+fn every_deployed_process_echoes_its_structured_log_to_stderr_and_no_drain_ships_logs_elsewhere() {
+    // The other half of OBS-020. A log-writer grant is no use to a record
+    // that never leaves the process: the structured logger kept its records
+    // in memory unless echo was on, and no root turned it on. Each root now
+    // builds its telemetry with `Telemetry::foreground`, whose echo is proven
+    // in `qip-observability/tests/telemetry.rs`.
+    for root in DEPLOYED_TELEMETRY_ROOTS {
+        let text = read(root);
+        assert!(
+            text.contains("= Telemetry::foreground(\"qip-"),
+            "{root} no longer builds its telemetry with Telemetry::foreground, so its structured \
+             log records stay in process memory"
+        );
+        assert!(
+            !text.contains("= Telemetry::new("),
+            "{root} builds a second, silent telemetry surface beside the echoing one"
+        );
+    }
+
+    // And nothing ships application logs to a second store. The in-tree
+    // drains post metrics and traces; ADR 0028 says logs go to OpenObserve
+    // too, and which store is authoritative for logs is undecided. A drain
+    // that began posting logs would decide it by accident, so the day one
+    // does, this fails and the decision is made in a record first.
+    for drain in [
+        "backend/crates/apps/qip-api/src/openobserve.rs",
+        "backend/crates/apps/qip-fastbrain/src/openobserve.rs",
+        "backend/crates/apps/qip-deepbrain/src/openobserve.rs",
+    ] {
+        let text = read(drain);
+        // Every endpoint the drain builds, by the one form it builds them in.
+        // The whole set is compared, so the premise — that the scan finds the
+        // two it should — and the prohibition are one assertion: ADR 0028's
+        // `/api/{org}/v1/logs`, or any other third path, fails it.
+        let endpoints: BTreeSet<&str> = text
+            .split("with_path(&format!(\"/api/{}/")
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        assert_eq!(
+            endpoints,
+            BTreeSet::from(["traces", "v1/metrics"]),
+            "{drain} posts to a different set of endpoints than metrics and traces; a log \
+             endpoint here would send application logs to a store other than Cloud Logging \
+             (OBS-020)"
+        );
+    }
+}
+
+// --- OBS-026: flow logs on every subnet, request logs on every backend ------
+
+/// The body of the first `<name> { … }` block nested in a resource body.
+///
+/// Closes at the first line that is only a closing brace, which is right for
+/// the flat blocks this is used on (`log_config`) and would be wrong for one
+/// that nests another; the callers assert on arguments inside it, so a block
+/// cut short fails rather than passes.
+fn nested_block(body: &str, name: &str) -> Option<String> {
+    let mut lines = body.lines();
+    lines.find(|line| line.trim() == format!("{name} {{"))?;
+    Some(
+        lines
+            .take_while(|line| line.trim() != "}")
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+#[test]
+fn every_subnet_keeps_flow_logs_and_every_load_balancer_backend_logs_its_requests() {
+    // Two of OBS-026's four instruments, held for every resource of the kind
+    // rather than for the ones somebody remembered: the plan "enables flow
+    // logs on the subnets that carry Reflex, Fabric and mesh traffic … and
+    // enables logging on every load balancer". Both were true and unchecked,
+    // so a subnet added for a new plane without a `log_config` would have
+    // been a network path nothing could reconstruct after an incident, and
+    // nothing would have said so.
+    //
+    // Not claimed: Connectivity Tests, which this tree declares none of, and
+    // Interconnect or VPN metrics, whose module is gated off everywhere.
+    let files: Vec<std::path::PathBuf> = files_with_extension("infrastructure/terraform", "tf")
+        .into_iter()
+        .filter(|path| !path.components().any(|c| c.as_os_str() == ".terraform"))
+        .collect();
+    let mut subnets = 0usize;
+    let mut backends = 0usize;
+    for path in &files {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        for (kind, name, body) in terraform_resources(&text) {
+            let log_config = nested_block(&body, "log_config");
+            match kind.as_str() {
+                "google_compute_subnetwork" => {
+                    subnets += 1;
+                    let sampling = log_config
+                        .as_deref()
+                        .and_then(|block| terraform_argument(block, "flow_sampling"))
+                        .and_then(|value| value.parse::<f64>().ok());
+                    assert!(
+                        sampling.is_some_and(|rate| rate > 0.0),
+                        "{}: subnet `{name}` keeps no flow logs (log_config.flow_sampling is \
+                         {sampling:?}); every subnet records what talked to what (OBS-026)",
+                        path.display()
+                    );
+                }
+                "google_compute_backend_service" | "google_compute_region_backend_service" => {
+                    backends += 1;
+                    let enabled = log_config
+                        .as_deref()
+                        .and_then(|block| terraform_argument(block, "enable"));
+                    assert_eq!(
+                        enabled.as_deref(),
+                        Some("true"),
+                        "{}: load-balancer backend `{name}` does not log its requests \
+                         (OBS-026)",
+                        path.display()
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    // The premise: both kinds exist and the scan saw them. Four subnets and
+    // two backends on the day this was written; a floor, so adding one does
+    // not fail this, and removing the scan's ability to see any does.
+    assert!(
+        subnets >= 4 && backends >= 2,
+        "the scan found {subnets} subnet(s) and {backends} load-balancer backend(s); it is not \
+         reading the modules that declare them"
+    );
 }

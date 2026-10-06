@@ -39,10 +39,13 @@
 
 pub mod adapters;
 pub mod backing;
+pub mod bigquery;
 pub mod catalog;
 pub mod delta;
+pub mod peer;
 pub mod ports;
 pub mod provider;
+pub mod rebalance;
 pub mod spine;
 pub mod state;
 

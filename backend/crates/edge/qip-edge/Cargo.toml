@@ -27,7 +27,10 @@ qip-arbitrage.workspace = true
 # vocabulary only; `qip-routing`'s gateway, its venue selection and its child
 # orders stay unreachable from here, because the cell sends through its own
 # `Placer` seam and a second order path would be a second place the
-# paper-trading boundary has to hold.
+# paper-trading boundary has to hold. `health::HealthTracker` is reached too
+# (RES-016): it counts what `Cell::send` sent and what the venue rejected and
+# can only take a venue out of rotation, so it adds a refusal and no order
+# path. `path_router.rs`'s forbidden list is the check, not this comment.
 qip-routing.workspace = true
 # Named by no source file in this crate: the cell sends through its own
 # `Placer` seam and never constructs the order manager. The edge stays because

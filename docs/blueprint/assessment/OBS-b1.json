@@ -1,21 +1,22 @@
 [
   {
     "id": "OBS-001",
-    "status": "MISSING",
-    "current": "nothing. qip_observability::Telemetry bundles a Metrics registry, a Tracer and a Logger into one value (backend/crates/libs/qip-observability/src/lib.rs:23-47), but that is three signal kinds held together, not five signal classes (infrastructure, application, data quality, model health, trading behaviour) attached to shared entity nodes.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs EntityGraph: signals of five SignalClass values attach to EntityKey nodes; an entity shared by several classes is one node; a signal about no entity is refused. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/lib.rs:23-47",
-      "grep -rln 'ObservationGraph|SignalGraph|EntityGraph|UnifiedGraph' backend/crates --include=*.rs -> no matches"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::five_signal_classes_about_one_instrument_are_reachable_from_its_single_node",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_signal_about_no_entity_is_refused"
     ],
-    "gap": "No entity-keyed graph exists anywhere in the workspace. Metrics, traces and logs are three separate per-process collections keyed by metric/span/log name, not by the instrument or deployment entity they concern, and nothing joins a data-quality signal to a model-health signal about the same instrument.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need a fixture emitting one signal per class about one instrument/deployment and an assertion that all five are reachable from that entity's single node.",
+    "verification": "cargo test -p qip-observability --test aiops five_signal_classes_about_one_instrument_are_reachable_from_its_single_node (mutation-verified: attaching only the first entity fails it)",
     "work_item": "E12",
     "tier": "T3",
     "size": "L",
@@ -23,49 +24,48 @@
   },
   {
     "id": "OBS-002",
-    "status": "PARTIAL",
-    "current": "qip_observability::slo::{default_slos, blueprint_slos} (backend/crates/libs/qip-observability/src/slo.rs:200,290) declare 8 + 15 objectives. qip-kernel's blueprint_objectives module evaluates the 15 against what the process actually observed (backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs) and is folded into every cycle's LEARN stage (backend/crates/runtime/qip-kernel/src/platform.rs:14259, via crate::blueprint_objectives::fold). Only 2 of 15 objectives are fed from a production seam: reconciliation-breaks-zero-unexplained and netting-ratio, from Platform::ingest_cell_report (platform.rs:5539,5561-5567).",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/critical_paths.rs critical_path_slos(): one Slo per critical path (market-data freshness, decision latency, order/fill integrity, ledger commit, reconciliation, model serving, data provenance, quantum job success), each with target, window and source series; zero observations read as unmeasured via SloStatus::is_observed. Source series for model package age, lineage completeness and quantum jobs are named but not yet emitted by any process.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/slo.rs:200-244,290-390",
-      "backend/crates/runtime/qip-kernel/src/blueprint_objectives.rs:1-120",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:14250-14259",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs::every_row_of_section_49_1_is_declared_as_an_objective_with_its_own_target",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs::an_objective_nothing_measured_is_never_reported_as_achieved",
-      "backend/crates/tests/qip-acceptance/tests/slo.rs::a_missed_blueprint_target_is_actually_reported_as_missed"
+      "backend/crates/libs/qip-observability/src/critical_paths.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_unmeasured"
     ],
-    "gap": "None of the declared 8+15 objectives is named for OBS-002's eight specific paths (order/fill integrity, ledger commit, model serving package freshness, data provenance lineage completeness and quantum job success have no objective at all under any name; market-data freshness and decision latency have no objective using those denominators — the closest rows, wire-to-first-order-p99 and reconciliation-breaks-zero-unexplained, are a different measurement and only the latter is fed).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/tests/qip-acceptance/tests/slo.rs (7 tests); backend/crates/runtime/qip-kernel/tests/blueprint_objectives.rs. Would additionally need: an SLO catalogue whose row names match the eight named paths, each with a target+window+source series, and a fed test per path.",
+    "verification": "cargo test -p qip-observability --test aiops the_catalogue_holds_one_objective_per_critical_path_and_an_unfed_one_reads_unmeasured (mutation-verified: a duplicated objective name fails it)",
     "work_item": "E12",
     "tier": "T2",
     "size": "M",
-    "notes": "qip-data-finder::freshness (backend/crates/services/qip-data-finder/src/freshness.rs) computes source lead time, a related building block for 'market-data freshness', but is not wired into any SLO objective."
+    "notes": "qip-data-finder::freshness (backend/crates/services/qip-data-finder/src/freshness.rs) computes source lead time, a related building block for 'market-data freshness', but is not wired into any SLO objective.\n\n2026-10-05: left unintegrated on purpose. Only one of the eight source series (reconciliation) is fed by any deployed process, and folding a critical-path line into LEARN changes the detail that qip-kernel/tests/central.rs holds to an equality across two platforms. Feed the series first."
   },
   {
     "id": "OBS-003",
-    "status": "MISSING",
-    "current": "nothing observes qip-observability's own metric series for anomalies. qip-opportunity-engine::detector::{AnomalyKind, Anomaly} (backend/crates/services/qip-opportunity-engine/src/detector.rs:14-142) is a trading/market-data anomaly detector (price moves, volatility shifts, volume spikes) consumed by the DISCOVER stage — a different subject (market data, not operational telemetry).",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs detect_level_shift: robust median/MAD level-shift detector over a metric series with no configured threshold; returns an Anomaly naming the series and window; a too-short series is refused rather than called quiet. Library logic only: no production seam calls it yet, so integrated and deployable stay false. Wired: qip-kernel Platform::run_cycle feeds its own cycle duration to self_watch::SelfWatch (Platform::watch_own_series), which runs detect_level_shift per point, counts qip_telemetry_anomalies_total{series} and puts a once-per-step problem on the LEARN stage. Only the cycle-duration series is fed; other series need a caller. Not deployed.",
     "evidence": [
-      "backend/crates/services/qip-opportunity-engine/src/detector.rs:14-142",
-      "grep -rn 'anomaly' backend/crates --include=*.rs -i -> only trading-signal and dispersion-history hits, none reading qip_observability::Metrics"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_step_change_crossing_no_threshold_is_named_by_series_and_window_and_the_same_series_without_it_is_silent",
+      "backend/crates/runtime/qip-kernel/src/self_watch.rs",
+      "backend/crates/runtime/qip-kernel/tests/self_observation.rs::a_step_in_the_platforms_own_series_is_counted_and_reported_once",
+      "backend/crates/runtime/qip-kernel/tests/self_observation.rs::a_cycle_feeds_its_own_duration_to_the_self_watch"
     ],
-    "gap": "No component runs statistical or threshold-free detection over the platform's own operational telemetry (qip_observability::Metrics series), and no signal type exists for raising a detected telemetry anomaly to triage.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "OBS-001"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Would need a synthetic metric series with an injected step change producing a signal naming the series and window, and the unmodified series producing none.",
+    "verification": "cargo test -p qip-observability --test aiops a_step_change_crossing_no_threshold_is_named_by_series_and_window_and_the_same_series_without_it_is_silent (mutation-verified at both a huge and a zero score threshold)",
     "work_item": "E12",
     "tier": "T3",
     "size": "L",
@@ -73,15 +73,15 @@
   },
   {
     "id": "OBS-004",
-    "status": "MISSING",
-    "current": "nothing. qip_compliance::incident (backend/crates/libs/qip-compliance/src/incident.rs:1-60) is a kill-switch/halt-scope record for risk incidents (Control 6), not a five-source correlation timeline. No 'SRE agent' or 'incident agent' symbol exists anywhere in the workspace.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs build_timeline: events from the five TimelineSource values inside an incident window, timestamp-ordered, each keeping its source; an inverted window is refused. An Anomaly converts into a Telemetry event. No agent process calls it yet. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/incident.rs:1-60",
-      "grep -in 'sre.?agent|incident.?agent|aiops' backend/crates --include=*.rs -> only 'AIOps' as a blueprint-domain label string in backend/crates/apps/qip-cli/src/blueprint.rs:86"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::the_timeline_holds_exactly_the_five_in_window_events_in_order_each_attributed"
     ],
-    "gap": "No component correlates telemetry, deployment diffs, data anomalies, venue behaviour and model drift into one timeline; qip-compliance's incident record has one source (a risk/kill-switch event) and no timeline concept.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -89,7 +89,7 @@
       "OBS-003"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Would need a fixture incident with one event from each of the five sources inside its window and one outside, and an assertion the agent's timeline holds exactly the five in order.",
+    "verification": "cargo test -p qip-observability --test aiops the_timeline_holds_exactly_the_five_in_window_events_in_order_each_attributed (mutation-verified: dropping the window end bound fails it)",
     "work_item": "E12",
     "tier": "T3",
     "size": "XL",
@@ -97,16 +97,16 @@
   },
   {
     "id": "OBS-005",
-    "status": "MISSING",
-    "current": "nothing executes an approved runbook automatically. 'runbook' appears in ~20 files (e.g. backend/crates/apps/qip-api/src/venue_views.rs:43, backend/crates/services/qip-market-ingestion/src/connector/backoff.rs:18) but always as prose pointing a human operator at an operational document, never as an executable, named, pre-approved action. The platform's only automatic remediation is qip_compliance::incident::HaltScope / qip_risk_engine::autonomy::KillSwitch, which only ever narrows (halts trading); neither restarts, rolls back, scales, drains, fails over, quarantines or disables a capability by name.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-observability/src/aiops.rs Remediator: an action executes only if a registered Runbook names that action on that target; anything else is refused and the refusal names the missing runbook; a runbook naming an action outside PERMITTED_ACTIONS cannot be registered. The effect sits behind the Effector trait, which no composition root implements yet. Library logic only: no production seam calls it yet, so integrated and deployable stay false.",
     "evidence": [
-      "backend/crates/libs/qip-compliance/src/incident.rs:26-56 (HaltScope)",
-      "grep -rn 'runbook' backend/crates --include=*.rs -> all human-facing prose, no executable registry",
-      "grep -rn 'runbook' backend/crates --include=*.rs | wc -l -> ~20, none an action executor"
+      "backend/crates/libs/qip-observability/src/aiops.rs",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::an_action_in_no_runbook_is_refused_and_recorded_while_a_named_one_executes",
+      "backend/crates/libs/qip-observability/tests/aiops.rs::a_runbook_naming_an_action_outside_the_permitted_set_cannot_be_registered"
     ],
-    "gap": "No runbook registry (named action -> permitted effect), no executor that selects and runs one, and no refusal path for an action outside every runbook — the entire OBS-005 mechanism is absent, though the kill-switch shows the platform already has an unconditional-trip pattern a runbook executor could sit beside.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -114,7 +114,7 @@
       "OBS-004"
     ],
     "blocked_by": "",
-    "verification": "No test exists. Would need an incident whose best action names no runbook (e.g. deleting a topic) producing a recorded refusal, and a runbook-named action executing.",
+    "verification": "cargo test -p qip-observability --test aiops an_action_in_no_runbook_is_refused_and_recorded_while_a_named_one_executes (mutation-verified: ignoring the runbook target fails it)",
     "work_item": "E12",
     "tier": "T3",
     "size": "L",
@@ -143,7 +143,7 @@
     "work_item": "E01",
     "tier": "T2",
     "size": "M",
-    "notes": "Score together with CICD-062 (gating half of the same G p13 step 10 sentence) per the requirement's own note. ADR 0028's divergence to OpenObserve over Managed Prometheus/Cloud Trace means any comparator built here would query OpenObserve, not the components G p13 names."
+    "notes": "Score together with CICD-062 (gating half of the same G p13 step 10 sentence) per the requirement's own note. ADR 0028's divergence to OpenObserve over Managed Prometheus/Cloud Trace means any comparator built here would query OpenObserve, not the components G p13 names.\n\nNot closed: the SLO comparator and rollback decision need a deployed non-production rollout (game-day verification) and a promotion path that can call it; the error-budget gate in qip_observability::aiops::release_gate is the building block."
   },
   {
     "id": "OBS-007",
@@ -167,7 +167,7 @@
     "work_item": "E01",
     "tier": "T2",
     "size": "M",
-    "notes": "Score together with CICD-064 (same G p13 step-10 sentence) and CICD-026 (Learning Agent's incident-to-task conversion) per the requirement's own note."
+    "notes": "Score together with CICD-064 (same G p13 step-10 sentence) and CICD-026 (Learning Agent's incident-to-task conversion) per the requirement's own note.\n\nNot closed: needs an external action (opening an issue/PR in the development loop) and an intake that does not exist; refused as an external action."
   },
   {
     "id": "OBS-008",
@@ -397,7 +397,7 @@
     "work_item": "E04",
     "tier": "T1",
     "size": "M",
-    "notes": "The design already avoids I/O on the hot path; the remaining work is writing and mutation-verifying the chaos test, not changing the implementation. verify: changed NEEDS-VALIDATION -> INCORRECT; deployable true -> false; work_item E12 -> E04; size S -> M. The claim that 'qip-edge-node renders its /metrics exposition on the thread that flushes the journal, not the order-path thread' is wrong: it is one thread, and main.rs:88-104 says so. That thread also writes eprintln! lines per requote and per break between passes, so a blocked log sink stops order processing. The fix is restructuring the node loop (ADR 0100 section 6), not only writing a test. Consistent with FABRIC-003 and EXPAND-064. deployable is false because the capability runs only in qip-edge-node."
+    "notes": "The design already avoids I/O on the hot path; the remaining work is writing and mutation-verifying the chaos test, not changing the implementation. verify: changed NEEDS-VALIDATION -> INCORRECT; deployable true -> false; work_item E12 -> E04; size S -> M. The claim that 'qip-edge-node renders its /metrics exposition on the thread that flushes the journal, not the order-path thread' is wrong: it is one thread, and main.rs:88-104 says so. That thread also writes eprintln! lines per requote and per break between passes, so a blocked log sink stops order processing. The fix is restructuring the node loop (ADR 0100 section 6), not only writing a test. Consistent with FABRIC-003 and EXPAND-064. deployable is false because the capability runs only in qip-edge-node.\n\n2026-10-05: the requote, break and failed-pass lines now go through pass::PassLog (sampled, and a failed write is ignored instead of panicking as eprintln! does), and each pass is timed by pass::PassMeter. Both still run on the decision thread, as does the scrape response, so the finding stands unchanged. What blocks it: ADR 0100 section 6's timer-driven passes with the scrape and the log hand-off off the decision thread, a restructure of qip-edge-node's serve loop."
   },
   {
     "id": "OBS-017",
@@ -428,15 +428,20 @@
   },
   {
     "id": "OBS-018",
-    "status": "PARTIAL",
-    "current": "Domain-specific latency and count series are extensive — 100 named metric constants in backend/crates/libs/qip-observability/src/metrics.rs, e.g. CYCLE_DURATION_MS, STAGE_DURATION_MS, EXECUTION_LATENCY_MS (lines 826,828,752) for latency, ORDERS_SUBMITTED/ORDERS_REFUSED (lines 738,839) as traffic/error proxies in that domain.",
+    "status": "COMPLETE",
+    "current": "One recorder, qip_observability::golden::GoldenSignals, writes the same four series on every deployed binary (ADR 0010's four): qip_service_requests_total (traffic), qip_service_errors_total{class=caller|service} (errors), qip_service_latency_milliseconds (latency histogram) and qip_service_saturation_ratio (a gauge, deliberately not clamped at one). The unit of work is each service's own. qip-api: every HTTP request, through qip_api::golden::GoldenHandler, the outermost handler main.rs binds the server with; saturation is requests in flight over ServerLimits::max_concurrent; an accepted event stream is not timed. qip-fastbrain and qip-deepbrain: every cycle, in node::run; a failed cycle is each loop's own notion (fast brain: over the fast-path budget, or a stage that did not run; deep brain: a stage that did not run), and saturation is the share of the cycle interval consumed. qip-edge-node: every pass, through pass::PassMeter around run_pass; a pass that errors or ends in a reconciliation break is a failure, and saturation is the share of the health surface's two-second request allowance one pass consumed. All record into the registry the process already scrapes and drains. qip-fabricd and qip-ledgerd build binaries that refuse to start and are not deployed (ADR 0010); qip-cli serves nothing.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs (100 'pub const' names)",
-      "grep -rn -i 'saturation' backend/crates --include=*.rs -> 4 hits, none a metric/gauge (a data-finder history-window constant, a comment, a stress-test premise string)",
-      "backend/crates/runtime/qip-kernel/tests/kernel.rs:695 a_cycle_records_one_run_and_one_timed_outcome_for_every_stage_it_ran (asserts STAGE_DURATION_MS and CYCLE_DURATION_MS histograms)",
-      "grep -rn 'metrics\\.(increment|observe|gauge|count)' backend/crates/apps/qip-api/src/*.rs -> only the openobserve.rs export counters; no per-request count, latency or error series"
+      "backend/crates/libs/qip-observability/src/golden.rs",
+      "backend/crates/libs/qip-observability/tests/golden.rs::a_mix_of_served_refused_and_failed_work_moves_all_four_signals_and_keeps_the_error_classes_apart",
+      "backend/crates/apps/qip-api/src/golden.rs",
+      "backend/crates/apps/qip-api/tests/api.rs::a_request_mix_with_failures_moves_all_four_of_the_apis_golden_signals",
+      "backend/crates/apps/qip-api/tests/api.rs::the_api_binary_serves_through_the_golden_signal_wrapper_under_the_limits_it_binds_with",
+      "backend/crates/apps/qip-fastbrain/tests/node.rs::the_loop_records_the_four_golden_signals_and_counts_a_cycle_over_its_budget_as_an_error",
+      "backend/crates/apps/qip-deepbrain/src/node.rs node::tests::the_loop_records_the_four_golden_signals_and_counts_a_refused_cycle_as_an_error",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_run_of_passes_with_a_refused_one_moves_all_four_of_the_nodes_golden_signals",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::the_node_binary_runs_its_pass_inside_the_golden_signal_meter"
     ],
-    "gap": "No uniform, per-service instrumentation applies all four golden signals across every deployable binary, and 'saturation' is entirely unimplemented as a concept anywhere in the workspace — zero gauges of that kind exist. Per service: qip-api records no request counter, request latency or error series for its HTTP routes at all. Its only direct recordings are the OpenObserve export counters. Traffic and errors exist only as domain counters inside the kernel cycle.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -444,11 +449,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No integration test drives every binary with a fixed request mix including failures and asserts all four signal types move. Would need a saturation gauge added first, since none exists to assert on.",
+    "verification": "cargo test -p qip-api --test api a_request_mix_with_failures (a 200, a 401, a 503 and a scrape over a real socket through the real router); -p qip-fastbrain --test node the_loop_records; -p qip-deepbrain --lib node::tests::the_loop_records; -p qip-edge-node --test pass a_run_of_passes. Mutation-verified per binary: recording every outcome as served fails each error assertion (0 against 1 or 2); dropping the saturation write fails each gauge assertion (the API's scrape then reads 0 where one request of 64 is in flight); clamping the ratio at one fails the 1.5 reading; binding the API server with other limits, or metering the node into an unscraped registry, fails the two source scans.",
     "work_item": "E12",
     "tier": "T2",
     "size": "M",
-    "notes": "Latency and (domain-specific) error/traffic counters exist unevenly per component; the gap concentrates in saturation, which is a net-new concept here. verify: kept PARTIAL and flags. Added the named test that backs tested=true (kernel.rs:695), and recorded that qip-api has no HTTP golden-signal series, which widens the gap beyond saturation."
+    "notes": "Latency and (domain-specific) error/traffic counters exist unevenly per component; the gap concentrates in saturation, which is a net-new concept here. verify: kept PARTIAL and flags. Added the named test that backs tested=true (kernel.rs:695), and recorded that qip-api has no HTTP golden-signal series, which widens the gap beyond saturation.\n\n2026-10-05: PARTIAL -> COMPLETE. The two binaries' loops that cannot be called from a test (qip-api main.rs, qip-edge-node main.rs) are pinned by source scans beside the behavioural tests, not by a running process. deployable stays false: no collection path has been shown to scrape any process (see OBS-017)."
   },
   {
     "id": "OBS-019",
@@ -481,52 +486,54 @@
   },
   {
     "id": "OBS-020",
-    "status": "PARTIAL",
-    "current": "The Cloud Logging placement is declared. modules/cloudrun grants every Cloud Run workload identity roles/logging.logWriter in its own project (modules/cloudrun/main.tf:310-314), and every environment instantiates module.cloud_run over local.cloud_run_catalogue (catalogue.tf:694-696). The execution-node identity and the portal identity get the same grant (modules/execution-node/main.tf:244; catalogue.tf:943-948). No google_logging_project_sink exists anywhere, so no sink routes logs elsewhere, and Cloud Run captures container stdout/stderr into Cloud Logging by default. The binaries' operational lines are println!/eprintln! to stdout/stderr, so they would land there. The structured qip_observability::Logger never leaves process memory: echo is off by default (logs.rs:77-78,99-101), no app calls set_echo, and the kernel makes no logger call. Its only production writers are the openobserve.rs drains' failure warnings. ADR 0028 says logs also go to OpenObserve. No drain posts logs (qip-api/src/openobserve.rs:290,296; fastbrain :271,277; deepbrain :264,270), and no committed config enables any drain (see OBS-008).",
+    "status": "COMPLETE",
+    "current": "Every identity that runs a platform binary holds roles/logging.logWriter in its own project: modules/cloudrun's workload account, modules/execution-node's node account, and the portal's account in catalogue.tf. No google_logging_*_sink exists, and one that named a destination outside logging.googleapis.com would now fail a test. Each of the four deployed composition roots builds its telemetry with Telemetry::foreground, which echoes every structured log record to stderr, the stream Cloud Logging ingests from a workload; before this the structured logger's records never left process memory. The three in-tree drains post metrics and traces only. Not claimed: the landing's identity holds no grant of any kind, deliberately (modules/secrets), and is outside the table the test covers; and nothing runs under these grants in any environment.",
     "evidence": [
-      "infrastructure/terraform/modules/cloudrun/main.tf:310-314 (roles/logging.logWriter on the workload service account)",
-      "infrastructure/terraform/catalogue.tf:694-696 (module.cloud_run for_each = local.cloud_run_catalogue), :943-948 (portal_logging)",
-      "infrastructure/terraform/modules/execution-node/main.tf:244 (roles/logging.logWriter)",
-      "grep -rn 'google_logging_project_sink' infrastructure/terraform -> none",
-      "backend/crates/libs/qip-observability/src/logs.rs:77-78,99-101,103-127 (echo to stderr off by default; records kept in memory); grep set_echo backend/crates/apps -> none",
-      "backend/crates/apps/qip-api/src/openobserve.rs:290,296; backend/crates/apps/qip-fastbrain/src/openobserve.rs:271,277; backend/crates/apps/qip-deepbrain/src/openobserve.rs:264,270 (metrics + traces only)"
+      "infrastructure/terraform/modules/cloudrun/main.tf (google_project_iam_member.logging)",
+      "infrastructure/terraform/modules/execution-node/main.tf (google_project_iam_member.logging)",
+      "infrastructure/terraform/catalogue.tf (google_project_iam_member.portal_logging)",
+      "backend/crates/libs/qip-observability/src/lib.rs (Telemetry::foreground)",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs::every_workload_identity_may_write_to_cloud_logging_in_its_own_project_and_no_sink_routes_logs_elsewhere",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs::every_deployed_process_echoes_its_structured_log_to_stderr_and_no_drain_ships_logs_elsewhere",
+      "backend/crates/libs/qip-observability/tests/telemetry.rs::the_foreground_telemetry_surface_echoes_its_log_records_and_the_default_one_does_not"
     ],
-    "gap": "No test asserts the log-writer grant or the absence of other sinks. grep for logWriter in qip-acceptance finds only logging.viewer comments. The structured Logger's records reach no store at all, because echo is never enabled. Which store is authoritative for logs (Cloud Logging, or OpenObserve per ADR 0028) is unresolved, and the OpenObserve half is unimplemented. Nothing is running to demonstrate it.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No infra-plan test asserts log-writer IAM or sink routing for application logs. Would need an acceptance assertion that every workload identity in modules/cloudrun and modules/execution-node holds roles/logging.logWriter in its own project and that no log sink routes elsewhere, plus the structured Logger emitting to stderr in each composition root.",
+    "verification": "cargo test -p qip-acceptance --test manifest_wiring every_workload_identity every_deployed_process; cargo test -p qip-observability --test telemetry the_foreground. Mutation-verified: changing the node's role to logging.viewer fails with 'expected exactly one roles/logging.logWriter grant, found 0'; adding a google_logging_project_sink to a storage bucket fails the sink assertion; building the fast brain's telemetry with Telemetry::new fails the root scan; adding /api/{org}/v1/logs to the API drain fails the endpoint-set equality; removing set_echo from Telemetry::foreground fails the unit test.",
     "work_item": "E12",
     "tier": "T1",
     "size": "S",
-    "notes": "Adding a log-drain endpoint to the existing openobserve.rs module (mirroring its metrics/traces POST pattern) is the smallest closure for the OpenObserve half. verify: kept PARTIAL; implemented false -> true and integrated false -> true. The infra half the requirement's infra-plan check names exists and every environment instantiates it: logWriter grants on every workload and node identity, and no alternative sinks. The assessor missed it. Corrected 'logs do not currently reach OpenObserve despite metrics and traces doing so': nothing reaches OpenObserve from committed config. Added that the structured Logger never leaves memory. tested stays false because no test covers the grant."
+    "notes": "Adding a log-drain endpoint to the existing openobserve.rs module (mirroring its metrics/traces POST pattern) is the smallest closure for the OpenObserve half. verify: kept PARTIAL; implemented false -> true and integrated false -> true. The infra half the requirement's infra-plan check names exists and every environment instantiates it: logWriter grants on every workload and node identity, and no alternative sinks. The assessor missed it. Corrected 'logs do not currently reach OpenObserve despite metrics and traces doing so': nothing reaches OpenObserve from committed config. Added that the structured Logger never leaves memory. tested stays false because no test covers the grant.\n\n2026-10-05: PARTIAL -> COMPLETE on the row's own stated bar (log-writer grant per workload identity, no other sink, the structured logger emitting to stderr in each root). Still open and not this row's to settle: ADR 0028 says logs also go to OpenObserve, and which store is authoritative for logs is undecided. The drain test now fails if a drain starts posting logs, so that decision has to be recorded before it is made in code. deployable stays false."
   },
   {
     "id": "OBS-021",
-    "status": "INCORRECT",
-    "current": "No sampling mechanism exists: Logger/logs.rs has no sample rate, and nothing else configures one. qip-edge's Cell::work makes no log call (cell.rs has 0 'logger.' hits and no eprintln). But the Reflex composition root logs per event on the decision thread. qip-edge-node's serve loop writes one eprintln! line for every requote outcome and every reconciliation break of each pass (main.rs:906,909; 'Every requote outcome, not only the failures'). A requote is minted once per book update when the touch moves past the threshold (qip-edge-node/src/reprice.rs:1-13), and each requote sends a cancel and a replacement. So stderr volume grows with message count instead of being bounded by a sample rate.",
+    "status": "COMPLETE",
+    "current": "qip-edge-node's per-pass stderr goes through qip_edge_node::pass::PassLog: every requote outcome, every reconciliation break and a failed pass are offered to one qip_observability::sampling::LineSampler (five lines per ten seconds, the dropped count carried on the next line that gets through), and main.rs writes nothing per event beside it. A failed write is ignored rather than panicking. Every requote and break is still a series and a journal entry. Cell::work itself makes no log call. The loop's remaining direct lines are per probe, not per message: a halt-flag or region-wire change, a journal that could not ship, a non-quiet mesh exchange.",
     "evidence": [
-      "grep -c 'logger\\.' backend/crates/edge/qip-edge/src/cell.rs -> 0",
-      "grep -n 'sample|Sample' backend/crates/libs/qip-observability/src/logs.rs -> no matches",
-      "backend/crates/apps/qip-edge-node/src/main.rs:900-910 (for requote in &requotes { eprintln!(...) }; for detail in &breaks { eprintln!(...) })",
-      "backend/crates/apps/qip-edge-node/src/reprice.rs:1-13 (repricing once per book update; cancel then re-send)"
+      "backend/crates/apps/qip-edge-node/src/pass.rs (PassLog)",
+      "backend/crates/apps/qip-edge-node/src/main.rs (pass_log.write in serve)",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::the_stderr_a_node_writes_in_one_window_is_the_sample_rate_whether_it_held_eight_passes_or_eighty",
+      "backend/crates/apps/qip-edge-node/tests/pass.rs::the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log",
+      "backend/crates/libs/qip-observability/tests/sampling.rs"
     ],
-    "gap": "The Reflex node's requote logging is per event, and no sampling policy exists to bound it. Needs: a sampled or aggregated requote line, or a counter series with periodic summaries, and a configured sample rate. Emitting off the decision thread belongs to OBS-016. No benchmark measures log volume against message rate.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No benchmark test exists. Would need a Reflex cell driven at its rated message rate for a fixed window with log volume asserted bounded by a configured sample rate, not proportional to message count.",
+    "verification": "cargo test -p qip-edge-node --test pass the_stderr_a_node_writes the_node_binary_writes: an assembled node's cell is driven through real passes with the touch walking away from a resting order, eight passes and then eighty inside the same nine seconds; both write exactly the five lines the sample rate allows. Mutation-verified: bypassing the sampler in PassLog::write fails it (29 lines against 5); restoring a per-requote eprintln in main.rs fails the source scan.",
     "work_item": "E04",
     "tier": "T1",
     "size": "S",
-    "notes": "Read with OBS-016 (never block) and the observability domain rule's note that raw history is not logged at all — the current zero-logging state satisfies the outcome by omission, not by the sampling policy the requirement asks for. verify: changed MISSING -> INCORRECT; work_item E12 -> E04. The assessor wrote that log volume on the Reflex path is 'trivially zero regardless of message rate'. That holds only inside Cell::work. The composition root that runs it, qip-edge-node, logs one stderr line per requote, and requotes scale with book updates and messages. That is the per-event form the requirement forbids. implemented stays false because no sampling exists; deployable false because the path runs only in qip-edge-node."
+    "notes": "Read with OBS-016 (never block) and the observability domain rule's note that raw history is not logged at all — the current zero-logging state satisfies the outcome by omission, not by the sampling policy the requirement asks for. verify: changed MISSING -> INCORRECT; work_item E12 -> E04. The assessor wrote that log volume on the Reflex path is 'trivially zero regardless of message rate'. That holds only inside Cell::work. The composition root that runs it, qip-edge-node, logs one stderr line per requote, and requotes scale with book updates and messages. That is the per-event form the requirement forbids. implemented stays false because no sampling exists; deployable false because the path runs only in qip-edge-node.\n\n2026-10-05: PARTIAL -> COMPLETE. The cell has no declared rated message rate, so the check is run as a tenfold change in pass count inside one window rather than at a named rate. The lines are still written synchronously on the decision thread, which is OBS-016's finding and is not changed here. deployable stays false: no node is deployed."
   }
 ]

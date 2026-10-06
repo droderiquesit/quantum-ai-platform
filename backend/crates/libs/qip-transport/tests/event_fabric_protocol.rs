@@ -10,6 +10,7 @@
 //! ([`FabricTransport`]) depends on: a future QUIC-with-mTLS implementation
 //! is only a safe swap if nothing downstream can tell it apart from this one
 //! by the *shape* of what comes back.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -92,7 +93,10 @@ fn sample_success_response(route: Route) -> Response {
         Route::Metadata => Response::Metadata(
             Metadata::new("orders", 3, 7, 120, 80).expect("a coherent metadata answer"),
         ),
-        Route::ProducerInit => Response::ProducerInit(ProducerInitResponse { producer_epoch: 4 }),
+        Route::ProducerInit => Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 4,
+            next_sequence: 0,
+        }),
         Route::Produce => Response::Produce(
             ProduceAck::new("orders", 3, 100, 120, 80).expect("a coherent produce acknowledgement"),
         ),

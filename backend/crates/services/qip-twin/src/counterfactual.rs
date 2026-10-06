@@ -361,6 +361,39 @@ impl SimulatedFill {
     }
 }
 
+/// How a counterfactual figure was estimated (WORLD-039).
+///
+/// [`Simulated`] says a figure is an estimate; it does not say whose. An
+/// estimate that does not name its method cannot be argued with: a reader
+/// comparing two regret figures has no way to know whether they were priced
+/// the same way, and the day a second pricer exists every earlier record
+/// silently becomes ambiguous. So the method travels on the record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimationMethod {
+    /// No method was recorded: a record written before this field existed, or
+    /// a score for which no alternative was priced. Never what
+    /// [`CounterfactualEngine::settle`] stamps, and deliberately the default,
+    /// so an old record reads back as unattributed rather than as priced by
+    /// a method it never named.
+    #[default]
+    Unrecorded,
+    /// [`CounterfactualEngine::settle`]: entry and exit at the simulator's
+    /// fill price (the open of the bar covering each instant), net of the
+    /// plan's cost model, after a seeded availability draw that can only
+    /// remove a fill.
+    BarOpenReplay,
+}
+
+impl EstimationMethod {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Unrecorded => "unrecorded",
+            Self::BarOpenReplay => "bar_open_replay",
+        }
+    }
+}
+
 /// What an alternative would have produced.
 ///
 /// Every money figure is a [`Simulated<Decimal>`] and there is no accessor that
@@ -375,11 +408,18 @@ pub struct SimulatedOutcome {
     entry_at: Timestamp,
     exit_at: Timestamp,
     fixed_as_of: Timestamp,
+    #[serde(default)]
+    method: EstimationMethod,
 }
 
 impl SimulatedOutcome {
     pub const fn alternative(&self) -> &Alternative {
         &self.alternative
+    }
+
+    /// The method that produced every figure on this record.
+    pub const fn method(&self) -> EstimationMethod {
+        self.method
     }
 
     pub const fn fill(&self) -> &SimulatedFill {
@@ -643,6 +683,10 @@ impl CounterfactualEngine {
         plan: CounterfactualPlan,
         stream: &str,
     ) -> Result<SimulatedOutcome> {
+        // One name for every outcome this function returns, traded or not:
+        // they are all this function's estimate, and five literals would be
+        // five chances for one arm to claim a method it did not use.
+        const METHOD: EstimationMethod = EstimationMethod::BarOpenReplay;
         let entry_at = plan.decided_at.saturating_add(plan.entry_delay);
         let exit_at = plan.decided_at.saturating_add(self.horizon);
         if exit_at <= entry_at {
@@ -661,6 +705,7 @@ impl CounterfactualEngine {
                 entry_at,
                 exit_at,
                 fixed_as_of: plan.fixed_as_of,
+                method: METHOD,
             });
         }
 
@@ -705,6 +750,7 @@ impl CounterfactualEngine {
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
+                    method: METHOD,
                 });
             }
         }
@@ -727,6 +773,7 @@ impl CounterfactualEngine {
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
+                    method: METHOD,
                 });
             }
         };
@@ -748,6 +795,7 @@ impl CounterfactualEngine {
                     entry_at,
                     exit_at,
                     fixed_as_of: plan.fixed_as_of,
+                    method: METHOD,
                 });
             }
         };
@@ -806,6 +854,7 @@ impl CounterfactualEngine {
             entry_at,
             exit_at,
             fixed_as_of: plan.fixed_as_of,
+            method: METHOD,
         })
     }
 

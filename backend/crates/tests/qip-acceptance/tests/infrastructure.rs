@@ -14,6 +14,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_acceptance::{files_with_extension, read, repository_root};
 
@@ -1804,6 +1805,46 @@ fn the_unit_pins_the_node_onto_the_first_isolated_core_so_the_isolcpus_refusal_g
 }
 
 #[test]
+fn nothing_in_the_terraform_autoscales_the_execution_node_group() {
+    // Blueprint REFLEX-070. A Reflex node owns one venue shard and an open
+    // venue session; an autoscaler that adds a second instance creates two
+    // owners of one session, and one that removes an instance drops a live
+    // session mid-day. The group is sized by the operator's `execution_nodes`
+    // map and nothing else. Matched on resource *type* and with comments
+    // stripped, because the data module legitimately says "autoscaling_config"
+    // for Bigtable and this file's own comments say "autoscaler".
+    let node = without_comments(&read(NODE_MODULE));
+    assert!(
+        node.contains("resource \"google_compute_instance_group_manager\" \"node\""),
+        "{NODE_MODULE} no longer declares the node's instance group manager, so \
+         the absence asserted below guards a group that is not there"
+    );
+    let forbidden = [
+        "google_compute_autoscaler",
+        "google_compute_region_autoscaler",
+        "autoscaling_policy",
+    ];
+    let mut scanned = 0;
+    for path in files_with_extension("infrastructure", "tf") {
+        scanned += 1;
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for needle in forbidden {
+            assert!(
+                !text.contains(needle),
+                "{} contains `{needle}`; a node group that scales makes two owners of one \
+                 venue session or drops a live one (REFLEX-070). Size it through \
+                 `execution_nodes` instead",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        scanned > 20,
+        "only {scanned} .tf files were scanned; the walk is broken"
+    );
+}
+
+#[test]
 fn an_execution_node_may_reach_its_venues_and_the_central_plane_and_nothing_else() {
     // The most security-relevant rules in the configuration. A node holds the
     // whole hot path and decides without asking anyone; these rules are the
@@ -3544,6 +3585,216 @@ fn no_firewall_allow_rule_permits_the_whole_internet() {
     );
 }
 
+/// Whether one port token of a firewall `ports` list (`"22"` or `"20-30"`)
+/// covers `port`.
+fn port_token_covers(token: &str, port: u32) -> bool {
+    match token.split_once('-') {
+        Some((low, high)) => matches!(
+            (low.parse::<u32>(), high.parse::<u32>()),
+            (Ok(low), Ok(high)) if low <= port && port <= high
+        ),
+        None => token.parse::<u32>() == Ok(port),
+    }
+}
+
+#[test]
+fn no_firewall_allow_rule_opens_remote_administration_except_from_iap() {
+    // SEC-019. `no_firewall_allow_rule_permits_the_whole_internet` refuses only
+    // `0.0.0.0/0`, so an allow on port 22 from a narrower public range, or an
+    // allow with no `ports` at all (which is every port), would have passed it
+    // while giving an internet host a shell prompt. The one source that may
+    // reach 22 or 3389 is Identity-Aware Proxy's tunnel range, because that is
+    // the path OS Login and IAM gate.
+    const IAP: &str = "35.235.240.0/20";
+    // Google's own health-check probers: not an internet host, and the only
+    // other ingress source the tree allows on a computed port.
+    const PROBERS: [&str; 2] = ["35.191.0.0/16", "130.211.0.0/22"];
+    let mut ingress_allows = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for (name, body) in terraform_resources(&content, "google_compute_firewall") {
+            if body.contains("direction = \"EGRESS\"") || body.contains("direction  = \"EGRESS\"") {
+                continue;
+            }
+            for allow in body.split("allow {").skip(1) {
+                let allow = allow.split('}').next().unwrap_or(allow);
+                let protocol = allow
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("protocol"))
+                    .unwrap_or("");
+                if protocol.contains("icmp") {
+                    continue;
+                }
+                ingress_allows += 1;
+                let ports: Vec<String> = allow
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("ports"))
+                    .map(|l| {
+                        l.split('"')
+                            .skip(1)
+                            .step_by(2)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // No `ports` means every port of the protocol.
+                let admin = ports.is_empty()
+                    || ports
+                        .iter()
+                        .any(|t| port_token_covers(t, 22) || port_token_covers(t, 3389));
+                if !admin {
+                    continue;
+                }
+                let source_line = body
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("source_ranges"));
+                // A zone-to-zone path takes its source from the VPC's own
+                // zone ranges, never from a literal: internal by construction.
+                // `load_balancer_ranges` is Google's prober list, a literal
+                // pair of Google-owned ranges declared once in that module.
+                if source_line.is_some_and(|l| {
+                    l.contains("local.zone_cidr") || l.contains("local.load_balancer_ranges")
+                }) {
+                    continue;
+                }
+                let sources: Vec<&str> = source_line
+                    .map(|l| l.split('"').skip(1).step_by(2).collect())
+                    .unwrap_or_default();
+                assert!(
+                    !sources.is_empty() && sources.iter().all(|s| *s == IAP || PROBERS.contains(s)),
+                    "{}: the allow rule `{name}` opens TCP 22 or 3389 (ports {ports:?}) to {sources:?}; \
+                     only IAP's {IAP} (or Google's health-check probers) may reach remote administration",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        ingress_allows >= 3,
+        "only {ingress_allows} non-ICMP allow rules were read; the walk is not reaching the modules"
+    );
+}
+
+#[test]
+fn no_virtual_machine_the_repository_defines_carries_an_external_address() {
+    // SEC-019. The execution-node test reads one module, and no environment
+    // enables it. Walk every VM definition instead: a Terraform instance or
+    // template with an `access_config` block has an external address, and the
+    // image builder is created by a workflow rather than Terraform, so its
+    // `--no-address` is read from the command itself.
+    let mut vms = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for kind in [
+            "google_compute_instance",
+            "google_compute_instance_template",
+            "google_compute_region_instance_template",
+        ] {
+            for (name, body) in terraform_resources(&content, kind) {
+                vms += 1;
+                assert!(
+                    !body.contains("access_config"),
+                    "{}: `{kind}.{name}` carries an access_config, an external address",
+                    path.display()
+                );
+            }
+        }
+    }
+    assert!(
+        vms >= 1,
+        "no VM definition was read; the walk is not reaching the modules"
+    );
+
+    let workflow = read(IMAGE_WORKFLOW);
+    let creates: Vec<&str> = workflow
+        .split("gcloud compute instances create")
+        .skip(1)
+        .collect();
+    assert!(
+        !creates.is_empty(),
+        "{IMAGE_WORKFLOW} no longer creates an instance; this check is reading the wrong workflow"
+    );
+    for create in creates {
+        // The command ends at the first line that does not continue with a backslash.
+        let command: String = create
+            .lines()
+            .scan(true, |go, l| {
+                let keep = *go;
+                *go = l.trim_end().ends_with('\\');
+                keep.then_some(l)
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            command.split_whitespace().any(|w| w == "--no-address"),
+            "{IMAGE_WORKFLOW} creates a builder VM without --no-address"
+        );
+    }
+}
+
+#[test]
+fn the_execution_node_module_declares_no_load_balancer_or_mesh_hop_on_the_venue_path() {
+    // SEC-011. A Reflex node's only hop to a venue is the venue connection
+    // itself; a forwarding rule, backend service or mesh attachment in the
+    // module would put a proxy on that path whose latency and failure nobody
+    // measured. The existing test reads for an external address; this reads
+    // for the other half of the constraint, by resource type so a comment or
+    // a variable description naming one cannot satisfy or trip it.
+    let module = without_comments(&read(NODE_MODULE));
+    let declared: Vec<String> = module
+        .lines()
+        .filter_map(|l| l.trim_start().strip_prefix("resource \""))
+        .filter_map(|l| l.split('"').next())
+        .map(str::to_string)
+        .collect();
+    assert!(
+        declared
+            .iter()
+            .any(|t| t == "google_compute_instance_template")
+            && declared.iter().any(|t| t == "google_compute_firewall"),
+        "the walk found {declared:?}; it is not reading the execution-node module"
+    );
+    for kind in &declared {
+        let hop = kind.contains("forwarding_rule")
+            || kind.contains("backend_service")
+            || kind.contains("url_map")
+            || kind.contains("_proxy")
+            || kind.contains("service_attachment")
+            || kind.starts_with("google_network_services")
+            || kind.contains("mesh");
+        assert!(
+            !hop,
+            "the execution node module declares `{kind}`, a load-balancer or mesh hop on the venue path"
+        );
+    }
+}
+
+#[test]
+fn every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access() {
+    // GCP-033: a subnet without Private Google Access sends a workload to
+    // Cloud Storage, Spanner or Artifact Registry through an external address
+    // or a NAT route, which is the path the requirement closes. A fifth subnet
+    // added in a new module is one more block that looks like the others.
+    let mut subnets = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for (name, body) in terraform_resources(&content, "google_compute_subnetwork") {
+            subnets += 1;
+            assert!(
+                body.lines()
+                    .any(|l| l.split_whitespace().collect::<Vec<_>>()
+                        == ["private_ip_google_access", "=", "true"]),
+                "{}: the subnet `{name}` does not set private_ip_google_access = true",
+                path.display()
+            );
+        }
+    }
+    assert!(
+        subnets >= 4,
+        "only {subnets} subnets were read; the walk is not reaching the modules"
+    );
+}
+
 #[test]
 fn the_fast_brain_cannot_reach_anything_that_could_serve_a_language_model() {
     // ADR 0008, consequence 3: nothing on the hot path consults a model. The
@@ -4072,6 +4323,147 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     );
 }
 
+#[test]
+fn no_terraform_grant_can_delete_or_drop_warehouse_tables_beyond_the_one_named_writer_role() {
+    // FINOPS-019: a cost response must never delete production state, and an
+    // identity that holds a delete-capable role is one bad automation away from
+    // doing it. The object-store half is pinned above; this is the BigQuery,
+    // Bigtable and Spanner half. `roles/bigquery.dataEditor` also carries
+    // `bigquery.tables.delete` and is granted to the data module's dataset
+    // writers; that residual is named here so it is visible rather than
+    // allowed by silence, and it may not spread to any other file.
+    let mut scanned = 0usize;
+    let mut editor_files = Vec::new();
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        scanned += 1;
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        for role in [
+            "roles/bigquery.admin",
+            "roles/bigquery.dataOwner",
+            "roles/bigtable.admin",
+            "roles/spanner.admin",
+            "roles/spanner.databaseAdmin",
+        ] {
+            assert!(
+                !content.contains(&format!("\"{role}\"")),
+                "{} grants {role}, which can delete or drop production data",
+                path.display()
+            );
+        }
+        if content.contains("\"roles/bigquery.dataEditor\"") {
+            editor_files.push(path.display().to_string());
+        }
+    }
+    assert!(
+        scanned > 10,
+        "the scan found {scanned} Terraform files; the glob is wrong"
+    );
+    assert_eq!(
+        editor_files.len(),
+        1,
+        "roles/bigquery.dataEditor (can delete tables) appears in {editor_files:?}; only the \
+         data module's dataset writers may hold it"
+    );
+    assert!(
+        editor_files[0].ends_with("modules/data/main.tf"),
+        "{editor_files:?}"
+    );
+}
+
+#[test]
+fn a_billing_budget_notifies_and_never_carries_a_programmatic_action() {
+    // FINOPS-019: a budget that publishes to a topic a function listens on is a
+    // budget that can act. Until FINOPS-018's anomaly path is built and reviewed,
+    // a budget may alert people and do nothing else.
+    let mut budgets = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        if !content.contains("resource \"google_billing_budget\"") {
+            continue;
+        }
+        budgets += 1;
+        assert!(
+            !content.contains("pubsub_topic"),
+            "{} routes a budget to a Pub/Sub topic, which is a programmatic action",
+            path.display()
+        );
+    }
+    assert!(
+        budgets >= 1,
+        "no google_billing_budget was found; the test guards nothing"
+    );
+}
+
+// --- capacity (FINOPS-002) ---------------------------------------------------
+
+/// The first resource type among `types` that a Terraform file declares.
+fn declares_resource_of(content: &str, types: &[&str]) -> Option<String> {
+    without_comments(content).lines().find_map(|line| {
+        let line = collapsed(line);
+        types
+            .iter()
+            .find(|t| line.starts_with(&format!("resource \"{t}\"")))
+            .map(|t| (*t).to_string())
+    })
+}
+
+const AUTOSCALER_TYPES: [&str; 3] = [
+    "google_compute_autoscaler",
+    "google_compute_region_autoscaler",
+    "google_compute_resource_policy_autoscaler",
+];
+
+#[test]
+fn reflex_capacity_is_never_scaled_by_a_reactive_autoscaler() {
+    // Reflex capacity changes by an operator provisioning shards ahead of
+    // demand. An autoscaler reacts to load that has already arrived, adds a
+    // machine that takes minutes to boot, fetch secrets and open venue
+    // sessions, and a second machine holding sessions for one cell is a
+    // duplicate-order hazard (execution-node `node_count` doc). The group's
+    // `target_size` must also be the literal operator input.
+    let mut scanned = 0usize;
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        scanned += 1;
+        let content = std::fs::read_to_string(&path).expect("readable");
+        assert_eq!(
+            declares_resource_of(&content, &AUTOSCALER_TYPES),
+            None,
+            "{} declares an autoscaler; Reflex capacity changes only by \
+             pre-provisioned shards",
+            path.display()
+        );
+    }
+    assert!(
+        scanned > 10,
+        "the scan read {scanned} files, so it proved nothing"
+    );
+
+    // The premise: the detector sees a declaration when one is present, and
+    // not when it is only discussed in a comment.
+    assert_eq!(
+        declares_resource_of(
+            "resource \"google_compute_autoscaler\" \"x\" {\n}\n",
+            &AUTOSCALER_TYPES
+        )
+        .as_deref(),
+        Some("google_compute_autoscaler")
+    );
+    assert_eq!(
+        declares_resource_of(
+            "# resource \"google_compute_autoscaler\" \"x\"\n",
+            &AUTOSCALER_TYPES
+        ),
+        None
+    );
+
+    let node = read("infrastructure/terraform/modules/execution-node/main.tf");
+    assert!(
+        node.lines()
+            .any(|l| collapsed(l) == "target_size = var.node_count"),
+        "the group's size is no longer the operator's literal node_count"
+    );
+}
+
 // --- the registry -----------------------------------------------------------
 
 #[test]
@@ -4244,6 +4636,9 @@ fn no_workflow_depends_on_a_repository_variable() {
         ".github/workflows/deploy.yml",
         ".github/workflows/vendor.yml",
         ".github/workflows/image.yml",
+        // Authenticates by workload identity as infra.yml does, so the same
+        // failure mode is available to it; it was outside the list when added.
+        ".github/workflows/fleet.yml",
     ] {
         let workflow = read(workflow_file);
         assert!(
@@ -5141,12 +5536,13 @@ fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, Str
 
 #[test]
 fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
-    const WORKFLOWS: [&str; 5] = [
+    const WORKFLOWS: [&str; 6] = [
         ".github/workflows/ci.yml",
         ".github/workflows/deploy.yml",
         ".github/workflows/image.yml",
         ".github/workflows/infra.yml",
         ".github/workflows/vendor.yml",
+        ".github/workflows/fleet.yml",
     ];
 
     /// The outputs each `id`-bearing step of one job writes.
@@ -5233,10 +5629,11 @@ const NOT_A_WORKLOAD: &[(&str, &str)] = &[
     ),
     (
         "qip-fabricd",
-        "ADR 0100 assigns this binary the event-fabric broker role, but its \
-         composition-root modules (config, health, archiver) are doc-only \
-         stubs and the binary refuses to start; scheduling a process that \
-         exits immediately is not a workload. See \
+        "ADR 0100 assigns this binary the event-fabric broker role, and its \
+         composition root now serves, but where a broker with one disk, one \
+         writer and no replica runs is undecided (ADR 0099 C8); the Cloud \
+         Run shape the catalogue schedules keeps nothing across a restart \
+         and is the one placement it cannot take. See \
          docs/adr/0010-what-gets-deployed.md",
     ),
     (
@@ -5272,11 +5669,10 @@ const NOT_IN_THE_IMAGE_MATRIX: &[(&str, &str, &str)] = &[
     (
         "qip-fabricd",
         "qip-fabricd",
-        "ADR 0100 assigns the event-fabric broker role, but its \
-         composition-root modules are doc-only stubs and the binary refuses \
-         to start; an image built from it would ship a process that exits \
-         the instant Cloud Run started it. Excluded while its packets land \
-         and GCP placement waits on ADR 0099 C8. See \
+        "ADR 0100 assigns the event-fabric broker role and its composition \
+         root now serves, but an image is built to be scheduled somewhere \
+         and where this broker runs is undecided. Excluded while GCP \
+         placement waits on ADR 0099 C8. See \
          docs/adr/0010-what-gets-deployed.md",
     ),
     (
@@ -8694,7 +9090,9 @@ fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_proje
          broken bootstrap. It printed: {printed}"
     );
     assert!(
-        written.lines().any(|line| line == "project=algorik-dev"),
+        written
+            .lines()
+            .any(|line| line == "project=algorik-platform-dev"),
         "the identity step admitted `dev` and wrote no `project=` output naming dev's project; \
          it exited 0 without reaching its end, which is the failure the four steps that read \
          `steps.identity.outputs.project` cannot see"
@@ -8824,7 +9222,7 @@ fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_wh
     //    stops. The project id it echoes is printed only after both guards.
     let (code, printed) = run(&real, "dev");
     assert!(
-        printed.contains("project:") && printed.contains("algorik-dev"),
+        printed.contains("project:") && printed.contains("algorik-platform-dev"),
         "scripts/bootstrap-deploy.sh did not get past its own guards for `dev`, the one \
          provisioned environment: it never echoed the project it would act on. A guard that \
          refuses everything is not a guard. It exited {code} and printed: {printed}"
@@ -9821,4 +10219,123 @@ fn the_diagnose_action_reaches_no_step_that_writes() {
             );
         }
     }
+}
+
+// --- CICD-084: dev holds no production secret --------------------------------
+
+/// The value of a `project_id = "..."` line in one environment's tfvars.
+fn environment_project(environment: &str) -> String {
+    let content = read(&format!(
+        "infrastructure/environments/{environment}/terraform.tfvars"
+    ));
+    without_comments(&content)
+        .lines()
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "project_id").then(|| value.trim().trim_matches('"').to_string())
+        })
+        .unwrap_or_else(|| panic!("{environment} declares no project_id"))
+}
+
+#[test]
+fn dev_secrets_cannot_be_a_production_secret_because_no_two_environments_share_a_project() {
+    // Secret Manager containers are project-scoped and named per environment,
+    // so isolation is two facts: the module only ever writes into the project
+    // it is handed, and no two environments are handed the same one. Today it
+    // holds because prod was never provisioned; this fails the day someone
+    // points dev and prod at one project to save a bill.
+    let projects: Vec<(&str, String)> = ["dev", "test", "stage", "prod"]
+        .into_iter()
+        .map(|environment| (environment, environment_project(environment)))
+        .collect();
+    assert!(
+        projects
+            .iter()
+            .any(|(_, project)| project != "unprovisioned"),
+        "premise: at least one environment names a real project, or the uniqueness check is vacuous"
+    );
+    for (index, (environment, project)) in projects.iter().enumerate() {
+        if project == "unprovisioned" {
+            continue;
+        }
+        for (other, other_project) in &projects[index + 1..] {
+            assert_ne!(
+                project, other_project,
+                "{environment} and {other} share project {project}; a shared project shares its \
+                 secret store, so dev could hold or read a production secret"
+            );
+        }
+    }
+
+    let module = without_comments(&read("infrastructure/terraform/modules/secrets/main.tf"));
+    let container = module
+        .split("resource \"google_secret_manager_secret\" \"platform\"")
+        .nth(1)
+        .and_then(|rest| rest.split("\nresource ").next())
+        .expect("premise: the platform secret container resource was found");
+    assert!(
+        container.contains("project   = var.project_id"),
+        "the secret containers must be created in the project the environment passes in"
+    );
+    assert!(
+        container.contains("\"${each.value}-${var.environment}\""),
+        "a secret id without the environment suffix could collide with another environment's"
+    );
+}
+
+#[test]
+fn a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the_deny_still_closes_everything_else()
+ {
+    // GCP-057: administrative interfaces are reachable only through IAP. A VM
+    // with no SSH path at all satisfies "no public SSH" by being unreachable;
+    // the failure to prevent is the operator who needs a shell and widens the
+    // ingress to 0.0.0.0/0 to get one.
+    let module = without_comments(&read(NODE_MODULE));
+    let rules = terraform_resources(&module, "google_compute_firewall");
+    let ingress: Vec<&(String, String)> = rules
+        .iter()
+        .filter(|(_, body)| body.contains("\"INGRESS\""))
+        .collect();
+    let deny = ingress
+        .iter()
+        .find(|(n, _)| n == "deny_ingress")
+        .map(|(_, b)| b.as_str())
+        .expect(
+            "the node's deny_ingress rule was not found; this check is reading the wrong module",
+        );
+    let ssh: Vec<&&(String, String)> = ingress
+        .iter()
+        .filter(|(_, body)| body.contains("\"22\""))
+        .collect();
+    assert_eq!(
+        ssh.len(),
+        1,
+        "exactly one ingress rule may open port 22 on the execution node, found {}",
+        ssh.len()
+    );
+    let (name, body) = (&ssh[0].0, ssh[0].1.as_str());
+    assert_eq!(name, "iap_ssh");
+    assert!(
+        body.contains("source_ranges = [\"35.235.240.0/20\"]"),
+        "the SSH rule's only source must be the IAP TCP-forwarding range"
+    );
+    assert!(
+        !body.contains("0.0.0.0/0"),
+        "the SSH rule admits the whole internet"
+    );
+    assert!(
+        body.contains("[local.node_tag]"),
+        "the SSH rule is not scoped to the node's tag"
+    );
+    // The allow must outrank the catch-all deny, or it never fires.
+    let priority = |b: &str| -> u32 {
+        b.lines()
+            .find_map(|l| l.trim().strip_prefix("priority"))
+            .and_then(|r| r.trim_start_matches([' ', '=']).trim().parse().ok())
+            .expect("a firewall rule without a numeric priority")
+    };
+    assert!(
+        priority(body) < priority(deny),
+        "the IAP allow ranks below the catch-all deny, so it can never fire"
+    );
 }

@@ -37,8 +37,18 @@
  *   HF_TOKEN_FILE=/run/secrets/hf-token \
  *   node scripts/model-gateway.mjs --task task.json
  *
+ *   ALGORIK_WORKER_PROVIDER=vertex \
+ *   ALGORIK_WORKER_VERTEX_PROJECT=<project-id> \
+ *   ALGORIK_WORKER_MODEL=google/gemini-2.5-flash-lite \
+ *   node scripts/model-gateway.mjs --task task.json   # on Google compute only
+ *
  *   node scripts/model-gateway.mjs --check     # configuration and reachability
  *   node scripts/model-gateway.mjs --probe     # reachability only, no key, nothing sent
+ *
+ * Every `--task` also needs `ALGORIK_WORKER_AGENT=<the calling agent's name>`
+ * and a call ceiling, `ALGORIK_WORKER_MAX_CALLS`. Each request, allowed or
+ * refused, appends one line to the ledger naming that agent, the model and
+ * the decision.
  *
  * The key is read from a *file* by default, never from an argument and never
  * from the environment where a crash dump would hold it. `_FILE` indirection
@@ -55,6 +65,16 @@
  * a third-party inference provider chosen per model, so the privacy
  * position is that provider's, which is why `--probe` prints the providers
  * a model resolves to before any key is spent on it.
+ *
+ * `vertex` is Vertex AI's OpenAI-shaped endpoint (ADR 0102), and it differs
+ * from every other provider in one way that matters: **it takes no key.** Its
+ * bearer is the short-lived token the metadata server issues to the attached
+ * service account, fetched per call and held nowhere. So the preset refuses
+ * an API key or a key file being set at all, where the others refuse one
+ * being absent: a key beside a keyless preset is either a mistake or a
+ * downloaded service-account key, and `01-security-and-safety.md` forbids
+ * the second. The host is fixed and the project is the only variable part of
+ * the URL, validated as a project id so that it cannot carry a path.
  */
 import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -72,7 +92,58 @@ export const PROVIDERS = {
     keyFileVariable: "HF_TOKEN_FILE",
     keyVariable: "HF_TOKEN",
   },
+  // Observed answering on 2026-10-04 in `global` (ADR 0102, appendix). The
+  // chat path has no `/v1` of its own: the version is in the base.
+  vertex: {
+    baseUrlFor: (project) =>
+      `https://aiplatform.googleapis.com/v1/projects/${project}/locations/global/endpoints/openapi`,
+    projectVariable: "ALGORIK_WORKER_VERTEX_PROJECT",
+    chatPath: "/chat/completions",
+    credential: "metadata",
+  },
 };
+
+/** Every variable through which a key could reach a preset that takes none. */
+const KEY_VARIABLES = [
+  "ALGORIK_WORKER_API_KEY",
+  "ALGORIK_WORKER_API_KEY_FILE",
+  "GOOGLE_API_KEY",
+  "GOOGLE_APPLICATION_CREDENTIALS",
+];
+
+/** A Google Cloud project id. Nothing in it can separate a URL path segment. */
+export const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+
+export const METADATA_TOKEN_URL =
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+
+/**
+ * The attached service account's short-lived token, from the metadata server.
+ *
+ * The timeout is explicit because off Google compute the name does not
+ * resolve at all on a good day and hangs on a bad one, and a worker that
+ * hangs before its first call bills task time for nothing. A refusal or an
+ * answer without a token throws: the alternative is `Bearer undefined` sent
+ * to the provider, which reads there as somebody else's malformed request.
+ */
+export async function metadataToken(fetchImpl = fetch, timeoutMs = 5000) {
+  const response = await fetchImpl(METADATA_TOKEN_URL, {
+    method: "GET",
+    headers: { "Metadata-Flavor": "Google" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `the metadata server refused a token (${response.status}); the vertex preset runs only ` +
+        "where a service account is attached (Cloud Run, Compute Engine)",
+    );
+  }
+  const body = await response.json();
+  if (typeof body.access_token !== "string" || body.access_token === "") {
+    throw new Error("the metadata server answered without an access_token; no call was made");
+  }
+  return body.access_token;
+}
 
 /** Patterns that mean "this payload carries a credential". Refuse, never strip. */
 const CREDENTIAL_SHAPES = [
@@ -117,17 +188,32 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
     );
   }
 
+  let presetBaseUrl = preset?.baseUrl;
+  if (preset?.baseUrlFor) {
+    const project = env[preset.projectVariable]?.trim();
+    if (!project) {
+      problems.push(`${preset.projectVariable} is not set; name the project the call is made in and billed to`);
+    } else if (!GCP_PROJECT_ID.test(project)) {
+      // Refused, not escaped: the value becomes part of a URL path.
+      problems.push(`${preset.projectVariable} is '${project}', which is not a Google Cloud project id`);
+    } else {
+      presetBaseUrl = preset.baseUrlFor(project);
+    }
+  }
+
   const explicitBaseUrl = env.ALGORIK_WORKER_BASE_URL?.trim();
-  if (preset && explicitBaseUrl && explicitBaseUrl !== preset.baseUrl) {
+  if (preset && explicitBaseUrl && explicitBaseUrl !== presetBaseUrl) {
     // A preset and a different URL is two claims about where the source
     // goes. Refuse rather than pick, because whichever one loses is the one
     // somebody meant.
     problems.push(
-      `ALGORIK_WORKER_PROVIDER=${providerName} fixes the base URL to ${preset.baseUrl}; ` +
+      `ALGORIK_WORKER_PROVIDER=${providerName} fixes the base URL${presetBaseUrl ? ` to ${presetBaseUrl}` : ""}; ` +
         `ALGORIK_WORKER_BASE_URL=${explicitBaseUrl} disagrees. Unset one.`,
     );
   }
-  const baseUrl = preset?.baseUrl ?? explicitBaseUrl;
+  // Never `presetBaseUrl ?? explicitBaseUrl`: a preset whose project was
+  // refused would then fall through to whatever URL the environment named.
+  const baseUrl = preset ? presetBaseUrl : explicitBaseUrl;
   const model = env.ALGORIK_WORKER_MODEL?.trim();
   const keyFileVariable = preset?.keyFileVariable ?? "ALGORIK_WORKER_API_KEY_FILE";
   const keyVariable = preset?.keyVariable ?? "ALGORIK_WORKER_API_KEY";
@@ -138,7 +224,16 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
   if (!model) problems.push("ALGORIK_WORKER_MODEL is not set");
 
   let apiKey = null;
-  if (keyFile && inlineKey) {
+  if (preset?.credential === "metadata") {
+    for (const name of KEY_VARIABLES) {
+      if (env[name]?.trim()) {
+        problems.push(
+          `${name} is set, and ALGORIK_WORKER_PROVIDER=${providerName} takes no key: its only ` +
+            "credential is the metadata server's short-lived token. Unset it.",
+        );
+      }
+    }
+  } else if (keyFile && inlineKey) {
     // The platform's `_FILE` rule: both set is an ambiguity, not a choice.
     problems.push(`${keyFileVariable} and ${keyVariable} are both set; set exactly one`);
   } else if (keyFile) {
@@ -190,7 +285,50 @@ export function configure(env = process.env, readFile = (path) => readFileSync(p
     }
   }
 
-  return { provider: providerName ?? "custom", baseUrl, model, apiKey, maxCalls, maxTokens, extraBody, problems };
+  return {
+    provider: providerName ?? "custom",
+    baseUrl,
+    chatPath: preset?.chatPath ?? "/v1/chat/completions",
+    credential: preset?.credential ?? "key",
+    model,
+    apiKey,
+    maxCalls,
+    maxTokens,
+    extraBody,
+    problems,
+  };
+}
+
+/** What every worker is told before its task; here once, so a caller can count its bytes. */
+export const WORKER_SYSTEM_PROMPT =
+  "You are a bounded worker. Do exactly the task. Return only the " +
+  "requested output. Do not invent files, do not widen scope, and " +
+  "state plainly if the task cannot be completed as specified.";
+
+/**
+ * One chat request to the configured provider; returns the raw response.
+ *
+ * `model` and `max_tokens` come from the configuration and are written after
+ * the extra body, so nothing a caller merges in can change what is billed.
+ * `timeoutMs` is the caller's to give: the command line below has never set
+ * one, and a deadline added there would start failing calls that pass today.
+ */
+export async function chatCompletion(config, messages, { fetchImpl = fetch, timeoutMs } = {}) {
+  const bearer = config.credential === "metadata" ? await metadataToken(fetchImpl) : config.apiKey;
+  return fetchImpl(`${config.baseUrl}${config.chatPath}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${bearer}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      ...config.extraBody,
+      model: config.model,
+      max_tokens: config.maxTokens,
+      messages,
+    }),
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+  });
 }
 
 /**
@@ -257,11 +395,45 @@ export async function probe(config, fetchImpl = fetch) {
   return 0;
 }
 
-/** Calls spent so far, counted from the ledger rather than from memory. */
-function spent() {
-  if (!existsSync(LEDGER)) return 0;
-  return readFileSync(LEDGER, "utf8").split("\n").filter((line) => line.trim()).length;
+/**
+ * Why a command does not apply to this configuration, or `null` if it does.
+ *
+ * `--probe` and `--check` both ask `/v1/models`, one with nothing and one
+ * with the key. A preset whose credential is the metadata token has neither
+ * a catalogue at that path nor a key, and `Bearer null` is not a question
+ * worth sending to a provider.
+ */
+export function inapplicable(config, args) {
+  if (config.credential === "metadata" && (args.includes("--probe") || args.includes("--check"))) {
+    return `--probe and --check do not apply to ${config.provider}: it lists no catalogue at /v1/models and takes no key`;
+  }
+  return null;
 }
+
+/**
+ * Calls spent so far, counted from the ledger rather than from memory.
+ *
+ * Every request leaves a line (see `run`), and only the ones that reached the
+ * provider are spend: a refusal is marked `billed: false` and is not counted.
+ * A line written before the marker existed, or one that does not parse,
+ * counts — a budget that cannot read its own ledger errs towards spent.
+ */
+export function spent(ledger = LEDGER) {
+  if (!existsSync(ledger)) return 0;
+  return readFileSync(ledger, "utf8")
+    .split("\n")
+    .filter((line) => line.trim())
+    .filter((line) => {
+      try {
+        return JSON.parse(line).billed !== false;
+      } catch {
+        return true;
+      }
+    }).length;
+}
+
+/** A calling agent's name, in the roster's own shape so it cannot carry a line break into the ledger. */
+const AGENT_NAME = /^[a-z][a-z0-9-]{0,63}$/;
 
 async function check(config) {
   if (config.problems.length > 0) {
@@ -281,23 +453,73 @@ async function check(config) {
 }
 
 /**
- * One task, one call.
+ * One task, one call, one audit line.
  *
  * The task file carries the whole worker contract — the same five fields the
  * orchestration policy requires of any worker, because a task without
  * acceptance criteria produces output nobody can judge.
+ *
+ * Every request appends exactly one line to the ledger, naming the calling
+ * agent, the model and the decision, whichever way it went. The ledger used
+ * to be written only when the provider answered, so each of the gateway's
+ * refusals — the ones that say most about what an agent tried to send — left
+ * no trace, and "how many requests were made" could not be answered from it.
+ * `billed` keeps the two readings apart: the budget counts spend, the audit
+ * counts requests.
+ *
+ * `agent` is what the caller says it is. Nothing here authenticates it; the
+ * line records the claim, and a request that makes none is refused.
  */
-async function run(config, taskPath) {
-  const task = JSON.parse(readFileSync(taskPath, "utf8"));
-  for (const field of ["task", "context", "acceptance", "paths"]) {
-    if (!task[field]) {
-      console.error(`task file is missing '${field}'; the worker contract requires it`);
-      return 2;
-    }
+export async function run(config, taskPath, { agent, fetchImpl = fetch, ledger = LEDGER } = {}) {
+  const started = Date.now();
+  const named = AGENT_NAME.test(agent ?? "");
+  let taskName = null;
+  const audit = (decision, billed, detail = {}) =>
+    appendFileSync(
+      ledger,
+      `${JSON.stringify({
+        at: new Date().toISOString(),
+        agent: named ? agent : null,
+        task: taskName,
+        model: config.model ?? null,
+        decision,
+        billed,
+        ...detail,
+        ms: Date.now() - started,
+      })}\n`,
+    );
+
+  const problems = [...config.problems];
+  if (!named) {
+    problems.push(
+      "ALGORIK_WORKER_AGENT must name the calling agent (lowercase letters, digits and -) — " +
+        "an audit line that cannot say who asked is not one",
+    );
+  }
+  if (problems.length > 0) {
+    audit("refused:unconfigured", false, { problems: problems.length });
+    console.error("gateway not configured:");
+    for (const problem of problems) console.error(`  - ${problem}`);
+    return 78;
   }
 
-  const used = spent();
+  let task;
+  try {
+    task = JSON.parse(readFileSync(taskPath, "utf8"));
+  } catch {
+    task = {};
+  }
+  const missing = ["task", "context", "acceptance", "paths"].find((field) => !task[field]);
+  if (missing || typeof task.task !== "string" || !Array.isArray(task.paths)) {
+    audit("refused:task-contract", false, { missing: missing ?? "a field of the wrong type" });
+    console.error(`task file is missing '${missing ?? "a well-formed task or paths"}'; the worker contract requires it`);
+    return 2;
+  }
+  taskName = task.task.slice(0, 120);
+
+  const used = spent(ledger);
   if (used >= config.maxCalls) {
+    audit("refused:budget", false, { used, max_calls: config.maxCalls });
     console.error(`budget exhausted: ${used} of ${config.maxCalls} calls already spent`);
     return 3;
   }
@@ -314,77 +536,58 @@ async function run(config, taskPath) {
 
   const found = screenPayload(payload);
   if (found.length > 0) {
+    // The names of the shapes, never the payload: the ledger is not a second
+    // place for the credential to be.
+    audit("refused:credential", false, { shapes: found });
     console.error(`refused: the payload carries ${found.join(", ")}.`);
     console.error("Sharing this repository's source is authorized; sharing a credential is not.");
     console.error("Remove the credential from the context and try again.");
     return 4;
   }
 
-  const started = Date.now();
-  const response = await fetch(`${config.baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: {
-      authorization: `Bearer ${config.apiKey}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      ...config.extraBody,
-      model: config.model,
-      max_tokens: config.maxTokens,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a bounded worker. Do exactly the task. Return only the " +
-            "requested output. Do not invent files, do not widen scope, and " +
-            "state plainly if the task cannot be completed as specified.",
-        },
+  let response;
+  let body;
+  try {
+    response = await chatCompletion(
+      config,
+      [
+        { role: "system", content: WORKER_SYSTEM_PROMPT },
         { role: "user", content: payload },
       ],
-    }),
-  });
+      { fetchImpl },
+    );
+    if (response.ok) body = await response.json();
+  } catch (cause) {
+    // Billed, because nobody can know whether the model ran: the request left
+    // and no answer came back that says it did not.
+    audit("failed:transport", true);
+    console.error(`the call failed in transit: ${cause?.message ?? cause}`);
+    return 5;
+  }
 
   if (!response.ok) {
+    audit("refused:provider", false, { status: response.status });
     console.error(`provider refused: ${response.status} ${response.statusText}`);
     return 5;
   }
-  const body = await response.json();
   const usage = body.usage ?? {};
+  const tokens = {
+    prompt_tokens: usage.prompt_tokens ?? null,
+    completion_tokens: usage.completion_tokens ?? null,
+  };
   const completion = completionText(body);
   if (!completion.ok) {
     // Still billed: the tokens were spent whether or not anything came back.
-    appendFileSync(
-      LEDGER,
-      `${JSON.stringify({
-        at: new Date().toISOString(),
-        task: task.task.slice(0, 120),
-        model: config.model,
-        prompt_tokens: usage.prompt_tokens ?? null,
-        completion_tokens: usage.completion_tokens ?? null,
-        ms: Date.now() - started,
-        empty: true,
-      })}\n`,
-    );
+    audit("refused:empty-completion", true, { ...tokens, empty: true });
     console.error(`refused: ${completion.reason}`);
     return 6;
   }
-  const text = completion.text;
 
   // The ledger is the budget's source of truth: counting in memory loses the
   // count on every crash, and a budget that resets on failure is not a budget.
-  appendFileSync(
-    LEDGER,
-    `${JSON.stringify({
-      at: new Date().toISOString(),
-      task: task.task.slice(0, 120),
-      model: config.model,
-      prompt_tokens: usage.prompt_tokens ?? null,
-      completion_tokens: usage.completion_tokens ?? null,
-      ms: Date.now() - started,
-    })}\n`,
-  );
+  audit("allowed", true, tokens);
 
-  process.stdout.write(text);
+  process.stdout.write(completion.text);
   return 0;
 }
 
@@ -393,6 +596,11 @@ async function run(config, taskPath) {
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const config = configure();
   const args = process.argv.slice(2);
+  const why = inapplicable(config, args);
+  if (why) {
+    console.error(why);
+    process.exit(64);
+  }
   if (args.includes("--probe")) {
     process.exit(await probe(config));
   }
@@ -404,10 +612,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.error("usage: node scripts/model-gateway.mjs --task <file.json> | --check | --probe");
     process.exit(64);
   }
-  if (config.problems.length > 0) {
-    console.error("gateway not configured:");
-    for (const problem of config.problems) console.error(`  - ${problem}`);
-    process.exit(78);
-  }
-  process.exit(await run(config, args[taskIndex + 1]));
+  // An unconfigured gateway is refused inside `run`, with exit 78 as before,
+  // because that refusal is a request too and leaves its audit line there.
+  process.exit(await run(config, args[taskIndex + 1], { agent: process.env.ALGORIK_WORKER_AGENT?.trim() }));
 }

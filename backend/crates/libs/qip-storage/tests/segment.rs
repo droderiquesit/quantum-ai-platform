@@ -6,6 +6,7 @@
 //! than imported from the crate under test, matching this suite's existing
 //! convention in `tests/engine.rs`'s `frame_extents`: a test that shares the
 //! reader with the code it checks proves less.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Clock, ManualClock, Timestamp};
@@ -610,4 +611,70 @@ fn a_manifest_record_written_before_a_crash_is_read_back_after_recovery_and_a_to
         message.contains("checksum") || message.contains("torn") || message.contains("corrupt"),
         "the refusal must say the record failed its own integrity check: {message}"
     );
+}
+
+// --- seal_active ---------------------------------------------------------
+
+/// A partition that has gone quiet still gets its last batches sealed: the
+/// active segment is sealed on request however small it is, an empty one is
+/// left alone, and the offsets that follow continue where the sealed
+/// segment ended.
+///
+/// The failure this prevents: sealing happened only inside `append`, by
+/// size, so a few batches on a quiet partition were never sealed, never
+/// archived, and a producer waiting to be told they were safe waited
+/// forever.
+///
+/// Mutation (run, failed, restored): `seal_active` without its empty-segment
+/// guard — the first call seals a zero-record segment and returns `true`.
+/// And `seal_active` returning `true` without rolling — the two batches are
+/// reported sealed and no sealed segment holds them.
+#[test]
+fn sealing_the_active_segment_on_request_seals_what_it_holds_and_leaves_an_empty_one_alone() {
+    let dir = temp_dir("seal-active");
+    // A roll threshold far above what this test writes, so nothing here is
+    // sealed by size.
+    let log = SegmentLog::open(&dir, config_with(manual_clock(), 1 << 20, true)).unwrap();
+    assert!(
+        !log.seal_active().unwrap(),
+        "an empty active segment is not sealed"
+    );
+    assert_eq!(log.append(&tagged_batch(0, b"first")).unwrap(), 0);
+    assert_eq!(log.append(&tagged_batch(1, b"second")).unwrap(), 1);
+    assert!(
+        sealed_segment_starts(&log).is_empty(),
+        "premise: two small batches did not seal the segment by size"
+    );
+
+    assert!(
+        log.seal_active().unwrap(),
+        "a non-empty active segment is sealed"
+    );
+    assert_eq!(sealed_segment_starts(&log), vec![0]);
+    let seal = log
+        .seal_of(0)
+        .unwrap()
+        .expect("the sealed segment has a seal");
+    assert_eq!(seal.record_count, 2);
+    assert!(
+        !log.seal_active().unwrap(),
+        "the new active segment is empty and is left alone"
+    );
+    assert_eq!(
+        sealed_segment_starts(&log),
+        vec![0],
+        "no empty segment was sealed"
+    );
+
+    assert_eq!(
+        log.append(&tagged_batch(2, b"third")).unwrap(),
+        2,
+        "offsets continue after the sealed segment"
+    );
+    assert_eq!(log.read(1).unwrap().unwrap().records[0].payload, b"second");
+    drop(log);
+    let reopened = SegmentLog::open(&dir, config_with(manual_clock(), 1 << 20, true)).unwrap();
+    assert_eq!(reopened.high_water(), 3);
+    assert_eq!(sealed_segment_starts(&reopened), vec![0]);
+    let _ = std::fs::remove_dir_all(&dir);
 }

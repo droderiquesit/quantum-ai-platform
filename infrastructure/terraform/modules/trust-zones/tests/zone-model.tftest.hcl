@@ -390,6 +390,11 @@ run "a_zone_egressing_from_this_region_is_given_a_nat" {
     condition     = length(google_compute_router_nat.egress) == 1 && length(google_compute_router.egress) == 1
     error_message = "a zone with a sanctioned destination in this region got no NAT; it would have firewall rules permitting a route it cannot take"
   }
+
+  assert {
+    condition     = google_compute_router_nat.egress[0].nat_ip_allocate_option == "MANUAL_ONLY" && length(google_compute_address.nat) == 1
+    error_message = "the zone NAT draws ephemeral addresses; a counterparty cannot allow-list an outbound address that Google may replace"
+  }
 }
 
 run "a_zone_declaring_no_egress_is_given_no_nat" {
@@ -409,6 +414,11 @@ run "a_zone_declaring_no_egress_is_given_no_nat" {
   assert {
     condition     = length(google_compute_router_nat.egress) == 0 && length(google_compute_router.egress) == 0
     error_message = "a deployment with an empty allowlist created a NAT; egress capability should not exist before a destination is argued for"
+  }
+
+  assert {
+    condition     = length(google_compute_address.nat) == 0
+    error_message = "an address was reserved for a NAT that does not exist; it would be billed for nothing"
   }
 }
 

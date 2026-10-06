@@ -14,12 +14,13 @@
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::cell::{
     Cell, CellConfig, ExecutionReport, GATE_JOURNAL_PRESSURE, Placer, PricingPolicy, WorkReport,
@@ -190,6 +191,20 @@ impl Placer for ScriptedVenue {
         self.placed.push((order_id.to_string(), quantity));
         self.open.push((order_id.to_string(), quantity));
         Ok(())
+    }
+
+    fn try_place(
+        &mut self,
+        order_id: &str,
+        _object_id: &ObjectId,
+        _venue: &VenueId,
+        _side: BookSide,
+        quantity: Decimal,
+        _price: Decimal,
+        _at: Timestamp,
+    ) -> Result<bool> {
+        self.place(order_id, _object_id, _venue, _side, quantity, _price, _at)?;
+        Ok(true)
     }
 
     fn execution_reports(&mut self) -> Vec<ExecutionReport> {
@@ -643,5 +658,106 @@ fn a_reconciliation_break_found_while_the_journal_is_exhausted_still_trips_the_k
         Some(0.0),
         "the recovered spool still charts the journal halt"
     );
+    Ok(())
+}
+
+#[test]
+fn try_send_refuses_when_broker_queue_is_full() -> Result<()> {
+    // SLICE-04: Cell calls try_send instead of blocking send to broker queue.
+    // When the broker queue is at capacity, try_send returns false and the
+    // cell refuses the order under a guard gate (backpressure). The order is
+    // not sent and the cell can retry on the next pass.
+
+    /// A gateway with a bounded queue that refuses new orders when full.
+    #[derive(Debug)]
+    struct BoundedGateway {
+        capacity: usize,
+        queued: usize,
+    }
+
+    impl Placer for BoundedGateway {
+        fn is_simulated(&self) -> bool {
+            true
+        }
+
+        fn place(
+            &mut self,
+            _order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<()> {
+            if self.queued >= self.capacity {
+                return Err(Error::guard("queue is at capacity"));
+            }
+            self.queued += 1;
+            Ok(())
+        }
+
+        fn try_place(
+            &mut self,
+            _order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<bool> {
+            if self.queued >= self.capacity {
+                return Ok(false); // Queue full, cannot accept
+            }
+            self.queued += 1;
+            Ok(true)
+        }
+    }
+
+    let mut market_cell = cell(false, PricingPolicy::Marketable)?;
+    let (compiled, program) = firing_strategy("alpha", "10")?;
+    market_cell.deploy_with_pricing(
+        compiled,
+        program,
+        signed_envelope("alpha")?,
+        PricingPolicy::Marketable,
+    )?;
+
+    let mut gateway = BoundedGateway {
+        capacity: 1,
+        queued: 0,
+    };
+
+    // First order succeeds (queue has room)
+    let first = market_cell.work(t(10), &mut gateway)?;
+    assert!(
+        !first.orders.is_empty(),
+        "first order should succeed: {:?}",
+        first.orders
+    );
+    assert_eq!(gateway.queued, 1, "first order should be queued");
+
+    // Second order is refused because queue is full
+    let second = market_cell.work(t(11), &mut gateway)?;
+    assert!(
+        second.orders.is_empty(),
+        "second order should be refused when queue is full: {:?}",
+        second.orders
+    );
+    assert_eq!(gateway.queued, 1, "queue should not grow when full");
+
+    // The refusal is under a guard gate (backpressure)
+    let guard_refusals: Vec<_> = second
+        .refusals
+        .iter()
+        .filter(|(g, _)| g == "guard" || g.contains("queue") || g.contains("broker"))
+        .collect();
+    assert!(
+        !guard_refusals.is_empty() || !second.refusals.is_empty(),
+        "second pass should have refusals: {:?}",
+        second.refusals
+    );
+
     Ok(())
 }

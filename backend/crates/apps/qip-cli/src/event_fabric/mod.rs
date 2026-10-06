@@ -12,8 +12,10 @@
 //! mistypes `qip event-fabric grnat` is told what the family holds rather
 //! than that `event-fabric` is not a command.
 
+pub mod admin;
 pub mod grant;
 pub mod inspect;
+pub mod schema_gate;
 
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, SystemClock};
@@ -28,7 +30,12 @@ use std::sync::Arc;
 ///
 /// The one list [`dispatch`] matches and the unknown-subcommand refusal
 /// prints, so the two cannot disagree about what exists.
-pub const SUBCOMMANDS: [&str; 1] = [grant::SUBCOMMAND];
+pub const SUBCOMMANDS: [&str; 4] = [
+    grant::SUBCOMMAND,
+    admin::ISOLATE,
+    admin::RELEASE,
+    schema_gate::SUBCOMMAND,
+];
 
 /// How a variable is looked up: the process environment in production, a
 /// map in a test.
@@ -141,6 +148,10 @@ pub fn dispatch(arguments: &[String], environment: &Environment) -> Result<Outco
     };
     match subcommand.as_str() {
         grant::SUBCOMMAND => grant::run(&arguments[1..], environment),
+        action @ (admin::ISOLATE | admin::RELEASE) => {
+            admin::run(action, &arguments[1..], environment)
+        }
+        schema_gate::SUBCOMMAND => schema_gate::run(&arguments[1..], environment),
         other => Err(Error::invalid(format!(
             "unknown event-fabric subcommand {other:?}; the family is: {}",
             SUBCOMMANDS.join(", ")

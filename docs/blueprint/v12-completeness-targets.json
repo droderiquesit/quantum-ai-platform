@@ -1,0 +1,43 @@
+[
+  {
+    "target": "A NOW Brain continuously estimates latent global/market/system state with uncertainty and freshness.",
+    "requirements": ["WORLD-067"]
+  },
+  {
+    "target": "A Temporal Forecast Lattice produces calibrated distributions from microseconds through years.",
+    "requirements": ["WORLD-069"]
+  },
+  {
+    "target": "Thousands of specialist/temporary models can compete in a scored Model Tournament and internal Forecast Market.",
+    "requirements": ["MODEL-072", "MODEL-073"]
+  },
+  {
+    "target": "Synthetic future trees and digital twins continuously explore worlds not present in historical data.",
+    "requirements": ["WORLD-070", "WORLD-021", "TICK-023", "TICK-051"]
+  },
+  {
+    "target": "Active Sensing chooses new observations by expected value of information.",
+    "requirements": ["AMBIENT-029"]
+  },
+  {
+    "target": "Adversarial verifier societies independently attack important predictions and models.",
+    "requirements": ["EVID-032"]
+  },
+  {
+    "target": "Meta-Intelligence allocates attention, agents and CPU/GPU/TPU/QPU compute by marginal information/economic value.",
+    "requirements": ["AMBIENT-031"]
+  },
+  {
+    "target": "A Cognitive Compiler distills slow-lane discoveries into bounded specialist/reflex packages.",
+    "requirements": ["REASON-041"]
+  },
+  {
+    "target": "Capital, hedge, model-risk and survival systems are independent from alpha generation and can veto/reduce exposure.",
+    "requirements": ["CAPITAL-035", "RISK-035", "RISK-036", "RISK-037", "RISK-020"],
+    "reading": "A veto or a reduction here is a limit the deterministic Risk Gate evaluates, never an enforcement path of its own: RISK-020 keeps enforcement with the Gate, and RISK-036 lets these systems contract size and grants and never expand them or bypass it."
+  },
+  {
+    "target": "Quantum is a native asynchronous substrate in a benchmarked hybrid compute fabric, never an assumed advantage or hot-path dependency.",
+    "requirements": ["QUANT-038", "ARCH-037", "ARCH-075"]
+  }
+]

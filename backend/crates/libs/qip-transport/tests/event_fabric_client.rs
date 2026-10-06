@@ -5,6 +5,7 @@
 //! generative [`FabricTransport`] that never opens a socket, with one
 //! exception (the read-timeout test), which is the one property that needs a
 //! real one to prove at all.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,7 +16,7 @@ use qip_core::error::{Error, Result};
 use qip_core::time::SystemClock;
 use qip_core::{CorrelationId, Duration as CoreDuration, EventId, Lineage, Timestamp};
 use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record};
-use qip_events::event_fabric::policy::AckProfile;
+use qip_events::event_fabric::policy::{AckProfile, QosClass};
 use qip_events::{Envelope, EventBody, Topic};
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +115,7 @@ fn producer_config(transport: Box<dyn FabricTransport + Send>) -> ProducerConfig
         stream: "orders".to_string(),
         partition: 0,
         producer_id: "cell-eu-1".to_string(),
+        qos_class: QosClass::P2MarketJournal,
         ack_profile: AckProfile::LeaderOnly,
         retry_policy: qip_transport::retry::RetryPolicy {
             max_attempts: 2,
@@ -238,9 +240,15 @@ impl FabricTransport for FetchLoopTransport {
 #[test]
 fn a_producer_refused_for_an_epoch_it_no_longer_holds_does_not_latch_fenced() {
     let (transport, _calls, _last_request) = ScriptedTransport::new(vec![
-        Response::ProducerInit(ProducerInitResponse { producer_epoch: 1 }),
+        Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 1,
+            next_sequence: 0,
+        }),
         Response::Refused(Refusal::Fenced),
-        Response::ProducerInit(ProducerInitResponse { producer_epoch: 2 }),
+        Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 2,
+            next_sequence: 0,
+        }),
         Response::Produce(ProduceAck::new("orders", 0, 10, 20, 20).expect("a coherent ack")),
     ]);
     let mut producer = new_producer(Box::new(transport));
@@ -486,7 +494,10 @@ fn a_consumer_killed_after_committing_n_resumes_at_n_plus_one() {
 #[test]
 fn a_producer_runs_over_an_in_memory_transport_without_opening_a_socket() {
     let (transport, calls, _last_request) = ScriptedTransport::new(vec![
-        Response::ProducerInit(ProducerInitResponse { producer_epoch: 9 }),
+        Response::ProducerInit(ProducerInitResponse {
+            producer_epoch: 9,
+            next_sequence: 0,
+        }),
         Response::Produce(ProduceAck::new("orders", 0, 0, 5, 5).expect("a coherent ack")),
     ]);
     assert_eq!(
@@ -1120,4 +1131,48 @@ fn a_second_batch_with_an_oversized_declared_length_keeps_the_codecs_own_invalid
         err.message()
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+// --- FABRIC-067: the SDK holds an acknowledgement profile to its class's floor
+
+/// FABRIC-067: before this, `ProducerConfig` carried an `AckProfile` and no
+/// class, so a P0 producer configured `LeaderOnly` was built and sent, and
+/// the broker's `Refusal::AckTooWeak` was never produced by anything.
+///
+/// Mutation: in `Producer::new`, delete the `config.ack_profile <
+/// config.qos_class.ack_floor()` refusal (or flip `<` to `>`) — fails on the
+/// first weaker-than-floor pair, because `Producer::new` then returns `Ok`.
+#[test]
+fn a_producer_is_refused_every_acknowledgement_profile_weaker_than_its_classs_floor() {
+    let profiles = [AckProfile::None, AckProfile::LeaderOnly, AckProfile::Quorum];
+    let mut refused = 0;
+    let mut accepted = 0;
+    for class in QosClass::ALL {
+        let floor = class.ack_floor();
+        for profile in profiles {
+            let (transport, _calls, _last) = ScriptedTransport::new(vec![]);
+            let mut config = producer_config(Box::new(transport));
+            config.qos_class = class;
+            config.ack_profile = profile;
+            let built = Producer::new(config);
+            if profile < floor {
+                let err = built.expect_err("a profile weaker than the class floor must be refused");
+                assert_eq!(err.code(), "denied", "{err}");
+                assert!(
+                    err.message().contains(class.as_str()),
+                    "the refusal must name the class {}: {}",
+                    class.as_str(),
+                    err.message()
+                );
+                refused += 1;
+            } else {
+                built.expect("the class floor and anything stronger must be accepted");
+                accepted += 1;
+            }
+        }
+    }
+    // Premise: both branches ran in the proportions the floors imply
+    // (P0/P1 accept one profile, P2/P3 two, P4 three), so a check that
+    // ignored the class would not land on these totals.
+    assert_eq!((accepted, refused), (9, 6), "five classes x three profiles");
 }

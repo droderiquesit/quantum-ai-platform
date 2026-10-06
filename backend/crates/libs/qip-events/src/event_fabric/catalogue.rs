@@ -41,6 +41,12 @@ use super::policy::{
 /// reserved word ends and the rest of the name begins.
 const RESERVED_STREAM_PREFIXES: [&str; 3] = ["autonomy.", "live.", "ceiling."];
 
+/// The prefix an ambient or development agent's identity carries, as
+/// `reflex:` is a cell's. A grant to an identity under it is held to
+/// FABRIC-110 by [`Catalogue::parse`]: produce and admin on research and
+/// telemetry streams only.
+pub const AGENT_IDENTITY_PREFIX: &str = "agent:";
+
 fn validate_stream_name(name: &str) -> Result<()> {
     if name.trim().is_empty() {
         return Err(Error::invalid("a stream must be named"));
@@ -346,6 +352,30 @@ impl Catalogue {
         if identity.starts_with("reflex:") && key_scope != KeyScope::OwnKey {
             return Err(Error::denied(format!(
                 "'{identity}' is a cell identity and must be scoped to its own key, not '{key_scope_raw}'"
+            )));
+        }
+
+        // FABRIC-110: an ambient or development agent publishes research and
+        // telemetry and nothing else. Without this rule the only thing
+        // keeping an agent off an outcome or journal stream was nobody
+        // having written the grant yet, and a grant is one line in a file a
+        // well-meaning change can add. Here the catalogue that carries such
+        // a line does not parse, so no broker starts on it and a running
+        // broker keeps the grants it had. `admin` is refused with `produce`:
+        // an agent that cannot write a control stream must not be able to
+        // park one either. `consume` is left alone — reading outcomes is
+        // what research is for.
+        let class = declaration.policy.qos_class();
+        if identity.starts_with(AGENT_IDENTITY_PREFIX)
+            && matches!(permission, Permission::Produce | Permission::Admin)
+            && !matches!(class, QosClass::P3Research | QosClass::P4Telemetry)
+        {
+            return Err(Error::denied(format!(
+                "'{identity}' is an agent identity and may hold '{permission_raw}' only on a \
+                 p3_research or p4_telemetry stream, not on the {} stream '{stream}'; an agent's \
+                 output reaches anything above research by being promoted, never by being \
+                 published there",
+                class.as_str()
             )));
         }
 

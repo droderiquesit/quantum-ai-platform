@@ -66,6 +66,7 @@ use qip_contracts::ledger::{Account, Direction, LedgerEvent};
 use qip_contracts::reflex::{ChainSpan, Decision, OutcomeRecord};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use qip_core::hash::{constant_time_eq, hmac_sha256, to_hex};
 use qip_portfolio::ledger::{PaperFill, post};
 use qip_storage::{DurableStore, EngineConfig, KeyValueStore, WriteBatch};
 use serde::de::DeserializeOwned;
@@ -91,7 +92,9 @@ const PREFIX_TAIL: &str = "tail/";
 const PREFIX_PARK: &str = "park/";
 const PREFIX_CURSOR: &str = "cursor/";
 const PREFIX_JOURNAL: &str = "journal/";
+const PREFIX_WATERMARK: &str = "watermark/";
 const KEY_JOURNAL_NEXT: &str = "meta/journal_next";
+const KEY_CURRENT_WATERMARK: &str = "meta/current_watermark";
 
 // --- what is delivered ------------------------------------------------------
 
@@ -227,6 +230,72 @@ pub struct ChainTail {
     pub digest: String,
 }
 
+/// Ledger state suitable for export and import (recovery, backups).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LedgerStateExport {
+    /// All balances as "account:unit" -> decimal string.
+    pub balances: BTreeMap<String, String>,
+    /// Count of chain records applied (for verification).
+    pub chain_records_count: u64,
+    /// The current watermark if one exists.
+    pub current_watermark: Option<LedgerWatermark>,
+}
+
+/// A signed watermark on the ledger state, chaining to the previous one.
+///
+/// Each watermark periodically signs (previous_digest, sequence, timestamp),
+/// forming an unbreakable chain. The signature is HMAC-SHA256 keyed on a
+/// stable secret known only to this ledger instance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LedgerWatermark {
+    /// The UNIX timestamp in seconds when this watermark was created.
+    pub timestamp: u64,
+    /// The ledger state digest from all applied records up to this point.
+    pub state_digest: String,
+    /// HMAC-SHA256(signing_key, timestamp || state_digest || previous_digest)
+    /// rendered as lowercase hex.
+    pub signature: String,
+    /// The digest of the previous watermark, for chaining. Empty on the first.
+    pub previous_digest: String,
+}
+
+impl LedgerWatermark {
+    /// Create a watermark, signing it with the given key.
+    ///
+    /// The key must be stable across restarts; it proves the ledger instance
+    /// and anchors the chain.
+    pub fn new(
+        timestamp: u64,
+        state_digest: String,
+        previous_digest: String,
+        signing_key: &[u8],
+    ) -> Self {
+        let message = format!("{}|{}|{}", timestamp, state_digest, previous_digest);
+        let sig_bytes = hmac_sha256(signing_key, message.as_bytes());
+        let signature = to_hex(&sig_bytes);
+
+        Self {
+            timestamp,
+            state_digest,
+            signature,
+            previous_digest,
+        }
+    }
+
+    /// Verify this watermark's signature against the given key.
+    ///
+    /// Returns true if the signature is valid, false otherwise.
+    pub fn verify(&self, signing_key: &[u8]) -> bool {
+        let message = format!(
+            "{}|{}|{}",
+            self.timestamp, self.state_digest, self.previous_digest
+        );
+        let expected_sig_bytes = hmac_sha256(signing_key, message.as_bytes());
+        let expected_sig = to_hex(&expected_sig_bytes);
+        constant_time_eq(self.signature.as_bytes(), expected_sig.as_bytes())
+    }
+}
+
 // --- stored rows --------------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -240,12 +309,12 @@ struct BalanceRow {
 
 /// One record the ledger applied, keyed by `(cell, session, first_seq)`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct ChainRecord {
-    last_seq: u64,
-    digest: String,
-    offset: u64,
-    record_hash: String,
-    event: Option<LedgerEvent>,
+pub struct ChainRecord {
+    pub last_seq: u64,
+    pub digest: String,
+    pub offset: u64,
+    pub record_hash: String,
+    pub event: Option<LedgerEvent>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -762,6 +831,139 @@ impl LedgerStore {
         }
         self.record_parked_keys()?;
         Ok(Disposition::Parked { reason })
+    }
+
+    /// Query the balance of a specific account in a unit, or Decimal::ZERO if not found.
+    pub fn balance(&self, account: &Account, unit: &str) -> Result<Decimal> {
+        let key = balance_key(account, unit);
+        Ok(self
+            .read::<BalanceRow>(&key)?
+            .map_or(Decimal::ZERO, |row| row.amount))
+    }
+
+    /// Query all chain records (postings).
+    pub fn chain_records(&self) -> Result<Vec<ChainRecord>> {
+        let mut records = Vec::new();
+        for (_, value) in self.store.scan_prefix(PREFIX_CHAIN)? {
+            let record: ChainRecord = decode(value)?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    /// Get the current watermark, if one has been recorded.
+    pub fn current_watermark(&self) -> Result<Option<LedgerWatermark>> {
+        self.read(KEY_CURRENT_WATERMARK)
+    }
+
+    /// Record a new watermark.
+    ///
+    /// This should be called periodically to create verifiable checkpoints
+    /// of the ledger state. The watermark is signed with the ledger's
+    /// stable signing key.
+    pub fn record_watermark(
+        &self,
+        timestamp: u64,
+        state_digest: String,
+        signing_key: &[u8],
+    ) -> Result<()> {
+        let previous_digest = self
+            .current_watermark()?
+            .map(|w| w.signature.clone())
+            .unwrap_or_default();
+
+        let watermark = LedgerWatermark::new(timestamp, state_digest, previous_digest, signing_key);
+
+        let batch = WriteBatch::new()
+            .put_as(KEY_CURRENT_WATERMARK, &watermark)?
+            .put_as(format!("{PREFIX_WATERMARK}{:020}", timestamp), &watermark)?;
+
+        self.store.commit(batch)?;
+        Ok(())
+    }
+
+    /// Export the ledger's state as a JSON-serializable structure.
+    pub fn export_state(&self) -> Result<LedgerStateExport> {
+        let balances = self.balances()?;
+        let chain_records = self.chain_records()?;
+        let watermark = self.current_watermark()?;
+
+        Ok(LedgerStateExport {
+            balances: balances
+                .into_iter()
+                .map(|((account, unit), amount)| {
+                    (format!("{}:{}", account, unit), amount.to_string())
+                })
+                .collect(),
+            chain_records_count: chain_records.len() as u64,
+            current_watermark: watermark,
+        })
+    }
+
+    /// Import ledger state from an export.
+    ///
+    /// This replaces the current state entirely. Used for recovery or
+    /// initialization from a backup.
+    pub fn import_state(&self, export: &LedgerStateExport) -> Result<()> {
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut batch = WriteBatch::new();
+
+        // Import all balances
+        for (key_str, amount_str) in &export.balances {
+            let parts: Vec<&str> = key_str.split(':').collect();
+            if parts.len() == 2 {
+                // Parse account string format: "trading:cell/strategy", "venue:vvv", "fees:vvv"
+                let account_str = parts[0];
+                let unit = parts[1];
+
+                let account = if let Some(rest) = account_str.strip_prefix("trading:") {
+                    let trading_parts: Vec<&str> = rest.split('/').collect();
+                    if trading_parts.len() == 2 {
+                        Account::Trading {
+                            cell: trading_parts[0].to_string(),
+                            strategy: trading_parts[1].to_string(),
+                        }
+                    } else {
+                        continue;
+                    }
+                } else if let Some(rest) = account_str.strip_prefix("venue:") {
+                    Account::Venue {
+                        venue: rest.to_string(),
+                    }
+                } else if let Some(rest) = account_str.strip_prefix("fees:") {
+                    Account::Fees {
+                        venue: rest.to_string(),
+                    }
+                } else {
+                    continue;
+                };
+
+                let amount = Decimal::parse(amount_str).ok_or_else(|| {
+                    Error::invalid(format!("invalid decimal in export: {}", amount_str))
+                })?;
+                let key = balance_key(&account, unit);
+                batch = batch.put_as(
+                    key,
+                    &BalanceRow {
+                        account,
+                        unit: unit.to_string(),
+                        amount,
+                    },
+                )?;
+            }
+        }
+
+        // Import watermark if present
+        if let Some(ref watermark) = export.current_watermark {
+            batch = batch.put_as(KEY_CURRENT_WATERMARK, watermark)?.put_as(
+                format!("{PREFIX_WATERMARK}{:020}", watermark.timestamp),
+                watermark,
+            )?;
+        }
+
+        self.store.commit(batch)?;
+        Ok(())
     }
 
     /// The balance rows an event moves, each checked, or a refusal.

@@ -599,6 +599,10 @@ impl EvolutionEngine {
         // incumbents is the platform's (ADR 0083 §4). Its outcome rides the
         // round so the cycle line says what happened to the fit.
         round.promotion = self.learning.promote_candidate(platform, now)?;
+        // A model that has drifted past its own threshold is retired and the
+        // one it displaced comes back (MODEL-045): after the promotion, so a
+        // candidate that already displaced the degraded model is not undone.
+        round.rolled_back = self.learning.roll_back_degraded(platform, now)?;
         Ok(Some(round))
     }
 

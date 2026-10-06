@@ -30,6 +30,7 @@
 pub mod attribution;
 pub mod evaluation;
 pub mod feedback;
+pub mod research;
 pub mod self_model;
 
 pub use attribution::{Attribution, Attributor, PositionAttribution, PositionPeriod, Source};
@@ -39,6 +40,7 @@ pub use evaluation::{
 pub use feedback::{
     CalibrationReport, FeedbackEngine, FeedbackReport, LessonCandidate, PromotionBar,
 };
+pub use research::{MINIMUM_CLUSTER, ResearchLedger, ResearchPrompt};
 pub use self_model::{
     CAPABILITY_WINDOW, Capability, CapabilityEstimate, ComponentKey, ComponentKind, MAX_COMPONENTS,
     MINIMUM_SAMPLE, ScoredOutcome, SelfModel,

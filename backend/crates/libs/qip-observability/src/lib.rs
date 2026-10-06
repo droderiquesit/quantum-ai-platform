@@ -6,8 +6,12 @@
 //! deployment concern, and a platform that cannot report on itself when the
 //! collector is unreachable is not observable.
 
+pub mod aiops;
+pub mod critical_paths;
+pub mod golden;
 pub mod logs;
 pub mod metrics;
+pub mod sampling;
 pub mod slo;
 pub mod trace;
 
@@ -34,6 +38,22 @@ impl Telemetry {
             tracer: Arc::new(Tracer::new(service.clone(), clock.clone())),
             logger: Arc::new(Logger::new(service, clock)),
         }
+    }
+
+    /// The surface a deployed process is built on: [`Self::new`], with every
+    /// log record also written to stderr (OBS-020).
+    ///
+    /// A workload's stderr is what Cloud Logging ingests, and until the
+    /// composition roots used this the structured logger never left process
+    /// memory: its records — today the telemetry drain's failure warnings,
+    /// which are exactly the lines an operator needs when telemetry stops
+    /// arriving — sat in a ring buffer nothing read. A constructor rather
+    /// than a second call each root must remember, so a root that builds its
+    /// telemetry at all builds it echoing.
+    pub fn foreground(service: impl Into<String>, clock: Arc<dyn qip_core::Clock>) -> Self {
+        let telemetry = Self::new(service, clock);
+        telemetry.logger.set_echo(true);
+        telemetry
     }
 
     /// A telemetry surface that discards everything, for tests that do not

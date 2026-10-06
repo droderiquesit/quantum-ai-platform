@@ -19,10 +19,14 @@ pub mod calendar;
 pub mod cashflow;
 pub mod catalogue;
 pub mod category;
+pub mod commerce;
+pub mod commerce_resale;
 pub mod constraints;
 pub mod costs;
 pub mod credit;
+pub mod derivative_permissions;
 pub mod extensions;
+pub mod history;
 pub mod identifiers;
 pub mod intelligence;
 pub mod ladder;
@@ -30,8 +34,11 @@ pub mod manifest;
 pub mod object;
 pub mod physical;
 pub mod pool;
+pub mod position_record;
+pub mod private_stage;
 pub mod quality;
 pub mod risk_profile;
+pub mod secondary_exit;
 pub mod universe;
 pub mod valuation;
 
@@ -63,7 +70,10 @@ pub use physical::{
 pub use pool::{
     BlockExecution, ContractRisk, DexModel, DexQuote, MevEstimate, PoolCurve, PoolQuote, PoolState,
 };
+pub use position_record::{Declared, ExitPlan, ExitRoute, PositionRecord, PositionRecordBuilder};
+pub use private_stage::{PrivateEvent, PrivateStage};
 pub use quality::{DataQuality, LicensingClass, Provenance};
 pub use risk_profile::{FactorExposures, Greeks, RiskCharacteristics};
+pub use secondary_exit::{DiscountToMark, SecondarySale, plan_secondary_exit};
 pub use universe::{CatalogueOrigin, Universe};
 pub use valuation::{AssetValuation, IlliquidValuator, ValuationInput, ValuationMethod};

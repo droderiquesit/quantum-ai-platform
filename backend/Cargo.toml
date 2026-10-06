@@ -54,6 +54,8 @@ members = [
     "crates/services/qip-capital",
     "crates/services/qip-cost-router",
     "crates/services/qip-twin",
+    "crates/services/qip-agency",
+    "crates/services/qip-expansion",
     "crates/services/qip-capital-fabric",
     "crates/services/qip-streaming",
     "crates/services/qip-training",
@@ -149,6 +151,8 @@ qip-lifecycle = { path = "crates/services/qip-lifecycle" }
 qip-capital = { path = "crates/services/qip-capital" }
 qip-cost-router = { path = "crates/services/qip-cost-router" }
 qip-twin = { path = "crates/services/qip-twin" }
+qip-agency = { path = "crates/services/qip-agency" }
+qip-expansion = { path = "crates/services/qip-expansion" }
 qip-capital-fabric = { path = "crates/services/qip-capital-fabric" }
 qip-streaming = { path = "crates/services/qip-streaming" }
 qip-training = { path = "crates/services/qip-training" }
@@ -174,6 +178,8 @@ panic_in_result_fn = "deny"
 float_cmp = "warn"
 needless_pass_by_value = "allow"
 must_use_candidate = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
 
 [profile.release]
 opt-level = 3

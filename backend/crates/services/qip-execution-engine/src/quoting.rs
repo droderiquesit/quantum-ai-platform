@@ -335,6 +335,25 @@ pub struct QuoteInputs {
     /// of this instrument.
     pub belief_confidence: f64,
     pub queue: QueuePosition,
+    /// The portfolio's existing correlated exposure and hedges, netted, as
+    /// seen from this instrument. `None` states that the caller read none,
+    /// which is a different claim from "zero" and is how the kernel's
+    /// per-instrument loop says it has no portfolio view (EXEC-005).
+    pub correlated: Option<CorrelatedExposure>,
+}
+
+/// Exposure the portfolio already holds in instruments correlated with the one
+/// being quoted, net of hedges, expressed in units of the quoted instrument.
+///
+/// Carried on the inputs so the portfolio effect of a fill is on the priced
+/// quote before the fill occurs, rather than corrected by a limit after it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+pub struct CorrelatedExposure {
+    /// Signed, correlation-weighted and hedge-netted. Positive is long.
+    pub net_units: Decimal,
+    /// The magnitude at which the side that adds to this exposure is shown at
+    /// zero size. Strictly positive.
+    pub limit_units: Decimal,
 }
 
 impl QuoteInputs {
@@ -393,6 +412,15 @@ impl QuoteInputs {
                 self.object_id
             )));
         }
+        if let Some(c) = &self.correlated
+            && !c.limit_units.is_positive()
+        {
+            return Err(Error::invalid(format!(
+                "{}'s correlated-exposure limit is {}; supply a positive limit, because a limit \
+                 of zero would silence the side that adds to exposure on every pass",
+                self.object_id, c.limit_units
+            )));
+        }
         self.queue.validate()
     }
 
@@ -433,8 +461,15 @@ pub struct QuotePair {
     pub fair_value: Decimal,
     pub bid: Decimal,
     pub ask: Decimal,
-    /// Quantity of the instrument to show on each side.
+    /// Quantity of the instrument to show on a side that adds no correlated
+    /// exposure. `bid_size` and `ask_size` are what is actually shown.
     pub size: Decimal,
+    /// Quantity to show on the bid. Below `size` when a fill would add to
+    /// correlated long exposure the portfolio already holds.
+    pub bid_size: Decimal,
+    /// Quantity to show on the ask. Below `size` when a fill would add to
+    /// correlated short exposure the portfolio already holds.
+    pub ask_size: Decimal,
     pub terms: SpreadTerms,
     /// Positive when long of target, shifting both quotes down.
     pub skew_bps: f64,
@@ -728,12 +763,33 @@ pub fn quote(policy: &QuotePolicy, inputs: &QuoteInputs) -> Result<QuoteDecision
         }));
     }
 
+    // Portfolio-aware sizing (EXEC-005): the side whose fill adds to exposure
+    // the portfolio already holds in a correlated instrument is cut in
+    // proportion to how much of the limit that exposure uses; the side that
+    // offsets it keeps full size. Computed here, on the priced quote.
+    let (bid_size, ask_size) = match &inputs.correlated {
+        None => (size, size),
+        Some(c) => {
+            let used = (c.net_units.abs().to_f64() / c.limit_units.to_f64()).min(1.0);
+            let kept = size_from_budget(size, 1.0 - used).unwrap_or(Decimal::ZERO);
+            if c.net_units.is_positive() {
+                (kept, size)
+            } else if c.net_units.is_negative() {
+                (size, kept)
+            } else {
+                (size, size)
+            }
+        }
+    };
+
     Ok(QuoteDecision::Quoted(Box::new(QuotePair {
         object_id: inputs.object_id.clone(),
         fair_value,
         bid,
         ask,
         size,
+        bid_size,
+        ask_size,
         terms,
         skew_bps,
     })))
@@ -873,6 +929,7 @@ mod tests {
             directional_persistence: 0.0,
             belief_confidence: 1.0,
             queue: QueuePosition::Unknown,
+            correlated: None,
         }
     }
 
@@ -1135,6 +1192,53 @@ mod tests {
         let mut below = inputs();
         below.belief_confidence = policy().minimum_confidence - 0.001;
         assert_eq!(withheld(&below).as_str(), "belief_below_bar");
+    }
+
+    #[test]
+    fn the_side_that_adds_to_held_correlated_exposure_is_smaller_and_the_offsetting_side_is_not() {
+        let flat = priced(&inputs());
+        // Premise: with no correlated view both sides show the same, positive size.
+        assert!(flat.size.is_positive());
+        assert_eq!(flat.bid_size, flat.size);
+        assert_eq!(flat.ask_size, flat.size);
+
+        let mut long = inputs();
+        long.correlated = Some(CorrelatedExposure {
+            net_units: dec!("500"),
+            limit_units: dec!("1000"),
+        });
+        let long = priced(&long);
+        assert!(
+            long.bid_size < flat.bid_size,
+            "a bid adds to held long exposure"
+        );
+        assert_eq!(
+            long.ask_size, flat.ask_size,
+            "an ask offsets it and is not reduced"
+        );
+
+        let mut short = inputs();
+        short.correlated = Some(CorrelatedExposure {
+            net_units: dec!("-500"),
+            limit_units: dec!("1000"),
+        });
+        let short = priced(&short);
+        assert!(short.ask_size < flat.ask_size);
+        assert_eq!(short.bid_size, flat.bid_size);
+
+        let mut full = inputs();
+        full.correlated = Some(CorrelatedExposure {
+            net_units: dec!("2000"),
+            limit_units: dec!("1000"),
+        });
+        assert_eq!(priced(&full).bid_size, Decimal::ZERO);
+
+        let mut bad = inputs();
+        bad.correlated = Some(CorrelatedExposure {
+            net_units: dec!("1"),
+            limit_units: Decimal::ZERO,
+        });
+        assert!(quote(&policy(), &bad).is_err());
     }
 
     #[test]

@@ -404,6 +404,36 @@ pub fn review(ledger: &ObjectiveLedger, now: Timestamp) -> (Option<String>, Vec<
     (Some(summary), problems)
 }
 
+/// Whether a promotion to `plane` may proceed, given what this process has
+/// observed (OBS-028).
+///
+/// Reads the same standings [`review`] does and hands only the **page-worthy
+/// observed** ones to `qip_observability::aiops::release_gate`. A single bad
+/// observation (the netting ratio of a cell that nets nothing misses on its
+/// first report) is not an exhausted budget, and a gate that refused on it
+/// would refuse every release of a platform working as configured. An
+/// objective nothing fed has no budget state and never blocks.
+pub fn release_decision(
+    ledger: &ObjectiveLedger,
+    plane: &str,
+    now: Timestamp,
+) -> qip_observability::aiops::ReleaseDecision {
+    qip_observability::aiops::release_gate(plane, &page_worthy_statuses(ledger, now))
+}
+
+fn page_worthy_statuses(ledger: &ObjectiveLedger, now: Timestamp) -> Vec<SloStatus> {
+    assess(ledger, now)
+        .standings
+        .into_iter()
+        .filter_map(|(_, standing)| match standing {
+            ObjectiveStanding::Met(s) | ObjectiveStanding::Missed(s) if s.is_page_worthy() => {
+                Some(s)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Fold a review onto a stage outcome, the way every other LEARN review is
 /// folded.
 pub fn fold(outcome: StageOutcome, ledger: &ObjectiveLedger, now: Timestamp) -> StageOutcome {
@@ -417,6 +447,21 @@ pub fn fold(outcome: StageOutcome, ledger: &ObjectiveLedger, now: Timestamp) -> 
     };
     for problem in problems {
         outcome = outcome.with_problem(problem);
+    }
+    // One refusal per plane whose budget is spent, so the LEARN record says
+    // which promotion is blocked, on every cycle it stays blocked.
+    let statuses = page_worthy_statuses(ledger, now);
+    let planes: std::collections::BTreeSet<&str> =
+        statuses.iter().map(|s| s.slo.service.as_str()).collect();
+    for plane in planes {
+        if let qip_observability::aiops::ReleaseDecision::Refused { reason } =
+            qip_observability::aiops::release_gate(plane, &statuses)
+        {
+            outcome = outcome.with_problem(format!(
+                "release to `{plane}` is refused: {reason}; ship nothing to that plane until \
+                 the budget recovers"
+            ));
+        }
     }
     outcome
 }

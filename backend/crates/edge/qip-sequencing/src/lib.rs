@@ -19,6 +19,11 @@
 //! * [`FailoverReconciler`] — change source mid-stream without dropping or
 //!   double-applying anything.
 //!
+//! And one that guards how two streams are read together: [`align`] relates
+//! events from venues that do not share a clock, and reports an order only
+//! where the stamps are further apart than both clocks' published
+//! uncertainty. It has no "simultaneous" answer to give.
+//!
 //! Three invariants hold across all of them, and the tests assert them as
 //! properties rather than as fixed outputs:
 //!
@@ -32,14 +37,19 @@
 //!    parameters, so a replay of a capture produces the same releases, the same
 //!    resets and the same watermarks as the live run did.
 
+pub mod align;
 pub mod arbitration;
 pub mod clock;
 pub mod failover;
 pub mod identity;
 pub mod tracker;
 
+pub use align::{Alignment, AsOf, Order, Placed, align, as_of};
 pub use arbitration::{ArbitrationEvent, ArbitrationOutcome, LineArbiter, LineHealth};
-pub use clock::{ClockDiscipline, ClockEstimate, ClockObservation};
+pub use clock::{
+    ClockCorrection, ClockDiscipline, ClockEstimate, ClockObservation, CorrectionKind,
+    DisciplinedTime,
+};
 pub use failover::{FailoverEvent, FailoverOutcome, FailoverReconciler, FailoverStats};
 pub use identity::{reset_message, synthetic_id};
 pub use tracker::{

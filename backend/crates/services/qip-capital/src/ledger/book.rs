@@ -50,6 +50,21 @@ pub struct AttributedFill {
     pub amount: Decimal,
 }
 
+/// The two linked legs of one currency conversion and the rate they were
+/// booked at. A report of what the ledger did; it is not an input.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Conversion {
+    pub from: Currency,
+    pub to: Currency,
+    /// Leg one: debited from `from`.
+    pub debited: Decimal,
+    /// Leg two: credited to `to`, `debited * rate` exactly.
+    pub credited: Decimal,
+    /// Units of `to` per one unit of `from`.
+    pub rate: Decimal,
+    pub at: Timestamp,
+}
+
 /// One user's part of an attributed fill.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserShare {
@@ -300,6 +315,82 @@ impl UserLedger {
 
     pub fn fills_journalled(&self) -> u64 {
         self.fills_journalled
+    }
+
+    /// Convert settled cash from one currency to another inside one book, as
+    /// two linked legs at a recorded rate and time (blueprint §21, COVERAGE-002).
+    ///
+    /// `rate` is units of `to` per one unit of `from` and is an input, never a
+    /// lookup: `None` is refused, because a conversion that defaulted a missing
+    /// rate to parity would move a yen balance into dollars one for one. Both
+    /// legs are validated before either moves, so a conversion the source
+    /// cannot fund leaves the book exactly as it was rather than crediting a
+    /// currency that nothing paid for.
+    pub fn convert(
+        &mut self,
+        user: &UserId,
+        strategy: &StrategyId,
+        from: Currency,
+        to: Currency,
+        amount: Decimal,
+        rate: Option<Decimal>,
+        at: Timestamp,
+    ) -> Result<Conversion> {
+        let Some(rate) = rate else {
+            return Err(Error::invalid(format!(
+                "converting {from} to {to} needs a recorded rate; none was supplied and the \
+                 ledger will not assume parity"
+            )));
+        };
+        if !rate.is_positive() || !amount.is_positive() {
+            return Err(Error::invalid(format!(
+                "a conversion of {amount} {from} at {rate} is refused; both the amount and the \
+                 rate must be positive"
+            )));
+        }
+        if from == to {
+            return Err(Error::invalid(format!(
+                "converting {from} into itself moves nothing; name two currencies"
+            )));
+        }
+        if self.registry.mandate(user).is_none() {
+            return Err(Error::denied(format!(
+                "{user} holds no mandate; enrol one before converting its cash"
+            )));
+        }
+        let credited = amount.checked_mul(rate).ok_or_else(|| {
+            Error::numeric(format!("converting {amount} {from} at {rate} overflowed"))
+        })?;
+        let book = self
+            .books
+            .get_mut(&(user.clone(), strategy.clone()))
+            .ok_or_else(|| {
+                Error::denied(format!(
+                    "{user} has no book at {strategy:?}; there is no {from} to convert"
+                ))
+            })?;
+        let available = book
+            .cash(from)
+            .map_or(Decimal::ZERO, CashBalance::available);
+        if amount > available {
+            return Err(Error::denied(format!(
+                "converting {amount} {from} exceeds the {available} available; the book is \
+                 unchanged"
+            )));
+        }
+        book.cash_mut(from).debit(amount)?;
+        // Credit cannot fail: `credited` is the product of two positives.
+        book.cash_mut(to).credit(credited)?;
+        book.entries += 2;
+        book.last_entry_at = Some(at);
+        Ok(Conversion {
+            from,
+            to,
+            debited: amount,
+            credited,
+            rate,
+            at,
+        })
     }
 
     /// Everything a user has funded into strategies, in the mandate's

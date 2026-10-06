@@ -148,11 +148,12 @@
       "backend/crates/apps/qip-api/src/main.rs:105-107, :184, :291, :322 (event-log archive, StreamJournal, trial-book, mesh opened on the configured store)",
       "backend/crates/apps/qip-edge-node/src/main.rs:475 (cell-journal on the configured store), :547 (non-durable target warns, does not refuse)",
       "backend/crates/services/qip-execution-engine/src/oms.rs:395 and backend/crates/runtime/qip-kernel/src/central/plane.rs:763 (derived sets described as caches of the event log)",
-      "grep -rln Redis backend/crates/services/qip-risk-engine/src backend/crates/runtime/qip-kernel/src -> no matches (2026-09-25)"
+      "grep -rln Redis backend/crates/services/qip-risk-engine/src backend/crates/runtime/qip-kernel/src -> no matches (2026-09-25)",
+      "backend/crates/libs/qip-storage/src/settings.rs require_authoritative; backend/crates/apps/qip-deepbrain/src/config.rs and qip-fastbrain/src/config.rs tests a_node_configured_to_keep_its_state_in_memorystore_refuses_to_start"
     ],
-    "gap": "No composition root refuses a Memorystore storage target, so the only thing keeping Redis from becoming the sole store of the mesh spool, cell journal and trial book is a Terraform validation that an out-of-band service update bypasses (the second-layer check the paper boundary has, this invariant lacks). No chaos test flushes or corrupts any cache during a paper session and checks positions, capital and risk decisions are unchanged.",
+    "gap": "The second-layer start-up refusal now exists: StorageSettings::require_authoritative refuses QIP_STORAGE_TARGET=memorystore in qip-api, qip-fastbrain, qip-deepbrain and qip-edge-node. Still missing: no chaos test flushes or corrupts any cache during a paper session and checks positions, capital and risk decisions are unchanged with reconciliation reporting no break. The api and edge-node call sites are one-line wirings with no root-level test of their own (their main.rs is not unit-testable); the deepbrain and fastbrain config tests cover the same call.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
@@ -160,11 +161,11 @@
       "ARCH-066"
     ],
     "blocked_by": "",
-    "verification": "no test exists; needed: (1) a composition-root test that QIP_STORAGE_TARGET=memorystore is refused for every namespace that holds state (or confined to a cache role with an owning store behind it), and (2) a chaos test flushing every cache mid-session with reconciliation reporting no break",
+    "verification": "cargo test -p qip-storage --test settings a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted; cargo test -p qip-deepbrain -p qip-fastbrain --lib a_node_configured_to_keep_its_state_in_memorystore_refuses_to_start (mutation-verified). Still needed: the cache-flush chaos test.",
     "work_item": "E07-cache-authority-chaos-test",
     "tier": "T1",
     "size": "S",
-    "notes": "v2.1's own anti-pattern (Redis as position/capital truth or a required risk-gate dependency) has no instance to check against yet because Memorystore ships in GCP Phase 6 (ARCH-066). verify: NEEDS-VALIDATION -> PARTIAL. The assessor's premise 'Redis can never be selected by any composition root' is false: only Terraform refuses it; StorageSettings::from_env and all four state-holding roots admit memorystore and would put the mesh spool, cell journal and trial book on Redis alone. The invariant is therefore not implemented as a runtime control, only as a plan-time one."
+    "notes": "v2.1's own anti-pattern (Redis as position/capital truth or a required risk-gate dependency) has no instance to check against yet because Memorystore ships in GCP Phase 6 (ARCH-066). verify: NEEDS-VALIDATION -> PARTIAL. The assessor's premise 'Redis can never be selected by any composition root' is false: only Terraform refuses it; StorageSettings::from_env and all four state-holding roots admit memorystore and would put the mesh spool, cell journal and trial book on Redis alone. The invariant is therefore not implemented as a runtime control, only as a plan-time one. Round 2: composition-root refusal added; status stays PARTIAL because the chaos half is unbuilt. Round 3: not closed. No composition root holds a flushable cache: Memorystore is refused as a store and provisioned nowhere, and the in-process derived sets have no flush seam; adding one for a test would be a control surface nothing in production uses."
   },
   {
     "id": "ARCH-055",
@@ -556,27 +557,27 @@
   },
   {
     "id": "ARCH-070",
-    "status": "PARTIAL",
-    "current": "A machine-readable per-workload register exists for the Cloud Run plane, without two of the four required attributes. infrastructure/terraform/catalogue.tf is 'one entry per workload, and one place': each entry names the binary, plane, trust zone, whose traffic it carries (ingress posture, invokers), the variables and secrets it reads, and its instance floor and ceiling (e.g. :241-255), and the acceptance suite holds every rendered manifest to its entry (manifest_wiring.rs, gitops.rs). It records no state owner (only prose comments such as 'Holds per-process state') and no degraded mode, and it deliberately excludes qip-edge-node, which modules/execution-node owns. A capability-level degradation table exists separately (qip-contracts/src/degradation.rs, the §6.2 table), but it is keyed by capability, not by workload.",
+    "status": "COMPLETE",
+    "current": "infrastructure/workload-register.json is the machine-readable workload register: one entry per workload the infrastructure declares — the three Cloud Run catalogue entries, the portal and OpenObserve (RunService manifests with no catalogue entry), the execution node, the GitOps control-plane cluster and the disabled Vertex AI module — each stating its state owner, its upstream and downstream peers with their protocol, its scaling model and its degraded mode, every statement naming the file it was read from. qip-acceptance derives the workload set from the tree (catalogue entries, RunService manifests in every environment, and any Terraform module declaring a service, machine, cluster or serving endpoint) and fails when the register and the tree disagree in either direction, when an entry leaves an attribute empty, or when a scaling model contradicts the instance bounds a manifest carries. Instance counts stay in the catalogue and the manifests and are not repeated.",
     "evidence": [
-      "infrastructure/terraform/catalogue.tf:1-40 (register purpose and exclusions), :241-255 (plane, trust_zone, min_instances/max_instances)",
-      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs:138 (catalogue_workloads), :2211 a_workloads_rendered_manifest_mounts_exactly_the_secrets_its_catalogue_entry_declares",
-      "backend/crates/libs/qip-contracts/src/degradation.rs (capability degradation order, not per workload)",
-      "grep -rln 'state_owner|degraded_mode|workload_register|WorkloadRegister' backend infrastructure docs -> only unrelated hits (2026-09-25)"
+      "infrastructure/workload-register.json",
+      "backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs every_workload_the_infrastructure_declares_has_a_complete_entry_in_the_workload_register",
+      "infrastructure/terraform/catalogue.tf (the Cloud Run entries the walk reads)",
+      "infrastructure/CLAUDE.md (layout row for the register)"
     ],
-    "gap": "No state-owner or degraded-mode field in any entry, no upstream/downstream protocol field beyond ingress/invokers, the execution node is outside the register, and no acceptance test fails when a Terraform-declared workload lacks a complete entry on these four attributes.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "no test covers the four attributes; the existing parity checks run with cargo test -p qip-acceptance --test manifest_wiring",
+    "verification": "cargo test -p qip-acceptance --test manifest_wiring every_workload (mutations, each failing for its own reason and each restored: renaming the ai entry left modules/ai unregistered; blanking a degraded_mode; calling the fast brain request-scaled against a manifest that runs exactly one; adding a scratch module declaring a google_container_cluster)",
     "work_item": "E12-workload-register",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: MISSING -> PARTIAL, implemented/integrated true. catalogue.tf is a machine-readable per-workload register (scaling and ingress/invokers present, parity-tested against manifests) that the assessor's grep for 'state_owner|degraded_mode' could not find; it lacks state owner and degraded mode, so tested stays false."
+    "notes": "Mutation-verified. The register documents what the configuration says and is not evidence that anything runs: every central workload's state owner is its own memory because storage_target defaults to memory in every environment, and the entry says so. Prose attributes cannot be checked for truth by a test; what the test holds is existence, completeness, and the one attribute the tree can contradict (scaling model against instance bounds). A workload of a runtime kind not in WORKLOAD_RESOURCES (five resource types, each already present in the tree) is added to that list in the change that introduces it."
   },
   {
     "id": "ARCH-071",
@@ -605,26 +606,27 @@
   },
   {
     "id": "ARCH-072",
-    "status": "NEEDS-VALIDATION",
+    "status": "COMPLETE",
     "current": "Application code (backend/), the Fabric substitute (qip-transport/qip-events/qip-streaming), IaC (infrastructure/terraform), policies (docs/ops/policies, docs/operations/arbitrage-policy.md, docs/plan/algorik-orchestration-policy.md), schemas (qip_events::registry::SchemaRegistry, qip_contracts::wire CELL_DELTA_SCHEMA_VERSION), environment desired state (infrastructure/environments/*, infrastructure/gitops/envs/*) and model/config (qip-ai's model registry) all resolve to paths in this one repository, and ci.yml's jobs (format, lint, test, release-build, dependency-policy, security-audit, dependency-supply-chain, sbom, frontend-portal, frontend-landing, trivy, trunk, infrastructure, secrets) run from the same push/PR trigger against one commit.",
     "evidence": [
       "docs/adr/0016-repository-layout.md",
       ".github/workflows/ci.yml:8-12 (one push/PR trigger), :27-393 (job list spanning Rust, frontend, infra, secrets)",
       "test: backend/crates/tests/qip-acceptance/tests/gitops.rs:1510 every_argo_cd_application_points_at_this_repository_and_at_one_environment_directory_that_exists (environment desired state lives here, not in a separate env repo -- one slice of the requirement)",
-      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:129 (C6 declined: 'The monorepo keeps one gate, one history and one review surface')"
+      "docs/adr/0099-blueprint-v11-6-and-gcp-v2-1-are-the-architecture-of-record-in-direction-and-every-standing-decision-they-contradict-keeps-its-force-until-its-own-record.md:129 (C6 declined: 'The monorepo keeps one gate, one history and one review surface')",
+      "backend/crates/tests/qip-acceptance/tests/blueprint_arch.rs the_whole_platform_resolves_to_one_repository_built_from_one_commit"
     ],
-    "gap": "No acceptance test directly asserts single-repository placement or would fail if a second repository appeared; the fact is demonstrated by directory inspection and by ci.yml's job list, not by a named test.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "ls backend infrastructure docs frontend (single tree) and .github/workflows/ci.yml's job list; no dedicated test exists",
+    "verification": "cargo test -p qip-acceptance --test blueprint_arch the_whole_platform_resolves_to_one_repository_built_from_one_commit (mutation: adding a submodules file failed it; restored, passed)",
     "work_item": "E00-monorepo-placement-test",
     "tier": "T1",
     "size": "S",
-    "notes": "ADR 0099's conflict register declines C6 (the seven-repository split) outright, keeping ADR 0016's one repository; that decision itself is not code and so is not a 'test' in the strict sense either. verify: status and flags kept. Added the one named test that proves a slice (GitOps applications point only at this repository); it does not cover the whole placement claim, so tested stays false. ci.yml job list completed (dependency-supply-chain and trunk were omitted)."
+    "notes": "Now held by a test: each artefact class resolves to a path, no submodules file exists, and no workflow checks out another repository."
   }
 ]

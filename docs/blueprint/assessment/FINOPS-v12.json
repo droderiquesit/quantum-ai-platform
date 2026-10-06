@@ -1,0 +1,24 @@
+[
+  {
+    "id": "FINOPS-020",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "No per-role budget exists in the repository; parallel agents share one checkout here (ADR 0098).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "C8",
+    "verification": "A budget value exists per role and a run exceeding it is stopped.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count."
+  }
+]

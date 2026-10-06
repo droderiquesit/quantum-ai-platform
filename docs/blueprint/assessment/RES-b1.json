@@ -398,40 +398,17 @@
   },
   {
     "id": "RES-016",
-    "status": "PARTIAL",
-    "current": "qip_routing::health::{HealthTracker, HealthPolicy} implements exactly this (reject-rate threshold, quarantine_for cooldown, re-quarantine check) but has zero production callers anywhere in the workspace outside its own tests. qip_edge::cell::Cell::venue_for (cell.rs:7313-7335) independently skips a venue at VenueStatus::Unreachable or that does not accept_orders(), which is reached from production, but is a simpler per-pass admission check, not a quarantine-with-cooldown-and-journaled-reason mechanism.",
+    "status": "COMPLETE",
+    "current": "qip_routing::health::HealthTracker now has a production caller. Cell::send records every order sent and every placement the venue rejected; Cell::venue_withheld reads the tracker's verdict; Cell::venue_for drops a quarantined venue from the candidates, so flow goes to a venue that still takes orders; Cell::route_for and cycle admission refuse under GATE_VENUE_QUARANTINE ('venue_quarantine') when there is nowhere else to go; and Cell::review_venues journals the quarantine once, at the first pass that finds it, with the evidence and the instant it ends. After the policy's cooldown the venue is tried again. The quarantine is opt-in on CellConfig (with_venue_health) and armed by the composition root: qip_edge_node::assemble passes HealthPolicy::default() (ten samples, a fifth rejected, five minutes).",
     "evidence": [
-      "backend/crates/edge/qip-routing/src/health.rs:36-155,277-284 (HealthTracker/HealthPolicy, unintegrated)",
-      "grep -rln 'qip_routing::health' backend/crates -> only backend/crates/edge/qip-routing/src/consolidate.rs and its own tests",
-      "backend/crates/edge/qip-edge/src/cell.rs:7313-7335 (venue_for, integrated, simpler VenueStatus gate)",
-      "tests a_venue_rejecting_most_of_its_orders_is_taken_out_of_rotation (:390) and a_quarantine_lapses_so_a_recovered_venue_is_tried_again (:474) in backend/crates/edge/qip-routing/tests/routing.rs",
-      "test a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing (backend/crates/edge/qip-edge/tests/unevaluated.rs:293) -- the wired path: an Unreachable venue is refused under 'venue_selection'"
+      "backend/crates/edge/qip-edge/src/cell.rs (GATE_VENUE_QUARANTINE, CellConfig::with_venue_health, Cell::send, Cell::venue_withheld, Cell::review_venues, Cell::venue_for, Cell::route_for)",
+      "backend/crates/edge/qip-routing/src/health.rs (HealthTracker, HealthPolicy: unchanged, now reached)",
+      "backend/crates/apps/qip-edge-node/src/lib.rs (assemble: config.with_venue_health(HealthPolicy::default()))",
+      "test a_venue_that_rejects_its_orders_is_quarantined_with_a_journaled_reason_and_gets_no_order_until_the_cooldown_lapses (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test with_nowhere_else_to_go_every_order_for_a_quarantined_venue_is_refused_under_its_own_gate (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test the_assembled_node_arms_the_venue_quarantine_with_the_routing_crates_own_policy (backend/crates/apps/qip-edge-node/tests/feed_recovery.rs)"
     ],
-    "gap": "The dedicated quarantine mechanism (threshold + cooldown + journaled reason) is fully built and tested in qip-routing but reaches no composition root; only the simpler status-based per-pass skip is wired into the cell, which has no cooldown/retry-later semantics and no journaled quarantine reason of its own.",
-    "implemented": true,
-    "tested": true,
-    "integrated": false,
-    "deployable": false,
-    "e2e": false,
-    "depends_on": [],
-    "blocked_by": "",
-    "verification": "backend/crates/edge/qip-routing/tests/routing.rs exercises HealthTracker directly; no test exercises quarantine-with-cooldown reached from qip-edge or qip-edge-node.",
-    "work_item": "E04",
-    "tier": "T2",
-    "size": "M",
-    "notes": "Wiring HealthTracker into Cell (or documenting why venue_for's simpler check is the deliberate replacement) is the closing work. verify: status and flags unchanged (PARTIAL). Confirmed that HealthTracker is referenced only inside qip-routing (consolidate.rs, router.rs) and its tests, and that nothing in qip-edge, qip-edge-node or qip-kernel reaches qip_routing::health. Named the quarantine tests and the Cell test that proves the simpler wired refusal."
-  },
-  {
-    "id": "RES-017",
-    "status": "PARTIAL",
-    "current": "qip_edge::cell::Cell::mass_cancel/withdraw_expired (cell.rs:4139-4281) cancel all resting orders across all venues when the cell halts; Cell::venue_for and the crossing logic already refuse to route a *new* cross through a failed venue.",
-    "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:4139-4281 (withdraw_expired / mass_cancel, cell-wide, halt-triggered)",
-      "test a_halted_cell_withdraws_every_order_it_had_resting_and_charts_it_as_a_mass_cancel (backend/crates/edge/qip-edge/tests/quoting.rs:385)",
-      "test a_halted_cell_that_cannot_withdraw_says_so_in_the_chain_rather_than_withdrawing_nothing_quietly (backend/crates/edge/qip-edge/tests/quoting.rs:523)",
-      "test a_cancel_the_venue_refuses_is_a_break_and_halts_the_cell (backend/crates/edge/qip-edge/tests/pricing.rs:603)"
-    ],
-    "gap": "No mechanism found that specifically cancels only the resting orders at ONE failed venue while continuing to trade normally at the others -- the existing mass_cancel is cell-wide and halt-triggered, a different (broader) trigger than a single venue's failure.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -439,20 +416,48 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "tests/quoting.rs::a_halted_cell_withdraws_every_order_it_had_resting_and_charts_it_as_a_mass_cancel and ::a_halted_cell_that_cannot_withdraw_says_so_in_the_chain_rather_than_withdrawing_nothing_quietly prove both halves of the check (cancel, or journal the failed cancel) on a cell-wide halt. No test triggers either on one venue's failure while the others keep trading.",
+    "verification": "cargo test -p qip-edge --test venue_failure quarantined (2 tests); cargo test -p qip-edge-node --test feed_recovery the_assembled_node_arms_the_venue_quarantine_with_the_routing_crates_own_policy. Mutations, each restored byte-for-byte: health.record_reject removed from Cell::send, both cell tests failed (the fourth pass still failed instead of routing around the venue); the venue_withheld skip removed from venue_for, the order no longer went to XPAR (left [] right [(XPAR, obj-ACME)]); with_venue_health removed from assemble, the node test failed (left None).",
     "work_item": "E04",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: status PARTIAL kept; evidence corrected. The cited cell.rs::a_venue_that_fails_leaves_no_cross_in_the_chain proves that the journal records no cross when placement fails. It does not cover cancelling resting exposure, so it was replaced with the quoting.rs tests that do cover cancel-or-journal, though on a halt rather than on a venue failure."
+    "notes": "Closed in RES round 3. Failure here means the venue rejects placements; a venue whose feed stops is RES-084's gate and a venue that reports itself Unreachable is skipped by the status check that already existed. A placement error still fails the pass it happens in (gateway.place's error leaves Cell::work); what changed is that the venue stops being sent to once the evidence crosses the policy. Not deployable: execution_nodes = {} in every environment."
+  },
+  {
+    "id": "RES-017",
+    "status": "COMPLETE",
+    "current": "Cell::withdraw_expired, on a cell that is not halted, now also withdraws every order resting at a venue whose feed has gone silent or that is quarantined (Cell::stranded_at_failed_venues), while orders at the other venues are left alone and the cell keeps trading there. Each withdrawal is journaled as Decision::VenueWithdrawn with the venue's own answer and the fault, a kind of its own beside OrderExpired and MassCancelled. A cancel the venue refuses goes down the path every refused cancel takes: a ReconciliationBreak naming the order, no withdrawal recorded, and the cell halts because the order's state is unknown. A gateway with no cancel path is not called; the cell records once per failure, under GATE_VENUE_WITHDRAWAL, that the exposure stands. Reached in production: qip-edge-node's run_pass calls withdraw_expired on every turn and Cell::work calls it again.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::withdraw_expired, Cell::stranded_at_failed_venues, Cell::withdraw_all, GATE_VENUE_WITHDRAWAL)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs (Decision::VenueWithdrawn)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs (is_outcome: VenueWithdrawn is a P1 outcome)",
+      "backend/crates/apps/qip-edge-node/src/pass.rs (run_pass calls cell.withdraw_expired every turn)",
+      "test when_one_venue_fails_every_order_resting_there_is_withdrawn_and_the_other_venue_keeps_its_orders_and_keeps_trading (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test a_failed_venue_that_refuses_the_cancel_is_journaled_as_a_break_and_the_order_is_not_recorded_as_withdrawn (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test a_cell_that_cannot_withdraw_from_a_failed_venue_says_so_in_the_chain_once_rather_than_withdrawing_nothing_quietly (backend/crates/edge/qip-edge/tests/venue_failure.rs)"
+    ],
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test venue_failure (the three tests named in the evidence). Mutations, each restored byte-for-byte: orders at a failed venue no longer due, no cancel was sent (left [] right [XLON, XLON]); the cause forced to None, the withdrawals were journaled as mass cancels and the VenueWithdrawn count was 0 not 2; the once-only guard removed, the cell said it could not withdraw twice in two passes; the can_cancel check bypassed, it said so zero times.",
+    "work_item": "E04",
+    "tier": "T2",
+    "size": "M",
+    "notes": "Closed in RES round 3. 'Exposure' here is resting orders. A position already filled at the failed venue is not flattened by this path; hedging it elsewhere is RES-018's open half. The trigger is a silent feed or a quarantine: resting orders at a venue whose own status message says Unreachable are not withdrawn by it. A refused cancel halts the whole cell, the rule this crate already held for a refused cancel on expiry. Not deployable: execution_nodes = {}."
   },
   {
     "id": "RES-018",
     "status": "PARTIAL",
-    "current": "Cell::venue_for (cell.rs:7313-7360) already routes new flow to the best-priced reachable, order-accepting venue among the cell's configured venues, naturally excluding a failed one -- reroute exists and is production-reached. qip_routing::router's cost-based multi-venue splitting router is a more sophisticated, unintegrated alternative (see RES-016's finding).",
+    "current": "Cell::venue_for routes new flow to the tightest usable venue among those the cell may reach. Since RES round 3 it also passes over a venue whose feed has gone silent and one quarantined for rejecting orders (Cell::venue_withheld), so the reroute happens on a venue failure as such and not only on a missing or gap-reset book. Resting orders at the failed venue are withdrawn (RES-017). Nothing hedges a position already held there.",
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs:7313-7360 (venue_for: skips Unreachable/non-accepting venues, picks best spread among the rest)",
       "backend/crates/edge/qip-routing/src/router.rs:1-60 (unintegrated, richer marginal-cost multi-venue router)",
-      "test a_venue_with_no_usable_book_is_not_a_candidate_even_though_it_would_have_won_on_spread (backend/crates/edge/qip-edge/tests/best_venue.rs:301) -- new flow routed to the other venue when the preferred one has no book or a stale one"
+      "test a_venue_with_no_usable_book_is_not_a_candidate_even_though_it_would_have_won_on_spread (backend/crates/edge/qip-edge/tests/best_venue.rs:301) -- new flow routed to the other venue when the preferred one has no book or a stale one",
+      "test a_venue_that_rejects_its_orders_is_quarantined_with_a_journaled_reason_and_gets_no_order_until_the_cooldown_lapses (backend/crates/edge/qip-edge/tests/venue_failure.rs) -- on quarantine the order goes to the other venue"
     ],
     "gap": "The 'hedge exposure stranded elsewhere' half of the requirement has no dedicated mechanism triggered by venue failure -- qip-edge's hedge/mirror machinery (cell.rs:4817-4956, hedge_review.rs) serves cross-region mirror-path assignment and portfolio-level hedge sizing, not stranded-position hedging specifically on a venue's failure.",
     "implemented": true,
@@ -464,7 +469,7 @@
       "RES-016"
     ],
     "blocked_by": "",
-    "verification": "tests/best_venue.rs::a_venue_with_no_usable_book_is_not_a_candidate_even_though_it_would_have_won_on_spread proves the reroute half through Cell::work, for an absent or gap-reset book. No test fails a venue that holds an open position and asserts a hedge of the stranded exposure elsewhere.",
+    "verification": "tests/best_venue.rs::a_venue_with_no_usable_book_is_not_a_candidate_even_though_it_would_have_won_on_spread proves the reroute half through Cell::work, for an absent or gap-reset book. No test fails a venue that holds an open position and asserts a hedge of the stranded exposure elsewhere. Round 3: cargo test -p qip-edge --test venue_failure a_venue_that_rejects_its_orders_is_quarantined proves the reroute on a rejecting venue (mutation: the venue_withheld skip removed from venue_for, no order reached XPAR).",
     "work_item": "E04",
     "tier": "T2",
     "size": "M",
@@ -558,18 +563,17 @@
   },
   {
     "id": "RES-022",
-    "status": "PARTIAL",
-    "current": "qip_orderbook::venue::VenueState::reset/resynchronised (venue.rs:158-179) discards the book and gates VenueState::mid/microprice/sweep_cost until resynchronised, on a sequence gap (qip_sequencing::tracker::SequenceEvent) or a corrupt/crossed book. Reached from production in two separate places: (a) qip_edge::Cell::on_bytes (cell.rs:2784; gap_detail at 8137), called from qip-edge-node in non-test code, which then refuses new decisions on that instrument under 'stale_book' (cell.rs:3365-3382); (b) qip_market_ingestion::depth (crossed-book reset, gap-triggered re-snapshot), whose IngestionService/DepthState has zero production callers anywhere.",
+    "status": "COMPLETE",
+    "current": "On the path a deployed cell takes (Cell::on_bytes, Cell::work), a sequence gap the sequencer gives up on, or a book left crossed at the end of a frame while the venue is not in auction, discards exactly the affected books and marks the interval in the chain: Decision::BookReset per book when it starts, Decision::BookResynchronised carrying unreliable_from when it ends. In between every order for those books is refused under 'stale_book' and the books' features are cleared; books at other venues are untouched and trade. Two defects were found and fixed to make this true. The sequencer's reset carries a synthetic identifier, and Cell::apply_batch applied it by instrument, so it matched no book: a gap was journaled as 'the affected books are reset' and reset none. And the sequencer abandons a gap only when polled, which the cell never did, so a gap followed by quiet was never abandoned at all. Cell::reset_venue_books now fans the reset out to every book at the venue, and Cell::work polls the sequencer each pass.",
     "evidence": [
-      "backend/crates/edge/qip-orderbook/src/venue.rs:8-16,158-179",
-      "backend/crates/edge/qip-edge/src/cell.rs:2784 (on_bytes), 8137-8148 (gap_detail, SequenceEvent::GapAbandoned), 3365-3382 ('stale_book' refusal)",
-      "backend/crates/services/qip-market-ingestion/src/depth.rs:740-775,1050-1075 (unintegrated: IngestionService/DepthState are constructed in no apps/*/src or qip-kernel/src file)",
-      "test a_book_that_crosses_while_the_venue_says_it_is_trading_is_rebuilt_rather_than_normalised (backend/crates/services/qip-market-ingestion/tests/book_depth.rs:572)",
-      "test an_abandoned_gap_tells_the_consumer_to_discard_before_it_hands_over_anything_newer (backend/crates/edge/qip-sequencing/tests/tracker.rs:173)",
-      "test a_crossed_book_is_reported_by_the_venue_state_even_when_it_cannot_be_traded (backend/crates/edge/qip-orderbook/tests/venue.rs:247)",
-      "test a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing (backend/crates/edge/qip-edge/tests/unevaluated.rs:293) -- stale book refused under 'stale_book' in Cell::work"
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::absorb_sequenced, Cell::apply_batch, Cell::reset_venue_books, Cell::mark_unreliable; the sequencer poll at the top of Cell::work)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs (Decision::BookReset, Decision::BookResynchronised)",
+      "backend/crates/edge/qip-sequencing/src/identity.rs (reset_message: the synthetic object id that matched no book)",
+      "test a_sequence_gap_or_a_crossed_book_marks_exactly_the_affected_books_unreliable_until_they_are_rebuilt (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test removing_one_message_flags_the_period_from_the_gap_and_the_flag_is_on_the_output (backend/crates/edge/qip-orderbook/tests/integrity.rs) -- the replay-side marking, library only",
+      "test a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing (backend/crates/edge/qip-edge/tests/unevaluated.rs) -- the stale_book refusal"
     ],
-    "gap": "The exact named test for this behaviour lives in the crate (qip-market-ingestion) that is not reached from any composition root. The reached path (qip-edge) has the mechanism wired and used to refuse decisions, but no test at the Cell level names this specific behaviour (mark-unreliable-on-gap-or-cross) end to end.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -577,36 +581,37 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/services/qip-market-ingestion/tests/book_depth.rs::a_book_that_crosses_while_the_venue_says_it_is_trading_is_rebuilt_rather_than_normalised (unintegrated crate); no equivalent named test in qip-edge/tests.",
+    "verification": "cargo test -p qip-edge --test venue_failure a_sequence_gap_or_a_crossed_book_marks_exactly_the_affected_books_unreliable_until_they_are_rebuilt. Mutations, each restored byte-for-byte: the reset applied by instrument as before, no book was discarded (left [] right [(XLON, obj-ACME), (XLON, obj-CARB)]); the poll removed from Cell::work, the same failure; the crossed check disabled, the crossed book was not discarded (left [] right [(XPAR, obj-BETA)]).",
     "work_item": "E06",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: status PARTIAL kept; citations corrected. cell.rs:43,55 are use-imports, not on_bytes (which is at :2784). Added the reached-path tests: qip-sequencing and qip-orderbook for gap/crossed detection, and unevaluated.rs:293 for the Cell refusal. The qip-edge tests reset the book directly rather than feeding a gap through on_bytes. No marking of an interval for replay exists, only the live stale flag."
+    "notes": "Closed in RES round 3. A gap discards every book the cell holds at that venue, not only those on the gapped stream: books are keyed by venue and instrument, not by feed. The lost sequences could have been for any of them, so this is the conservative reading. Features of an instrument the cell holds no book for are not cleared; such an instrument cannot be routed. The verification method is 'replay'; what is proven is the live path, and qip_orderbook::replay's own UnreliablePeriod marking is tested in its crate and has no production caller. The in-process simulated feed cannot lose a frame, so the test's decoder carries the sequence on the wire. Not deployable: execution_nodes = {}."
   },
   {
     "id": "RES-023",
-    "status": "PARTIAL",
-    "current": "Same split as RES-022. qip_market_ingestion::depth's apply_increments forces a fresh REST snapshot when a sequence gap will not close (SequenceEvent::GapAbandoned), rebuilding the book from the response.",
+    "status": "COMPLETE",
+    "current": "A discarded book raises a standing snapshot request (Cell::snapshot_requests, one per book, with the reason). The cell does no I/O, so the feed handler answers it: qip-edge-node's SimulatedFeed::publish reads the requests every pass and rebuilds each book from the venue's own depth through Cell::apply_snapshot, which clears the book, applies the snapshot, clears the stale flag, rebuilds the instrument's features and journals Decision::BookResynchronised. apply_snapshot refuses while a stream of that venue still has a sequence gap open, so a book is not declared whole before continuity is re-established; it also refuses a snapshot nobody asked for and one that is itself crossed. Before this the cell had no way to be handed a snapshot: nothing called VenueState::resynchronised on the cell's path.",
     "evidence": [
-      "backend/crates/services/qip-market-ingestion/src/depth.rs:740-742,1050-1075",
-      "test a_sequence_gap_that_will_not_close_forces_a_re_snapshot_rather_than_a_silent_apply (backend/crates/services/qip-market-ingestion/tests/book_depth.rs:327)",
-      "test the_first_poll_asks_for_a_snapshot_before_it_asks_for_the_increments_to_apply_to_it (tests/book_depth.rs:203)"
+      "backend/crates/edge/qip-edge/src/cell.rs (SnapshotRequest, Cell::snapshot_requests, Cell::apply_snapshot, the open_gaps map kept by Cell::absorb_sequenced)",
+      "backend/crates/apps/qip-edge-node/src/feed.rs (SimulatedFeed::publish answers cell.snapshot_requests(); FeedTick::resynchronised)",
+      "test a_gap_raises_a_snapshot_request_and_the_book_is_priced_from_again_only_once_the_gap_has_closed_and_the_snapshot_is_applied (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test a_book_the_cell_discarded_is_rebuilt_from_the_venues_own_depth_on_the_next_pass_and_the_node_trades_again (backend/crates/apps/qip-edge-node/tests/feed_recovery.rs)"
     ],
-    "gap": "Same integration split as RES-022: the exact-matching, well-named test lives in the crate with zero production callers. qip-edge's own gap handling (Cell::on_bytes via qip_sequencing) marks the book unreliable but was not found to itself issue a snapshot *request* -- the feed side of the cell's pipeline (qip-edge-node/src/feed.rs) is a simulated in-process feed with no real recovery-request path modelled.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
       "RES-022"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/services/qip-market-ingestion/tests/book_depth.rs::a_sequence_gap_that_will_not_close_forces_a_re_snapshot_rather_than_a_silent_apply",
+    "verification": "cargo test -p qip-edge --test venue_failure a_gap_raises_a_snapshot_request; cargo test -p qip-edge-node --test feed_recovery a_book_the_cell_discarded_is_rebuilt. Mutations, each restored byte-for-byte: the open-gap refusal disabled, a snapshot was accepted while the stream was still broken ('a book was declared whole while its stream still had a gap open'); resynchronised not called, the request for the rebuilt book still stood; the request loop removed from SimulatedFeed::publish, the node test failed (resynchronised left 0 right 1).",
     "work_item": "E06",
     "tier": "T2",
     "size": "M",
-    "notes": ""
+    "notes": "Closed in RES round 3. The snapshot is taken to be as of the stream's position, which is true of the in-process feed that cuts it synchronously. A remote feed would have to carry the snapshot's sequence and drop older increments; apply_snapshot says so and does not check it, because no such feed exists (ADR 0003). The in-process feed cannot lose a frame, so the node-level test installs a discarded book directly and the gap itself is injected at the cell level. qip_market_ingestion::depth's own re-snapshot path is unchanged and still has no production caller. Not deployable."
   },
   {
     "id": "RES-024",

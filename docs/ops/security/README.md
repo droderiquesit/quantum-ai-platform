@@ -55,6 +55,15 @@ Credentials in the application store only a SHA-256 hash. A test serialises a
 scanner that flags every high-entropy string produces a wall of false
 positives, and a wall of false positives is a scanner people learn to skip.
 
+It runs twice. With no argument it reads the tree; with `--history` it reads
+every line any commit reachable from `HEAD` ever added, so a credential that
+was committed and then deleted is still a finding. Deleting it was never the
+fix: rotation is, and once that is done the finding is recorded in
+`scripts/secrets-reviewed.txt` as `<commit> <path> <what it was>`. A line with
+no third field silences nothing. The history mode refuses a shallow clone
+rather than report one commit as the history, and it names the commit and the
+path of a finding but never reprints the matched line into a build log.
+
 ## What an order-entry adapter can and cannot do
 
 Recorded 2026-09-15, after an independent review of the paper-trading boundary

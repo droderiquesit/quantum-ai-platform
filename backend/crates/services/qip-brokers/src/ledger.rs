@@ -167,7 +167,7 @@ impl AccountLedger {
             fill.costs,
             fill.at,
             Some(fill.order_id.as_str().to_string()),
-        );
+        )?;
         self.marks
             .insert(object_id.as_str().to_string(), fill.price);
         self.fills.push(fill.clone());

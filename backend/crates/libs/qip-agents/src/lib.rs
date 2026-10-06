@@ -30,7 +30,9 @@ pub mod finding;
 pub mod governance;
 pub mod manifest;
 pub mod memory;
+pub mod research;
 pub mod runtime;
+pub mod tools;
 
 pub use budget::{Budget, BudgetLedger, BudgetLine, Spend};
 pub use capability::{Capability, CapabilitySet};

@@ -76,7 +76,7 @@ use qip_core::hash::to_hex;
 use qip_core::rng::Xoshiro256;
 use qip_core::time::Clock;
 use qip_events::event_fabric::codec::{Batch, stamp_drain};
-use qip_events::event_fabric::policy::AckProfile;
+use qip_events::event_fabric::policy::{AckProfile, QosClass};
 
 use crate::breaker::{
     BreakerPolicy, BreakerState, CircuitBreaker, Decision, Outcome, Refusal as BreakerRefusal,
@@ -105,11 +105,15 @@ pub struct ProducerConfig {
     pub stream: String,
     pub partition: u32,
     pub producer_id: String,
-    /// FABRIC-067: never weaker than the stream's own class requires. This
-    /// producer cannot check that locally — the wire protocol does not yet
-    /// carry a stream's `QosClass` to a producer that has not fetched its
-    /// catalogue entry — so a profile that is too weak surfaces as
-    /// [`Refusal::AckTooWeak`] from the broker, not as a local refusal here.
+    /// The class the stream was declared under (ADR 0100 §5). Stated by the
+    /// caller, never defaulted, so [`Producer::new`] can hold
+    /// [`Self::ack_profile`] to this class's floor before a single byte
+    /// leaves the process (FABRIC-067).
+    pub qos_class: QosClass,
+    /// FABRIC-067: never weaker than [`QosClass::ack_floor`] of
+    /// [`Self::qos_class`]; [`Producer::new`] refuses a weaker one naming the
+    /// class, so a P0 producer cannot be built that would acknowledge on the
+    /// leader's say-so alone.
     pub ack_profile: AckProfile,
     pub retry_policy: RetryPolicy,
     pub breaker_policy: BreakerPolicy,
@@ -198,6 +202,17 @@ impl Producer {
                 "a producer must have a non-empty producer id: the broker fences by it",
             ));
         }
+        if config.ack_profile < config.qos_class.ack_floor() {
+            return Err(Error::denied(format!(
+                "a {} producer must acknowledge at {:?} or stronger, not {:?}: the class is \
+                 never dropped, and a weaker acknowledgement would call a record safe before \
+                 it is; choose AckProfile::{:?} or stronger",
+                config.qos_class.as_str(),
+                config.qos_class.ack_floor(),
+                config.ack_profile,
+                config.qos_class.ack_floor(),
+            )));
+        }
         config.retry_policy.validate()?;
         config.breaker_policy.validate()?;
         let peer_key = format!("{}#{}", config.stream, config.partition);
@@ -265,8 +280,14 @@ impl Producer {
 
     /// Establish (or re-establish) this producer's epoch. ADR 0100 §4: this
     /// fences whatever producer previously held `producer_id` on this
-    /// partition, and resets this producer's own sequence to zero — a fresh
-    /// epoch is a fresh dedup window, never a continuation of the old one.
+    /// partition, and adopts the sequence the broker's dense stream for this
+    /// producer continues at — "sequences carry over across epochs".
+    ///
+    /// This reset the sequence to zero until the SDK was first driven against
+    /// the broker library over a real listener. The broker's producer table
+    /// carries sequences across epochs, so a restarted producer's zero was a
+    /// slot behind the stream that no window could verify, and every batch
+    /// it sent afterwards was refused.
     pub fn init(&mut self) -> Result<u64> {
         let request = Request::ProducerInit(ProducerInitRequest {
             stream: self.stream.clone(),
@@ -277,7 +298,7 @@ impl Producer {
         match response {
             Response::ProducerInit(init) => {
                 self.epoch = Some(init.producer_epoch);
-                self.next_sequence = 0;
+                self.next_sequence = init.next_sequence;
                 Ok(init.producer_epoch)
             }
             Response::Refused(refusal) => Err(describe_refusal(Route::ProducerInit, refusal)),
@@ -308,6 +329,13 @@ impl Producer {
         }
 
         let sequence = self.next_sequence;
+        // The broker's dense stream advances one slot per record, not per
+        // batch (`ProducerTable::admit`), so the next batch's sequence is
+        // this one's plus its record count. Advancing by one made the batch
+        // after any multi-record batch land behind the stream and be refused.
+        let records = u64::try_from(batch.records.len()).map_err(|_| {
+            Error::invalid("a batch carries more records than a u64 sequence can count")
+        })?;
         stamp_drain(&mut batch, &self.producer_id, epoch, sequence);
         let encoded = batch.encode()?;
         let request = Request::Produce(ProduceRequest::new(
@@ -319,7 +347,7 @@ impl Producer {
         let response = self.call(request)?;
         match response {
             Response::Produce(ack) => {
-                self.next_sequence = sequence.checked_add(1).ok_or_else(|| {
+                self.next_sequence = sequence.checked_add(records).ok_or_else(|| {
                     Error::invalid(format!(
                         "the producer sequence for {}:{} would overflow past {sequence}; this \
                          producer must be retired and a new producer id issued",
@@ -353,12 +381,21 @@ impl Producer {
 
     /// `AckProfile::Quorum`'s condition: block, within the retry policy's own
     /// attempt budget, until a [`super::protocol::Metadata`] poll shows
-    /// `archived_through` has reached the batch's `base_offset`. Any weaker
+    /// `archived_through` has passed the batch's `base_offset`. Any weaker
     /// profile is satisfied by the leader's own [`ProduceAck`] already in
     /// hand — see the module documentation.
+    ///
+    /// `archived_through` is an exclusive bound: the broker reports the
+    /// offset *below which* every batch is archived, so it is zero on a
+    /// partition with nothing archived and equals the high watermark when
+    /// everything is. The batch at `base_offset` is therefore archived when
+    /// `archived_through > base_offset`. This compared with `>=` until the
+    /// SDK was driven against the broker, where a P1 producer's very first
+    /// batch — offset zero, archive empty — was reported quorum-safe before
+    /// any segment had been sealed, and every later one a segment early.
     fn await_ack_profile(&mut self, ack: ProduceAck) -> Result<ProduceAck> {
         if !matches!(self.ack_profile, AckProfile::Quorum)
-            || ack.archived_through() >= ack.base_offset()
+            || ack.archived_through() > ack.base_offset()
         {
             return Ok(ack);
         }
@@ -384,9 +421,7 @@ impl Producer {
                 partition: self.partition,
             });
             match self.call(request)? {
-                Response::Metadata(metadata)
-                    if metadata.archived_through() >= ack.base_offset() =>
-                {
+                Response::Metadata(metadata) if metadata.archived_through() > ack.base_offset() => {
                     return ProduceAck::new(
                         ack.stream(),
                         ack.partition(),
@@ -624,9 +659,13 @@ mod tests {
             stream: "orders".to_string(),
             partition: 0,
             producer_id: "cell-eu-1".to_string(),
+            qos_class: QosClass::P0Control,
             ack_profile: AckProfile::Quorum,
             retry_policy: RetryPolicy {
-                max_attempts: 3,
+                // Three polls and the send that precedes them: the script
+                // below answers one stale poll, one a single offset short,
+                // and one caught up.
+                max_attempts: 4,
                 ..RetryPolicy::default()
             },
             breaker_policy: BreakerPolicy::default(),
@@ -648,7 +687,15 @@ mod tests {
     /// short-circuit's *body* so `await_ack_profile` always returns `ack`
     /// immediately — fails, because the returned ack's `archived_through`
     /// (80, the stale produce-time value) no longer matches the metadata
-    /// poll's caught-up value (100) this test asserts on.
+    /// poll's caught-up value (101) this test asserts on.
+    ///
+    /// The script answers three polls, and the middle one is the point:
+    /// `archived_through == base_offset` says every batch *below* the base
+    /// offset is archived and the batch itself is not. This test's
+    /// caught-up poll answered exactly that value (100, for a batch at 100)
+    /// while the condition was `>=`, so it pinned the off-by-one it should
+    /// have caught. Mutation: restore `>=` in either comparison — fails,
+    /// returning 100 from the poll that is not yet caught up.
     #[test]
     fn a_quorum_ack_profile_is_not_reported_until_a_metadata_poll_shows_the_batch_archived() {
         let init_epoch = 4;
@@ -660,15 +707,19 @@ mod tests {
         );
         let still_behind = super::super::protocol::Metadata::new("orders", 0, init_epoch, 120, 80)
             .expect("a coherent metadata answer");
-        let caught_up = super::super::protocol::Metadata::new("orders", 0, init_epoch, 120, 100)
+        let one_short = super::super::protocol::Metadata::new("orders", 0, init_epoch, 120, 100)
+            .expect("a coherent metadata answer");
+        let caught_up = super::super::protocol::Metadata::new("orders", 0, init_epoch, 120, 101)
             .expect("a coherent metadata answer");
 
         let mut producer = producer(vec![
             Response::ProducerInit(super::super::protocol::ProducerInitResponse {
                 producer_epoch: init_epoch,
+                next_sequence: 0,
             }),
             Response::Produce(produce_ack),
             Response::Metadata(still_behind),
+            Response::Metadata(one_short),
             Response::Metadata(caught_up),
         ]);
         producer.init().expect("init succeeds");
@@ -678,9 +729,9 @@ mod tests {
             .expect("send eventually reports once the quorum condition is met");
         assert_eq!(
             ack.archived_through(),
-            100,
-            "the acknowledged ack must carry the caught-up archived_through, not the stale \
-             produce-time value"
+            101,
+            "the acknowledged ack must carry the archived_through that covers the batch at \
+             offset 100, not the stale produce-time value and not the poll one short of it"
         );
     }
 }

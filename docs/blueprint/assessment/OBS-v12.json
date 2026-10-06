@@ -1,0 +1,24 @@
+[
+  {
+    "id": "OBS-042",
+    "status": "MISSING",
+    "current": "Nothing in-tree implements this as stated.",
+    "evidence": [
+      "docs/blueprint/v12-delta-master.md and v12-delta-gcp.md (sentence diff of the two source texts)",
+      "docs/adr/0101 (adoption terms and conflict register)"
+    ],
+    "gap": "No calibration SLO series or alert exists; no target is given by the source.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "A calibration series is recorded per horizon and an alert fires when it breaches the configured target.",
+    "work_item": "",
+    "tier": "T4",
+    "size": "L",
+    "notes": "New in v12.0/GCP v3.0. Status is from a delta read and a title grep, not a code audit; NEEDS-VALIDATION and PARTIAL rows must be re-verified before they count.\n\n2026-10-05: examined, not started. qip_learning_engine::Evaluation carries no horizon, so a per-horizon series needs a field on a journaled record; the target has to be a configured value no environment sets; and the alert is a Cloud Monitoring policy gated on workload_metrics_exist like the other nine. qip_belief_brier_score is the one calibration series recorded today, window-wide."
+  }
+]

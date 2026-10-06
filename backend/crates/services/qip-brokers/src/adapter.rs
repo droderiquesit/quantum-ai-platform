@@ -293,6 +293,49 @@ pub struct MarketData {
     pub simulated: bool,
 }
 
+/// A feature native to one venue that the common contract has no word for,
+/// declared by that venue's adapter so it stays reachable (EXEC-012).
+///
+/// The failure this prevents is the lowest common denominator. A contract
+/// every venue satisfies can only name what every venue does, so without a
+/// declared way past it an order type one venue has and the others lack is
+/// either dropped on the way in or quietly sent as its nearest common
+/// relative — and the second is the worse of the two, because the order then
+/// *does something else* at the venue while the caller believes it asked for
+/// what it wrote.
+///
+/// The name is the venue's own word for the feature. Nothing above the
+/// adapter matches on it: a caller hands the name back in a
+/// [`NativeInstruction`], and [`VenueAdapter::submit_native`] refuses a name
+/// the adapter did not declare before the adapter's own code runs.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NativeExtension {
+    /// The venue's own name for the feature.
+    pub name: String,
+    /// What the venue does differently when an order carries it, in a
+    /// sentence an operator can read off a capability listing.
+    pub summary: String,
+}
+
+/// A venue-native instruction carried beside an order of the common contract.
+///
+/// The order itself is untouched — the same [`Order`] every adapter takes —
+/// so nothing native leaks into the contract EXEC-011 fixed. What is native
+/// travels here, by the name the venue declared it under.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeInstruction {
+    /// The [`NativeExtension::name`] this instruction invokes.
+    pub extension: String,
+}
+
+impl NativeInstruction {
+    pub fn new(extension: impl Into<String>) -> Self {
+        Self {
+            extension: extension.into(),
+        }
+    }
+}
+
 /// Overwrite every fill's simulation flag with the adapter's own.
 ///
 /// The venue does not get a vote. A fill's `simulated` flag decides whether a
@@ -418,6 +461,97 @@ pub trait VenueAdapter: Broker {
     /// One sentence naming everything a deployment still owes this venue.
     fn requirement_summary(&self) -> String {
         describe_missing(self.venue_id(), &self.missing_requirements())
+    }
+
+    /// Send an order only if the venue declares the capability it needs.
+    ///
+    /// Provided, so no adapter can skip it: an order whose type is absent from
+    /// [`Broker::capabilities`] is refused here, before the adapter's own
+    /// `submit_order` runs and before anything reaches a venue. Callers above
+    /// the adapter use this rather than `submit_order` (EXEC-011).
+    fn submit_declared(
+        &mut self,
+        ticket: &ReadyTicket,
+        order: &Order,
+        at: Timestamp,
+    ) -> Result<OrderAck> {
+        let capabilities = self.capabilities();
+        let needed = order.order_type.as_str();
+        if !capabilities.supported_types.iter().any(|t| t == needed) {
+            return Err(qip_core::error::Error::denied(format!(
+                "{} does not declare the {needed} order type (it declares {:?}); send an order \
+                 type it declares, or work this one into child orders upstream",
+                capabilities.name, capabilities.supported_types
+            )));
+        }
+        self.submit_order(ticket, order, at)
+    }
+
+    /// The venue-native features this adapter keeps reachable (EXEC-012).
+    ///
+    /// Empty unless the adapter overrides it, which is the truthful default:
+    /// an adapter that declares nothing has nothing native to reach, and
+    /// [`Self::submit_native`] refuses every instruction sent to it.
+    fn native_extensions(&self) -> Vec<NativeExtension> {
+        Vec::new()
+    }
+
+    /// The adapter's own handling of a native instruction it declared.
+    ///
+    /// Not for callers: [`Self::submit_native`] is the door, and it has
+    /// already checked the declaration. The default refuses, so an adapter
+    /// that declares an extension and forgets to carry it refuses the order
+    /// rather than sending it as a plain one.
+    fn submit_native_order(
+        &mut self,
+        _ticket: &ReadyTicket,
+        _order: &Order,
+        instruction: &NativeInstruction,
+        _at: Timestamp,
+    ) -> Result<OrderAck> {
+        Err(qip_core::error::Error::denied(format!(
+            "{} declares the native extension {} and does not carry it to the venue; the order \
+             was not sent, because sending it without the instruction would trade something \
+             the caller did not ask for",
+            self.venue_id().as_str(),
+            instruction.extension
+        )))
+    }
+
+    /// Send an order carrying a venue-native instruction, only where the
+    /// adapter declares the extension it names (EXEC-012).
+    ///
+    /// Provided, so no adapter can skip the check: an instruction naming an
+    /// extension absent from [`Self::native_extensions`] is refused here,
+    /// before the adapter's own code runs and before anything reaches a
+    /// venue. It is never downgraded to [`Self::submit_order`] — an order
+    /// that silently lost its native instruction is the lowest common
+    /// denominator arriving by the back door.
+    fn submit_native(
+        &mut self,
+        ticket: &ReadyTicket,
+        order: &Order,
+        instruction: &NativeInstruction,
+        at: Timestamp,
+    ) -> Result<OrderAck> {
+        let declared = self.native_extensions();
+        if !declared
+            .iter()
+            .any(|extension| extension.name == instruction.extension)
+        {
+            let names: Vec<&str> = declared
+                .iter()
+                .map(|extension| extension.name.as_str())
+                .collect();
+            return Err(qip_core::error::Error::denied(format!(
+                "{} does not declare the native extension {} (it declares {names:?}); the order \
+                 was not sent. Send it to a venue that declares the extension, or send the \
+                 plain order through the common contract if that is what is meant",
+                self.venue_id().as_str(),
+                instruction.extension
+            )));
+        }
+        self.submit_native_order(ticket, order, instruction, at)
     }
 
     /// Connect, authenticate and heartbeat, in the only order that works.

@@ -267,8 +267,11 @@ variable "execution_nodes" {
         the other half of the node — modules/execution-node/README.md.
       * `venues` is not guessed. It comes from the venue's own connectivity
         documentation, and in shadow mode the node still cannot reach them.
-      * `create_egress_nat` is true only where the node's region has no NAT
-        of its own; two NATs on one subnet in one region is an apply error.
+      * `create_egress_nat` is true only for a node whose venue is on the
+        public internet. Nothing else translates a node's subnetwork —
+        modules/network has no NAT and the zones' gateway lists zone
+        subnetworks only — so false leaves the node no route out, which is
+        what the simulated venue wants.
   EOT
 
   type = map(object({
@@ -1131,6 +1134,24 @@ variable "snapshot_retain_days" {
   EOT
   type        = number
   default     = 90
+}
+
+variable "billing_budget_enabled" {
+  description = "Create the monthly spend budget (observability module). False by default; needs billing_account_id, passed outside committed tfvars. A budget alerts; it does not cap spend."
+  type        = bool
+  default     = false
+}
+
+variable "billing_account_id" {
+  description = "Billing account for the budget. Required only when billing_budget_enabled."
+  type        = string
+  default     = null
+}
+
+variable "billing_budget_monthly_usd" {
+  description = "Monthly budget in whole USD; 750 is 25 USD/day."
+  type        = number
+  default     = 750
 }
 
 variable "workload_metrics_exist" {

@@ -28,6 +28,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_acceptance::{files_with_extension, read, repository_root};
 use qip_agents::capability::{Capability, CapabilitySet};
@@ -170,7 +171,8 @@ fn an_agent_that_has_read_a_hostile_page_still_cannot_reach_a_model_or_the_marke
         "Suborned Analyst",
         "reads filings and publishes a thesis",
         now(),
-    );
+    )
+    .with_competencies(vec!["reading filings".to_string()]);
     assert!(
         !manifest
             .capabilities

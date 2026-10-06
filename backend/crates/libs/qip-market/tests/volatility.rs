@@ -5,6 +5,7 @@
 //! a query it has no data for is worse than one that has no data, because the
 //! caller cannot tell the difference — and the number goes straight into a
 //! payoff valuation.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::approx_eq;
 use qip_core::{Decimal, Duration, Timestamp, dec};

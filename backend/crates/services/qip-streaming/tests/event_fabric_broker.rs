@@ -7,6 +7,7 @@
 //! one.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +34,36 @@ fn temp_dir(label: &str) -> PathBuf {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     dir
+}
+
+/// A fully declared policy: the one thing `Broker::declare_stream` takes in
+/// place of the defaults a broker would otherwise supply (FABRIC-057).
+fn policy() -> qip_events::event_fabric::policy::StreamPolicy {
+    policy_with_lag(1_000)
+}
+
+fn policy_with_lag(lag_limit: u64) -> qip_events::event_fabric::policy::StreamPolicy {
+    use qip_events::event_fabric::policy::{
+        AckProfile, Entitlement, Mirroring, Ordering as Ord_, OverloadPolicy, StreamPolicy,
+        StreamPolicySpec,
+    };
+    StreamPolicy::new(StreamPolicySpec {
+        qos_class: qip_events::event_fabric::policy::QosClass::P1Outcomes,
+        partition_key: "account".to_string(),
+        ordering: Ord_::PerPartition,
+        retention: qip_events::RetentionClass::EventAnchored,
+        replication_factor: 1,
+        mirroring: Mirroring::None,
+        overload_policy: OverloadPolicy::RefuseProducer,
+        ack_profile: AckProfile::Quorum,
+        byte_quota_per_producer: 1_048_576,
+        message_quota_per_producer: 10_000,
+        lag_limit,
+        entitlement: Entitlement::new("internal-reflex", "trade").unwrap(),
+        seal_age_ms: 500,
+        peak_bytes_per_second: 5_000_000,
+    })
+    .unwrap()
 }
 
 fn clock() -> Arc<dyn Clock> {
@@ -99,7 +130,7 @@ fn a_restarted_broker_serves_every_acknowledged_record_byte_for_byte_from_offset
     let mut payloads = Vec::new();
     {
         let broker = Broker::open(&dir, clock())?;
-        broker.declare_stream(stream, 1, config(10_000_000))?;
+        broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
         broker.register_schema(stream, 1, 1, sample_shape())?;
         for i in 0..6u64 {
             let payload = format!("payload-{i:03}").into_bytes();
@@ -120,7 +151,7 @@ fn a_restarted_broker_serves_every_acknowledged_record_byte_for_byte_from_offset
     );
 
     let broker = Broker::open(&dir, clock())?;
-    broker.declare_stream(stream, 1, config(10_000_000))?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
     let partition = partition::partition_for("same-key", 1)?;
 
     for (offset, expected) in payloads.iter().enumerate() {
@@ -174,7 +205,7 @@ fn a_produce_acknowledgement_and_the_metadata_both_report_archived_through_for_t
     let stream = "journal";
     let broker = Broker::open(&dir, clock())?;
     // A small roll threshold so a handful of batches actually seal segments.
-    broker.declare_stream(stream, 1, config(200))?;
+    broker.declare_stream(stream, 1, policy(), config(200))?;
     broker.register_schema(stream, 1, 1, sample_shape())?;
     let partition = partition::partition_for("k", 1)?;
 
@@ -244,7 +275,7 @@ fn a_fetch_never_passes_the_last_fsynced_offset() -> Result<()> {
     let dir = temp_dir("fetch-boundary");
     let stream = "ticks";
     let broker = Broker::open(&dir, clock())?;
-    broker.declare_stream(stream, 1, config(10_000_000))?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
     broker.register_schema(stream, 1, 1, sample_shape())?;
     let partition = partition::partition_for("k", 1)?;
 
@@ -288,7 +319,7 @@ fn an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it() -> Resul
     let dir = temp_dir("schema-refusal");
     let stream = "orders";
     let broker = Broker::open(&dir, clock())?;
-    broker.declare_stream(stream, 1, config(10_000_000))?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
     let partition = partition::partition_for("k", 1)?;
 
     let batch = drain_batch("p", 1, 0, 0, b"unregistered-schema-payload");
@@ -333,7 +364,7 @@ fn records_sharing_a_key_share_a_partition_in_produce_order() -> Result<()> {
     let stream = "orders";
     let broker = Broker::open(&dir, clock())?;
     let partition_count = 4;
-    broker.declare_stream(stream, partition_count, config(10_000_000))?;
+    broker.declare_stream(stream, partition_count, policy(), config(10_000_000))?;
     broker.register_schema(stream, 1, 1, sample_shape())?;
 
     let key_a = "account-alpha";
@@ -391,7 +422,7 @@ fn a_read_only_opener_reads_what_a_running_broker_wrote_and_holds_no_lock() -> R
     let dir = temp_dir("read-only");
     let stream = "orders";
     let broker = Broker::open(&dir, clock())?;
-    broker.declare_stream(stream, 1, config(10_000_000))?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
     broker.register_schema(stream, 1, 1, sample_shape())?;
     let partition = partition::partition_for("k", 1)?;
 
@@ -430,5 +461,412 @@ fn a_read_only_opener_reads_what_a_running_broker_wrote_and_holds_no_lock() -> R
         4,
         "the running broker's own next append must not be refused by a concurrent read-only read"
     );
+    Ok(())
+}
+
+// --- FABRIC-075: the property over any keys and any produce order
+
+/// FABRIC-075's stated check: for any set of keys and any sequence of
+/// produces, all records sharing a key sit in one partition and appear in
+/// produce order. The two-key test above fixes one example; this one lets a
+/// seeded generator interleave twelve keys across four partitions, so a
+/// router that is only stable for the keys somebody thought to try (a
+/// per-call counter, a time-seeded hash) is caught by the keys nobody did.
+///
+/// Mutation: in `partition::partition_for`, mix a process-wide counter into
+/// the hash (`hashed.wrapping_add(COUNTER.fetch_add(1, ..))`) — fails,
+/// because one key then lands in more than one partition.
+#[test]
+fn for_any_interleaving_of_keys_every_key_stays_in_one_partition_and_in_produce_order() -> Result<()>
+{
+    use qip_core::{Rng, Xoshiro256};
+    use std::collections::BTreeMap;
+
+    const KEYS: usize = 12;
+    const PRODUCES: usize = 120;
+    let dir = temp_dir("key-property");
+    let stream = "orders";
+    let partition_count = 4;
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, partition_count, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+
+    let keys: Vec<String> = (0..KEYS).map(|i| format!("account-{i}")).collect();
+    let mut rng = Xoshiro256::seeded(75);
+    // key -> (partition seen, base offsets in produce order)
+    let mut seen: BTreeMap<String, (u32, Vec<u64>)> = BTreeMap::new();
+    // One producer per key, so each key's own sequence is dense and the
+    // property is about routing rather than about producer bookkeeping.
+    let mut next_sequence: BTreeMap<String, u64> = BTreeMap::new();
+
+    for tag in 0..PRODUCES as u64 {
+        let key = keys[rng.below(KEYS as u64) as usize].clone();
+        let sequence = next_sequence.entry(key.clone()).or_insert(0);
+        let batch = drain_batch(
+            &format!("producer-{key}"),
+            1,
+            *sequence,
+            tag,
+            format!("{key}-{tag}").as_bytes(),
+        );
+        *sequence += 1;
+        let ack = broker.produce(stream, &key, batch)?;
+        let entry = seen
+            .entry(key.clone())
+            .or_insert_with(|| (ack.partition(), Vec::new()));
+        assert_eq!(
+            entry.0,
+            ack.partition(),
+            "key {key} was produced to two different partitions"
+        );
+        assert_eq!(
+            ack.partition(),
+            partition::partition_for(&key, partition_count)?,
+            "the broker must route by the declared function of the key and nothing else"
+        );
+        entry.1.push(ack.base_offset());
+    }
+
+    // Premise: the generator actually spread keys over several partitions
+    // and used most of the keys, so "one partition per key" is a claim that
+    // could have failed.
+    let partitions_used: std::collections::BTreeSet<u32> = seen.values().map(|(p, _)| *p).collect();
+    assert!(
+        partitions_used.len() >= 2,
+        "the keys all hashed to one partition"
+    );
+    assert!(seen.len() >= KEYS / 2, "too few keys were exercised");
+
+    for (key, (_, offsets)) in &seen {
+        assert!(
+            offsets.windows(2).all(|w| w[0] < w[1]),
+            "key {key}'s records must append in produce order, got offsets {offsets:?}"
+        );
+    }
+    Ok(())
+}
+
+// --- FABRIC-016: checkpoints survive a restart and any retained offset can be replayed
+
+/// Every batch offset `from..high_watermark` of `(stream, 0)` as
+/// `(offset, event_id)`, read back through `fetch` exactly as a consumer
+/// would.
+fn read_event_ids(broker: &Broker, stream: &str, from: u64) -> Vec<(u64, String)> {
+    let mut out = Vec::new();
+    let mut offset = from;
+    loop {
+        let response = broker.fetch(stream, 0, offset, 1_000_000).unwrap();
+        let hex = response.batches().to_string();
+        if hex.is_empty() {
+            return out;
+        }
+        let bytes = qip_core::hash::from_hex(&hex).unwrap();
+        match Batch::decode(&bytes).unwrap() {
+            DecodeOutcome::Complete(batch) => {
+                out.push((offset, batch.records[0].event_id.clone()));
+                offset += 1;
+            }
+            DecodeOutcome::Torn => panic!("a fetch returned a torn batch at offset {offset}"),
+        }
+    }
+}
+
+/// FABRIC-016's stated check: a consumer that commits offset N and is killed
+/// resumes at N+1, with only the uncommitted tail redelivered, across a
+/// broker restart; and a fresh consumer sought to any retained offset reads
+/// the records the original read.
+///
+/// Mutation: in `Broker::commit_offset`, skip the `self.checkpoints.put`
+/// (acknowledge without storing) — fails at the first
+/// `committed_offset` assertion, which then reads `None`.
+#[test]
+fn a_group_committing_n_resumes_at_n_plus_one_after_a_broker_restart_and_a_fresh_consumer_can_replay_from_any_offset()
+-> Result<()> {
+    let dir = temp_dir("checkpoint");
+    let stream = "orders";
+    let group = "sink-a";
+    let seen_by_original;
+    {
+        let broker = Broker::open(&dir, clock())?;
+        broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+        broker.register_schema(stream, 1, 1, sample_shape())?;
+        for i in 0..10u64 {
+            broker.produce(
+                stream,
+                "k",
+                drain_batch("producer-a", 1, i, i, format!("p-{i}").as_bytes()),
+            )?;
+        }
+        seen_by_original = read_event_ids(&broker, stream, 0);
+        // Premise: the original consumer saw all ten, so "resume at 5" has a
+        // tail of five to redeliver and not nothing.
+        assert_eq!(seen_by_original.len(), 10);
+
+        assert_eq!(broker.committed_offset(group, stream, 0)?, None);
+        assert_eq!(broker.commit_offset(group, stream, 0, 4)?, 4);
+        assert_eq!(broker.committed_offset(group, stream, 0)?, Some(4));
+        // A rewind is refused, and so is a commit past what exists.
+        assert!(broker.commit_offset(group, stream, 0, 3).is_err());
+        assert!(broker.commit_offset(group, stream, 0, 10).is_err());
+        assert_eq!(broker.committed_offset(group, stream, 0)?, Some(4));
+        // Another group's checkpoint is independent.
+        assert_eq!(broker.committed_offset("sink-b", stream, 0)?, None);
+    } // the broker and the consumer are "killed".
+
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+    let committed = broker
+        .committed_offset(group, stream, 0)?
+        .expect("the checkpoint must survive a restart");
+    assert_eq!(committed, 4);
+
+    let resumed = read_event_ids(&broker, stream, committed + 1);
+    assert_eq!(
+        resumed,
+        seen_by_original[5..].to_vec(),
+        "resuming at N+1 must redeliver exactly the uncommitted tail, no gap and no overlap"
+    );
+
+    for from in [0u64, 2, 7, 9] {
+        assert_eq!(
+            read_event_ids(&broker, stream, from),
+            seen_by_original[from as usize..].to_vec(),
+            "a fresh consumer sought to offset {from} must read what the original read"
+        );
+    }
+    Ok(())
+}
+
+// --- FABRIC-057: a stream is declared with its whole policy or not at all
+
+/// FABRIC-057's creation check at the broker: a stream is declared with a
+/// `StreamPolicy` (so no declaration can be left to a default — the call
+/// does not compile without one), the stored definition returns every
+/// declared value, and redeclaring under a different policy is refused.
+///
+/// Mutation: in `Broker::declare_stream`, delete the `existing.policy !=
+/// policy` refusal — fails at the redeclaration assertion, because the
+/// stream is then silently re-promised under a weaker policy.
+#[test]
+fn a_declared_stream_returns_its_whole_policy_and_cannot_be_redeclared_under_another() -> Result<()>
+{
+    let broker = Broker::open(temp_dir("policy"), clock())?;
+    let declared = policy();
+    broker.declare_stream("orders", 2, declared.clone(), config(10_000_000))?;
+
+    let stored = broker.stream_policy("orders")?;
+    assert_eq!(
+        stored, declared,
+        "the stored definition must round-trip every declared value"
+    );
+    assert_eq!(stored.lag_limit(), 1_000);
+    assert_eq!(stored.partition_key(), "account");
+
+    // Premise: the second policy really differs, so a refusal below is about
+    // the policy and not about an identical redeclaration.
+    let weaker = policy_with_lag(5);
+    assert_ne!(weaker, declared);
+    let err = broker
+        .declare_stream("orders", 2, weaker, config(10_000_000))
+        .expect_err("a different policy must be refused");
+    assert!(err.to_string().contains("different stream policy"), "{err}");
+    assert_eq!(broker.stream_policy("orders")?, declared);
+
+    // The same policy again is idempotent, as a restarted caller's is.
+    broker.declare_stream("orders", 2, declared, config(10_000_000))?;
+    assert!(broker.stream_policy("never-declared").is_err());
+    Ok(())
+}
+
+// --- a_second_producer_with_the_same_id_fences_the_first_and_none_of_its_later_records_appear
+
+/// CONTRACT-049. A restarted producer holds a higher epoch under the same
+/// producer id; the stale instance (a paused process that wakes up, say) must
+/// not interleave records into the partition, even when its sequence number
+/// happens to be exactly the one the stream expects next.
+///
+/// Mutation: in `ProducerTable::admit`, accept an epoch lower than the
+/// current one, or make `init` not record the new epoch — the stale write then appends and the high watermark and the
+/// fetched payloads below both change.
+#[test]
+fn a_second_producer_with_the_same_id_fences_the_first_and_none_of_its_later_records_appear()
+-> Result<()> {
+    let dir = temp_dir("fencing");
+    let stream = "orders";
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+    let partition = partition::partition_for("k", 1)?;
+
+    let first = broker.init_producer(stream, partition, "cell-eu-1")?;
+    broker.produce(stream, "k", drain_batch("cell-eu-1", first, 0, 0, b"old-0"))?;
+    // Starting a second producer under the same id bumps the epoch; the first
+    // is fenced from this call on, before the second has appended anything.
+    let second = broker.init_producer(stream, partition, "cell-eu-1")?;
+    assert_eq!(
+        (first, second),
+        (1, 2),
+        "premise: init hands out successive epochs"
+    );
+    let high_water = broker.metadata(stream, partition)?.high_watermark();
+    assert_eq!(
+        high_water, 1,
+        "premise: only the first producer's record is in the partition"
+    );
+
+    // The first producer's next write carries exactly the sequence the
+    // partition expects, so only the epoch can refuse it.
+    for attempt in 0..3u64 {
+        let err = broker
+            .produce(
+                stream,
+                "k",
+                drain_batch("cell-eu-1", first, 1, 10 + attempt, b"stale"),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("is fenced by epoch 2"), "{err}");
+    }
+
+    assert_eq!(
+        broker.metadata(stream, partition)?.high_watermark(),
+        high_water,
+        "a fenced producer's records must never reach the partition"
+    );
+    let fetched = broker.fetch(stream, partition, 0, 65_536)?;
+    let bytes = qip_core::hash::from_hex(fetched.batches()).expect("valid hex");
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("stale"),
+        "no fenced payload may be readable from the partition"
+    );
+
+    // The current epoch still writes, continuing the dense sequence.
+    broker.produce(
+        stream,
+        "k",
+        drain_batch("cell-eu-1", second, 1, 20, b"new-1"),
+    )?;
+    assert_eq!(broker.metadata(stream, partition)?.high_watermark(), 2);
+    Ok(())
+}
+
+// --- consuming_a_partition_from_the_same_offset_twice_returns_byte_identical_batches
+
+/// CONTRACT-050. Replay is the whole point of a per-partition offset: reading
+/// from offset N must return the same bytes in the same order however many
+/// times, and across a broker restart, or a sink restarted from its committed
+/// offset would reprocess different records than it first saw.
+///
+/// Mutation: in `Broker::fetch`, start the loop at `cursor = offset + 1` — the
+/// first record is skipped and the two reads no longer carry offset 2's
+/// payload.
+#[test]
+fn consuming_a_partition_from_the_same_offset_twice_returns_byte_identical_batches() -> Result<()> {
+    let dir = temp_dir("replay");
+    let stream = "orders";
+    let partition = partition::partition_for("k", 1)?;
+    let read_from_two = |broker: &Broker| -> Result<String> {
+        Ok(broker
+            .fetch(stream, partition, 2, 1_000_000)?
+            .batches()
+            .to_string())
+    };
+
+    let first_read = {
+        let broker = Broker::open(&dir, clock())?;
+        broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+        broker.register_schema(stream, 1, 1, sample_shape())?;
+        for i in 0..5u64 {
+            let payload = format!("payload-{i}").into_bytes();
+            broker.produce(stream, "k", drain_batch("producer-a", 1, i, i, &payload))?;
+        }
+        let a = read_from_two(&broker)?;
+        let b = read_from_two(&broker)?;
+        assert_eq!(a, b, "two reads of one offset must be byte-identical");
+        a
+    };
+    assert!(
+        !first_read.is_empty() && first_read.contains(&qip_core::hash::to_hex(b"payload-2")),
+        "premise: the read starts at offset 2 and carries payload-2's bytes"
+    );
+    assert!(
+        !first_read.contains(&qip_core::hash::to_hex(b"payload-1")),
+        "premise: nothing before offset 2 is returned"
+    );
+
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    assert_eq!(
+        read_from_two(&broker)?,
+        first_read,
+        "a restart must not change a single byte a consumer re-reads"
+    );
+    Ok(())
+}
+
+// --- RES-058: a retry across a broker restart is neither lost nor duplicated
+
+/// RES-058. The failover this requirement names is, with a replication
+/// factor of one, a broker restart: a produce that was appended and whose
+/// acknowledgement never arrived, a new leader epoch, and the producer
+/// retrying the same batch. The failure this prevents is the dense-sequence
+/// rule starting from an empty table after the restart, reading the retry as
+/// the next new batch and appending it a second time.
+///
+/// Mutation: remove the replay of a partition's existing batches through the
+/// producer table when the partition is opened - the retry is then appended
+/// again and the high watermark reads 2.
+#[test]
+fn a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_still_fenced()
+-> Result<()> {
+    let dir = temp_dir("res058");
+    let stream = "orders";
+    let partition = partition::partition_for("k", 1)?;
+    let (epoch, first_leader_epoch, original_offset);
+    {
+        let broker = Broker::open(&dir, clock())?;
+        broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+        broker.register_schema(stream, 1, 1, sample_shape())?;
+        epoch = broker.init_producer(stream, partition, "cell-eu-1")?;
+        first_leader_epoch = broker.leader_epoch();
+        original_offset = broker
+            .produce(stream, "k", drain_batch("cell-eu-1", epoch, 0, 0, b"once"))?
+            .base_offset();
+    } // the acknowledgement is lost with the broker.
+
+    let broker = Broker::open(&dir, clock())?;
+    broker.declare_stream(stream, 1, policy(), config(10_000_000))?;
+    broker.register_schema(stream, 1, 1, sample_shape())?;
+    assert!(
+        broker.leader_epoch() > first_leader_epoch,
+        "premise: the restart bumped the leader epoch"
+    );
+    assert_eq!(
+        broker.metadata(stream, partition)?.high_watermark(),
+        1,
+        "premise: the first attempt survived the restart"
+    );
+
+    let retried = broker.produce(stream, "k", drain_batch("cell-eu-1", epoch, 0, 0, b"once"))?;
+    assert_eq!(retried.base_offset(), original_offset);
+    assert_eq!(
+        broker.metadata(stream, partition)?.high_watermark(),
+        1,
+        "the retried record was appended a second time"
+    );
+
+    // A new incarnation fences the old one even though the old one's table
+    // entry came from replay rather than from a live produce.
+    let newer = broker.init_producer(stream, partition, "cell-eu-1")?;
+    assert!(
+        newer > epoch,
+        "premise: the new incarnation has a newer epoch"
+    );
+    broker.produce(stream, "k", drain_batch("cell-eu-1", newer, 1, 1, b"next"))?;
+    let err = broker
+        .produce(stream, "k", drain_batch("cell-eu-1", epoch, 2, 2, b"stale"))
+        .unwrap_err();
+    assert!(err.to_string().contains("is fenced by epoch"), "{err}");
+    assert_eq!(broker.metadata(stream, partition)?.high_watermark(), 2);
     Ok(())
 }

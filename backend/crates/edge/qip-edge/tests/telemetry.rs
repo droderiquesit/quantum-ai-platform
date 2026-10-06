@@ -15,6 +15,7 @@
 // In a test the assertion is the deliverable; the workspace denies
 // `panic_in_result_fn` for production code, where it would be a bug.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::degradation::Capability;
@@ -418,6 +419,85 @@ fn a_policy_going_stale_narrows_the_cell_to_the_floor_and_the_gauges_move_with_i
         stale.gauge(names::EDGE_SIZING_MULTIPLIER, &base()),
         Some(0.375),
         "a stale payload should narrow the cell back to the 0.375 floor"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_whose_centre_has_stopped_makes_the_same_decision_as_one_still_served_and_differs_only_by_the_stated_narrowing()
+-> Result<()> {
+    // ARCH-026: the Cognitive Core is never the hot-path trader. Two cells
+    // identical in every local respect; one is re-served a fresh payload
+    // before each pass, the other is served once and then the centre stops.
+    // The failure this prevents is a cell that, with the centre gone, either
+    // stops deciding or decides something else — a different venue, side or
+    // price — which would make the centre a participant in the order decision
+    // rather than the source of a bound on it. What may differ is the size,
+    // by §6.2's multiplier and by nothing else.
+    let (mut served, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let (mut orphaned, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    served.apply_policy(fresh_policy(1, t(100))?, t(100))?;
+    orphaned.apply_policy(fresh_policy(1, t(100))?, t(100))?;
+    let first = work(&mut served, t(100))?;
+    assert_eq!(
+        first.orders.len(),
+        1,
+        "the premise is a cell that decides something: {:?}",
+        first.refusals
+    );
+    assert_eq!(
+        work(&mut orphaned, t(100))?.orders,
+        first.orders,
+        "the two cells differ before the centre has stopped, so nothing below compares like \
+         with like"
+    );
+
+    // The centre keeps one cell served and falls silent to the other.
+    served.apply_policy(fresh_policy(2, t(500))?, t(500))?;
+    let with_centre = work(&mut served, t(500))?;
+    let without_centre = work(&mut orphaned, t(500))?;
+
+    let narrowed = orphaned.narrowing(t(500)).sizing_multiplier();
+    assert_eq!(served.narrowing(t(500)).sizing_multiplier(), d("1"));
+    assert_eq!(
+        narrowed,
+        d("0.375"),
+        "the premise is that the centre's silence has aged the orphaned cell's payload"
+    );
+
+    assert_eq!(with_centre.orders.len(), 1, "{:?}", with_centre.refusals);
+    assert_eq!(
+        without_centre.orders.len(),
+        1,
+        "the cell stopped deciding when the centre did: {:?}",
+        without_centre.refusals
+    );
+    let (kept, lost) = (&with_centre.orders[0], &without_centre.orders[0]);
+    assert_eq!(
+        (
+            &lost.strategy,
+            &lost.object_id,
+            &lost.venue,
+            lost.side,
+            lost.price
+        ),
+        (
+            &kept.strategy,
+            &kept.object_id,
+            &kept.venue,
+            kept.side,
+            kept.price
+        ),
+        "losing the centre changed what the cell decided, not only how much"
+    );
+    assert_eq!(
+        Some(lost.quantity),
+        kept.quantity.checked_mul(narrowed),
+        "the size differs by something other than the §6.2 multiplier"
+    );
+    assert_eq!(
+        without_centre.refusals, with_centre.refusals,
+        "losing the centre refused something a served cell admitted"
     );
     Ok(())
 }
@@ -1432,5 +1512,54 @@ fn slot_twelves_posture_for_a_configured_venue_reaches_the_cells_exposition_one_
     assert_eq!(posture_gauge(&metrics, "unknown"), Some(1.0));
     assert_eq!(posture_gauge(&metrics, "unstated"), Some(0.0));
     assert_eq!(posture_gauge(&metrics, "unmeasured"), Some(0.0));
+    Ok(())
+}
+
+// --- EXEC-020: execution-mode enablement --------------------------------------
+
+fn mode_support() -> qip_execution_engine::modes::ModeSupport {
+    qip_execution_engine::modes::ModeSupport {
+        jurisdiction: "US".to_string(),
+        legally_permitted: true,
+        operationally_supported: true,
+    }
+}
+
+#[test]
+fn an_order_in_a_mode_not_enabled_at_its_venue_is_refused_before_an_order_number_is_spent()
+-> Result<()> {
+    use qip_execution_engine::modes::{ExecutionMode, ModeGate};
+
+    // Premise: the same strategy on a cell with no gate does place an order, so
+    // the refusal below is the gate's and not a cell that could never trade.
+    let (mut ungated, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    assert_eq!(work(&mut ungated, t(50))?.orders.len(), 1);
+
+    // A gate with nothing enabled refuses the order and says so on its own gate.
+    let (cell, metrics) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let mut cell = cell.with_mode_gate(ModeGate::new());
+    assert!(work(&mut cell, t(50)).is_err());
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(names::EDGE_REFUSALS, &by("gate", "mode_disabled")),
+        1
+    );
+    assert_eq!(
+        snapshot.counter(names::EDGE_ORDERS_PLACED, &by("venue", VENUE)),
+        0
+    );
+
+    // Enabling the wrong mode at the venue still refuses; the right one admits.
+    let mut wrong = ModeGate::new();
+    wrong.enable(VENUE, ExecutionMode::Derivatives, &mode_support())?;
+    let (cell, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let mut cell = cell.with_mode_gate(wrong);
+    assert!(work(&mut cell, t(50)).is_err());
+
+    let mut right = ModeGate::new();
+    right.enable(VENUE, ExecutionMode::OrderTaking, &mode_support())?;
+    let (cell, _) = trading_cell(&[("alpha", SignalKind::Enter, "100")])?;
+    let mut cell = cell.with_mode_gate(right);
+    assert_eq!(work(&mut cell, t(50))?.orders.len(), 1);
     Ok(())
 }

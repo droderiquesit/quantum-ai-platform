@@ -11,6 +11,7 @@
 //! the instant it was written, because a node stamped at write time makes
 //! every point-in-time query return facts the platform did not hold, and the
 //! backtest reads better than the platform was.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::{Duration, Timestamp};
 use qip_world_model::graph::NodeKind;
@@ -55,7 +56,9 @@ fn a_thesis_can_be_traversed_to_the_authority_that_settles_it() {
         "the fixture already held a resolution source"
     );
 
-    let id = world.record_resolution_source(&claim("platform-market-data", "hyp-1", designated()));
+    let id = world
+        .record_resolution_source(&claim("platform-market-data", "hyp-1", designated()))
+        .unwrap();
     assert_eq!(
         id,
         format!("{RESOLUTION_SOURCE_PREFIX}:platform-market-data")
@@ -107,7 +110,9 @@ fn an_authority_is_stamped_with_the_instant_its_claim_was_knowable_and_not_a_lat
     // every replay before that instant would silently lose the provenance.
     let mut world = WorldModel::new();
     let knowable = designated();
-    let id = world.record_resolution_source(&claim("platform-market-data", "hyp-1", knowable));
+    let id = world
+        .record_resolution_source(&claim("platform-market-data", "hyp-1", knowable))
+        .unwrap();
 
     let node = world.graph().node(&id).expect("recorded");
     assert_eq!(
@@ -163,7 +168,9 @@ fn an_authority_seen_again_keeps_the_instant_it_was_first_known_at() {
     // that walks forward and can never be replayed against.
     let mut world = WorldModel::new();
     let first = designated();
-    let id = world.record_resolution_source(&claim("platform-market-data", "hyp-1", first));
+    let id = world
+        .record_resolution_source(&claim("platform-market-data", "hyp-1", first))
+        .unwrap();
 
     // Premise: the first sighting is what we think it is.
     assert_eq!(
@@ -172,7 +179,9 @@ fn an_authority_seen_again_keeps_the_instant_it_was_first_known_at() {
     );
 
     let second = days_after(10);
-    let again = world.record_resolution_source(&claim("platform-market-data", "hyp-2", second));
+    let again = world
+        .record_resolution_source(&claim("platform-market-data", "hyp-2", second))
+        .unwrap();
     assert_eq!(again, id, "the same authority took a second node id");
     assert_eq!(
         world.graph().node(&id).expect("recorded").recorded_at,

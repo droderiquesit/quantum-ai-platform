@@ -924,3 +924,237 @@ fn a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference
     // a change of model.
     assert!(registry.promote_artifact(&first, now()).is_ok());
 }
+
+// --- benchmarks, budgets and rollback ancestry (EXPAND-038) --------------------
+
+use qip_ai::registry::ResourceBudget;
+
+fn successor_card(version: &str) -> ModelCard {
+    let mut card = ModelCard::new(
+        ModelId::from_string(format!("MDL-{version}")),
+        "regime-classifier",
+        version,
+        "quant-research",
+        now(),
+    )
+    .with_features(vec![
+        "realised_volatility".into(),
+        "term_structure_slope".into(),
+    ])
+    .with_training_data(vec!["synthetic-market-2020-2025".into()])
+    .with_benchmark("accuracy over the volatility-threshold rule on held-out-2025")
+    .with_resource_budget(ResourceBudget {
+        max_inference_micros: 500,
+        max_memory_bytes: 65_536,
+    });
+    card.evaluations.push(EvaluationRecord {
+        evaluated_at: now(),
+        dataset: "held-out-2025".into(),
+        metrics: BTreeMap::from([
+            ("accuracy".to_string(), 0.9),
+            ("expected_calibration_error".to_string(), 0.03),
+        ]),
+        passed: true,
+    });
+    card
+}
+
+#[test]
+fn a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_artifact() {
+    let mut registry = ModelRegistry::new();
+    let parent = successor_card("2.1.0");
+    let parent_artifact = artifact_for(&parent, 0.1);
+    registry.register(parent);
+    registry.promote_artifact(&parent_artifact, now()).unwrap();
+
+    let child = successor_card("2.2.0");
+    let child_artifact = artifact_for(&child, 0.2);
+    assert_ne!(parent_artifact.digest, child_artifact.digest, "premise");
+    registry.register(child);
+    registry.promote_artifact(&child_artifact, now()).unwrap();
+    registry.retire("regime-classifier@2.1.0", now()).unwrap();
+    registry
+        .record_rollback_parent(
+            "regime-classifier@2.2.0",
+            &["regime-classifier@2.1.0".to_string()],
+        )
+        .unwrap();
+
+    // All six attributes are on the record.
+    let card = registry.get("regime-classifier@2.2.0").unwrap();
+    assert!(!card.training_datasets.is_empty(), "datasets");
+    assert!(!card.features.is_empty(), "features");
+    assert!(
+        card.latest_evaluation()
+            .unwrap()
+            .metrics
+            .contains_key("expected_calibration_error"),
+        "calibration"
+    );
+    assert_eq!(card.benchmarks.len(), 1, "benchmarks");
+    assert_eq!(card.resource_budget.unwrap().max_inference_micros, 500);
+    assert_eq!(
+        card.rollback_parent.as_deref(),
+        Some("regime-classifier@2.1.0"),
+        "rollback ancestry"
+    );
+
+    // Rolling back resolves to the recorded parent and the bytes it carried.
+    let restored = registry.rollback("regime-classifier@2.2.0", now()).unwrap();
+    assert_eq!(restored.reference(), "regime-classifier@2.1.0");
+    assert_eq!(restored.stage, ModelStage::Production);
+    assert_eq!(
+        restored.artifact_digest.as_deref(),
+        Some(parent_artifact.digest.as_str())
+    );
+    assert_eq!(
+        registry.get("regime-classifier@2.2.0").unwrap().stage,
+        ModelStage::Retired
+    );
+}
+
+#[test]
+fn a_model_with_no_recorded_parent_cannot_be_rolled_back() {
+    let mut registry = ModelRegistry::new();
+    let card = successor_card("2.1.0");
+    let artifact = artifact_for(&card, 0.1);
+    registry.register(card);
+    registry.promote_artifact(&artifact, now()).unwrap();
+
+    let error = registry
+        .rollback("regime-classifier@2.1.0", now())
+        .unwrap_err();
+    assert_eq!(error.code(), "denied");
+    assert!(error.message().contains("no parent"), "{error}");
+    assert_eq!(
+        registry.get("regime-classifier@2.1.0").unwrap().stage,
+        ModelStage::Production,
+        "a refused rollback retired the model"
+    );
+}
+
+// --- packages (MODEL-068) ---------------------------------------------------
+
+#[test]
+fn a_package_of_each_of_the_four_kinds_registers_and_any_other_kind_is_refused() {
+    use qip_ai::registry::PackageKind;
+    let mut registry = ModelRegistry::new();
+    let digest = |seed: &str| qip_core::hash::sha256_hex(seed.as_bytes());
+
+    for kind in PackageKind::ALL {
+        registry
+            .register_package(
+                kind.as_str(),
+                "pack",
+                "1.0.0",
+                &digest(kind.as_str()),
+                now(),
+            )
+            .unwrap();
+        assert!(registry.package(kind, "pack", "1.0.0").is_some());
+    }
+    assert_eq!(registry.packages().count(), 4, "premise: four kinds held");
+
+    // The discriminating half: a kind outside the four, including near
+    // misses, is refused by name and registers nothing.
+    for other in ["", "models", "Model", "dataset", "weights"] {
+        let refused = registry
+            .register_package(other, "pack", "2.0.0", &digest("x"), now())
+            .unwrap_err();
+        assert!(
+            refused.message().contains("not a package kind"),
+            "{refused}"
+        );
+    }
+    assert_eq!(registry.packages().count(), 4, "a refused kind was filed");
+
+    // One version, one artifact, for every kind: the policy half of
+    // MODEL-034.
+    let refused = registry
+        .register_package("policy", "pack", "1.0.0", &digest("other bytes"), now())
+        .unwrap_err();
+    assert_eq!(refused.code(), "denied");
+    assert!(
+        registry
+            .register_package("policy", "pack", "1.0.0", &digest("policy"), now())
+            .is_ok(),
+        "re-registering the same digest is idempotent"
+    );
+    // A value that is not a digest names nothing.
+    assert!(
+        registry
+            .register_package("risk", "pack", "3.0.0", "not-a-digest", now())
+            .is_err()
+    );
+}
+
+// --- who moved an alias (MODEL-057) ------------------------------------------
+
+#[test]
+fn an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newest_moves() {
+    use qip_ai::registry::{ALIAS_MOVES_RETAINED, PRODUCTION_ALIAS};
+    const REFERENCE: &str = "regime-classifier@2.1.0";
+    let mut registry = ModelRegistry::new();
+    registry.register(evaluated_card(now(), true));
+    // Premise: an unpromoted card holds no alias and no move, so what is
+    // read below was written below.
+    assert!(registry.aliases(REFERENCE).unwrap().is_empty());
+    assert!(registry.get(REFERENCE).unwrap().alias_moves.is_empty());
+
+    // An anonymous move and an unexplained one are refused, and leave no
+    // record behind them.
+    registry.promote(REFERENCE, now()).unwrap();
+    let anonymous = registry
+        .record_alias_move(REFERENCE, "  ", "held-out-2025 passed", now())
+        .unwrap_err();
+    assert!(anonymous.message().contains("names nobody"), "{anonymous}");
+    let unexplained = registry
+        .record_alias_move(REFERENCE, "model-desk", "", now())
+        .unwrap_err();
+    assert!(
+        unexplained.message().contains("states no evidence"),
+        "{unexplained}"
+    );
+    assert!(
+        registry
+            .record_alias_move("nobody@0.0.0", "model-desk", "evidence", now())
+            .is_err()
+    );
+    assert!(registry.get(REFERENCE).unwrap().alias_moves.is_empty());
+
+    // Which way the alias went is read off the card, not asserted.
+    registry
+        .record_alias_move(REFERENCE, "model-desk", "held-out-2025 passed", now())
+        .unwrap();
+    assert_eq!(registry.aliases(REFERENCE).unwrap(), vec![PRODUCTION_ALIAS]);
+    let on = registry.get(REFERENCE).unwrap().alias_moves[0].clone();
+    assert!(on.assigned);
+    assert_eq!(on.alias, PRODUCTION_ALIAS);
+    assert_eq!(on.moved_by, "model-desk");
+    assert_eq!(on.evidence, "held-out-2025 passed");
+
+    registry.retire(REFERENCE, now()).unwrap();
+    registry
+        .record_alias_move(REFERENCE, "model-desk", "drift past threshold", now())
+        .unwrap();
+    assert!(registry.aliases(REFERENCE).unwrap().is_empty());
+    assert!(!registry.get(REFERENCE).unwrap().alias_moves[1].assigned);
+
+    // Bounded: a card that flaps keeps its newest moves and drops the oldest.
+    for flap in 0..ALIAS_MOVES_RETAINED * 2 {
+        registry
+            .record_alias_move(REFERENCE, "model-desk", &format!("flap {flap}"), now())
+            .unwrap();
+    }
+    let moves = &registry.get(REFERENCE).unwrap().alias_moves;
+    assert_eq!(moves.len(), ALIAS_MOVES_RETAINED);
+    assert_eq!(
+        moves.last().unwrap().evidence,
+        format!("flap {}", ALIAS_MOVES_RETAINED * 2 - 1)
+    );
+    assert_eq!(
+        moves[0].evidence,
+        format!("flap {}", ALIAS_MOVES_RETAINED),
+        "the oldest retained move is not the one the bound implies"
+    );
+}

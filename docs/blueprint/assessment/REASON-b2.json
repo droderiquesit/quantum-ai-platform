@@ -144,7 +144,7 @@
   {
     "id": "REASON-026",
     "status": "PARTIAL",
-    "current": "qip_reasoning_engine::engine::ReasoningEngine (backend/crates/services/qip-reasoning-engine/src/engine.rs:108) runs two of the six named reasoning kinds -- Bayesian probabilistic belief update (src/bayes.rs, fn update) and causal-chain hypothesis synthesis (src/hypothesis.rs, CausalChain) -- plus a twelve-challenge red-team review (src/redteam.rs:252 RedTeam, :292 RedTeam::review). It is constructed once by qip-kernel's Platform (platform.rs:4519, ReasoningEngine::new(config.review)) and driven every REASON-stage pass via stage_reason -> reason_about_the_queue (platform.rs:10794,10839). No ontology reasoning exists. Temporal, rule and constraint evaluation exist only as domain engines, not as reasoners answering requests with a derivation: temporal-precedence testing (qip_world_model::granger), rule/limit evaluation (qip_risk::limits::LimitSet::check) and the bounded strategy-rule compiler (qip-strategy). And the engine is not an addressable service other specialist components request from: `rg -n \"qip_reasoning_engine::|ReasoningEngine::\"` outside the crate's own tests matches only qip-kernel/src/platform.rs -- no other brain, service or agent calls it.",
+    "current": "qip_reasoning_engine::engine::ReasoningEngine (backend/crates/services/qip-reasoning-engine/src/engine.rs:108) runs two of the six named reasoning kinds -- Bayesian probabilistic belief update (src/bayes.rs, fn update) and causal-chain hypothesis synthesis (src/hypothesis.rs, CausalChain) -- plus a twelve-challenge red-team review (src/redteam.rs:252 RedTeam, :292 RedTeam::review). It is constructed once by qip-kernel's Platform (platform.rs:4519, ReasoningEngine::new(config.review)) and driven every REASON-stage pass via stage_reason -> reason_about_the_queue (platform.rs:10794,10839). No ontology reasoning exists. Rule, temporal, lifecycle, constraint and Bayesian-network reasoners now exist as library modules of this crate (rules.rs, temporal.rs, lifecycle.rs, constraint.rs, network.rs), tested and called by no stage; none answers a request with a shared derivation. The older domain engines remain: temporal-precedence testing (qip_world_model::granger), rule/limit evaluation (qip_risk::limits::LimitSet::check) and the bounded strategy-rule compiler (qip-strategy). And the engine is not an addressable service other specialist components request from: `rg -n \"qip_reasoning_engine::|ReasoningEngine::\"` outside the crate's own tests matches only qip-kernel/src/platform.rs -- no other brain, service or agent calls it.",
     "evidence": [
       "backend/crates/services/qip-reasoning-engine/src/engine.rs:108,137,165 (ReasoningEngine, red_team, reason)",
       "backend/crates/services/qip-reasoning-engine/src/bayes.rs (probabilistic reasoning)",
@@ -153,7 +153,7 @@
       "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs:140 log_odds_round_trips, :148 no_finite_evidence_drives_a_belief_to_certainty, :1264 the_red_team_rejects_often_enough_to_be_doing_something",
       "rg -n \"qip_reasoning_engine::|ReasoningEngine::\" backend/crates --iglob '*.rs' | grep -v qip-reasoning-engine/ -> qip-kernel/src/platform.rs plus qip-deepbrain/src/{language,config}.rs (which use only the providers::huggingface adapter) and test fixtures"
     ],
-    "gap": "No ontology reasoner exists, and temporal, rule and constraint evaluation exist only as domain engines (granger, LimitSet::check, qip-strategy), not as reasoners returning derivations; the engine is invoked only by the kernel's own REASON stage, not exposed as a request/response service another specialist brain can address, so it does not match 'on request from other brains' or 'a Symbolic Reasoning Brain [...] in the specialist brain society'.",
+    "gap": "No ontology reasoner exists. Rule, temporal, lifecycle, constraint and Bayesian-network reasoners now exist in qip-reasoning-engine (rules.rs, temporal.rs, lifecycle.rs, constraint.rs, network.rs) and causal queries in qip_world_model::inference, each tested, but they share no derivation contract, and none is addressable as a request/response service another specialist brain can call: ReasoningEngine is still invoked only by the kernel's own REASON stage, and no stage calls the new reasoners at all.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -167,30 +167,29 @@
     "work_item": "E09-symbolic-reasoning-brain",
     "tier": "T3",
     "size": "XL",
-    "notes": "No 'Brain' concept of any kind exists in this codebase (rg for 'Brain' across backend/crates outside comments returns nothing); ADR 0091 composes such things as library crates inside existing binaries, which is the unblocked path (avoids C7). verify: status PARTIAL kept; deployable true -> false, because no Cloud Run service runs: under ADR 0036 they are RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path. Corrected two claims. (1) 'No ... temporal, rule or constraint reasoning kind exists anywhere' overstated the gap: those exist as domain engines (granger precedence, LimitSet::check, qip-strategy), just not as request-serving reasoners with derivations. (2) The note's 'rg for Brain returns nothing' is false: the composition roots are qip-fastbrain and qip-deepbrain, and ADR 0091 composes the brains as library crates in five binaries. What is absent is a Symbolic Reasoning Brain. Also fixed the red-team citation (:252 is the struct, review is :292). The four cited reasoning.rs tests were re-run: 'test result: ok. 4 passed'."
+    "notes": "2026-10-05: The gap's 'temporal, rule and constraint evaluation exist only as domain engines' stopped being true when REASON-009, -011, -012 and -015 were closed; the gap is rewritten to what remains. `current` above predates that and still describes the engine as it is reached. | prior note: No 'Brain' concept of any kind exists in this codebase (rg for 'Brain' across backend/crates outside comments returns nothing); ADR 0091 composes such things as library crates inside existing binaries, which is the unblocked path (avoids C7). verify: status PARTIAL kept; deployable true -> false, because no Cloud Run service runs: under ADR 0036 they are RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path. Corrected two claims. (1) 'No ... temporal, rule or constraint reasoning kind exists anywhere' overstated the gap: those exist as domain engines (granger precedence, LimitSet::check, qip-strategy), just not as request-serving reasoners with derivations. (2) The note's 'rg for Brain returns nothing' is false: the composition roots are qip-fastbrain and qip-deepbrain, and ADR 0091 composes the brains as library crates in five binaries. What is absent is a Symbolic Reasoning Brain. Also fixed the red-team citation (:252 is the struct, review is :292). The four cited reasoning.rs tests were re-run: 'test result: ok. 4 passed'."
   },
   {
     "id": "REASON-027",
-    "status": "MISSING",
-    "current": "No component of the reasoning fabric emits a constraint, and no CONTRACT-024 SymbolicDerivation type exists (rg for 'SymbolicDerivation' across backend/crates returns no hits). Machine-checkable constraints do cross a process boundary elsewhere, which sets the pattern. The centre issues CapitalEnvelopes and a signed policy payload (share bounds, capability grants) that qip_edge::Cell checks deterministically without the issuer. rule_review's two-signature path emits a LimitSet artefact that LimitSet::check evaluates. None of these comes from a reasoner, and none is compared against a reasoner's own verdict.",
+    "status": "COMPLETE",
+    "current": "Rule conditions and Invariants are a declared serde form (Cond/Invariant); the test evaluates them with a standalone JSON evaluator in tests/rules.rs that imports nothing from the reasoner.",
     "evidence": [
-      "rg -n \"SymbolicDerivation\" backend/crates --iglob '*.rs' -> no matches"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: an_independent_checker_agrees_with_every_constraint_verdict (500 generated states, both verdicts asserted to occur). Mutation: Lt weakened to Le made the fabric disagree with the checker and the test failed. Scope: the constraints are the rule-pack invariants; other emitters (capital, risk limits) are outside this register entry."
     ],
-    "gap": "The reasoning fabric emits no constraint, and there is no declared formal form for one. The platform's existing emitted constraints (capital envelopes, policy bounds, limit-set artefacts) come from the capital and risk planes, not from reasoning.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "REASON-026"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need a standalone evaluator sharing no code with the reasoner, checking generated constraints against generated states and agreeing with the reasoner's own verdict on every one.",
-    "work_item": "E09-symbolic-reasoning-brain",
+    "verification": "cargo test -p qip-reasoning-engine --test rules -- an_independent_checker_agrees_with_every_constraint_verdict",
+    "work_item": "",
     "tier": "T3",
     "size": "M",
-    "notes": "Depends on REASON-026 existing to emit anything; the contract shape (CONTRACT-024's SymbolicDerivation) should be defined once, alongside REASON-035's proof-checking contract. verify: status MISSING kept; corrected 'No component emits a constraint at all, symbolic or otherwise'. The centre emits signed capital envelopes and policy bounds that the cell evaluates deterministically, and the risk path emits LimitSet artefacts. The row stays MISSING because none of them is emitted by the reasoning fabric that this requirement governs."
+    "notes": "Closed by the rules.rs rule-pack engine. integrated=false: no composition root or stage calls RulePack yet. | prior note: Depends on REASON-026 existing to emit anything; the contract shape (CONTRACT-024's SymbolicDerivation) should be defined once, alongside REASON-035's proof-checking contract. verify: status MISSING kept; corrected 'No component emits a constraint at all, symbolic or otherwise'. The centre emits signed capital envelopes and policy bounds that the cell evaluates deterministically, and the risk path emits LimitSet artefacts. The row stays MISSING because none of them is emitted by the reasoning fabric that this requirement governs."
   },
   {
     "id": "REASON-028",
@@ -204,7 +203,7 @@
       "backend/crates/agents/qip-investment-agents/tests/organisation.rs:1555 the_organisation_feeds_the_reasoning_engine",
       "backend/crates/apps/qip-deepbrain/src/language.rs:362 with_the_provider_unset_the_chain_is_the_deterministic_model_alone"
     ],
-    "gap": "The requirement's check needs a derivation citing two distinct reasoner kinds through a shared contract, and a fabric that still answers rule/temporal/constraint queries with the language model disabled; neither rule, temporal nor constraint reasoning exists to be queried, disabled or not.",
+    "gap": "The requirement's check needs a derivation citing two distinct reasoner kinds through a shared contract. Rule, temporal and constraint reasoners now exist and take no language model anywhere in their signatures (qip-reasoning-engine rules.rs, temporal.rs, constraint.rs; tests/rules.rs and tests/reasoners.rs), but there is no shared derivation contract through which one reasoner's conclusion becomes another's input, and no test of a two-reasoner derivation.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -218,7 +217,7 @@
     "work_item": "E09-symbolic-reasoning-brain",
     "tier": "T3",
     "size": "L",
-    "notes": "Largely the same build as REASON-026; this requirement is what REASON-026 being built would resolve rather than a separate piece of work. verify: status PARTIAL kept; deployable true -> false, because no Cloud Run service runs: under ADR 0036 they are RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path. Replaced the unnamed 'REASON-stage tests' with two named tests, both run and passing. Corrected the reading of platform.rs:10896: that comment is about cost-router rungs. Agents' findings already feed the reasoning engine through a shared contract, so 'exactly one reasoner kind' understated what exists."
+    "notes": "2026-10-05: The gap's 'neither rule, temporal nor constraint reasoning exists to be queried' stopped being true when REASON-009, -013 and -015 were closed; rewritten to what remains, which is the shared contract (CONTRACT-024's SymbolicDerivation is where it should be defined once). | prior note: Largely the same build as REASON-026; this requirement is what REASON-026 being built would resolve rather than a separate piece of work. verify: status PARTIAL kept; deployable true -> false, because no Cloud Run service runs: under ADR 0036 they are RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path. Replaced the unnamed 'REASON-stage tests' with two named tests, both run and passing. Corrected the reading of platform.rs:10896: that comment is about cost-router rungs. Agents' findings already feed the reasoning engine through a shared contract, so 'exactly one reasoner kind' understated what exists."
   },
   {
     "id": "REASON-029",
@@ -276,7 +275,7 @@
   {
     "id": "REASON-031",
     "status": "PARTIAL",
-    "current": "No symbolic theory store and no theory-revision-task type exist. Two production paths already turn a contradiction of held theory into an explicit, journaled record naming the element and its evidence, without silently modifying it. (1) Declared risk rules: qip-kernel/src/rule_review.rs, via Platform::review_rules (platform.rs:17460, called from stage_learn at :13988). When the twin's scores show a rule vetoing mostly profitable paths, it journals a RecalibrationProposal under Topic::RiskRuleRecalibration. The proposal names the rule, its current and proposed bounds and the scored orders (RegretEvidence), and the running limit set never applies it: only a two-signature LimitSet::rebound artefact can move the bound. That is a revision task in all but name, for one theory class, in one direction. (2) Causal structure (ADR 0087): when an edge's own precedence test fails, record_causal_condition_failure marks it KnownToFail. After RETIREMENT_CONSECUTIVE_FAILURES (3) in one regime the edge is retired from inference but kept in the graph under EdgeStanding::Retired with the regime, instant and run, and journaled as ChangeKind::CausalEdgeRetired. That is explicit, but it is an automatic retirement rather than a task for review. qip-kernel/src/causal_review.rs::audit_controls reports precedence edges that fail a controlled re-test as a finding and writes nothing. falsification.rs and references.rs remain the adjacent claim and citation mechanisms the assessor named.",
+    "current": "For rule packs a theory-revision-task type now exists — qip_reasoning_engine::rules::RulePack::contradictions returns RevisionTask values, tested, and called by no stage (see the gap). Outside rule packs nothing has changed: Two production paths already turn a contradiction of held theory into an explicit, journaled record naming the element and its evidence, without silently modifying it. (1) Declared risk rules: qip-kernel/src/rule_review.rs, via Platform::review_rules (platform.rs:17460, called from stage_learn at :13988). When the twin's scores show a rule vetoing mostly profitable paths, it journals a RecalibrationProposal under Topic::RiskRuleRecalibration. The proposal names the rule, its current and proposed bounds and the scored orders (RegretEvidence), and the running limit set never applies it: only a two-signature LimitSet::rebound artefact can move the bound. That is a revision task in all but name, for one theory class, in one direction. (2) Causal structure (ADR 0087): when an edge's own precedence test fails, record_causal_condition_failure marks it KnownToFail. After RETIREMENT_CONSECUTIVE_FAILURES (3) in one regime the edge is retired from inference but kept in the graph under EdgeStanding::Retired with the regime, instant and run, and journaled as ChangeKind::CausalEdgeRetired. That is explicit, but it is an automatic retirement rather than a task for review. qip-kernel/src/causal_review.rs::audit_controls reports precedence edges that fail a controlled re-test as a finding and writes nothing. falsification.rs and references.rs remain the adjacent claim and citation mechanisms the assessor named.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/rule_review.rs:1-30,208-330 (RecalibrationProposal; 'A proposal is not a change')",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13988 (stage_learn -> review_rules), :17460 (review_rules)",
@@ -284,9 +283,11 @@
       "backend/crates/services/qip-world-model/src/causal.rs:14-28 (ADR 0087 retirement), src/world.rs:390-420 (record_causal_condition_failure journals CausalEdgeRetired)",
       "backend/crates/services/qip-world-model/tests/retirement.rs:70 an_edge_retires_on_the_third_consecutive_failure_in_one_regime_and_not_on_the_second, :414 the_world_model_journals_a_retirement_under_its_own_kind_and_counts_it",
       "backend/crates/runtime/qip-kernel/src/causal_review.rs (audit_controls: a finding, writes nothing)",
-      "backend/crates/runtime/qip-kernel/src/falsification.rs; src/references.rs:258-283 (assessor's adjacent citations, verified)"
+      "backend/crates/runtime/qip-kernel/src/falsification.rs; src/references.rs:258-283 (assessor's adjacent citations, verified)",
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs (Conflict, RevisionTask, RulePack::contradictions)",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: a_contradicted_rule_raises_a_revision_task_naming_both_sides_and_is_neither_changed_nor_dropped (the requirement's own check: a fixture rule, a contradicting observation, a task naming the rule, the observation and the evidence, the pack equal to its copy afterwards and the rule still firing; premise: an agreeing observation raises nothing). Mutation: inverting the comparison raised a task for the agreeing observation and failed the premise."
     ],
-    "gap": "There is no theory-revision-task type. Rule contradiction is covered only for risk limits, and only in the too-tight direction: a rule contradicted by evidence that it is too loose, or by another rule, raises nothing. A contradicted causal edge retires automatically rather than raising a task for review. No symbolic rule store exists for the requirement's own check (admit a fixture rule, feed a contradicting observation).",
+    "gap": "Closed for rule packs, open in production. RulePack::contradictions raises a RevisionTask for a rule against an observation, a rule against another rule, and an observation an invariant calls unreachable; each carries the pack and version, the conflicting elements, the whole observation and its evidence ids, and the method takes &self so the rule is neither changed nor dropped. Still open: no stage holds a rule pack, so no contradiction in a running process raises a task; a contradicted causal edge still retires automatically (ADR 0087) rather than raising one for review; and risk-limit review is still one-directional (too tight only).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -296,11 +297,11 @@
       "REASON-021"
     ],
     "blocked_by": "",
-    "verification": "Run by the verifier, passing: cargo test -p qip-kernel --lib a_rule_that_vetoed_mostly_profitable_paths_yields_a_proposal_that_is_never_applied (ok); cargo test -p qip-world-model --test retirement the_world_model_journals_a_retirement_under_its_own_kind_and_counts_it (ok). Still needed: admit a fixture symbolic rule, feed a contradicting observation, and assert that a theory-revision task names the rule, the observation and the evidence while the rule stays unmodified.",
+    "verification": "Run by the verifier, passing: cargo test -p qip-kernel --lib a_rule_that_vetoed_mostly_profitable_paths_yields_a_proposal_that_is_never_applied (ok); cargo test -p qip-world-model --test retirement the_world_model_journals_a_retirement_under_its_own_kind_and_counts_it (ok). Still needed: admit a fixture symbolic rule, feed a contradicting observation, and assert that a theory-revision task names the rule, the observation and the evidence while the rule stays unmodified. Added: cargo test -p qip-reasoning-engine --test rules a_contradicted_rule_raises_a_revision_task_naming_both_sides_and_is_neither_changed_nor_dropped (the check the line above called still needed, now passing for rule packs).",
     "work_item": "E16-symbolic-theory-compiler",
     "tier": "T2",
     "size": "M",
-    "notes": "Cheap once REASON-021's rule store exists; the pattern already exists twice in this codebase (falsification.rs, references.rs) as a template to follow, just not for this subject. verify: upgraded MISSING -> PARTIAL (implemented/tested/integrated true). The assessor treated this as needing REASON-021's store first, and missed that rule_review already journals a proposal naming a contradicted rule and its evidence, never applied in-process, with a test that asserts exactly that. ADR 0087 retirement journals contradicted causal edges. A general revision-task type and coverage of symbolic theory are absent. deployable false: no Cloud Run service runs: under ADR 0036 they are RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path."
+    "notes": "2026-10-05: Advanced, left PARTIAL on purpose. The requirement's own check now passes against the rule-pack store, but its statement is 'never absorbed silently or left to accumulate' across symbolic theory, and the two production paths named above still resolve a contradiction without a task. | prior note: Cheap once REASON-021's rule store exists; the pattern already exists twice in this codebase (falsification.rs, references.rs) as a template to follow, just not for this subject. verify: upgraded MISSING -> PARTIAL (implemented/tested/integrated true). The assessor treated this as needing REASON-021's store first, and missed that rule_review already journals a proposal naming a contradicted rule and its evidence, never applied in-process, with a test that asserts exactly that. ADR 0087 retirement journals contradicted causal edges. A general revision-task type and coverage of symbolic theory are absent. deployable false: no Cloud Run service runs: under ADR 0036 they are RunService manifests reconciled by Config Connector, and ADR 0093 suspends that path."
   },
   {
     "id": "REASON-032",
@@ -355,16 +356,15 @@
   },
   {
     "id": "REASON-034",
-    "status": "PARTIAL",
-    "current": "The structural fact holds today, and tests already hold it for the reasoning and solver crates that exist, not only for quantum. qip-edge's Cargo.toml names no reasoning or solver crate. architecture.rs:715 no_edge_cell_can_reach_a_language_model asserts that no edge crate (nor qip-edge-node) reaches qip-ai, and anchors on qip-reasoning-engine reaching qip-ai, so an edge crate that took on the reasoning engine would fail it. architecture.rs:1028 no_edge_cell_can_reach_a_quantum_solver asserts the same for qip-quantum, which qip-optimization-engine reaches (its sibling test's anchor), so the classical optimiser is excluded too. For the runtime half, all reasoning lives in the central binaries. qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running shows that a cell whose centre is unreachable is not halted and keeps its deployed strategy. qip-edge/tests/region_table.rs:1118 shows that a partitioned cell keeps spending within its last share. What is not shown: a cell running passes with every reasoning service stopped, with pass count, refusals and order flow asserted unchanged. There is also no test that names a reasoning crate directly rather than through the qip-ai anchor.",
+    "status": "COMPLETE",
+    "current": "Both halves are held by tests. Static: qip-acceptance architecture::no_edge_cell_can_reach_a_reasoning_crate asserts no edge crate reaches qip-reasoning-engine, qip-world-model or qip-optimization-engine; the reasoners added since are modules of the first two, so the list still names every reasoning crate. Run time: qip-edge-node/tests/reasoning_outage.rs runs the assembled node twice over the same seven passes against the simulated venue, a mesh tick after each. In one run the centre answers throughout; in the other the centre's listener is stopped before the fourth pass and never returns. The node's pass count, every pass's refusals and every order it sent are the same in both, and the venue's own count of submissions agrees.",
     "evidence": [
-      "backend/crates/edge/qip-edge/Cargo.toml:10-40 (no reasoning or solver crate)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:715-755 no_edge_cell_can_reach_a_language_model (anchor: qip-reasoning-engine reaches qip-ai)",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1027-1057 no_edge_cell_can_reach_a_quantum_solver",
-      "backend/crates/apps/qip-edge-node/tests/mesh.rs:375 a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
-      "backend/crates/edge/qip-edge/tests/region_table.rs:1118 a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs :: no_edge_cell_can_reach_a_reasoning_crate",
+      "backend/crates/apps/qip-edge-node/tests/reasoning_outage.rs :: a_node_works_the_same_passes_sends_the_same_orders_and_refuses_the_same_when_the_centre_stops_answering (premises asserted first: with the centre up no tick went unanswered, with it stopped every tick from that pass on did; orders were sent and refusals made on both sides of the stop). Mutation: halting the cell when the centre cannot be polled failed it at 'a node halted'.",
+      "backend/crates/apps/qip-edge-node/tests/mesh.rs :: a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running",
+      "backend/crates/edge/qip-edge/tests/region_table.rs :: a_partitioned_cell_keeps_spending_within_its_last_share_until_its_envelopes_expire"
     ],
-    "gap": "No chaos test runs cell passes with every reasoning service stopped and asserts that pass count, refusals and order flow are unchanged; the existing test performs one mesh tick against a dead centre. The dependency guard for qip-reasoning-engine is indirect, through the qip-ai anchor, and a future symbolic-reasoner crate that did not reach qip-ai would need its own named test.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -374,34 +374,33 @@
       "REASON-026"
     ],
     "blocked_by": "",
-    "verification": "Run by the verifier, passing: cargo test -p qip-acceptance --test architecture no_edge_cell_can_reach_a_language_model no_edge_cell_can_reach_a_quantum_solver ('test result: ok. 2 passed'); cargo test -p qip-edge-node --test mesh a_tick_against_an_unreachable_centre_reports_it_and_leaves_the_cell_running (ok). Still needed: the chaos test over passes, and a no_edge_cell_can_reach_a_symbolic_reasoner test once such a crate exists.",
+    "verification": "cd backend && cargo test -p qip-edge-node --test reasoning_outage && cargo test -p qip-acceptance --test architecture no_edge_cell_can_reach_a_reasoning_crate",
     "work_item": "E01-edge-reasoning-boundary-test",
     "tier": "T1",
     "size": "S",
-    "notes": "Cheapest of the twenty: once a symbolic-reasoner crate exists, adding it to a no_edge_cell_can_reach_a_symbolic_reasoner test mirrors an existing, working pattern almost exactly. verify: status PARTIAL kept; tested false -> true. The assessor said no test covers a reasoning crate, but no_edge_cell_can_reach_a_language_model is anchored on qip-reasoning-engine and so already fails if an edge crate reaches it. An unreachable-centre test covers part of the chaos half. Both were run and pass. Not COMPLETE: the over-passes chaos assertion is absent, and deployable stays false because qip-edge-node runs nowhere (execution_nodes = {} in every environment)."
+    "notes": "2026-10-05: Chaos half closed by reasoning_outage.rs. 'Every reasoning service' is the centre: the reasoning crates run only in the central binaries and a node reaches them over the mesh link and nothing else, so stopping the centre's listener stops all of them at once. The run sits inside the thirty seconds the simulated venue's session lasts without a heartbeat, so it shows the node does not wait on the centre from pass to pass; what a cell does once its envelopes and policy go stale is the degradation table's business and region_table.rs's. deployable stays false: qip-edge-node runs nowhere (execution_nodes = {} in every environment). A future reasoning crate still has to be added to the architecture test's list by hand. | prior note: Cheapest of the twenty: once a symbolic-reasoner crate exists, adding it to a no_edge_cell_can_reach_a_symbolic_reasoner test mirrors an existing, working pattern almost exactly. verify: status PARTIAL kept; tested false -> true. The assessor said no test covers a reasoning crate, but no_edge_cell_can_reach_a_language_model is anchored on qip-reasoning-engine and so already fails if an edge crate reaches it. An unreachable-centre test covers part of the chaos half. Both were run and pass. Not COMPLETE: the over-passes chaos assertion is absent, and deployable stays false because qip-edge-node runs nowhere (execution_nodes = {} in every environment)."
   },
   {
     "id": "REASON-035",
-    "status": "MISSING",
-    "current": "nothing. No proof-producing reasoner exists (see REASON-026), so there is no independent checker to build. No 'proof' or 'checker' construct related to symbolic reasoning exists in the workspace.",
+    "status": "COMPLETE",
+    "current": "Verdict.trace is a machine-readable proof; the test checker re-verifies each step from serialised JSON sharing no code with the solver, and RulePack::verify refuses a verdict that differs from re-evaluation.",
     "evidence": [
-      "rg -n \"SymbolicDerivation\" backend/crates --iglob '*.rs' -> no matches"
+      "backend/crates/services/qip-reasoning-engine/src/rules.rs",
+      "backend/crates/services/qip-reasoning-engine/tests/rules.rs :: the_checker_accepts_untampered_traces_and_rejects_and_the_pack_refuses_any_one_step_mutated (every step mutated in turn, plus a dropped step). Mutation: verify() made always-accept failed the test. Scope: proofs of the rule-pack engine; no other solver in the tree produces proofs."
     ],
-    "gap": "No reasoner produces a proof, and no independent checker exists to verify one.",
-    "implemented": false,
-    "tested": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "REASON-026"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "No test exists. Would need an independent checker (sharing no code with the solver) that accepts every untampered derivation trace and rejects every trace with one step mutated.",
-    "work_item": "E09-symbolic-reasoning-brain",
+    "verification": "cargo test -p qip-reasoning-engine --test rules -- the_checker_accepts_untampered_traces_and_rejects_and_the_pack_refuses_any_one_step_mutated",
+    "work_item": "",
     "tier": "T3",
     "size": "M",
-    "notes": "Follows naturally once REASON-026/027 exist; the mutation-verification discipline this repository already requires of every test (architecture/01-testing-strategy.md) is a close cousin of what this requirement asks the checker itself to do to a derivation."
+    "notes": "Closed by the rules.rs rule-pack engine. integrated=false: no composition root or stage calls RulePack yet. | prior note: Follows naturally once REASON-026/027 exist; the mutation-verification discipline this repository already requires of every test (architecture/01-testing-strategy.md) is a close cousin of what this requirement asks the checker itself to do to a derivation."
   },
   {
     "id": "REASON-036",

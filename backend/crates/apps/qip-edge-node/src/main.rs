@@ -43,6 +43,7 @@
 //! it that way. There is no runtime check because there is nothing to check —
 //! the call does not exist to be made.
 
+use qip_arbitrage::SearchSettings;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -52,7 +53,9 @@ use qip_edge::cell::{Cell, CellConfig, Placer, PricingPolicy, WorkReport};
 use qip_edge::region::RegionOutlook;
 use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
-use qip_edge_node::arbitrage::{ArbitrageInstaller, STRATEGY_VARIABLE};
+use qip_edge_node::arbitrage::{
+    ArbitrageInstaller, MAX_LEGS_VARIABLE, STRATEGY_VARIABLE, parse_max_legs,
+};
 use qip_edge_node::cross_region::{CrossRegionMirror, MIRROR_VARIABLE, no_declaration_line};
 use qip_edge_node::dark::DarkRegionWire;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SIMULATED_FEED, SimulatedFeed};
@@ -60,7 +63,8 @@ use qip_edge_node::gateway::NodeGateway;
 use qip_edge_node::halt::{FLAG_VARIABLE, HaltFlag};
 use qip_edge_node::mesh::{MeshLink, MeshSettings, PEER_VARIABLE};
 use qip_edge_node::mirror::StoreMirror;
-use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
+use qip_edge_node::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
+use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::strategies::{
@@ -147,6 +151,11 @@ struct NodeConfig {
     /// runs one. `None` installs no desk and is named in the production
     /// requirements — see `qip_edge_node::arbitrage`.
     arbitrage_strategy: Option<StrategyId>,
+    /// What the desk searches under, the maximum leg count in force above
+    /// all (MESH-010). The engine's defaults when `QIP_ARBITRAGE_MAX_LEGS`
+    /// is unset; a value outside two to twenty stops the process — see
+    /// `qip_edge_node::arbitrage::parse_max_legs`.
+    arbitrage_search: SearchSettings,
     /// The feed the pass loop prices from. `None` is a node that runs no
     /// pass at all — announced, never defaulted — and the only `Some` is the
     /// simulator; see `qip_edge_node::feed` for why a live feed is refused
@@ -173,6 +182,12 @@ struct NodeConfig {
     /// venues are at home — every node deployed so far — and is announced at
     /// start-up rather than assumed; see `qip_edge_node::cross_region`.
     mirror: Option<CrossRegionMirror>,
+    /// Each venue's own message rate and message-to-trade ratio (EXEC-004).
+    /// Empty is every venue on the cell's fallback ceiling, announced venue
+    /// by venue at start-up; an entry that is malformed, or names a venue
+    /// outside `QIP_VENUES`, stops the process — see
+    /// `qip_edge_node::quote_limits`.
+    quote_limits: VenueQuoteLimits,
 }
 
 impl NodeConfig {
@@ -243,6 +258,7 @@ impl NodeConfig {
         }
 
         let storage = StorageSettings::from_env(&|name| std::env::var(name).ok())
+            .and_then(StorageSettings::require_authoritative)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
         let mesh = MeshSettings::from_env(&cell_id, &region)?;
         // Set but unusable is refused; unset is a node without the second
@@ -262,6 +278,15 @@ impl NodeConfig {
             Ok(value) if !value.trim().is_empty() => Some(StrategyId::new(value.trim())),
             _ => None,
         };
+        let max_legs = std::env::var(MAX_LEGS_VARIABLE).ok();
+        let arbitrage_search = parse_max_legs(max_legs.as_deref())?;
+        if max_legs.is_some_and(|value| !value.trim().is_empty()) && arbitrage_strategy.is_none() {
+            return Err(Error::invalid(format!(
+                "configuration: {MAX_LEGS_VARIABLE} is set and {STRATEGY_VARIABLE} is not; a \
+                 node with no desk scans no cycle, and a leg limit nothing consults reads as a \
+                 control. Set {STRATEGY_VARIABLE} or unset {MAX_LEGS_VARIABLE}"
+            )));
+        }
         let feed = FeedChoice::from_env()?;
         let pricing = parse_pricing(std::env::var(PRICING_VARIABLE).ok().as_deref())?;
         let plan_path = match std::env::var(PLAN_VARIABLE) {
@@ -277,6 +302,12 @@ impl NodeConfig {
         let mirror = CrossRegionMirror::read(
             std::env::var(MIRROR_VARIABLE).ok().as_deref(),
             &region,
+            &venues,
+        )?;
+        // Read against the venue list for the same reason the mirror is: a
+        // limit stated for a venue this cell may not trade binds nothing.
+        let quote_limits = VenueQuoteLimits::read(
+            std::env::var(QUOTE_LIMITS_VARIABLE).ok().as_deref(),
             &venues,
         )?;
         if reprice.is_some() && feed.is_none() {
@@ -300,11 +331,13 @@ impl NodeConfig {
             halt_flag,
             region_wire,
             arbitrage_strategy,
+            arbitrage_search,
             feed,
             pricing,
             plan_path,
             reprice,
             mirror,
+            quote_limits,
         })
     }
 }
@@ -357,6 +390,27 @@ fn run() -> Result<()> {
     for venue in &config.venues {
         cell_config = cell_config.with_venue(venue.clone());
     }
+    // EXEC-004. Until this line every node ran one default budget on every
+    // venue, so a venue's own rate and ratio were found out when the venue
+    // enforced them. Stated limits refuse before the gateway is called; a
+    // venue with none keeps the fallback ceiling, and that is said by name
+    // rather than left to be assumed.
+    let cell_config = config.quote_limits.apply(cell_config);
+    for line in config.quote_limits.banner_lines() {
+        println!("{line}");
+    }
+    for venue in config.quote_limits.unstated(&config.venues) {
+        println!(
+            "qip-edge-node: awaiting {QUOTE_LIMITS_VARIABLE} for {venue}: without it this venue \
+             runs the cell's default message ceiling, which is no venue's stated limit, and \
+             its message-to-trade ratio narrows quoting without refusing it"
+        );
+    }
+    // Built empty, and not left that way: which instruments this cell will
+    // trade is the plan's to say, so `StrategyInstaller` registers the
+    // standard suite for each strategy's subject as it deploys it
+    // (`Cell::register_features`). An engine nothing registered into was
+    // what every node ran until then.
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
 
     // The cell, the mesh series and the registry the scrape serves are wired
@@ -571,10 +625,10 @@ fn run() -> Result<()> {
     // It holds nothing until a grant arrives over the mesh and installs
     // nothing until a whitelist does, so a node with no peer can never grow
     // a desk — which is right, since neither input can reach it.
-    let mut installer = config
-        .arbitrage_strategy
-        .clone()
-        .map(|strategy| ArbitrageInstaller::new(strategy, config.venues.clone()));
+    let mut installer = config.arbitrage_strategy.clone().map(|strategy| {
+        ArbitrageInstaller::new(strategy, config.venues.clone())
+            .with_search(config.arbitrage_search)
+    });
     // The plan's installer, always: it holds the grants for strategies the
     // plan will name and deploys them once a fresh, verified payload names
     // a plan whose bytes are at the configured path. With no pricing or no
@@ -592,6 +646,16 @@ fn run() -> Result<()> {
         requoter.is_some(),
     ) {
         println!("qip-edge-node: awaiting {requirement}");
+    }
+    // The maximum leg count in force, said out loud when there is a desk to
+    // hold it to: a limit an operator has to infer from the absence of long
+    // cycles is a limit nobody can check against what they configured.
+    if let Some(installer) = &installer {
+        println!(
+            "qip-edge-node: arbitrage cycles of at most {} legs ({MAX_LEGS_VARIABLE}); a longer \
+             one is refused under arbitrage_scan_length",
+            installer.max_legs()
+        );
     }
     if let Some(flag) = &config.halt_flag {
         println!(
@@ -805,6 +869,14 @@ fn serve(
     // after the exchange, per the order below.
     let mut last_report = WorkReport::default();
     let mut stats = PassStats::default();
+    // Requote, break and failed-pass lines are per event on a path that runs
+    // at message rate; at most five per ten seconds reach stderr, and the
+    // journal and the metrics hold the rest (OBS-021). The bound lives in
+    // `PassLog` so `tests/pass.rs` can drive it through real passes.
+    let mut pass_log = PassLog::new(5, Duration::from_secs(10))?;
+    // The four golden signals with the pass as the unit of work, saturation
+    // measured against the allowance this loop gives one request (OBS-018).
+    let pass_meter = PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?;
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -885,40 +957,30 @@ fn serve(
                 if let (Some(pass_loop), Some(simulated)) =
                     (pass_loop.as_deref_mut(), gateway.simulated_mut())
                 {
-                    match run_pass(
-                        cell,
-                        simulated,
-                        &mut *pass_loop.feed,
-                        pass_loop.requoter.as_deref_mut(),
-                        &mut stats,
-                        now,
-                    ) {
-                        Ok(PassOutcome::Ran {
-                            report,
-                            requotes,
-                            breaks,
-                            ..
-                        }) => {
-                            // Every requote outcome, not only the failures:
-                            // an order that is no longer where the cell
-                            // sent it is a line the log has to carry.
-                            for requote in &requotes {
-                                eprintln!("qip-edge-node: requote: {}", requote.describe());
-                            }
-                            for detail in &breaks {
-                                eprintln!("qip-edge-node: reconciliation break: {detail}");
-                            }
-                            last_report = *report;
-                        }
+                    let outcome = pass_meter.measure(|| {
+                        run_pass(
+                            cell,
+                            simulated,
+                            &mut *pass_loop.feed,
+                            pass_loop.requoter.as_deref_mut(),
+                            &mut stats,
+                            now,
+                        )
+                    });
+                    // Every requote outcome, not only the failures — an
+                    // order that is no longer where the cell sent it is a
+                    // line the log has to carry — every break, and a failed
+                    // pass, all through the one sampler.
+                    pass_log.write(now, &outcome, &mut std::io::stderr());
+                    match outcome {
+                        Ok(PassOutcome::Ran { report, .. }) => last_report = *report,
                         Ok(PassOutcome::Halted { .. }) => {
                             last_report = WorkReport::default();
                         }
                         // A pass that failed is a fact the journal already
                         // holds where the cell refused; the loop keeps serving
                         // so the halt poll and the flush keep running.
-                        Err(error) => {
-                            eprintln!("qip-edge-node: the pass failed: {}", error.message());
-                        }
+                        Err(_) => {}
                     }
                 }
                 let health = link.as_deref().map(MeshLink::health);

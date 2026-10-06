@@ -49,12 +49,14 @@
 //! deterministic templates narrating — which is what every deployment does
 //! today.
 
+pub mod artifacts;
 pub mod attestation;
 pub mod campaign;
 pub mod config;
 pub mod connectors;
 pub mod discovery;
 pub mod evolution;
+pub mod features;
 pub mod health;
 pub mod language;
 pub mod learning;

@@ -128,30 +128,29 @@
   },
   {
     "id": "RES-072",
-    "status": "INCORRECT",
-    "current": "Terraform matches the requirement: google_redis_instance.cache sets persistence_mode = DISABLED, enable_memorystore = false everywhere, and var.storage_target's validation admits only memory|file|engine. The Rust storage layer does the opposite. StorageTarget::Memorystore is a selectable primary target. StorageSettings::from_env (qip-storage/src/settings.rs:102-110) parses QIP_STORAGE_TARGET=memorystore, and StorageProvider::key_value (provider.rs:358-360) builds a RedisKeyValueStore for any namespace. Every composition root opens its authoritative stores through that one setting: qip-api main.rs:105-107 puts the hash-chained 'event-log' ChainArchive on storage.key_value, as do the trial book and mesh spool, and qip-edge-node's cell-journal uses the same path. No root refuses Memorystore; qip-edge-node only warns on a non-durable target (main.rs:547). An out-of-band service update setting the variable would therefore put the event log in a persistence-disabled Redis, and a flush would lose it. That is exactly the financial-state loss this requirement forbids. No risk, capital or portfolio crate imports qip_storage::redis.",
+    "status": "PARTIAL",
+    "current": "No composition root can make Memorystore its store of record. StorageSettings::require_authoritative refuses QIP_STORAGE_TARGET=memorystore and is chained onto StorageSettings::from_env in qip-api, qip-fastbrain, qip-deepbrain, qip-edge-node and, since RES round 3, qip-cli, which had been left out: `qip cycle` archives the event log on the configured store and the command line would have told an operator which variables to set to put it in the cache. An acceptance guard now fails any root under backend/crates/apps that resolves a storage target without the refusal. Terraform still refuses the value at plan time and provisions the instance with persistence disabled. No service uses Redis as a cache at all, so there is no cache to flush or rebuild.",
     "evidence": [
-      "infrastructure/terraform/modules/data/main.tf:295-322 (persistence_mode = DISABLED)",
-      "infrastructure/environments/dev/terraform.tfvars:256 (enable_memorystore = false)",
-      "infrastructure/terraform/variables.tf:365-383 (storage_target validation: memory|file|engine, a plan-time layer only)",
-      "backend/crates/libs/qip-storage/src/settings.rs:102-110 (from_env admits memorystore)",
-      "backend/crates/libs/qip-storage/src/provider.rs:358-360 (key_value builds a RedisKeyValueStore for any namespace)",
-      "backend/crates/apps/qip-api/src/main.rs:105-107 (event-log ChainArchive opened on the configured store; no Memorystore refusal)",
-      "backend/crates/apps/qip-edge-node/src/main.rs:547 (non-durable target warns, does not refuse)"
+      "backend/crates/libs/qip-storage/src/settings.rs (StorageSettings::require_authoritative)",
+      "backend/crates/apps/qip-cli/src/main.rs (storage(): from_env(..).and_then(StorageSettings::require_authoritative))",
+      "test the_command_line_refuses_to_keep_the_event_log_archive_in_the_memorystore_cache (backend/crates/apps/qip-cli/tests/storage.rs)",
+      "test every_composition_root_that_resolves_a_storage_target_refuses_a_cache_as_the_store_of_record (backend/crates/tests/qip-acceptance/tests/architecture.rs)",
+      "test a_cache_target_is_refused_as_the_store_of_record_and_every_durable_target_is_admitted (backend/crates/libs/qip-storage/tests/settings.rs)",
+      "infrastructure/terraform/modules/data/main.tf (persistence_mode = DISABLED); infrastructure/terraform/variables.tf (storage_target admits memory|file|engine)"
     ],
-    "gap": "Only Terraform keeps Redis from being the store of record. The composition roots would put the event log, trial book, mesh spool and cell journal on a persistence-disabled Redis if QIP_STORAGE_TARGET=memorystore reached them. Fix in-tree, with no C4 dependency: refuse Memorystore as a StorageSettings primary target at from_env/preflight, and expose Redis only through a separate cache port whose values can be recomputed. The requirement's chaos test, which flushes and removes a live cache, needs the managed instance (C4).",
+    "gap": "The requirement's own check is not run: flush and then remove a live cache while the platform runs, and assert positions, cash and ledger state are unchanged and the services rebuild the cache. It needs the managed instance (C4), and today it would have nothing to rebuild, because no service keeps a cache in Redis.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "C4",
-    "verification": "To write: a qip-storage settings test asserting that from_env/preflight refuses QIP_STORAGE_TARGET=memorystore for any namespace that holds state, mutation-verified. Then, once C4 clears, the chaos test. The 35 redis.rs tests prove the RESP client, not non-authority.",
+    "verification": "cargo test -p qip-cli --test storage; cargo test -p qip-acceptance --test architecture every_composition_root_that_resolves_a_storage_target_refuses_a_cache_as_the_store_of_record. Mutation, restored byte-for-byte: require_authoritative removed from qip-cli's storage(), both tests failed, the first on the message an operator would have been shown ('Set QIP_MEMORYSTORE_ADDRESS to the instance address'). Still to run once C4 clears: the cache-flush chaos test.",
     "work_item": "E14-memorystore-cache-only",
     "tier": "T4",
     "size": "M",
-    "notes": "Matches the assessments already recorded for DATA-045 (the resource/adapter pair) and ARCH-054 (the cache-authority invariant) exactly; this requirement is their failure-mode consequence — already true by absence, unproven by a chaos test. verify: BLOCKED -> INCORRECT, integrated false -> true, blocked_by C4 kept for the managed-instance chaos exercise. The row's premise, 'storage_target admits only memory|file|engine, so Redis can never be selected by any composition root', is false. storage_target is a Terraform variable. The binaries read QIP_STORAGE_TARGET through StorageSettings::from_env, which accepts memorystore, and provider.rs:358-360 builds Redis for whatever namespace asks, including qip-api's event-log (main.rs:105-107). Both confirmed by reading the code on 2026-09-25. This matches the verified DATA-045 (INCORRECT) and ARCH-054 findings the row claimed to match. work_item aligned with DATA-045."
+    "notes": "RES round 3: INCORRECT -> PARTIAL. The defect the row named, that the Rust storage layer would put the event log in a persistence-disabled Redis, was closed for four binaries under ARCH-054 and the row had not been re-scored; this round found the fifth root, qip-cli, still open and closed it, with a guard over every root. blocked_by C4 is kept for the chaos exercise against a managed instance. Matches ARCH-054, which is PARTIAL for the same remaining reason."
   },
   {
     "id": "RES-073",
@@ -363,27 +362,28 @@
   },
   {
     "id": "RES-081",
-    "status": "NEEDS-VALIDATION",
-    "current": "qip-edge (the hot-path Cell crate) carries no dependency on qip-storage at all — only qip-edge-node (the composition root) does, and only for its journal KeyValueStore mirror (memory/file/engine), never Bigtable or BigQuery. qip_storage::provider::StorageTarget::{Bigtable,BigQuery} exist as ports; BigQuery has a working in-tree adapter (gcp::BigQueryWarehouse, reachable in principle through the egress proxy) while Bigtable has none at all (refuses construction, needing a gRPC client this workspace does not carry). Neither is reachable from Cell::work by construction.",
+    "status": "COMPLETE",
+    "current": "No process on the reflex path can hold a handle to BigQuery or Bigtable, and three guards hold that. No crate under backend/crates/edge can reach qip-storage, where both adapters live, through its dependency graph. qip-edge-node, the one edge artifact that does link qip-storage (for its journal mirror), names neither store in shipped code and opens key-value stores only. And StorageProvider::key_value refuses both targets, so a node configured with either fails its start-up probe rather than putting a warehouse behind its journal flush.",
     "evidence": [
+      "test no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store (backend/crates/tests/qip-acceptance/tests/architecture.rs)",
+      "test a_warehouse_or_a_wide_column_target_cannot_be_opened_as_the_key_value_store_a_process_keeps_its_state_on (backend/crates/libs/qip-storage/tests/settings.rs)",
+      "backend/crates/libs/qip-storage/src/provider.rs (StorageProvider::key_value: BigQuery refused as invalid, Bigtable as unavailable)",
       "backend/crates/edge/qip-edge/Cargo.toml (no qip-storage dependency)",
-      "backend/crates/apps/qip-edge-node/Cargo.toml:24 (qip-storage present, used only for the journal mirror)",
-      "backend/crates/libs/qip-storage/src/provider.rs:107,115,253-261 (Bigtable/BigQuery port descriptions; Bigtable refuses construction)",
-      "rg -ln 'BigQuery|Bigtable' backend/crates/tests backend/crates/edge/qip-edge/tests backend/crates/apps/qip-edge-node/tests -> no hits"
+      "backend/crates/apps/qip-edge-node/src/main.rs (config.storage.key_value(\"cell-journal\") is the node's only store)"
     ],
-    "gap": "No chaos test makes both stores unreachable and asserts reflex decision latency/fill rate are unchanged, because neither store is reachable from the hot path to begin with — the invariant holds by structural absence rather than a proven control, the same shape as the cache-authority finding already recorded for ARCH-054.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "no test exists; write a chaos test once a research/replay path actually depends on Bigtable/BigQuery, or a structural architecture.rs test asserting qip-edge never depends on qip-storage",
+    "verification": "cargo test -p qip-acceptance --test architecture no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store; cargo test -p qip-storage --test settings a_warehouse_or_a_wide_column_target. Mutations, each restored byte-for-byte: qip-storage added to qip-orderbook's dependencies, the guard failed ('the edge crate qip-edge can reach qip-storage'); a BigQueryWarehouse import added to the node's mirror.rs, it failed naming the file and line; key_value made to open a store for BigQuery, the storage test failed ('big_query was opened as a key-value store').",
     "work_item": "E06-store-isolation-chaos-test",
     "tier": "T1",
     "size": "S",
-    "notes": "Same absence-not-proof shape as ARCH-054 (Redis/cache authority)."
+    "notes": "Closed in RES round 3. NEEDS-VALIDATION -> COMPLETE on the structural test the row itself named as sufficient. The chaos form of the check has nothing to make unreachable: neither store is provisioned (C4) and no research, replay or feature job depends on either yet, so 'research and feature jobs report a degraded state' has no job to report it. That half becomes testable when the first such dependency is wired, and belongs to that change."
   },
   {
     "id": "RES-082",
@@ -438,19 +438,16 @@
   },
   {
     "id": "RES-084",
-    "status": "PARTIAL",
-    "current": "Two mechanisms each stop part of the behaviour, and neither is proven end to end for a stalled feed. (1) A sequence gap: the sequencer emits MessageBody::Reset, the book is marked awaiting-snapshot (qip_orderbook::venue::VenueState::is_stale returns awaiting_snapshot, venue.rs:257), the cell journals GapDetected, and Cell::route_for (cell.rs:3339-3420) refuses every intent against that book under 'stale_book'. The ordinary path and the ADR 0080 disposition path share this refusal. (2) A silent stall, where no messages arrive: the book is not marked stale, because VenueState has no time-based staleness and the sequencer's gap_timeout runs only once a gap has opened. CellConfig::max_staleness ('How long a book may go unrefreshed before its prices stop counting', cell.rs:300, default 5s at :396) is declared and read by nothing. It is a threshold that cannot fire. What does stop a strategy on a stall is the feature graph. qip-edge-node builds the cell's FeatureEngine with a 5s max_staleness (main.rs:360). FeatureContext::fresh returns None past it, and features go Undefined. qip-strategy's runtime then emits nothing from an undefined input. Reached in production via qip-edge-node main.rs:888 -> pass.rs:117 -> Cell::work.",
+    "status": "COMPLETE",
+    "current": "CellConfig::max_staleness now fires. The cell records when each venue's feed was last heard, on its own clock, from Cell::on_bytes and from Cell::feed_heartbeat, the feed handler's statement that the feed is connected though nothing moved. Once a venue has been silent for longer than max_staleness every order bound for it is refused under GATE_SILENT_FEED ('silent_feed'): Cell::route_for refuses the signal, Cell::venue_for stops offering the venue, and cycle admission refuses a cycle with a leg there. Strategies on venues still heard are untouched, and the strategy resumes when the feed is heard again. The gate does not depend on the strategy reading a feature of the silent instrument, which was the only thing that stopped one before. In production qip-edge-node's SimulatedFeed::publish calls feed_heartbeat on every pass, because that feed publishes differences and a quiet market publishes nothing.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:3381-3383 (stale_book refusal in route_for)",
-      "backend/crates/edge/qip-orderbook/src/venue.rs:257-259 (is_stale == awaiting_snapshot; no clock)",
-      "backend/crates/edge/qip-edge/src/cell.rs:300,396 (CellConfig::max_staleness declared and defaulted; rg max_staleness finds no reader in qip-edge)",
-      "backend/crates/edge/qip-feature-dag/src/definition.rs:115-119 (fresh() hides a state older than max_staleness); src/engine.rs:200-215",
-      "backend/crates/apps/qip-edge-node/src/main.rs:360 (FeatureEngine::new(..., Duration::from_secs(5)))",
-      "backend/crates/edge/qip-edge/tests/unevaluated.rs:293-320 (a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing; the StaleBook row injects state.reset('a sequence gap was abandoned') at :232-235, not a stall)",
-      "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs:650 (a_feed_that_has_gone_quiet_makes_its_features_undefined)",
-      "backend/crates/edge/qip-strategy/tests/strategy.rs:1015 (a_signal_is_never_emitted_from_an_undefined_input)"
+      "backend/crates/edge/qip-edge/src/cell.rs (GATE_SILENT_FEED, Cell::feed_heartbeat, Cell::venue_withheld, Cell::route_for, Cell::venue_for)",
+      "backend/crates/apps/qip-edge-node/src/feed.rs (SimulatedFeed::publish: cell.feed_heartbeat(&self.venue, now))",
+      "test a_venue_whose_feed_stalls_gets_no_new_order_once_the_staleness_limit_is_crossed_while_a_venue_still_heard_keeps_trading (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test a_simulated_venue_that_did_not_move_is_still_heard_so_a_quiet_market_is_not_refused_as_a_lost_feed (backend/crates/apps/qip-edge-node/tests/feed_recovery.rs)",
+      "test a_feed_that_has_gone_quiet_makes_its_features_undefined (backend/crates/edge/qip-feature-dag/tests/feature_dag.rs) -- the feature-graph half, unchanged"
     ],
-    "gap": "No test stalls a feed through Cell::work and asserts that the strategies consuming it stop placing orders once the threshold is crossed while strategies on other feeds continue. That check is the requirement's own verification. The cell's routing-level staleness threshold (CellConfig::max_staleness) is dead configuration. A stall therefore stops a strategy only through undefined features. That works for a strategy whose rules read the stalled instrument's features, but nothing refuses under a named gate or journals the stall. A strategy whose features come from another instrument could still route an order against the silent venue's frozen book. The 'other feeds continue' half is unproven.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -458,11 +455,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test unevaluated a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing (gap-reset case); cargo test -p qip-feature-dag --test feature_dag a_feed_that_has_gone_quiet_makes_its_features_undefined; cargo test -p qip-strategy --test strategy a_signal_is_never_emitted_from_an_undefined_input. Needed: a Cell::work test that advances time past the threshold with one venue's feed silent and another live, and asserts which strategies stop.",
+    "verification": "cargo test -p qip-edge --test venue_failure a_venue_whose_feed_stalls_gets_no_new_order; cargo test -p qip-edge-node --test feed_recovery a_simulated_venue_that_did_not_move. Mutations, each restored byte-for-byte: the venue_withheld refusal removed from route_for, the stalled venue still received an order (left [(XLON, obj-ACME), (XPAR, obj-BETA)] right [(XPAR, obj-BETA)]); the heartbeat removed from SimulatedFeed::publish, a quiet venue was refused as a silent feed after sixty seconds.",
     "work_item": "E04",
     "tier": "T0",
     "size": "S",
-    "notes": "Not deployable because execution_nodes = {} in every environment. The unread CellConfig::max_staleness is a limit that cannot fire, the defect class risk-and-execution.md names, and it should either gate route_for on book age or be deleted. verify: COMPLETE -> PARTIAL. The cited test does not exercise the requirement: its StaleBook row calls state.reset('a sequence gap was abandoned') (unevaluated.rs:232-235), so it proves the gap-reset path and not a stalled feed crossing a staleness threshold. The verifier read VenueState::is_stale, which returns awaiting_snapshot and reads no clock. The only book-age threshold on the cell, CellConfig::max_staleness, has no reader (rg max_staleness over backend/crates: only the declaration and the default in qip-edge). The feature-graph staleness path does stop a feature-dependent strategy on a stall, and its two halves were run on 2026-09-25: unevaluated 'test result: ok. 3 passed', feature_dag '1 passed', strategy '1 passed'. The assessor's own note conceded that 'other feeds continue' was unproven."
+    "notes": "Closed in RES round 3. The test's strategy is a constant rule that reads no feature, so the feature graph cannot be what stops it. Silence is judged per venue, not per feed or instrument. A venue never heard is not judged silent: a book handed to the cell by Cell::track with no feed behind it has no silence to measure, and the other book gates apply to it. Not deployable: execution_nodes = {} in every environment."
   },
   {
     "id": "RES-085",
@@ -492,15 +489,16 @@
   },
   {
     "id": "RES-086",
-    "status": "PARTIAL",
-    "current": "For a feed loss that shows up as a sequence gap, the incident half exists. Cell::on_bytes journals Decision::GapDetected{stream,detail} for every gap event the sequencer reports (cell.rs:2805-2815). Cell::refuse (cell.rs:7486) then journals Decision::Refused{gate:'stale_book'} and increments qip_edge_refusals_total{gate='stale_book'} on each routing attempt against the reset book. For a feed that simply goes silent, nothing is journaled: no gap opens, the book is not marked stale, and the strategy that stops does so by emitting nothing from undefined features (RES-084). No reconciliation event is recorded when a book is resynchronised or a feed resumes. ReconciliationRequired and VenueReconciled (journal.rs:328-343) belong to §36.3's node-crash venue reconciliation, not to feed recovery.",
+    "status": "COMPLETE",
+    "current": "A feed loss is in the journal at both ends. When a venue's feed has been silent past CellConfig::max_staleness the next pass records Decision::FeedSilent {venue, last_heard, limit_ms}, once per stall rather than once per pass and before the halt check. When the feed is heard again Cell::feed_heartbeat records Decision::FeedReconciled {venue, silent_from, resting_orders, stale_books}: the interval the cell could not see, how many orders it still had open at that venue across it, and how many of the venue's books are still awaiting a rebuild. A loss that shows up as a sequence gap is recorded as GapDetected and, per book, BookReset and BookResynchronised (RES-022, RES-023).",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:2805-2815 (GapDetected journaled on a sequencer gap; no test asserts it: rg GapDetected finds no test)",
-      "backend/crates/edge/qip-edge/src/cell.rs:7486-7502 (refuse, journals Decision::Refused)",
-      "backend/crates/edge/qip-edge/tests/unevaluated.rs:293-320 (proves the stale_book refusal after an injected reset)",
-      "backend/crates/edge/qip-edge/src/journal.rs:328-343 (ReconciliationRequired/VenueReconciled are node-crash venue reconciliation, not feed recovery)"
+      "backend/crates/libs/qip-contracts/src/reflex.rs (Decision::FeedSilent, Decision::FeedReconciled)",
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::review_venues, Cell::feed_heartbeat)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs (is_outcome classifies both kinds, with no wildcard arm)",
+      "test a_stalled_feed_is_journaled_once_as_an_incident_and_its_return_as_a_reconciliation_of_what_rested_there (backend/crates/edge/qip-edge/tests/venue_failure.rs)",
+      "test a_sequence_gap_or_a_crossed_book_marks_exactly_the_affected_books_unreliable_until_they_are_rebuilt (backend/crates/edge/qip-edge/tests/venue_failure.rs) -- the gap form's entries"
     ],
-    "gap": "A silent feed produces no incident event. No reconciliation event distinct from the absence of further refusals is recorded when a feed recovers. GapDetected is journaled but no test asserts it.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -510,11 +508,11 @@
       "RES-084"
     ],
     "blocked_by": "",
-    "verification": "integration: stall a feed, assert an incident is journaled; after recovery, assert a reconciliation event. Only the first half is proven today (cargo test -p qip-edge --test unevaluated a_figure_the_cell_cannot_evaluate_refuses_under_a_named_gate_and_sends_nothing).",
+    "verification": "cargo test -p qip-edge --test venue_failure a_stalled_feed_is_journaled_once. Mutations, each restored byte-for-byte: the silent set not written, the incident was journaled on both passes of the stall instead of once; the FeedReconciled record removed, the reconciliation list was empty (left [] right [(XLON, .., 1, 0, ..)]).",
     "work_item": "E04",
     "tier": "T2",
     "size": "S",
-    "notes": "verify: status and flags kept. Added GapDetected, the actual incident record the assessor did not cite. It has no test. Recorded that a silent stall journals nothing, and that the tree's two reconciliation decisions concern node-crash venue reconciliation, not feed recovery."
+    "notes": "Closed in RES round 3. The reconciliation entry reconciles the cell's own view across the blind interval; it is not the venue's account of what filled. That comparison is the drop-copy reconciler's and runs every pass regardless (RES-019). Neither kind has a metric: they are chain entries. Not deployable: execution_nodes = {}."
   },
   {
     "id": "RES-087",

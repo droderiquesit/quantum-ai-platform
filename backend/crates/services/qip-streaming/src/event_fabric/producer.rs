@@ -226,6 +226,68 @@ impl ProducerTable {
             .and_then(|state| state.epoch)
     }
 
+    /// Register a new incarnation of `producer_id` at `partition` and return
+    /// its epoch (CONTRACT-049): one past the highest this table knows. Every
+    /// older epoch is fenced from this moment, not from the successor's first
+    /// append, so a paused process that wakes after its replacement started
+    /// cannot slip a write in during the gap.
+    pub fn init(&mut self, producer_id: &str, partition: &str) -> Result<u64> {
+        let state = self
+            .producers
+            .entry(lookup_key(producer_id, partition))
+            .or_default();
+        let next = match state.epoch {
+            Some(epoch) => epoch.checked_add(1).ok_or_else(|| {
+                Error::numeric(format!(
+                    "producer {producer_id} at partition {partition} has used every epoch a \
+                     u64 can carry; refusing rather than wrapping to 0"
+                ))
+            })?,
+            None => 1,
+        };
+        state.epoch = Some(next);
+        Ok(next)
+    }
+
+    /// Seed the table from a batch already durable in the partition, at a
+    /// restart. Unlike [`Self::admit`] it never refuses on sequence: the
+    /// batch is history, and the table must end up believing what the log
+    /// already holds, in log order. Without this a restarted broker starts
+    /// from an empty table, reads a producer's retry of an acknowledged-but-
+    /// unconfirmed batch as the next new one and appends it twice, and hands
+    /// a new incarnation epoch 1 again so it fences nobody (RES-058).
+    pub fn restore(
+        &mut self,
+        producer_id: &str,
+        partition: &str,
+        epoch: u64,
+        base_sequence: u64,
+        record_count: u64,
+        payload_hash: ContentHash,
+    ) -> Result<()> {
+        let next = base_sequence.checked_add(record_count).ok_or_else(|| {
+            Error::numeric(format!(
+                "a stored batch for producer {producer_id} at partition {partition} starting at                  sequence {base_sequence} with {record_count} records overflows a u64 sequence"
+            ))
+        })?;
+        let state = self
+            .producers
+            .entry(lookup_key(producer_id, partition))
+            .or_default();
+        state.epoch = Some(state.epoch.map_or(epoch, |held| held.max(epoch)));
+        state.last_sequence = Some(next.saturating_sub(1));
+        state.window.push_back(CachedBatch {
+            epoch,
+            base_sequence,
+            record_count,
+            payload_hash,
+        });
+        while state.window.len() > WINDOW_SIZE {
+            state.window.pop_front();
+        }
+        Ok(())
+    }
+
     /// Offer one batch already stamped with a drain-assigned producer
     /// identity and sequence. See the module documentation for the decision
     /// order this follows.

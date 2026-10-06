@@ -272,3 +272,36 @@ run "a_service_name_too_long_to_derive_a_resource_name_from_is_refused" {
 
   expect_failures = [var.service_name]
 }
+
+# SEC-048: the portal's policy refuses injection by content, and blocks.
+run "the_portal_policy_blocks_sql_injection_and_cross_site_scripting_before_the_rate_limit" {
+  command = plan
+
+  variables {
+    hostname = "portal.algorik.ai"
+  }
+
+  assert {
+    condition = length([
+      for rule in google_compute_security_policy.edge.rule : rule
+      if rule.action == "deny(403)" && length(rule.match) > 0 && length(rule.match[0].expr) > 0 && strcontains(rule.match[0].expr[0].expression, "evaluatePreconfiguredWaf('sqli-v33-stable'")
+    ]) == 1
+    error_message = "the portal policy carries no blocking SQL-injection rule; an admitted caller's payload reaches the application"
+  }
+
+  assert {
+    condition = length([
+      for rule in google_compute_security_policy.edge.rule : rule
+      if rule.action == "deny(403)" && length(rule.match) > 0 && length(rule.match[0].expr) > 0 && strcontains(rule.match[0].expr[0].expression, "evaluatePreconfiguredWaf('xss-v33-stable'")
+    ]) == 1
+    error_message = "the portal policy carries no blocking cross-site-scripting rule"
+  }
+
+  assert {
+    condition = alltrue([
+      for rule in google_compute_security_policy.edge.rule : rule.priority < 2000
+      if length(rule.match) > 0 && length(rule.match[0].expr) > 0
+    ])
+    error_message = "a WAF rule is ordered after the rate limit; the injection would be counted against a budget before it was refused"
+  }
+}

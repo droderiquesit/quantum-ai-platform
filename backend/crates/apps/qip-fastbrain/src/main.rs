@@ -83,7 +83,12 @@ fn run() -> Result<()> {
         .storage
         .preflight()
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
-    let archive = ChainArchive::open(config.storage.key_value("event-log")?)?;
+    // The same hand-over that archives the log seals the platform's own
+    // orders, fills and verdicts into the Tick/Internal Lake (TICK-065).
+    // Opened here, so a lake that cannot be opened stops the process rather
+    // than the first archived cycle.
+    let archive = ChainArchive::open(config.storage.key_value("event-log")?)?
+        .with_outcome_lake(config.storage.blobs(qip_storage::lake::LAKE_NAMESPACE)?);
 
     // Bound before the platform is assembled: a busy port is a deployment
     // mistake, and finding it after building a platform wastes the start-up.
@@ -194,7 +199,7 @@ fn run() -> Result<()> {
     // while the platform recorded into one nothing could reach — which is the
     // shape of the defect this whole surface exists to close, rebuilt one
     // level up.
-    let telemetry = Telemetry::new("qip-fastbrain", clock.clone());
+    let telemetry = Telemetry::foreground("qip-fastbrain", clock.clone());
     let metrics = telemetry.metrics.clone();
     // A second handle on the same three `Arc`s, taken for the same reason the
     // registry handle above is: the drain thread must read the registry the
@@ -335,6 +340,7 @@ fn run() -> Result<()> {
             .map_err(|error| Error::io(format!("cannot start the health thread: {error}")))?;
     }
 
+    let mut cycle_log = qip_fastbrain::cycle_log::CycleLog::new(qip_core::Duration::from_secs(10));
     let summary = node::run(
         &mut platform,
         &mut feed,
@@ -344,18 +350,16 @@ fn run() -> Result<()> {
         &stop,
         &clock,
         |outcome| {
-            println!();
-            println!("{}", outcome.report.summarise());
-            println!(
-                "  {:>10} {:>4}  {}us against a {}ms ceiling{}",
-                "elapsed",
-                "",
-                outcome.elapsed.as_nanos() / 1_000,
-                config.cycle_budget.as_millis(),
-                if outcome.over_budget { "  BREACH" } else { "" }
-            );
-            for rejection in &outcome.rejections {
-                println!("             !  {rejection}");
+            // A bounded line, not the cycle's report: stdout is Cloud Logging on
+            // Cloud Run, and the event log and metrics already hold every cycle.
+            if let Some(line) = cycle_log.observe(
+                clock.now(),
+                outcome.report.cycle,
+                outcome.rejections.len(),
+                outcome.over_budget,
+                outcome.elapsed,
+            ) {
+                println!("{line}");
             }
         },
     )?;

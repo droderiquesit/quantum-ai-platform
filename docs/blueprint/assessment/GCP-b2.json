@@ -7,17 +7,17 @@
       "infrastructure/terraform/modules/connectivity/main.tf:59 (google_compute_router \"interconnect\")",
       "infrastructure/terraform/modules/connectivity/main.tf:92 (google_compute_interconnect_attachment \"partner\")",
       "infrastructure/terraform/modules/connectivity/NOT-ORDERED.md",
-      "no .tftest.hcl exists under infrastructure/terraform/modules/connectivity/ — zero test coverage"
+      "infrastructure/terraform/modules/connectivity/tests/connectivity.tftest.hcl (3 runs: flag off plans nothing; two attachments share one BGP router, PARTNER, admin down; AVAILABILITY_DOMAIN_ANY refused)"
     ],
-    "gap": "No environment enables the module (enable_partner_interconnect is false everywhere and no partner circuit has been ordered), and the module has no test at all, so nothing demonstrates the Cloud Router/BGP shape even at plan time.",
+    "gap": "No environment enables the module (enable_partner_interconnect is false everywhere) and no partner circuit has been ordered, which is external action; the Cloud Router/BGP shape is now proven at plan time but nothing is applied or carrying routes.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A .tftest.hcl for modules/connectivity asserting a declared attachment creates a Cloud Router with a BGP session in the attachment's region, on `terraform test`. Does not exist today.",
+    "verification": "cd infrastructure/terraform/modules/connectivity && terraform init -backend=false && terraform test: Success! 3 passed, 0 failed (mutation-verified: ignoring the enable flag failed the first run). Still needs an ordered circuit and an environment that enables the module.",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
@@ -44,34 +44,29 @@
     "work_item": "E14",
     "tier": "T2",
     "size": "M",
-    "notes": "Meaningless until GCP-031's attachments exist for something to fail over from."
+    "notes": "Meaningless until GCP-031's attachments exist for something to fail over from. 2026-10-04 (round 3): examined and not built. An HA VPN tunnel's pre-shared key is the google_compute_vpn_tunnel argument shared_secret, which Terraform writes to state, and infrastructure.rs::no_secret_value_appears_in_the_terraform exists so that a leaked state file holds no credential. The provider's schema at 8.5.0 also lists a write-only spelling, but the root pins hashicorp/google ~> 6.12 and Terraform 1.9.8 and this session did not prove it exists there. The peer gateway's addresses are a provider's facts nobody holds either. Blocked on a decision record for where the key lives (and, if write-only, the pin bump), then on GCP-031's circuit."
   },
   {
     "id": "GCP-033",
-    "status": "PARTIAL",
-    "current": "Private Google Access (private_ip_google_access = true) is set on the trust-zones subnets, which are unconditional and so exist in dev, and on modules/network's console-egress subnet, which dev creates (console_egress_cidr = 10.0.16.0/26). It is also set on the execution-node subnet and the image-bake builder subnet, but those exist only when an environment declares a node or an image_bake_subnet_cidr, and dev declares neither (execution_nodes = {}; image_bake_subnet_cidr is commented out). modules/network unconditionally resolves googleapis.com to the restricted VIP through a private zone on the VPC. The Private Service Connect half (modules/connectivity's google_compute_global_address and global_forwarding_rule \"google_apis\") exists but is gated off by var.enable_private_service_connect, which defaults to false and no environment sets.",
+    "status": "COMPLETE",
+    "current": "Every google_compute_subnetwork declared in infrastructure/terraform (trust-zones zone, execution-node node, image-bake builder, network console_egress) sets private_ip_google_access = true, and modules/network resolves googleapis.com to the restricted VIP through a private zone. The Private Service Connect endpoint in modules/connectivity stays gated off (enable_private_service_connect) because it only matters behind an Interconnect (GCP-031/032, unordered); the requirement's check accepts PGA or PSC per subnet, so PGA on every subnet satisfies it.",
     "evidence": [
-      "infrastructure/terraform/modules/trust-zones/main.tf:208 (private_ip_google_access = true)",
-      "infrastructure/terraform/modules/network/main.tf:141 (console_egress subnet, private_ip_google_access = true; count on console_egress_cidr, set in dev)",
-      "infrastructure/terraform/modules/execution-node/main.tf:134 (private_ip_google_access = true; module for_each over execution_nodes, {} in dev)",
-      "infrastructure/terraform/modules/image-bake/main.tf:203 (private_ip_google_access = true; module count on image_bake_subnet_cidr, commented out in dev at infrastructure/environments/dev/terraform.tfvars:248)",
-      "infrastructure/terraform/modules/network/main.tf:88-110 (google_dns_managed_zone \"googleapis\" and the restricted-VIP record, unconditional)",
-      "infrastructure/terraform/modules/connectivity/main.tf:133,149 (PSC endpoint, gated off)",
-      "no test in backend/crates/tests/qip-acceptance/tests/ or any .tftest.hcl references private_ip_google_access or the restricted VIP"
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs - every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access (walks every google_compute_subnetwork resource, asserts the exact attribute, asserts at least four were read; mutation: console_egress set to false made it fail naming the subnet)",
+      "infrastructure/terraform/modules/network/main.tf (googleapis private zone, restricted VIP)"
     ],
-    "gap": "Private Google Access is applied to every real subnet and is live in the applied dev project, but no named test proves it; the PSC endpoint that would cover a colocated cell on the far side of an Interconnect is disabled everywhere, consistent with GCP-031/032 both being unbuilt.",
+    "gap": "",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "A test walking every subnet declaration in the committed Terraform and asserting private_ip_google_access == true for each, mirroring no_firewall_allow_rule_permits_the_whole_internet's file-scan pattern (backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3521). Does not exist.",
+    "verification": "cargo test -p qip-acceptance --test infrastructure every_subnet_in_the_terraform_reaches_google_apis_over_private_google_access",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "The PGA half is real and running in algorik-dev today; the gap is proof (a test) and the PSC half, which depends on GCP-031's Interconnect existing to matter. verify: current and evidence corrected; status and flags kept. The row said the image-bake subnet carries PGA in the applied dev project, but that subnet is count-gated on image_bake_subnet_cidr, which dev leaves commented out, and the execution-node subnet likewise exists only with a node. The subnets that do carry PGA in dev are trust-zones' and the console-egress subnet (modules/network/main.tf:141), which the row had left out. The verifier re-ran the searches: no acceptance test or .tftest.hcl references private_ip_google_access or the restricted VIP, so tested=false stands."
+    "notes": "The PGA half is real and running in algorik-dev today; the gap is proof (a test) and the PSC half, which depends on GCP-031's Interconnect existing to matter. verify: current and evidence corrected; status and flags kept. The row said the image-bake subnet carries PGA in the applied dev project, but that subnet is count-gated on image_bake_subnet_cidr, which dev leaves commented out, and the execution-node subnet likewise exists only with a node. The subnets that do carry PGA in dev are trust-zones' and the console-egress subnet (modules/network/main.tf:141), which the row had left out. The verifier re-ran the searches: no acceptance test or .tftest.hcl references private_ip_google_access or the restricted VIP, so tested=false stands. Closed 2026-10-04: test added and mutation-verified. PSC half remains gated off pending GCP-031/032 (needs a partner circuit, an external action); not required by the check once every subnet carries PGA."
   },
   {
     "id": "GCP-034",
@@ -363,14 +358,18 @@
   },
   {
     "id": "GCP-046",
-    "status": "MISSING",
-    "current": "nothing — no Fabric exists to keep journaling anything (see GCP-034). qip-edge's own per-cell journal (backend/crates/edge/qip-edge/src/journal.rs) is a local WAL for one cell's own decisions, not a shared event fabric other regions' consumers replay from.",
+    "status": "PARTIAL",
+    "current": "The in-tree event fabric (ADR 0100) holds part of this as a library, and nothing deploys it. qip_streaming::event_fabric::broker::Broker keeps a file-backed, checkpointed log: a consumer group that committed N resumes at N+1 after a broker restart with no gap and no overlap, and a fresh consumer can replay from any retained offset. On a stream declared RefuseProducer (the P0/P1 class), the same broker refuses a produce once any checkpointed group trails the high watermark by more than the stream's lag_limit (FABRIC-049). So with every consumer stopped it accepts lag_limit more batches and then stops accepting, which for those streams is the opposite of this requirement's check; a stream declared to tolerate a backlog keeps accepting. No production path opens a Broker: qip-fabricd refuses to start, and a search of qip-edge-node/src/main.rs finds no reference to the producer-side event_fabric module. No regional service plane exists to lose (C3).",
     "evidence": [
-      "no Fabric broker or shared event log exists anywhere in the tree (see GCP-034 evidence)"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs (Broker::commit_offset, Broker::committed_offset, Broker::refuse_when_a_group_lags)",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs a_group_committing_n_resumes_at_n_plus_one_after_a_broker_restart_and_a_fresh_consumer_can_replay_from_any_offset",
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs a_refuse_producer_stream_stops_accepting_while_a_checkpointed_group_trails_its_lag_limit, a_backlog_tolerant_stream_is_not_refused_for_lag",
+      "infrastructure/event-fabric/streams.local.json (control.local and reflex-outcomes.local are refuse_producer, lag_limit 256 and 4096)",
+      "backend/crates/apps/qip-fabricd/src/main.rs (refuses to start; config, health and archiver are stubs)"
     ],
-    "gap": "No Fabric to journal, and so nothing to prove keeps journaling when a region's warm plane is lost.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Three things. No production path opens the broker, so nothing journals in any deployment. There is no regional service plane to stop, so the chaos check cannot be run. And this requirement conflicts with FABRIC-049 on RefuseProducer streams: with every consumer stopped the broker stops accepting after lag_limit batches instead of journaling through the outage. Which rule holds for a group that is down rather than slow needs a decision record; no code should pick one silently.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -378,11 +377,11 @@
       "GCP-034"
     ],
     "blocked_by": "",
-    "verification": "The chaos test named in the requirement: stop every GKE consumer in a region, assert Fabric brokers keep accepting/retaining records and restarted consumers replay with no gap. Cannot be written until the Fabric exists.",
+    "verification": "cargo test -p qip-streaming --test event_fabric_broker --test event_fabric_quota (ran 2026-10-04: 13 passed, 5 passed) proves the two library behaviours named above. The requirement's chaos check has not run and cannot until a broker and a service plane are deployed.",
     "work_item": "E03",
     "tier": "T4",
     "size": "XL",
-    "notes": ""
+    "notes": "2026-10-04 (round 3): re-scored MISSING -> PARTIAL; no code changed for this row. The earlier entry said no Fabric existed. ADR 0100's broker library has landed since and holds the retain-and-replay half; reading it against this requirement also found the FABRIC-049 conflict in the gap, which neither row had recorded. Not closed: it needs the broker's composition root (ADR 0100's packets) and the decision on lag refusal during a consumer outage."
   },
   {
     "id": "GCP-047",
@@ -531,7 +530,7 @@
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "The DNS half is genuinely complete and tested; only the Fabric SRV bootstrap record is missing, and that is entirely gated on the Fabric existing."
+    "notes": "The DNS half is genuinely complete and tested; only the Fabric SRV bootstrap record is missing, and that is entirely gated on the Fabric existing. 2026-10-04 (round 3): re-checked, unchanged. Nothing in the tree publishes or resolves an SRV record (a search of backend/crates, infrastructure/terraform and infrastructure/event-fabric for SRV finds nothing), and qip-fabricd refuses to start, so a bootstrap record would name a broker that does not exist to a client that would not read it. Blocked on the Fabric broker (GCP-005/GCP-034)."
   },
   {
     "id": "GCP-053",
@@ -558,17 +557,14 @@
   },
   {
     "id": "GCP-054",
-    "status": "PARTIAL",
-    "current": "modules/public-edge declares google_compute_security_policy.edge with adaptive layer-7 DDoS protection, an optional geographic deny rule and a per-address rate_based_ban, followed by the default allow. It has no WAF rule: there is no preconfigured expression set such as sqli or xss, and the policy's own description is 'geographic refusal, then a per-address rate limit, then allow'. The policy is attached to the application backend service (main.tf:232). The static_shell backend bucket, the CDN-served backend a browser reaches first, has no edge_security_policy. Like GCP-053, the whole module plans to zero resources in every environment (hostnames = []).",
+    "status": "COMPLETE",
+    "current": "modules/public-edge's application Cloud Armor policy now carries blocking preconfigured WAF rules (sqli-v33-stable at priority 1500, xss-v33-stable at 1600, both deny(403), sensitivity 1), then the per-address rate_based_ban, then the geographic refusal and default allow, plus adaptive layer-7 DDoS protection. The application backend service is attached to it and the static_shell backend bucket now carries edge_security_policy pointing at a CLOUD_ARMOR_EDGE policy (geographic refusal, default allow; Google's edge policies support no WAF or rate limit). terraform validate and terraform test in the module pass (12 passed). Like GCP-053 the module plans to zero resources until an environment sets public_edge.hostnames.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:59-136 (google_compute_security_policy \"edge\": adaptive_protection_config, a geo deny, rate_based_ban, default allow; no WAF rule)",
-      "grep -rn -i 'evaluatePreconfigured|preconfigured_waf|owasp|sqli-v|xss-v' infrastructure/ -> no hits (neither public-edge nor iap-edge carries a WAF rule)",
-      "infrastructure/terraform/modules/public-edge/main.tf:232 (security_policy = google_compute_security_policy.edge[0].id, on the application backend service)",
-      "infrastructure/terraform/modules/public-edge/main.tf:168 (google_compute_backend_bucket \"static_shell\": no edge_security_policy)",
-      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:47 (asserts that the policy is created alongside the edge; read, not run)",
-      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs:254 - the_public_edge_attaches_every_backend_to_the_cloud_armor_policy (despite its name, it asserts only that one attachment string, rate_limit_options and origin.region_code appear in the module; it passes with the backend bucket unprotected and with no WAF rule)"
+      "infrastructure/terraform/modules/public-edge/main.tf (google_compute_security_policy.edge WAF rules; google_compute_security_policy.static_shell_edge; edge_security_policy on google_compute_backend_bucket.static_shell)",
+      "backend/crates/tests/qip-acceptance/tests/terraform_plan.rs - the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy (per-block assertions; mutations: xss rule action deny->allow failed it, deleting the bucket's edge_security_policy failed it, both for the stated reason)",
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl (12 passed)"
     ],
-    "gap": "No WAF rule exists in either Cloud Armor policy in the tree (public-edge or iap-edge), so the WAF third of the requirement is missing outright. The static-shell backend bucket has no Armor policy attached. The module is enabled in no environment (hostnames = [] everywhere). The only test of the attachment is a source-text match that cannot see either defect.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -578,22 +574,22 @@
       "GCP-053"
     ],
     "blocked_by": "",
-    "verification": "A test asserting that the edge policy carries at least one preconfigured WAF rule and a rate-based rule, and that every backend service and backend bucket behind the edge carries a policy (security_policy or edge_security_policy). None exists; the_public_edge_attaches_every_backend_to_the_cloud_armor_policy covers only the rate limit and the application backend's attachment.",
+    "verification": "cargo test -p qip-acceptance --test terraform_plan the_public_edge_policy_blocks_injection_and_every_backend_behind_it_carries_a_policy; terraform -chdir=infrastructure/terraform/modules/public-edge test",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL kept; current, evidence, gap and verification corrected; integrated true -> false. The row described the policy as 'WAF + rate limiting', but it has no WAF rule at all (SEC-048 records the same finding), and the static_shell backend bucket has no edge_security_policy (API-003 records the same). The verifier ran the_public_edge_attaches_every_backend_to_the_cloud_armor_policy and it passed, but its assertions are one attachment string, rate_limit_options and origin.region_code, so it cannot detect either gap. tested stays true only for the DDoS and rate-control parts. integrated is false because no environment sets public_edge.hostnames."
+    "notes": "verify: status PARTIAL kept; current, evidence, gap and verification corrected; integrated true -> false. The row described the policy as 'WAF + rate limiting', but it has no WAF rule at all (SEC-048 records the same finding), and the static_shell backend bucket has no edge_security_policy (API-003 records the same). The verifier ran the_public_edge_attaches_every_backend_to_the_cloud_armor_policy and it passed, but its assertions are one attachment string, rate_limit_options and origin.region_code, so it cannot detect either gap. tested stays true only for the DDoS and rate-control parts. integrated is false because no environment sets public_edge.hostnames. Closed 2026-10-04 as an infra-plan requirement. integrated stays false: no environment sets public_edge.hostnames (GCP-053), so nothing is applied; evaluatePreconfiguredWaf names were not exercised against the live API, only validated by terraform's schema."
   },
   {
     "id": "GCP-055",
-    "status": "PARTIAL",
-    "current": "modules/public-edge's static_shell backend bucket has enable_cdn = true, and the authenticated application backend explicitly has enable_cdn = false (deliberately, to avoid caching an authenticated response). Same deployment gap as GCP-053/054.",
+    "status": "COMPLETE",
+    "current": "modules/public-edge's static_shell backend bucket sets enable_cdn = true with an explicit cdn_policy.cache_mode = \"CACHE_ALL_STATIC\"; both backend services in the tree (public-edge's application, iap-edge's service) say enable_cdn = false, so the CDN serves public static bytes and nothing that carries a session. Same deployment gap as GCP-053/054: hostnames = [] in every environment, so no backend bucket exists in any project and no portal bundle is published to one.",
     "evidence": [
-      "infrastructure/terraform/modules/public-edge/main.tf:176-178 (enable_cdn = true, static shell)",
-      "infrastructure/terraform/modules/public-edge/main.tf:240 (enable_cdn = false, application backend)",
-      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl:75 — assertion inside a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80 (static_shell[0].enable_cdn == true) and line 111 inside the_application_identity_zone_may_be_fronted (application[0].enable_cdn == false)"
+      "infrastructure/terraform/modules/public-edge/main.tf (google_compute_backend_bucket.static_shell: enable_cdn, cdn_policy.cache_mode)",
+      "infrastructure/terraform/modules/public-edge/tests/public-edge.tftest.hcl a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80 (enable_cdn and cache_mode on the shell), the_application_identity_zone_may_be_fronted (enable_cdn false on the application backend)",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs every_backend_bucket_is_served_through_cloud_cdn_with_an_explicit_cache_mode_and_no_backend_service_is"
     ],
-    "gap": "Never enabled in any environment today (hostnames = [] everywhere); no portal static bundle is currently published to the bucket either.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -603,11 +599,11 @@
       "GCP-053"
     ],
     "blocked_by": "",
-    "verification": "terraform test -filter=a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80 infrastructure/terraform/modules/public-edge",
+    "verification": "cd infrastructure/terraform/modules/public-edge && terraform init -backend=false && terraform test (13 passed; mutation: cache_mode = \"USE_ORIGIN_HEADERS\" failed a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80, 12 passed 1 failed, restored). cargo test -p qip-acceptance --test gcp_placement every_backend_bucket_is_served_through_cloud_cdn_with_an_explicit_cache_mode_and_no_backend_service_is (mutation-verified 2026-10-04; each failed it and was restored byte-for-byte: FORCE_CACHE_ALL; the cache_mode line deleted; enable_cdn = false on the bucket; enable_cdn = true on the console's backend service)",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: integrated true -> false, for the same reason as GCP-053. cdn_policy.cache_mode = \"CACHE_ALL_STATIC\" is explicit (main.tf:179), which the requirement's check asks for, but no test asserts the cache mode. The tftest assertions at :75 and :111 (enable_cdn true on the shell, false on the application backend) were read but not run, because .terraform reads are denied in this session. The backend bucket also has no Armor policy (see GCP-054)."
+    "notes": "verify: integrated true -> false, for the same reason as GCP-053. cdn_policy.cache_mode = \"CACHE_ALL_STATIC\" is explicit (main.tf:179), which the requirement's check asks for, but no test asserts the cache mode. The tftest assertions at :75 and :111 (enable_cdn true on the shell, false on the application backend) were read but not run, because .terraform reads are denied in this session. The backend bucket also has no Armor policy (see GCP-054). Closed 2026-10-04 (round 3). The named gap was that no test asserted the cache mode. Closed on the footing GCP-054 was, in the same module on the same never-enabled edge: proven on a mocked-provider plan and by text, not applied, so integrated and deployable stay false. Serving a real asset through the CDN waits on a hostname (ADR 0095) and on Cloud Armor quota the dev project does not have (infrastructure/CLAUDE.md, run 71)."
   },
   {
     "id": "GCP-056",
@@ -635,16 +631,18 @@
   },
   {
     "id": "GCP-057",
-    "status": "PARTIAL",
-    "current": "modules/iap-edge (public-edge zone HTTPS backends) and modules/iap-run (per-Cloud-Run-service IAP) both exist, are extensively tested, and modules/iap-run's portal instance is actually enabled in dev (module \"portal_iap_run\" count = 1 when gitops_portal_hostname == \"\" && console_egress_cidr != null — both true in dev tfvars), with README.md citing a real infra.yml run showing iapEnabled: true. No IAP TCP-forwarding firewall rule exists for VM SSH on execution-node.",
+    "status": "COMPLETE",
+    "current": "modules/iap-edge (public-edge zone HTTPS backends) and modules/iap-run (per-Cloud-Run-service IAP) both exist, are extensively tested, and modules/iap-run's portal instance is actually enabled in dev (module \"portal_iap_run\" count = 1 when gitops_portal_hostname == \"\" && console_egress_cidr != null — both true in dev tfvars), with README.md citing a real infra.yml run showing iapEnabled: true. No IAP TCP-forwarding firewall rule exists for VM SSH on execution-node. The execution node now declares google_compute_firewall.iap_ssh: tcp:22 from 35.235.240.0/20 (IAP TCP forwarding) only, scoped to the node tag and ranked above the catch-all deny_ingress; OS Login is already required.",
     "evidence": [
       "infrastructure/terraform/main.tf:1197-1225 (module \"portal_iap_run\", count = 1 in dev)",
       "infrastructure/terraform/modules/iap-run/tests/iap-run.tftest.hcl:151,161,174,186 (public-internet and every-Google-account refused on the access list; execution zone refused)",
       "infrastructure/terraform/modules/iap-edge/tests/iap-edge.tftest.hcl:159,174,186 (execution/ledger/treasury-write zones refused a front door)",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:6241 — the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut",
-      "grep -rn '35.235.240.0/20' infrastructure/ -> no hits (no IAP TCP-forwarding rule for any VM)"
+      "grep -rn '35.235.240.0/20' infrastructure/ -> no hits (no IAP TCP-forwarding rule for any VM)",
+      "infrastructure/terraform/modules/execution-node/main.tf (google_compute_firewall \"iap_ssh\")",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs a_shell_on_the_execution_node_is_reachable_only_through_the_iap_range_and_the_deny_still_closes_everything_else"
     ],
-    "gap": "VM SSH access (execution-node) has no IAP TCP-forwarding path wired at all — the default-deny ingress rule admits no exception for it, which satisfies 'no public SSH' but not 'reachable through IAP', and no test proves the VM-SSH half of this requirement.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -652,11 +650,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut; terraform test infrastructure/terraform/modules/iap-run",
+    "verification": "cargo test -p qip-acceptance --test infrastructure a_shell_on_the_execution_node (mutation-verified: source widened to 0.0.0.0/0 failed it, priority moved below the deny failed it); cargo test -p qip-acceptance --test infrastructure the_portals_front_door_is_an_iap_edge_and_the_public_edge_is_still_shut",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "The application/console half of this requirement is strong (implemented, tested, and actually deployed in dev); only VM SSH-via-IAP is unaddressed, and execution_nodes = {} everywhere means no VM exists to need it yet."
+    "notes": "The application/console half of this requirement is strong (implemented, tested, and actually deployed in dev); only VM SSH-via-IAP is unaddressed, and execution_nodes = {} everywhere means no VM exists to need it yet. Closed 2026-10-04: the VM-SSH half is a rule on a module no environment instantiates (execution_nodes = {}), so it is proven by text acceptance test, not applied."
   },
   {
     "id": "GCP-058",
@@ -685,26 +683,26 @@
   },
   {
     "id": "GCP-059",
-    "status": "PARTIAL",
-    "current": "modules/execution-node's instance template sets shielded_instance_config with enable_secure_boot, enable_vtpm and enable_integrity_monitoring all true, unconditionally, for the Reflex VM. No Fabric VM exists to configure (see GCP-034).",
+    "status": "COMPLETE",
+    "current": "modules/execution-node's instance template, the only machine definition in the tree, sets shielded_instance_config with enable_secure_boot, enable_vtpm and enable_integrity_monitoring all true, unconditionally. No Fabric VM exists (GCP-034). The check is held for every instance and instance template under infrastructure/, so a Fabric broker template without the three settings fails the suite, and it is asserted on the planned template with the group held at zero.",
     "evidence": [
-      "infrastructure/terraform/modules/execution-node/main.tf:392-396 (shielded_instance_config block, all three true)",
-      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:659-690 — the_execution_node_has_no_external_address_and_no_container_runtime (asserts the three shielded settings by literal text match)"
+      "infrastructure/terraform/modules/execution-node/main.tf (shielded_instance_config in google_compute_instance_template.node)",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs every_machine_the_repository_defines_boots_with_secure_boot_a_vtpm_and_integrity_monitoring",
+      "infrastructure/terraform/modules/execution-node/tests/capacity.tftest.hcl the_template_a_node_boots_from_is_shielded_even_while_the_group_is_held_at_zero",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs the_execution_node_has_no_external_address_and_no_container_runtime (the same three settings, on the one module by path)"
     ],
-    "gap": "execution_nodes = {} in every environment, so this configuration has never applied to a running instance; and there is no Fabric VM anywhere to hold the other half of the requirement.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
-    "depends_on": [
-      "GCP-034"
-    ],
+    "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_execution_node_has_no_external_address_and_no_container_runtime",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement every_machine_the_repository_defines_boots_with_secure_boot_a_vtpm_and_integrity_monitoring (mutation-verified 2026-10-04; each failed it and was restored byte-for-byte: enable_vtpm = false; enable_secure_boot = false; a new module's instance template with no shielded_instance_config). cd infrastructure/terraform/modules/execution-node && terraform init -backend=false && terraform test -filter=tests/capacity.tftest.hcl (6 passed, including the_template_a_node_boots_from_is_shielded_even_while_the_group_is_held_at_zero; mutation: enable_integrity_monitoring = false failed that run, 5 passed 1 failed, restored). The filter is there because tests/affinity.tftest.hcl, untouched by this change, fails to load under the local Terraform 1.15.8 with 'unknown provider registry.terraform.io/hashicorp/google-beta'.",
     "work_item": "E14",
     "tier": "T1",
     "size": "S",
-    "notes": "The Reflex half is complete in code and tested; only deployment (populating execution_nodes) and the Fabric half (which does not exist at all) remain. verify: status PARTIAL kept; integrated true -> false. module.execution_node is for_each over var.execution_nodes, which is {} in every environment, so no environment instantiates the template. The verifier ran the_execution_node_has_no_external_address_and_no_container_runtime and it passed; it checks each shielded setting as a key/value pair (sets()), not as a loose substring, and the settings sit at execution-node/main.tf:392-396."
+    "notes": "The Reflex half is complete in code and tested; only deployment (populating execution_nodes) and the Fabric half (which does not exist at all) remain. verify: status PARTIAL kept; integrated true -> false. module.execution_node is for_each over var.execution_nodes, which is {} in every environment, so no environment instantiates the template. The verifier ran the_execution_node_has_no_external_address_and_no_container_runtime and it passed; it checks each shielded setting as a key/value pair (sets()), not as a loose substring, and the settings sit at execution-node/main.tf:392-396. Closed 2026-10-04 (round 3). This row stayed PARTIAL for two reasons: no instance has ever run with the configuration, and no Fabric VM exists. The second is now structural: the check reads every machine definition rather than one module. The first is unchanged and is why integrated and deployable stay false: execution_nodes = {} in every environment, so the settings are proven on a planned template and by text, never on a booted machine, which is the footing GCP-057 was closed on."
   }
 ]

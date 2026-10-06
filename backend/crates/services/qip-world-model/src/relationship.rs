@@ -144,7 +144,7 @@ impl Relationship {
             from: from.into(),
             to: to.into(),
             kind,
-            weight: weight.clamp(0.0, 1.0),
+            weight,
             source: source.into(),
         }
     }

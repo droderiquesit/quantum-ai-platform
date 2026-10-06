@@ -148,3 +148,95 @@ fn a_snapshot_taken_twice_from_one_book_is_the_same_snapshot() -> Result<()> {
     assert_ne!(shallow.digest(), full.digest());
     Ok(())
 }
+
+/// A replay that starts from a checkpoint must be indistinguishable from one
+/// that started at the beginning, at every sequence number after it.
+///
+/// The failure it prevents: a checkpoint of levels alone restores the sizes and
+/// loses queue order, so the two replays agree on every level digest while
+/// every queue-position answer differs. The comparison therefore includes the
+/// checkpoint itself (which holds queue order), not just the snapshot digest.
+#[test]
+fn a_replay_started_from_a_checkpoint_matches_a_replay_from_the_start_at_every_sequence()
+-> Result<()> {
+    for (seed, cut) in [(0xC0FFEE_u64, 1_500usize), (0xBADC0DE, 3_333), (11, 4_000)] {
+        let stream = l3_stream(seed, 5_000);
+        let mut full = VenueState::order_by_order(instrument(), venue(), VenueStatus::Open);
+        let mut head = VenueState::order_by_order(instrument(), venue(), VenueStatus::Open);
+        for m in &stream[..cut] {
+            full.apply(m)?;
+            head.apply(m)?;
+        }
+        // Premise: the checkpoint is taken of a populated book, and it
+        // survives a trip through bytes as it would across a process boundary.
+        assert!(
+            head.book().resting_orders() > 50,
+            "seed {seed}: empty checkpoint"
+        );
+        let bytes = serde_json::to_vec(&head.checkpoint())?;
+        let mut resumed = VenueState::restore(&serde_json::from_slice(&bytes)?)?;
+        assert_eq!(resumed.snapshot().digest(), full.snapshot().digest());
+
+        for (i, m) in stream[cut..].iter().enumerate() {
+            full.apply(m)?;
+            resumed.apply(m)?;
+            assert_eq!(
+                resumed.snapshot().digest(),
+                full.snapshot().digest(),
+                "seed {seed}: diverged {i} messages after the checkpoint"
+            );
+        }
+        // Queue order is read off the live books, not off either checkpoint,
+        // so a checkpoint that scrambled it cannot vouch for itself.
+        let (f, r) = (
+            full.book().as_order_by_order().expect("order-by-order"),
+            resumed.book().as_order_by_order().expect("order-by-order"),
+        );
+        let bids = full.snapshot().book.bids;
+        assert!(bids.len() > 3, "seed {seed}: premise, several levels");
+        for level in &bids {
+            assert_eq!(
+                f.queue_at(BookSide::Bid, level.price),
+                r.queue_at(BookSide::Bid, level.price),
+                "seed {seed}: queue order diverged at {}",
+                level.price
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_aggregated_book_restored_from_a_checkpoint_replays_to_the_same_book() -> Result<()> {
+    let stream = l2_stream(0xA66, 4_000);
+    let mut full = Book::aggregated();
+    let mut head = Book::aggregated();
+    for m in &stream[..2_000] {
+        full.apply(&m.body)?;
+        head.apply(&m.body)?;
+    }
+    assert!(head.level_count(BookSide::Bid) > 5, "empty checkpoint");
+    let mut resumed = Book::restore(&head.checkpoint())?;
+    for m in &stream[2_000..] {
+        full.apply(&m.body)?;
+        resumed.apply(&m.body)?;
+        assert_eq!(resumed.snapshot().digest(), full.snapshot().digest());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_checkpoint_that_repeats_an_order_reference_is_refused_not_repaired() -> Result<()> {
+    let mut book = L3Book::new();
+    book.add(
+        1,
+        BookSide::Bid,
+        Decimal::from_int(100),
+        Decimal::from_int(5),
+    )?;
+    let mut cp = book.checkpoint();
+    assert_eq!(cp.orders.len(), 1, "premise: one resting order");
+    cp.orders.push(cp.orders[0]);
+    assert!(L3Book::restore(&cp).is_err());
+    Ok(())
+}

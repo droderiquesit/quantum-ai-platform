@@ -376,15 +376,15 @@
   },
   {
     "id": "GOV-016",
-    "status": "MISSING",
-    "current": "nothing implements an 'executable scope' concept for an opportunity to be outside of, so nothing can be shown to keep such an opportunity shadow-only. The 18-agent organisation's findings feed the same REASON pipeline for every instrument the desk holds data for; oms.rs's submit() gates are technical (feasibility/autonomy/venue), not eligibility-based, so an opportunity in an 'uncovered' instrument is not structurally blocked from reaching the order path -- only its advisory ComplianceControl finding is escalated (see GOV-006).",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/action.rs: ExecutableScope::route returns Routed::Shadow(ShadowRecord) for any instrument outside the scope; ShadowRecord has no conversion to ActionIntent and route takes no score, so a re-score cannot promote. An empty scope shadows everything.",
     "evidence": [
-      "backend/crates/agents/qip-investment-agents/src/control.rs:224-241 (uncovered != blocked)",
-      "grep -rn 'ActionIntent' backend --include=*.rs -> zero hits (docs/blueprint/assessment/CONTRACT-b2.json, CONTRACT-029, confirms no shadow-record type exists)"
+      "backend/crates/libs/qip-contracts/src/action.rs",
+      "backend/crates/libs/qip-contracts/tests/action.rs::an_opportunity_outside_the_executable_scope_stays_shadow_however_it_is_rescored"
     ],
-    "gap": "No executable-scope concept and no shadow-record type exist; an opportunity research finds outside a would-be executable scope cannot currently be shown to stay off the order path.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Library type only: no production path calls ExecutableScope yet and no executable-scope configuration is loaded from a composition root; the guarantee that no adapter call is emitted holds for this type, not yet for the kernel order path.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -393,7 +393,7 @@
       "GOV-010"
     ],
     "blocked_by": "",
-    "verification": "none exists.",
+    "verification": "cargo test -p qip-contracts --test action (6 passed). Mutation-verified: 12 mutations (inverted scope test, dropped revocation/budget declaration checks, removed revoked arm, rate >=, budget bound, audit flag forced true, justification accepting any evidence/any non-price ground, dropped plan/execution ordering, dropped goal link) each failed the named test and were restored byte-for-byte.",
     "work_item": "E16-actionintent-shadow-type",
     "tier": "T2",
     "size": "M",
@@ -401,22 +401,23 @@
   },
   {
     "id": "GOV-017",
-    "status": "MISSING",
-    "current": "nothing. No action-tool registry exists; no type requires an identity, permission scope, disclosure policy, audience/channel rules, rate/budget limits and revocation path to be declared before a tool can act. qip_agents::capability::CapabilitySet and qip_agents::budget::BudgetLedger are the nearest existing pattern -- a typed capability-tier grant and a pre-work-charged budget ledger for the 18 investment analyst agents -- but they govern read/compute/production/authority tiers for analysis agents, not identity/jurisdiction/channel/rollback declarations for external action tools.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/action.rs: ToolRegistry::register refuses a registration missing identity, scope, disclosure, channels, rate, budget or revocation path; authorise refuses unregistered, revoked, off-channel, over-rate and over-budget tools and audits every outcome.",
     "evidence": [
-      "docs/blueprint/assessment/AGENCY-b1.json, AGENCY-026",
-      "backend/crates/libs/qip-agents/src/capability.rs, budget.rs (nearest pattern, different contract)",
-      "grep -rn 'ActionIntent' backend --include=*.rs -> zero hits"
+      "backend/crates/libs/qip-contracts/src/action.rs",
+      "backend/crates/libs/qip-contracts/tests/action.rs::a_tool_missing_any_of_its_declarations_cannot_be_registered",
+      "backend/crates/libs/qip-contracts/tests/action.rs::an_unregistered_or_over_limit_tool_is_refused_and_every_decision_is_audited",
+      "backend/crates/libs/qip-contracts/tests/action.rs::after_revocation_the_tools_next_action_is_refused_and_the_refusal_is_audited"
     ],
-    "gap": "No action-tool registry, no six-field contract, no revocation path exists anywhere.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Library type only: no action tool exists in the platform yet to register, and the audit is an in-memory Vec not the hash-chained event log.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "none exists; would assert registering a tool with any of the six declarations missing is refused, and a revoked tool's next call is refused.",
+    "verification": "cargo test -p qip-contracts --test action (6 passed). Mutation-verified: 12 mutations (inverted scope test, dropped revocation/budget declaration checks, removed revoked arm, rate >=, budget bound, audit flag forced true, justification accepting any evidence/any non-price ground, dropped plan/execution ordering, dropped goal link) each failed the named test and were restored byte-for-byte.",
     "work_item": "E16",
     "tier": "T2",
     "size": "L",
@@ -424,15 +425,15 @@
   },
   {
     "id": "GOV-018",
-    "status": "MISSING",
-    "current": "nothing. No GoalSpec/plan/execution three-stage audit record exists. The kernel's SENSE..LEARN cycle (qip_kernel::cycle::Stage) enforces a fixed stage order for trading decisions but has no goal-approval/plan-approval/execution-approval semantics for anything to attribute separately.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/action.rs: GoalApproval -> PlanApproval -> ExecutionRecord: three records each naming its own actor and time; plan references goal id and execution references plan id (SHA-256 of the fields); a later stage predating its predecessor or lacking an actor is refused.",
     "evidence": [
-      "docs/blueprint/assessment/AGENCY-b2.json, AGENCY-034",
-      "backend/crates/runtime/qip-kernel/src/cycle.rs (Stage enum: Sense, Understand, Discover, Reason, Simulate, Decide, Act, Learn -- no goal/plan/execution approval concept)"
+      "backend/crates/libs/qip-contracts/src/action.rs",
+      "backend/crates/libs/qip-contracts/tests/action.rs::one_intervention_leaves_three_linked_records_each_with_its_own_actor_and_time"
     ],
-    "gap": "No three-stage (goal/plan/execution) audit record exists to attribute approvals separately; the kernel's cycle stages are a different property over a different object.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Library records only: no agency loop produces them and they are not written to the event log; the check was exercised on a constructed intervention, not a kernel cycle.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -440,7 +441,7 @@
       "GOV-017"
     ],
     "blocked_by": "",
-    "verification": "none exists.",
+    "verification": "cargo test -p qip-contracts --test action (6 passed). Mutation-verified: 12 mutations (inverted scope test, dropped revocation/budget declaration checks, removed revoked arm, rate >=, budget bound, audit flag forced true, justification accepting any evidence/any non-price ground, dropped plan/execution ordering, dropped goal link) each failed the named test and were restored byte-for-byte.",
     "work_item": "E16-agency-loop-state-machine",
     "tier": "T4",
     "size": "XL",
@@ -502,15 +503,15 @@
   },
   {
     "id": "GOV-021",
-    "status": "MISSING",
-    "current": "nothing. No ActionIntent or justification-record type exists at all, so there is nothing to check a justification against, let alone refuse one that names only expected profit or price impact.",
+    "status": "COMPLETE",
+    "current": "backend/crates/libs/qip-contracts/src/action.rs: check_justification refuses a justification whose grounds are only ExpectedProfit and/or DesiredPriceImpact, empty, or blank evidence; an Evidence ground passes on to the ordinary conduct checks.",
     "evidence": [
-      "docs/blueprint/assessment/CONTRACT-b2.json, CONTRACT-029",
-      "grep -rn 'ActionIntent' backend --include=*.rs -> zero hits"
+      "backend/crates/libs/qip-contracts/src/action.rs",
+      "backend/crates/libs/qip-contracts/tests/action.rs::a_justification_of_only_profit_or_price_impact_is_refused"
     ],
-    "gap": "No action record and no justification field exist to check.",
-    "implemented": false,
-    "tested": false,
+    "gap": "Pure gate only: no market-facing action record carries Ground values yet and GOV-020 conduct checks do not call it. Exercised on enumerated cases, not generated ones.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -518,7 +519,7 @@
       "GOV-020"
     ],
     "blocked_by": "",
-    "verification": "none exists.",
+    "verification": "cargo test -p qip-contracts --test action (6 passed). Mutation-verified: 12 mutations (inverted scope test, dropped revocation/budget declaration checks, removed revoked arm, rate >=, budget bound, audit flag forced true, justification accepting any evidence/any non-price ground, dropped plan/execution ordering, dropped goal link) each failed the named test and were restored byte-for-byte.",
     "work_item": "E16-actionintent-shadow-type",
     "tier": "T2",
     "size": "M",

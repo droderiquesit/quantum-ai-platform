@@ -942,5 +942,90 @@
       "FABRIC"
     ],
     "notes": "Split from the diagram edge set (see RISK-032). It belongs primarily to ASSET and is kept here because the raw item was assigned to RISK."
+  },
+  {
+    "id": "RISK-035",
+    "domain": "RISK",
+    "title": "An independent Hedge Brain searches for the cheapest executable hedge portfolio and every hedge passes the Risk Gate",
+    "statement": "Independent of alpha generation, the Hedge Brain maps exposures to drivers, Greeks, liquidity, funding, counterparty and tail, and searches for the cheapest executable hedge, weighing cost, basis risk, convexity, liquidity decay, counterparty risk and unwind feasibility. The source does not say hedges pass the Risk Gate; this requirement does, and only simulated hedges are built.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "28",
+        "section": "§14.1 Autonomous Hedge Brain"
+      },
+      {
+        "doc": "G3",
+        "page": "14",
+        "section": "§11.7 hedge-brain"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A simulated hedge is produced and refused by the Gate when it breaches a limit; no hedge reaches a venue."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "ASSET"
+    ]
+  },
+  {
+    "id": "RISK-036",
+    "domain": "RISK",
+    "title": "A Model-Risk Brain and Confidence Governor can only contract position size and capital grants, never expand them or bypass the Risk Gate",
+    "statement": "Position size and capital grants contract automatically when calibration decays, disagreement rises, evidence freshness falls, out-of-distribution scores spike or the regime no longer resembles training. The contraction is restriction-only and is evaluated as a limit by the deterministic Gate; a model never routes a pre-trade check.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "28",
+        "section": "§14.2 Confidence Governor & Model-Risk Brain"
+      },
+      {
+        "doc": "M12",
+        "page": "50",
+        "section": "§31.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Decayed calibration shrinks a size through the Gate; no input can enlarge one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ]
+  },
+  {
+    "id": "RISK-037",
+    "domain": "RISK",
+    "title": "Capital and hedge systems demonstrate survival across the listed tail scenarios",
+    "statement": "Risk generates adversarial and synthetic tail worlds and capital and hedge systems must survive liquidity freezes, venue outages, gap moves, correlation inversion, counterparty failure, model failure, data poisoning and simultaneous multi-market shocks.",
+    "rationale": "Added by ADR 0101, which adopts v12.0 and GCP v3.0 in direction on ADR 0099's terms. It is scored against the repository as found, and it authorises no execution.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M12",
+        "page": "28",
+        "section": "§14.3 Tail Universe & Survival Scenarios"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A suite runs each of the eight scenarios on a paper book and asserts capital invariants hold."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ]
   }
 ]

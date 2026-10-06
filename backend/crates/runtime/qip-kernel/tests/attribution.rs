@@ -20,6 +20,7 @@
 // assertion that aborts a `Result`-returning function is a bug. In a test the
 // assertion is the deliverable, and `?` is what keeps the setup readable.
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_compliance::incident::HaltScope;
 use qip_contracts::intent::Contributor;
@@ -696,5 +697,55 @@ fn a_fill_whose_shares_do_not_sum_to_it_is_refused_rather_than_booked_short() ->
         ),
         1
     );
+    Ok(())
+}
+
+#[test]
+fn the_outcome_backlog_rises_while_an_order_is_unfilled_and_returns_to_zero_when_it_fills()
+-> Result<()> {
+    // LEDGER-044. A ledger that has fallen behind what the cells did must
+    // be visible as a number, and a gauge that never fell back would read
+    // as a stall forever.
+    let mut platform = platform()?;
+    let backlog = |p: &Platform| {
+        p.telemetry()
+            .metrics
+            .snapshot()
+            .gauge(names::CENTRAL_OUTCOME_BACKLOG, &labels([]))
+    };
+    assert_eq!(
+        backlog(&platform),
+        None,
+        "the premise is a platform that has settled nothing"
+    );
+    let sent = order(
+        "ord-b",
+        BookSide::Ask,
+        dec!("10"),
+        dec!("50"),
+        vec![contributor("alpha", dec!("1"))],
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, start()).with_orders(vec![sent]),
+        start(),
+    )?;
+    assert_eq!(
+        backlog(&platform),
+        Some(1.0),
+        "an unfilled order is backlog"
+    );
+
+    let filled = self::fill(
+        "ord-b",
+        BookSide::Ask,
+        dec!("10"),
+        dec!("50"),
+        &[("alpha", dec!("10"))],
+    );
+    platform.ingest_cell_report(
+        CellReport::new(CELL, start()).with_fills(vec![filled]),
+        start(),
+    )?;
+    assert_eq!(backlog(&platform), Some(0.0), "a booked fill clears it");
     Ok(())
 }

@@ -32,6 +32,6 @@ pub use evaluation::{Calibration, DriftReport, PredictionOutcome};
 pub use language::{
     Completion, DeterministicModel, LanguageModel, ModelRequest, NumericGuard, OutputSchema,
 };
-pub use registry::{ModelCard, ModelRegistry, ModelStage};
+pub use registry::{ModelCard, ModelRegistry, ModelStage, ResourceBudget};
 pub use retrieval::{Document, RetrievalResult, SearchIndex};
 pub use serving::{ModelArtifact, ModelFormat, ModelProvider, NoProvider, ServedModel};

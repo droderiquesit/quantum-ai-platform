@@ -63,6 +63,13 @@
 //! stub awaiting an engine — a gate that refuses is the control, and the
 //! control is the half worth having.
 //!
+//! [`rebalance`] is the same half applied to drift: when holdings have moved
+//! away from a decided placement it produces the [`gate::TransferIntent`]s
+//! that would bring them back, each naming the active corridor it would run
+//! along, and reports — rather than routing around — a drift no signed
+//! corridor can carry. The intents are records for the gate, and nothing
+//! executes them.
+//!
 //! # Determinism, and the log as the only record
 //!
 //! Nothing here reads a wall clock or draws a random number. Every entry point
@@ -171,6 +178,7 @@ pub mod gate;
 pub mod journal;
 pub mod location;
 pub mod plan;
+pub mod rebalance;
 pub mod replay;
 pub mod settlement;
 pub mod tolerance;
@@ -184,5 +192,8 @@ pub use plan::{
     LaneContext, LocationBalance, PrePositionMove, PrePositioningPlan, PrePositioningPlanner,
     PrePositioningRequest, Refusal, RefusalReason,
 };
-pub use settlement::{SettlementBook, SettlementCalendar, SettlementConvention, SettlementQuote};
+pub use settlement::{
+    DeadlineVerdict, SettlementBook, SettlementCalendar, SettlementConvention, SettlementQuote,
+    UndecidableReason,
+};
 pub use transfer::{FundingCurve, FxRates, ShortfallAsymmetry, TransferCost, TransferCostModel};

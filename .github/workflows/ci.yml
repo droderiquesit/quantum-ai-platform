@@ -71,6 +71,29 @@ jobs:
       # complete — a financial limit whose vetoing fixture regressed is invisible
       # if an earlier binary aborted the run before reaching it.
       - run: cargo test --workspace --all-features --no-fail-fast
+      # The schema compatibility gate (CICD-070). The suite above proves each
+      # fabric-bound body still has the shape its row in schemas.lock.json
+      # records, and that is a comparison of the tree with itself: a row
+      # regenerated in place after a field was removed passes it, at the
+      # version every consumer already trusts. This step compares the lock
+      # with the one on the commit the pull request would merge into, and
+      # exits 3 when a field was removed, renamed or retyped without a version
+      # bump. A field that was only added passes.
+      #
+      # Pull requests only, because "the base" is a fact only a pull request
+      # has. The base commit is fetched by its id rather than by a branch
+      # name, so the comparison is with what this run was opened against and
+      # not with wherever the branch has moved since.
+      - name: schema compatibility against the base
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git show "$BASE_SHA:backend/crates/libs/qip-events/schemas.lock.json" > "$RUNNER_TEMP/base.lock.json"
+          cargo run --quiet -p qip-cli --bin qip -- event-fabric schema-gate \
+            --base "$RUNNER_TEMP/base.lock.json" \
+            --head crates/libs/qip-events/schemas.lock.json
 
   # The build that would actually be deployed. Run separately from the tests
   # because a release build catches optimisation-dependent problems the debug
@@ -377,6 +400,17 @@ jobs:
             terraform -chdir="$directory" test
             echo "::endgroup::"
           done
+      # The fleet root (ADR 0102) is a separate Terraform root with its own
+      # state, so the steps above, all `-chdir=infrastructure/terraform`, never
+      # open it. No credential: providers are mocked and the backend is off.
+      - name: fleet root
+        run: |
+          set -euo pipefail
+          cd infrastructure/fleet
+          terraform fmt -check -recursive .
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform test
       # `validate` accepts a module using a provider it never declared; only
       # `plan` refuses it, and a plan of the whole root against real providers
       # needs credentials CI does not have. The mocked plans above declare the
@@ -387,9 +421,21 @@ jobs:
       - name: provider declarations
         run: ./scripts/check-terraform-providers.sh
 
-  # The secrets check runs on the diff, not the history: a secret already
-  # committed needs rotating rather than a failing build, and a build that
-  # fails forever on an old commit is a build people learn to ignore.
+  # The secrets check runs twice: over the tree, and over every line any
+  # commit in the history added (CICD-006).
+  #
+  # This comment used to say the check "runs on the diff, not the history",
+  # and it ran on neither: it read the tree. A credential committed and then
+  # deleted in a later commit of the same pull request passed it, and every
+  # clone kept the blob. The reason given for staying off the history still
+  # stands, and the second step answers it rather than ignoring it: a secret
+  # already committed needs rotating, not a build that fails for ever, so a
+  # finding somebody has read is recorded in scripts/secrets-reviewed.txt with
+  # what it was, and only an unrecorded one fails the build.
+  #
+  # fetch-depth 0 is what makes the second step mean anything. A shallow
+  # clone has one commit of history, and the script refuses to scan one
+  # rather than report it clean.
   secrets:
     name: secret scan
     runs-on: ubuntu-latest
@@ -398,3 +444,22 @@ jobs:
         with:
           fetch-depth: 0
       - run: ./scripts/check-secrets.sh
+      - run: ./scripts/check-secrets.sh --history
+
+  # The development tooling's own tests: the model gateway and the fleet's
+  # dispatcher and worker. They are the programs that send repository source
+  # to a provider and decide what a day may cost, and until this job their
+  # tests ran only when somebody remembered to run them. Node built-ins only,
+  # so there is nothing to install. The files are named one by one rather
+  # than globbed, because `node --test` with no path would also collect the
+  # frontend's tests; the acceptance suite fails if a test file under
+  # scripts/ is missing from this line.
+  scripts:
+    name: scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test scripts/model-gateway.test.mjs scripts/fleet/dispatch.test.mjs scripts/fleet/worker.test.mjs

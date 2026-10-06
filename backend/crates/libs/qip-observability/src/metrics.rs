@@ -827,6 +827,21 @@ pub mod names {
     pub const STAGE_RUNS: &str = "qip_stage_runs_total";
     pub const STAGE_DURATION_MS: &str = "qip_stage_duration_milliseconds";
     pub const STAGE_PROBLEMS: &str = "qip_stage_problems_total";
+    /// Level shifts the platform found in its own telemetry (OBS-003), labelled
+    /// `series`, bounded by the source-file literals the kernel feeds.
+    pub const TELEMETRY_ANOMALIES: &str = "qip_telemetry_anomalies_total";
+
+    // The four golden signals (OBS-018), under the same names on every
+    // service and recorded only by `crate::golden::GoldenSignals`. The unit
+    // of work is the service's own: a request for the API, a cycle for a
+    // brain, a pass for a cell. None carries a label beyond `class` on the
+    // error counter, which is a two-value enum; the service is the registry's
+    // own resource, not a label.
+    pub const SERVICE_REQUESTS: &str = "qip_service_requests_total";
+    pub const SERVICE_ERRORS: &str = "qip_service_errors_total";
+    pub const SERVICE_LATENCY_MS: &str = "qip_service_latency_milliseconds";
+    /// A ratio, deliberately not clamped at one: over one is over capacity.
+    pub const SERVICE_SATURATION: &str = "qip_service_saturation_ratio";
     /// Entries in the platform's own hash-chained event log. A gauge rather
     /// than a counter: it is the length of a log, not a rate of appends, and
     /// an operator asking whether the chain is growing wants the length.
@@ -1126,6 +1141,12 @@ pub mod names {
     /// A fill is booked only from a delta's `fills`; a sent order books
     /// nothing, whatever contributors it names.
     pub const CENTRAL_FILLS_ATTRIBUTED: &str = "qip_central_fills_attributed_total";
+    /// Orders the centre registered as sent whose fills it has not yet booked,
+    /// summed over cells: the outcome-to-ledger backlog (LEDGER-044). A gauge
+    /// rather than a counter because it must fall back to zero once fills
+    /// arrive; a value that stays above zero while fills should be landing is
+    /// a ledger falling behind what the cells did.
+    pub const CENTRAL_OUTCOME_BACKLOG: &str = "qip_central_outcome_backlog_orders";
     /// What the platform decided about who may have capital put to work, by
     /// `decision`: `granted` and `revoked` are the two arms of the
     /// eligibility registry's own decision enum, recorded where the registry

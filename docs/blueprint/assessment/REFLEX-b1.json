@@ -38,7 +38,7 @@
       "backend/crates/apps/qip-edge-node/src/main.rs:808-888 (serve loop order: flush at 852, exchange at 869, run_pass at 888)",
       "backend/crates/apps/qip-edge-node/src/mesh.rs:463-472 (uplink.publish inside the exchange)"
     ],
-    "gap": "No dedicated test drives the requirement's own verification method: black-holing the Fabric/centre/model endpoints and a peer, then replaying a simulated venue event and asserting unchanged decision latency and an unchanged order. The invariant is proven today by code inspection (no I/O in the hot functions) plus adjacent tests (no-LLM reachability, mesh dead-letter/circuit-breaker), not by one test exercising this exact chaos scenario. qip-edge's own crate-level dependency graph does include qip-transport (for the separate, non-hot-path mesh module), so a naive crate-reachability architecture test of the kind the verification method describes would not by itself prove the invariant; it would need to be scoped to the on_bytes/work call graph. Also: in the running node the blocking mesh exchange and Cell::flush precede each run_pass on the same thread, so a stalled (not refused) centre delays when the next venue event is ingested by up to the transport timeouts; the requirement's 'unchanged decision latency' under a stalled peer is therefore unproven and probably false for event arrival time. And the node binary links qip-storage (with a GCS client, for the journal mirror) as well as qip-transport, so the crate-level 'no network client on the tick-to-order path' assertion would fail today unless scoped to the Cell::on_bytes/work call graph.",
+    "gap": "The architecture half is now asserted: architecture.rs::every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_transport holds that no deciding stage crate can reach qip-transport, that in qip-edge only mesh.rs and journal.rs name a socket or a file, and that the node's feed.rs, pass.rs and reprice.rs name neither (scoped to sources, because qip-edge and the node binary do link the transport and qip-storage for the mesh and the journal mirror). tests/degraded.rs shows the cell deciding with the centre refusing every connection and every peer dark. Still open, and it is the requirement's first check: in the running node the blocking mesh exchange and Cell::flush precede each run_pass on the same thread, so a stalled (not refused) centre delays when the next venue event is ingested by up to the transport timeouts. 'Unchanged decision latency' under a stalled peer is therefore unproven and probably false for event arrival time. It waits on ADR 0100 section 6's pass scheduler (qip-edge-node/src/scheduler.rs is a two-line stub, SLICE-55); no chaos test stalls a peer and compares latency.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -78,27 +78,29 @@
   },
   {
     "id": "REFLEX-004",
-    "status": "PARTIAL",
-    "current": "qip_edge::Cell aggregates every listed Lane-0 function inside one process: feed decode (qip_protocols::Decoder via Cell's ProtocolRegistry), sequencing (qip_sequencing::Sequencer, cell.rs:2803), book (qip_orderbook::VenueState via CellLiquidity), features (qip_feature_dag::FeatureEngine, cell.rs:2829,3015), strategy predicates (qip_strategy::StrategyRuntime), local risk/feasibility (qip_edge::feasibility), netting/crossing/decomposition (qip_edge::decomposition), inventory and routing (qip_edge::reservation, qip_routing::{path,pathcycle,reprice}), order/quote generation and venue adapters (Cell::send via the Placer/Gateway seam). All reached from qip-edge-node's non-test source, invoked once per pass by run_pass.",
+    "status": "COMPLETE",
+    "current": "Every listed stage runs in the node's own process and is now driven on one venue event. qip-edge-node's StrategyInstaller registers the standard feature suite for each deployed strategy's subject into the cell's engine (Cell::register_features, bounded by MAX_FEATURE_NODES and refused whole past it); main.rs builds the engine empty and until this nothing registered into it, so a plan reading a computed feature compiled, deployed and never fired. tests/lane0.rs assembles the node as main.rs does (engine empty), hands it a plan file by digest, a grant and one signed payload naming the plan, the promoted inline model and the grant, then moves the simulated venue's book: decode -> sequence -> book -> book_pressure feature -> inline DistilledModel (Op::Model) -> strategy predicate -> narrowing/feasibility -> netting -> venue selection -> order -> simulated venue adapter -> fill, journaled in that order. The same deployed strategy stays quiet on a book the model declines, so the entry is caused by the model's output over a computed feature. An architecture test holds the linkage and the no-transport claim for the stage crates.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/pass.rs:117-235 (run_pass)",
-      "backend/crates/apps/qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move",
-      "backend/crates/edge/qip-edge/src/cell.rs:1003-8051 (struct Cell and its per-pass cycle)",
-      "backend/crates/apps/qip-edge-node/Cargo.toml (workspace_deps: qip-edge, qip-arbitrage, qip-feature-dag, qip-strategy, qip-routing, qip-protocols, qip-orderbook, qip-brokers, qip-execution-engine)"
+      "backend/crates/apps/qip-edge-node/tests/lane0.rs::one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs::every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_transport",
+      "backend/crates/apps/qip-edge-node/src/strategies.rs (StrategyInstaller::reconcile registers standard_suite(subject) before deploy)",
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::register_features, Cell::features, MAX_FEATURE_NODES)",
+      "backend/crates/edge/qip-edge/tests/cell.rs::a_feature_registration_past_the_engines_bound_is_refused_whole_and_one_inside_it_is_admitted",
+      "backend/crates/apps/qip-edge-node/src/pass.rs (run_pass)"
     ],
-    "gap": "Placement is right but two listed stages do not run in the deployable. (1) Features: qip-edge-node/src/main.rs:360 builds FeatureEngine::new(..) and registers no definition, and StrategyInstaller compiles every plan against FeatureCatalogue::new() (qip-edge-node/src/strategies.rs:355), so no deployed strategy can read a feature and the engine evaluates nothing. (2) Reflex inference: the cited test deploys Rule(Expr::Flag(true)) with no model (qip-edge-node/tests/pass.rs:80-94, 'always-enter'), so no model is evaluated on the event; a model-carrying plan is admitted only when the policy's trained_models manifest names it. No architecture test asserts that each stage's crate is linked into qip-edge-node and none is reached through a transport (the requirement's second check). And the node runs a pass per health-probe connection, not per event (see REFLEX-001).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/apps/qip-edge-node/tests/pass.rs::a_node_with_the_simulated_feed_runs_a_pass_and_the_pass_time_series_move drives decode -> sequence -> book -> strategy -> feasibility/capital -> order through one process with no out-of-process call, but with an empty feature engine and an always-true flag strategy, so features and reflex inference are not exercised. Needed: the same pass with a registered feature graph and a promoted inline model, plus an architecture.rs test on qip-edge-node's linked crates.",
+    "verification": "backend/crates/apps/qip-edge-node/tests/lane0.rs::one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order (mutation: the installer registering nothing failed it at 'the strategy was deployed and the feature it reads is still registered nowhere'; restored byte-for-byte, passes) and backend/crates/tests/qip-acceptance/tests/architecture.rs::every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_transport (four mutations, each fired and was restored byte-for-byte: std::net named in qip-edge's feasibility.rs; std::fs named in the node's pass.rs; qip-sequencing dropped from qip-edge's manifest; qip-transport added to qip-feature-dag's manifest).",
     "work_item": "E04",
     "tier": "T2",
     "size": "M",
-    "notes": "Placement is correct; whether each stage does anything substantive live is the separate concern of REFLEX-005/006/016/017/020/021/023/024, several of which are PARTIAL or MISSING. No dedicated architecture test formally asserts 'each stage's crate is linked into the node binary and none is reached through a transport' as its own claim — pass.rs's integration test is the closest evidence and satisfies the requirement's own verification method. verify: downgraded COMPLETE -> PARTIAL and e2e true -> false. The cited test uses FeatureEngine::new with no registration and Expr::Flag(true) with no model, so it does not take an event through the features or reflex-inference stages; production main.rs registers no feature and compiles plans against an empty FeatureCatalogue. No stage-linkage architecture test exists. work_item E04/T2/M set."
+    "notes": "Closed 2026-10-04. Not deployed: execution_nodes = {} in every environment, so deployable stays false. The node still runs a pass per health probe and not per event; that is REFLEX-001's. A feature goes undefined once its instrument has had no feed message for the engine's 5 s staleness window, because the simulated feed publishes differences only: conservative, and REFLEX-023's to measure. The venue-adapter stage is the simulated exchange in-process; the REST adapter is the one source in qip-brokers that names the transport, and the architecture test pins that to exactly rest.rs."
   },
   {
     "id": "REFLEX-005",
@@ -153,22 +155,22 @@
   },
   {
     "id": "REFLEX-007",
-    "status": "NEEDS-VALIDATION",
+    "status": "PARTIAL",
     "current": "Structurally true today: qip-edge-node's Cargo.toml lists no dependency on qip-market-ingestion, qip-capital-fabric, or any other historical/replay-reader crate, and no crate under backend/crates/edge references one. Since no Tick Lake exists in this repository at all (no bucket-backed store, no reader client), the order path cannot read it.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/Cargo.toml (workspace_deps list; no archive/replay/market-ingestion crate)",
       "no matches for 'Tick Lake'/TickLake in backend/ (rg confirmed)",
       "cargo metadata (2026-09-25, offline): the normal-dependency closure of qip-edge-node contains no qip-market-ingestion, qip-twin, qip-simulation-engine or qip-capital-fabric; it does contain qip-storage (journal mirror)"
     ],
-    "gap": "No architecture test asserts this absence as its own claim (unlike the adjacent no_edge_cell_can_reach_a_language_model / no_edge_cell_can_reach_a_quantum_solver tests). The guarantee holds today only because the Tick Lake itself has not been built; the prohibition is unproven by a named test and will need one the day a Tick Lake reader crate exists anywhere in the workspace. Note for whoever writes the test: qip-edge-node links qip-storage, whose GCS object client is the likely reader of a future bucket-backed Tick Lake, so a crate-name absence test would pass while a Tick Lake read through qip-storage from the node became possible; the assertion needs to cover the Cell::on_bytes/work call graph or the store the node is configured with.",
+    "gap": "Asserted today only over the history-bearing crates that exist (ingestion, streaming, training, learning engine, twin, world model, data finder), because no Tick Lake reader crate exists. A read through qip-storage, which qip-edge-node links for its journal mirror, is not covered; the test must gain the lake reader the day one exists.",
     "implemented": true,
-    "tested": false,
+    "tested": true,
     "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Needed: an architecture.rs-style reachability test asserting no edge crate (qip-edge, qip-edge-node) can reach a Tick Lake/archive/historical-replay reader crate, on the same pattern as no_edge_cell_can_reach_a_language_model.",
+    "verification": "backend/crates/tests/qip-acceptance/tests/architecture.rs::no_edge_cell_can_reach_a_historical_data_reader (mutation: qip-edge-node depending on qip-twin failed it naming qip-learning-engine; restored, passes)",
     "work_item": "E01",
     "tier": "T0",
     "size": "S",
@@ -428,58 +430,57 @@
   },
   {
     "id": "REFLEX-018",
-    "status": "PARTIAL",
-    "current": "qip_sequencing::tracker::Sequencer is held by every Cell (cell.rs:1006,1203) and called from Cell::on_bytes on every decoded batch (cell.rs:2803) before apply_batch touches the book; it reorders within a bounded window and raises Duplicate, GapOpened, GapFilled and GapAbandoned. The cell journals GapOpened/GapAbandoned as GapDetected (cell.rs:8137-8163) and drops Duplicate without a journal entry or metric. The only decoder reached from a composition root, qip-edge-node's DepthDecoder, manufactures its own sequence number (self.sequence += 1 per decoded line, feed.rs:350-356,414-419) instead of reading a venue sequence number.",
+    "status": "COMPLETE",
+    "current": "The simulated feed's wire (qip.simulated-depth.2) carries the venue publisher's own sequence number on every line and DepthDecoder reads it instead of numbering lines itself, so the cell's Sequencer sees a venue sequence in the one configuration a composition root runs. Cell::on_bytes journals each observation as GapDetected under its own leading word (gap:, reorder:, duplicate:, abandoned:), duplicates summed per stream per call. Three defects that made the control unable to fire are fixed: the decoder manufactured the sequence; the reset the sequencer synthesises for an abandoned gap was looked up by a derived instrument id and reached no book (Cell::reset_venue now resets every book at the venue and the feature state with it); and nothing told the sequencer the time, so a gap followed by silence was held for ever (Cell::work and Cell::on_bytes now poll the deadline). SimulatedFeed::publish rebuilds a stale book from the venue's whole depth rather than a difference.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:1006,1203,2784-2815 (on_bytes: decode -> sequencer.accept -> apply_batch(released))",
-      "backend/crates/edge/qip-edge/src/cell.rs:8137-8163 (gap_detail: Duplicate and GapFilled map to None)",
-      "backend/crates/apps/qip-edge-node/src/feed.rs:350-356,414-419 (DepthDecoder assigns the sequence itself: 'the feed is in-process and cannot lose or reorder a frame')",
-      "backend/crates/edge/qip-protocols/src/fix.rs:172 (the unwired FIX decoder does read MsgSeqNum (34))",
-      "backend/crates/edge/qip-sequencing/tests/tracker.rs::a_message_delivered_twice_is_applied_once (line 96)",
-      "backend/crates/edge/qip-sequencing/tests/tracker.rs::reordered_delivery_produces_exactly_what_in_order_delivery_produces (line 236)",
-      "backend/crates/edge/qip-sequencing/tests/tracker.rs::an_abandoned_gap_tells_the_consumer_to_discard_before_it_hands_over_anything_newer (line 173)",
-      "backend/crates/edge/qip-sequencing/tests/tracker.rs::a_gap_that_outlives_its_deadline_is_abandoned_even_if_nothing_else_arrives (line 212)"
+      "backend/crates/apps/qip-edge-node/tests/sequence.rs::a_level_delivered_twice_is_applied_once_and_the_cell_journals_the_duplicate",
+      "backend/crates/apps/qip-edge-node/tests/sequence.rs::a_level_that_overtakes_its_predecessor_is_held_until_the_stream_is_contiguous",
+      "backend/crates/apps/qip-edge-node/tests/sequence.rs::a_dropped_frame_is_never_papered_over_and_the_book_it_left_stale_is_rebuilt_whole",
+      "backend/crates/apps/qip-edge-node/src/feed.rs (level_line, DepthDecoder reads the wire's sequence; SimulatedFeed::publish resynchronises a stale book)",
+      "backend/crates/edge/qip-edge/src/cell.rs (Cell::expire_sequence_gaps, Cell::apply_sequenced, Cell::reset_venue, gap_detail)",
+      "backend/crates/edge/qip-sequencing/tests/tracker.rs (the Sequencer in isolation)"
     ],
-    "gap": "The mechanism is complete and well tested in isolation, but in the running node it cannot fire: DepthDecoder numbers each line itself, so the Sequencer never sees a venue sequence and can never detect an upstream drop, duplicate or reorder. The decoders that read real venue sequence numbers (FIX MsgSeqNum, ITCH, SBE) have no production caller (REFLEX-016). No cell- or node-level test injects a dropped, duplicated and reordered sequence through Cell::on_bytes and asserts the book was not advanced past the hole; and the cell raises no signal for a duplicate.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [
       "REFLEX-016"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-sequencing/tests/tracker.rs (14 tests, not 36) proves the Sequencer raises gap/duplicate/reorder outcomes and releases nothing past a hole. Needed: a Cell-level replay through on_bytes with a decoder that carries venue sequence numbers, injecting a drop, a duplicate and a reorder, asserting each is signalled (duplicates included) and the book never applies across the gap.",
+    "verification": "backend/crates/apps/qip-edge-node/tests/sequence.rs (three tests replaying through Cell::on_bytes and run_pass with the registered decoder; a duplicate, a reorder and a dropped frame each raise their own signal and nothing past a hole is applied). Six mutations, each fired and was restored byte-for-byte: the decoder numbering lines itself; the reset never reaching a book; Cell::work never judging the deadline; the feed never rebuilding a stale book; duplicates dropped in silence; a recovered reorder not signalled.",
     "work_item": "E04",
     "tier": "T1",
     "size": "S",
-    "notes": "Neither blueprint document specifies book behaviour after a gap (resync/snapshot/stale-mark) and this requirement asks only that the gap be detected, which it is. verify: downgraded COMPLETE -> PARTIAL. The only reachable decoder (DepthDecoder, feed.rs:414-419) manufactures the sequence number, so the wired Sequencer checks no venue sequence and cannot fire in the deployable, a control that cannot fire. No cell-level injection test; duplicates are not signalled by the cell; tracker.rs holds 14 tests, not 36."
+    "notes": "Closed 2026-10-04. The requirement's own replay check is met on the adapter the node runs. The decoders that read a real venue's sequence numbers (FIX MsgSeqNum, ITCH, SBE) still have no production caller: that is REFLEX-016, and each will owe the same replay when it is wired. After an abandoned gap every book at the venue is reset, not only the ones the lost sequences touched, because which those were is what was lost."
   },
   {
     "id": "REFLEX-019",
-    "status": "PARTIAL",
-    "current": "qip_contracts::message::MarketMessage carries two distinct required timestamp fields — venue_time ('when the venue says it happened') and capture_time ('when this cell's hardware saw the packet') — with a transit() method computing wire latency between them. qip-protocols' FIX/ITCH/SBE decoders (tested, unwired) set these from genuinely distinct sources.",
+    "status": "COMPLETE",
+    "current": "The one decoder a composition root reaches, the simulated feed's DepthDecoder, now writes the two timestamps from two sources: capture_time is the node's clock at receipt, and venue_time is read from the line, where the feed's publisher stamped the venue's own clock (SimulatedGateway::now). The decoder refuses a frame whose receipt instant is earlier than the last it stamped (invalid, nothing consumed, Diagnostics::frames_refused counted), so receipt stamps are monotonic within the adapter and a clock that ran backwards is refused rather than restamped.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/message.rs:160-197 (MarketMessage: venue_time, capture_time, transit())",
-      "backend/crates/edge/qip-protocols/tests/itch.rs:130 (venue_time distinct from capture)",
-      "backend/crates/apps/qip-edge-node/src/feed.rs:425-426 (DepthDecoder passes the same `captured_at` value for both venue_time and capture_time)"
+      "backend/crates/apps/qip-edge-node/src/feed.rs::tests::a_decoded_level_carries_the_venues_instant_and_the_nodes_receipt_in_separate_fields",
+      "backend/crates/apps/qip-edge-node/src/feed.rs::tests::a_frame_received_earlier_than_the_last_is_refused_and_consumes_nothing",
+      "backend/crates/apps/qip-edge-node/tests/sequence.rs::the_venues_instant_reaches_the_book_as_the_venue_stated_it_and_not_as_the_receipt_stamp",
+      "backend/crates/libs/qip-contracts/src/message.rs (MarketMessage: venue_time, capture_time, transit())"
     ],
-    "gap": "The one decoder actually reached from a composition root (DepthDecoder, for the simulated feed) sets venue_time = capture_time — the same value — because the simulator supplies no independent source timestamp, so in the only running configuration the two fields never diverge and REFLEX-019's specific purpose (measuring market-event-to-decision latency, and knowing what the node knew and when) is not exercised end-to-end. Also, capture_time is the probe instant (clock.now() once per health-probe iteration, main.rs:811) stamped on every line of the frame, not a per-message receipt time, and it comes from SystemClock (wall clock), so nothing guarantees or tests monotonicity within an adapter.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": false,
-    "e2e": false,
+    "e2e": true,
     "depends_on": [
       "REFLEX-016"
     ],
     "blocked_by": "",
-    "verification": "backend/crates/edge/qip-protocols/tests/itch.rs and framing.rs prove venue_time/capture_time distinctness for the unwired decoders; no test proves it for the production-reached DepthDecoder because that decoder cannot distinguish them by construction.",
+    "verification": "backend/crates/apps/qip-edge-node/src/feed.rs unit tests (both stamps on one decoded level, 3 ms apart; a backwards receipt refused) and backend/crates/apps/qip-edge-node/tests/sequence.rs through SimulatedFeed::publish. Two mutations, each fired and was restored byte-for-byte: venue_time written from the receipt stamp; a backwards receipt stamped anyway.",
     "work_item": "E04",
     "tier": "T1",
     "size": "S",
-    "notes": "Cheap partial fix available even before REFLEX-016 closes: give the simulated feed its own independent 'venue-side' clock so the two fields genuinely diverge in the one path that runs today. verify: kept PARTIAL. Added that the receipt stamp is one wall-clock instant per probe, not per message, and that no test asserts per-adapter monotonicity."
+    "notes": "Closed 2026-10-04. One frame is one receipt: the in-process venue hands a frame over whole, so every line of it shares the receipt instant. In a running node the venue's clock and the receipt instant are the same value, because run_pass advances the gateway to the pass instant before the feed publishes; that is what a venue with no wire between it and the cell measures, and the fields diverge wherever the two clocks do. The receipt clock is read once per pass, which is once per health probe until REFLEX-001's scheduler lands. FIX/ITCH/SBE decoders set distinct stamps already and remain unwired (REFLEX-016)."
   },
   {
     "id": "REFLEX-020",
@@ -562,7 +563,7 @@
   {
     "id": "REFLEX-023",
     "status": "PARTIAL",
-    "current": "qip_feature_dag::engine::FeatureEngine is an incremental, dirty-tracking DAG (register/ingest/evaluate/dirty_count/revision) that recomputes only nodes a message can move, called every pass from Cell::work (cell.rs:2829 ingest, cell.rs:3015 evaluate).",
+    "current": "qip_feature_dag::engine::FeatureEngine is an incremental, dirty-tracking DAG that recomputes only nodes a message can move, called every pass from Cell::work. The deployable's engine is no longer empty: main.rs still builds it empty, and qip-edge-node's StrategyInstaller now registers the standard suite for each deployed strategy's subject through Cell::register_features, bounded at MAX_FEATURE_NODES (1,024) and refused whole past it.",
     "evidence": [
       "backend/crates/edge/qip-feature-dag/src/engine.rs (FeatureEngine)",
       "backend/crates/edge/qip-edge/src/cell.rs:1008,2829,3015",
@@ -571,7 +572,7 @@
       "backend/crates/tests/qip-acceptance/tests/performance.rs:638 (feature_evaluation_costs_the_same_per_message_however_many_the_engine_has_already_seen: per-message cost after 5,000 vs 25,000 messages within a 2.0x ratio, over a registered 6-feature-per-symbol graph)",
       "backend/crates/tests/qip-acceptance/tests/performance.rs:597 (feature_evaluation_costs_what_the_budget_says)"
     ],
-    "gap": "No composition root ever registers a feature definition (grep for standard_suite/.register against a FeatureDefinition outside tests returns nothing), so the production FeatureEngine is permanently empty and evaluate() always returns an empty vector — the bounded-cost property is proven on the mechanism in isolation, not observed against any live workload the node actually runs.",
+    "gap": "A registered feature graph in the deployable is closed (tests/lane0.rs drives a computed feature through the node; qip-edge tests/cell.rs proves the registration bound, both mutation-verified). Still missing: the 10^3 against 10^6 per-event comparison (performance.rs measures 5,000 against 25,000); a test that bounds retained per-instrument feature state directly; and a load-time refusal of a definition declaring unbounded state (FeatureDefinition declares no state at all). Observed while wiring: a feature goes undefined once its instrument has had no feed message for the engine's 5 s staleness window, because the simulated feed publishes differences only.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -579,7 +580,7 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "qip-acceptance/tests/performance.rs:638 already measures per-message feature cost at two history lengths (5k vs 25k, ratio <= 2.0) on a registered graph, and its own comment records that it guards super-linear time, not bounded retention (an unbounded spread history passed at 1.04x). Needed: the 10^3 vs 10^6 comparison, a direct bound on retained feature state, a load-time refusal of a definition declaring unbounded state, and a registered feature graph in the deployable.",
+    "verification": "qip-acceptance/tests/performance.rs:638 measures per-message feature cost at two history lengths (5k vs 25k, ratio <= 2.0) on a registered graph. Added: backend/crates/apps/qip-edge-node/tests/lane0.rs::one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order and backend/crates/edge/qip-edge/tests/cell.rs::a_feature_registration_past_the_engines_bound_is_refused_whole_and_one_inside_it_is_admitted. Needed: the 10^3 vs 10^6 comparison, a direct bound on retained feature state, and a load-time refusal of a definition declaring unbounded state.",
     "work_item": "E04",
     "tier": "T2",
     "size": "M",

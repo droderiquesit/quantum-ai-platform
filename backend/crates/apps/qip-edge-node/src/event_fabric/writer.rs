@@ -82,14 +82,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 
 /// The batch schema id of a spool batch bound for the P1 outcomes stream.
-pub const P1_BATCH_SCHEMA_ID: u32 = 1;
+pub const P1_BATCH_SCHEMA_ID: u32 = QosClass::P1Outcomes.batch_schema_id();
 
 /// The batch schema id of a spool batch bound for the P2 market-journal
 /// stream.
-pub const P2_BATCH_SCHEMA_ID: u32 = 2;
+pub const P2_BATCH_SCHEMA_ID: u32 = QosClass::P2MarketJournal.batch_schema_id();
 
 /// The only batch schema version this writer produces.
-pub const BATCH_SCHEMA_VERSION: u32 = 1;
+pub const BATCH_SCHEMA_VERSION: u32 = qip_events::event_fabric::policy::BATCH_SCHEMA_VERSION;
 
 /// The manifest key the session counter is committed under.
 const SESSION_KEY: &str = "outbox.session";
@@ -208,10 +208,15 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::Filled { .. }
         | Decision::OrderExpired { .. }
         | Decision::MassCancelled { .. }
+        | Decision::VenueWithdrawn { .. }
         | Decision::CrossedInternally { .. }
         | Decision::ReconciliationBreak { .. } => true,
         Decision::Ingested { .. }
         | Decision::GapDetected { .. }
+        | Decision::FeedSilent { .. }
+        | Decision::FeedReconciled { .. }
+        | Decision::BookReset { .. }
+        | Decision::BookResynchronised { .. }
         | Decision::SignalRaised { .. }
         | Decision::EdgePriced { .. }
         | Decision::Refused { .. }
@@ -230,7 +235,16 @@ pub fn is_outcome(decision: &Decision) -> bool {
         | Decision::ReconciliationRequired { .. }
         | Decision::VenueReconciled { .. }
         | Decision::VenueChosen { .. }
-        | Decision::DispositionIntent { .. } => false,
+        | Decision::DispositionIntent { .. }
+        | Decision::KnowledgeReconciled { .. }
+        | Decision::DegradationChanged { .. } => false,
+        // A requote's two halves act on the venue, and by that argument they
+        // are outcomes. They are on P2 alone because ADR 0100 §5's P1 row
+        // names six kinds and these are not among them: widening that row is
+        // the ADR's to do, not this match's. Decided, not defaulted — and
+        // until the row names them a consumer of P1 alone sees an order sent
+        // at one limit and filled at another, as it always has.
+        Decision::RequoteWithdrawn { .. } | Decision::OrderReplaced { .. } => false,
     }
 }
 

@@ -128,14 +128,16 @@ use qip_data_finder::registration::{
     RegistrationRecord, RegistrationRegistry, RegistrationStanding,
 };
 use qip_data_finder::source::SourceCandidate;
-use qip_data_finder::{RegisteredSource, RegistrationDecision};
+use qip_data_finder::{LifecycleAction, RegisteredSource, RegistrationDecision};
 use qip_events::log::EventLog;
 use qip_events::{EventBody, EventFilter, Topic};
 use qip_execution_engine::broker::{Broker, SimulatedBroker, SimulationSettings};
 use qip_execution_engine::oms::{OrderManager, RefusalReason, SubmissionResult};
 use qip_execution_engine::order::{Order, OrderType, Side};
-use qip_financial::asset_class::AssetClass;
+use qip_financial::asset_class::{AssetClass, InstrumentType};
+use qip_financial::constraints::Jurisdiction;
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
+use qip_financial::derivative_permissions::DerivativePermissions;
 use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
@@ -202,6 +204,7 @@ use qip_twin::asof::TwinMarket;
 use qip_twin::capture::{Action, Decision, OutcomeCapture, RealisedOutcome};
 use qip_twin::counterfactual::{
     ActualTrade, AlternativeMenu, Counterfactual, CounterfactualEngine, CounterfactualSet,
+    EstimationMethod,
 };
 use qip_twin::value::Simulated;
 use qip_world_model::WorldModel;
@@ -387,6 +390,15 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// The Model Pack in force — the newest version of the promoted set,
+    /// naming its predecessor and delta (MODEL-037). Rebuilt from the same
+    /// log records as `model_promotions` and advanced only beside it.
+    pub(crate) model_pack: Option<crate::model_serving::ModelPack>,
+    /// Who moves the production alias in this process: the model desk named
+    /// through `Platform::name_model_desk` (MODEL-057). `None` until one is
+    /// named, and a promotion or rollback is refused while it is, because a
+    /// move nobody can be asked about is not a record of who moved it.
+    pub(crate) model_desk: Option<String>,
     /// §22.1's fallback series: the daily bars the platform has observed,
     /// per instrument, under three stated bounds — insurance against a
     /// source withdrawing its archive, and what the research campaign falls
@@ -463,6 +475,8 @@ pub struct Platform {
     /// Fed by [`Platform::learn_from`]; read by the REASON stage through the
     /// per-origin factors it hands the reasoning engine (blueprint §13.1).
     self_model: SelfModel,
+    /// Failure clusters raised as research prompts (MODEL-046).
+    research: qip_learning_engine::research::ResearchLedger,
     /// What the LEARN stage calibrated this cycle, for the journal. Cleared
     /// as each cycle's LEARN begins so a cycle that scored nothing journals
     /// nothing rather than the previous cycle's figure.
@@ -550,6 +564,9 @@ pub struct Platform {
     /// would be evaluated over one cycle whatever window the objective
     /// declares. The ledger bounds itself instead.
     objectives: crate::blueprint_objectives::ObjectiveLedger,
+    /// Tails of the series the cycle records about itself, searched for level
+    /// shifts as each point arrives (OBS-003).
+    self_watch: crate::self_watch::SelfWatch,
     /// Each limit's firing history, keyed by the limit's configured name and
     /// seeded with every name in the boot set at assembly — a rule that never
     /// fires must still have a row for its silence to be measured against.
@@ -737,6 +754,17 @@ pub struct Platform {
     /// drift from it the way absorbed state would — and absorbed state is
     /// now shared rather than projected, see the `world` field.
     asset_classes: BTreeMap<String, AssetClass>,
+    /// The instrument type of every derivative in the universe, taken at
+    /// assembly like `asset_classes`; the release loop asks it which
+    /// permission an order needs.
+    derivative_types: BTreeMap<String, InstrumentType>,
+    /// COVERAGE-013: who may trade which derivative type. Empty at assembly,
+    /// so every derivative order is refused until a composition root grants.
+    derivative_permissions: DerivativePermissions,
+    /// The trading entity and jurisdiction the permissions are read against.
+    /// `None` refuses every derivative, because a grant with nobody to read
+    /// it against must not admit anything.
+    derivative_desk: Option<(String, Jurisdiction)>,
     /// The classes this platform is registered to trade (blueprint §17.7),
     /// and the gate `Self::new` admits the universe through. Built at
     /// assembly from the shipped table and never from the universe: a
@@ -919,6 +947,15 @@ pub struct Platform {
     aggregates: RiskAggregates,
     /// Opportunities found and not yet worked through.
     queue: Vec<Opportunity>,
+    /// The queued opportunities the REASON stage has taken up, by id.
+    ///
+    /// REASON works the head of the queue and nothing leaves the queue
+    /// except by lapsing, so when an opportunity lapses this is the only
+    /// record of whether anything ever looked at it. One that was never
+    /// here expired unworked, and is captured as an outcome of its own
+    /// (MODEL-013). Bounded by the queue: an id is added only for an
+    /// opportunity in it and removed when that opportunity leaves.
+    worked_opportunities: BTreeSet<String>,
     /// Recent proposals, most recent last, capped at [`PROPOSAL_HISTORY`].
     ///
     /// A working window, not the record: the record is the event log, which is
@@ -974,6 +1011,9 @@ pub struct Platform {
 /// wrong rather than that the bound is tight. That is why the overflow is a
 /// refusal on the record and not a quiet eviction: evicting the oldest pending
 /// action drops exactly the one whose ex-date is nearest.
+/// The series name the cycle feeds its own duration under (OBS-003).
+pub const CYCLE_DURATION_SERIES: &str = "cycle_duration_ms";
+
 const PENDING_CORPORATE_ACTIONS: usize = 4_096;
 
 /// How many recent proposals the platform keeps in memory.
@@ -2318,6 +2358,11 @@ impl ChainAbsorption {
 /// What assessing a batch of candidate sources produced.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceAssessment {
+    /// What the pass set out to find a source for (DATA-031): uncovered
+    /// entities with a world-model gap or a forecast-error spike, as
+    /// [`Platform::discovery_targets`] read them before the first candidate
+    /// was assessed.
+    pub targets: Vec<qip_data_finder::discovery_targets::DiscoveryTarget>,
     /// One decision per candidate, in identifier order.
     pub decisions: Vec<RegistrationDecision>,
     /// Datasets that reached the mesh catalogue as a result.
@@ -2820,6 +2865,15 @@ pub struct DeclinedScore {
     /// reads back as attributed to no venue rather than refusing to load.
     #[serde(default)]
     pub venue: Option<String>,
+    /// How `would_have_earned` was estimated (WORLD-039): the method the
+    /// twin's own `trade` alternative carries, read off that record and
+    /// never named here a second time. `Simulated` says the figure is an
+    /// estimate; this says whose, so two regret figures can be told apart
+    /// the day a second pricer exists. Defaulted so a score journalled
+    /// before the field existed reads back as `unrecorded` rather than as
+    /// priced by a method it never named.
+    #[serde(default)]
+    pub method: EstimationMethod,
 }
 
 /// One order a venue filled, kept until the twin can price the sizes that
@@ -3676,6 +3730,85 @@ impl EventBody for CycleJournalEntry {
     }
 }
 
+/// The journalled record of one desk fill, written before the book takes it,
+/// and the only place the fill lives between one process and the next
+/// (LEDGER-005, LEDGER-007).
+///
+/// Until this record existed [`TrackedCapital`] was the one book of record
+/// that no log could rebuild: `Platform` opened it at the configured initial
+/// equity on every start, so a restart forgot every position the desk held,
+/// every fee it had paid, the peak its drawdown is measured from and the
+/// equity the day opened at. The last two are the dangerous half — a process
+/// halted on its daily loss or its drawdown came back from a restart reading
+/// zero on both, with the positions that caused the loss gone from every
+/// limit that would have refused adding to them.
+///
+/// Every argument [`TrackedCapital::apply_fill`] takes is a field here and
+/// nothing else is, so [`Platform::resume_book`] books the same fill through
+/// the same arithmetic and reaches the same state. `costs` is the fee the
+/// venue charged on this fill, as its own figure beside the price rather
+/// than netted into it (LEDGER-011): the book's running `costs_paid` is the
+/// sum of this field over the log, and each fee is traceable to the record —
+/// and so to the order and the fill — that incurred it.
+///
+/// `simulated` is the fill's own account of where it came from, carried
+/// rather than assumed, for the reason `OrderManager::has_live_fills` gives.
+/// Nothing reads it to decide anything; the log says what the fill said.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FillBooked {
+    pub order_id: String,
+    pub fill_id: String,
+    pub object_id: String,
+    pub venue: String,
+    pub side: Side,
+    pub quantity: Decimal,
+    pub price: Decimal,
+    pub costs: Decimal,
+    /// The instant the fill is booked at, which is the instant the day
+    /// anchor is asked about. Not the envelope's `occurred_at`: that is when
+    /// the platform recorded it, and a replay that anchored the day on the
+    /// recording instant would move a fill across midnight.
+    pub at: Timestamp,
+    pub simulated: bool,
+}
+
+/// The journalled record of a corporate action reaching the desk's book.
+///
+/// The second and last way the book changes without a fill: a split
+/// multiplies a held quantity and divides its cost. Written whenever an
+/// action that changes share counts is applied — **whether or not the book
+/// held the instrument at the time** — because what a restart must not do is
+/// apply the action again: the tape is re-fed to a new process, the action
+/// comes due against it a second time, and a lot the log rebuilt would be
+/// split twice. A record for a book that held nothing is what stops a lot
+/// opened *after* the split, at post-split prices, from being split on the
+/// next start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LotAdjusted {
+    /// The action's idempotency key, as `CorporateAction::idempotency_key`
+    /// gives it.
+    pub action: String,
+    pub object_id: String,
+    pub quantity_factor: Decimal,
+}
+
+/// The producer both book records carry, and the discriminator
+/// [`Platform::resume_book`] selects on beside the topic: `PositionUpdated`
+/// is shared with the cells' deltas and the retirement dispositions.
+const BOOK_ORIGIN: &str = "kernel/book";
+
+impl EventBody for FillBooked {
+    /// The platform's own fill, in the class the log never evicts. The topic
+    /// had a retention class and a stream and, until this record, no writer.
+    const TOPIC: Topic = Topic::OrderFilled;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+impl EventBody for LotAdjusted {
+    const TOPIC: Topic = Topic::PositionUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
 /// One open position at its average entry cost. Quantity is signed: negative
 /// is short.
 #[derive(Clone, Copy, Debug)]
@@ -3743,6 +3876,12 @@ struct TrackedCapital {
     day_open: DayOpen,
     /// Open positions keyed by instrument.
     positions: BTreeMap<String, PositionLot>,
+    /// The corporate actions this book has already taken, by idempotency
+    /// key — resumed from the log's [`LotAdjusted`] records, which is the
+    /// point: `Platform::corporate_actions_applied` begins empty in every
+    /// process, and it alone would let a re-fed split reach a resumed lot a
+    /// second time.
+    actions_taken: BTreeSet<String>,
 }
 
 impl TrackedCapital {
@@ -3767,7 +3906,51 @@ impl TrackedCapital {
                 equity: initial_equity,
             },
             positions: BTreeMap::new(),
+            actions_taken: BTreeSet::new(),
         }
+    }
+
+    /// The lot `object` would hold once a corporate action had multiplied
+    /// its share count by `factor`: quantity times the factor, average cost
+    /// divided by it, so quantity times cost is unchanged to the unit.
+    /// `None` when the book holds none of it.
+    ///
+    /// Computed apart from [`Self::adjust_lot`] so the live path can refuse
+    /// an unrepresentable adjustment *before* it journals one: a record of
+    /// an adjustment the book then could not take is a log the next start
+    /// cannot replay.
+    fn lot_after(&self, object: &str, factor: Decimal) -> Result<Option<PositionLot>> {
+        let Some(lot) = self.positions.get(object) else {
+            return Ok(None);
+        };
+        let quantity = lot.quantity.checked_mul(factor).ok_or_else(|| {
+            Error::numeric(format!(
+                "the corporate action on {object} multiplies a holding of {} by {factor} and \
+                 the product is not representable; correct the action",
+                lot.quantity
+            ))
+        })?;
+        let average_price = lot.average_price.checked_div(factor).ok_or_else(|| {
+            Error::numeric(format!(
+                "the corporate action on {object} divides a cost basis of {} by {factor} and \
+                 the quotient is not representable; correct the action",
+                lot.average_price
+            ))
+        })?;
+        Ok(Some(PositionLot {
+            quantity,
+            average_price,
+        }))
+    }
+
+    /// Take one corporate action's adjustment and remember having taken it.
+    /// The one arithmetic the live path and [`Platform::resume_book`] share.
+    fn adjust_lot(&mut self, action: &str, object: &str, factor: Decimal) -> Result<()> {
+        if let Some(lot) = self.lot_after(object, factor)? {
+            self.positions.insert(object.to_string(), lot);
+        }
+        self.actions_taken.insert(action.to_string());
+        Ok(())
     }
 
     /// Re-anchor the day if the clock has passed midnight since the last look.
@@ -4074,6 +4257,16 @@ impl Platform {
         let asset_classes: BTreeMap<String, AssetClass> = universe
             .iter()
             .map(|object| (object.object_id.as_str().to_string(), object.asset_class))
+            .collect();
+        let derivative_types: BTreeMap<String, InstrumentType> = universe
+            .iter()
+            .filter(|object| object.instrument_type.is_derivative())
+            .map(|object| {
+                (
+                    object.object_id.as_str().to_string(),
+                    object.instrument_type,
+                )
+            })
             .collect();
         // §17.7's gate between architecturally reachable and actually
         // supported, asked here — before the universe moves into the desk
@@ -4444,6 +4637,8 @@ impl Platform {
             references: Self::resume_references(&event_log)?,
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            model_pack: crate::model_serving::resume_model_pack(&event_log)?,
+            model_desk: None,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             fallback_refused: BTreeSet::new(),
             source_leads: qip_data_finder::freshness::LeadLedger::new(),
@@ -4456,6 +4651,7 @@ impl Platform {
             evaluations: Vec::new(),
             last_calibration: None,
             self_model: SelfModel::new(),
+            research: qip_learning_engine::research::ResearchLedger::new(),
             cycle_calibration: None,
             bar_history: BTreeMap::new(),
             declined: Vec::new(),
@@ -4472,6 +4668,7 @@ impl Platform {
             cycle_counterfactuals: None,
             cycle_rule_review: None,
             objectives: crate::blueprint_objectives::ObjectiveLedger::new(),
+            self_watch: crate::self_watch::SelfWatch::new(),
             rule_activity,
             orders_submitted: 0,
             open_proposals,
@@ -4503,6 +4700,9 @@ impl Platform {
             universe_assembled,
             inherited_through,
             asset_classes,
+            derivative_types,
+            derivative_permissions: DerivativePermissions::none(),
+            derivative_desk: None,
             asset_class_registry,
             exposure_axes,
             liquidity_reference,
@@ -4577,6 +4777,7 @@ impl Platform {
             capital: TrackedCapital::new(initial_equity, now),
             aggregates: RiskAggregates::new(initial_equity, initial_equity)?,
             queue: Vec::new(),
+            worked_opportunities: BTreeSet::new(),
             proposals: Vec::new(),
             equity_history: Vec::new(),
             proposals_made: 0,
@@ -4649,6 +4850,11 @@ impl Platform {
         // 0085 §5). Two fields borrowed disjointly, as the ledger's resume
         // is, so the log is read while the book is written.
         Self::resume_capital_calls(&platform.event_log, &mut platform.commitments)?;
+        // The desk's own book, replayed from the fills and lot adjustments
+        // the log holds. Before this seam a restart opened the book flat:
+        // the positions, the fees, the drawdown's peak and the day's loss
+        // were all forgotten, and the limits read a book that held nothing.
+        platform.resume_book(now)?;
         // The committed venue registrations, through the same journaled path
         // an operator's runtime approval takes. A record the registry refuses
         // — a source with no declared requirement — stops assembly with the
@@ -4743,6 +4949,10 @@ impl Platform {
         metrics.describe(
             names::CYCLE_DURATION_MS,
             "wall time for one full cycle, on the injected clock",
+        );
+        metrics.describe(
+            names::TELEMETRY_ANOMALIES,
+            "level shifts found in the platform's own telemetry, by series",
         );
         metrics.describe(
             names::STAGE_RUNS,
@@ -4956,6 +5166,11 @@ impl Platform {
         metrics.describe(
             names::CENTRAL_FILLS_ATTRIBUTED,
             "cell fills attributed to strategies by the central plane, by the basis of the split",
+        );
+        metrics.describe(
+            names::CENTRAL_OUTCOME_BACKLOG,
+            "orders reported sent whose fills the central plane has not yet booked; rises while \
+             outcomes are outstanding and returns to zero when they are booked",
         );
         metrics.describe(
             names::CENTRAL_CROSSES_SETTLED,
@@ -6799,6 +7014,115 @@ impl Platform {
         Ok(resumed)
     }
 
+    // --- the desk's book (LEDGER-005) ---------------------------------------------
+
+    /// Rebuild the desk's book from the log's own record of it, in log
+    /// order, through the arithmetic the live path books with — and return
+    /// how many records were replayed.
+    ///
+    /// The seam [`TrackedCapital`] lacked, and the one whose absence cost
+    /// most: every other resume here restores a registry, and this restores
+    /// what the limits read. A process that restarted used to open flat at
+    /// the configured equity, so the positions it held, the fees it had
+    /// paid, its drawdown from peak and the loss it had taken that day were
+    /// all gone — a restart lifted a daily-loss halt and a drawdown halt by
+    /// forgetting what tripped them.
+    ///
+    /// **The fold, exactly.** Each [`FillBooked`] goes through
+    /// [`TrackedCapital::apply_fill`] with the arguments the live booking
+    /// passed, and each [`LotAdjusted`] through [`TrackedCapital::adjust_lot`];
+    /// nothing else has ever moved the book. The book is reopened at the
+    /// first fill's own instant rather than at this boot's, because the day
+    /// anchor only advances: a book opened *now* would never re-anchor on a
+    /// replayed fill, and would report the desk's whole lifetime loss as
+    /// today's. It is then asked about `now`, as a cycle asks, so a restart
+    /// on a later day opens that day at the equity the log leaves and a
+    /// restart on the same day keeps the day's loss.
+    ///
+    /// Each replayed fill is carried into the risk aggregate through
+    /// [`Self::aggregate_fill`], the call the live path makes, so the
+    /// exposure the pre-trade check reads is the resumed book's and not a
+    /// flat one beside it.
+    ///
+    /// **What this does not rebuild, stated because it would otherwise read
+    /// as covered.** The opening equity is this boot's configuration, as the
+    /// desk's mandate is; a deployment that changed it between starts moves
+    /// the cash the fold begins from. A cell's fills never reach this book
+    /// at all — they are booked to the per-user ledger and the aggregate —
+    /// so nothing here restores them. And a fill whose record the log
+    /// refused is not in it: the live path reports that when it happens.
+    ///
+    /// Refused — assembly stops — when the log holds a book record this
+    /// build cannot decode or an adjustment the rebuilt book cannot take.
+    /// Skipping it would open a book the log does not describe.
+    fn resume_book(&mut self, now: Timestamp) -> Result<usize> {
+        enum Entry {
+            Fill(FillBooked),
+            Adjustment(LotAdjusted),
+        }
+        // Collected before anything is applied: the log is read while the
+        // book and the aggregate are written, and the aggregate is reached
+        // through `&mut self`. Bounded by the log's own retained records.
+        let mut entries = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer != BOOK_ORIGIN {
+                continue;
+            }
+            let frame = StreamEnvelope::from_frame(&record.event)?;
+            let entry = if record.event.topic == FillBooked::TOPIC {
+                Entry::Fill(frame.decode::<FillBooked>()?.body)
+            } else if record.event.topic == LotAdjusted::TOPIC {
+                Entry::Adjustment(frame.decode::<LotAdjusted>()?.body)
+            } else {
+                continue;
+            };
+            entries.push((record.sequence, entry));
+        }
+        let first_fill = entries.iter().find_map(|(_, entry)| match entry {
+            Entry::Fill(fill) => Some(fill.at),
+            Entry::Adjustment(_) => None,
+        });
+        if let Some(opened_at) = first_fill {
+            self.capital = TrackedCapital::new(self.config.initial_equity, opened_at);
+        }
+        let resumed = entries.len();
+        for (sequence, entry) in entries {
+            match entry {
+                Entry::Fill(fill) => {
+                    let moved = self.capital.apply_fill(
+                        &fill.object_id,
+                        fill.side,
+                        fill.price,
+                        fill.quantity,
+                        fill.costs,
+                        fill.at,
+                    );
+                    self.aggregate_fill(&fill.object_id, moved);
+                }
+                Entry::Adjustment(adjusted) => self
+                    .capital
+                    .adjust_lot(
+                        &adjusted.action,
+                        &adjusted.object_id,
+                        adjusted.quantity_factor,
+                    )
+                    .map_err(|why| {
+                        Error::invalid(format!(
+                            "the event log's record {sequence} adjusts the desk's holding of {} \
+                             for corporate action {} and the book the log rebuilt refuses it \
+                             ({}); the book cannot be resumed from this log — archive the log \
+                             and start a new one",
+                            adjusted.object_id,
+                            adjusted.action,
+                            why.message()
+                        ))
+                    })?,
+            }
+        }
+        self.capital.open_day(now);
+        Ok(resumed)
+    }
+
     // --- investment requests ----------------------------------------------------
 
     /// Decide a user's investment request against their mandate, and journal
@@ -7877,11 +8201,12 @@ impl Platform {
     /// [`WalletJudgement::NothingObserved`] rather than the bare `Ok(())`
     /// that made it indistinguishable from a book that reconciled clean.
     /// The caller is required to say which happened, because the type gives
-    /// it no way to ignore the difference. The ledger's view is one
-    /// entry, the desk's cash at the broker's venue, with the capital
-    /// ledger's reservations against it; it is supplied only when a
-    /// statement names that venue-asset, because the wallet refuses a
-    /// ledger view nobody has observed. In-flight is zero and stated so:
+    /// it no way to ignore the difference. The ledger's view is the desk's
+    /// cash at the broker's venue, with the capital ledger's reservations
+    /// against it, and each position the book holds there; every one is
+    /// supplied only when a statement names that venue-asset, because the
+    /// wallet refuses a ledger view nobody has observed. In-flight is zero
+    /// and stated so:
     /// this process instructs no transfer (ADR 0021), so nothing is ever in
     /// flight towards its book. A stale statement makes the assembly a
     /// refused record, which the journal keeps; reconciliation then finds
@@ -7898,17 +8223,38 @@ impl Platform {
             venue: desk_venue.clone(),
             asset: Asset::new(SETTLEMENT_CURRENCY.to_string())?,
         };
-        let ledger_views = if self.holdings_observed.contains_key(&desk_key) {
-            vec![LedgerView::new(
-                desk_venue,
-                desk_key.asset,
+        let mut ledger_views = Vec::new();
+        if self.holdings_observed.contains_key(&desk_key) {
+            ledger_views.push(LedgerView::new(
+                desk_venue.clone(),
+                desk_key.asset.clone(),
                 self.capital.cash,
                 self.reservations.reserved_total(),
                 Decimal::ZERO,
-            )?]
-        } else {
-            Vec::new()
-        };
+            )?);
+        }
+        // The desk's positions, on the terms its cash is on: a view for
+        // every instrument the book holds at the desk's venue that a
+        // statement names, and for no other. Until this the book's
+        // positions were compared with nothing — a statement naming a held
+        // instrument halted as unrecorded by a ledger that had booked it,
+        // so the only honest statement was one that left positions off.
+        // Nothing is reserved against a position here and nothing is in
+        // flight (ADR 0021), so the expectation is the lot's own quantity.
+        for key in self.holdings_observed.keys() {
+            if key.venue == desk_venue
+                && *key != desk_key
+                && let Some(lot) = self.capital.positions.get(key.asset.as_str())
+            {
+                ledger_views.push(LedgerView::new(
+                    desk_venue.clone(),
+                    key.asset.clone(),
+                    lot.quantity,
+                    Decimal::ZERO,
+                    Decimal::ZERO,
+                )?);
+            }
+        }
         self.decide_fabric(
             FabricCommand::Wallet(WalletCommand::Assemble {
                 observations,
@@ -8195,6 +8541,54 @@ impl Platform {
         crate::blueprint_objectives::assess(&self.objectives, now)
     }
 
+    /// Feed one point of a series the platform records about itself to the
+    /// level-shift detector and, for a shift not reported before, count it on
+    /// `qip_telemetry_anomalies_total` and return the sentence for the LEARN
+    /// record. A non-finite point is returned as a problem too, rather than
+    /// dropped: a source emitting NaN is itself the finding.
+    pub fn watch_own_series(
+        &mut self,
+        series: &'static str,
+        at: Timestamp,
+        value: f64,
+    ) -> Option<String> {
+        match self.self_watch.observe(series, at, value) {
+            Ok(Some(anomaly)) => {
+                self.telemetry
+                    .metrics
+                    .count(names::TELEMETRY_ANOMALIES, labels([("series", series)]));
+                Some(format!(
+                    "telemetry level shift in `{}` between {} and {} ({:.1} noise-scales); \
+                     look at what deployed or changed in that window",
+                    anomaly.series,
+                    anomaly.window_start.as_secs(),
+                    anomaly.window_end.as_secs(),
+                    anomaly.score
+                ))
+            }
+            Ok(None) => None,
+            Err(error) => Some(format!(
+                "the self-watch refused a sample of `{series}`: {}",
+                error.message()
+            )),
+        }
+    }
+
+    /// Points the self-watch holds for `series`.
+    pub fn watched_points(&self, series: &str) -> usize {
+        self.self_watch.len(series)
+    }
+
+    /// Whether a promotion to `plane` may proceed on this process's own error
+    /// budgets (OBS-028). See [`crate::blueprint_objectives::release_decision`].
+    pub fn release_decision(
+        &self,
+        plane: &str,
+        now: Timestamp,
+    ) -> qip_observability::aiops::ReleaseDecision {
+        crate::blueprint_objectives::release_decision(&self.objectives, plane, now)
+    }
+
     pub fn autonomy_mut(&mut self) -> &mut AutonomyController {
         &mut self.autonomy
     }
@@ -8401,6 +8795,21 @@ impl Platform {
         self.capital.costs_paid
     }
 
+    /// The desk's cash, after every booked fill's notional and costs.
+    pub fn cash(&self) -> Decimal {
+        self.capital.cash
+    }
+
+    /// The desk's open positions as the book holds them: signed quantity
+    /// and average entry cost, by instrument.
+    pub fn positions_at_cost(&self) -> BTreeMap<String, (Decimal, Decimal)> {
+        self.capital
+            .positions
+            .iter()
+            .map(|(object, lot)| (object.clone(), (lot.quantity, lot.average_price)))
+            .collect()
+    }
+
     /// Score resolved theses and recompute the calibration over the window.
     ///
     /// Called by the LEARN stage on every cycle with whatever resolved since
@@ -8478,6 +8887,12 @@ impl Platform {
         }
         self.reasoning
             .set_origin_factors(self.self_model.origin_factors());
+        // A cluster of failed theses of one class becomes a research prompt.
+        // A refusal (ledger full) is a problem line, not an abort, for the
+        // same reason a mischarged component is.
+        if let Err(error) = self.research.observe(&evaluations, now) {
+            problems.push(error.message().to_string());
+        }
 
         let informative = self
             .evaluations
@@ -8547,6 +8962,22 @@ impl Platform {
             })
             .collect();
         self.episodes.experience(known.iter(), now)
+    }
+
+    /// The research prompts raised from failure clusters, and which are
+    /// answered.
+    pub fn research(&self) -> &qip_learning_engine::research::ResearchLedger {
+        &self.research
+    }
+
+    /// Record the research task that answered a prompt.
+    pub fn close_research_prompt(
+        &mut self,
+        prompt: &str,
+        task: &str,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.research.close(prompt, task, now)
     }
 
     pub fn self_model(&self) -> &SelfModel {
@@ -8747,12 +9178,25 @@ impl Platform {
                     // records sentiment at the item's published instant; the
                     // context supplies only entity-resolution bookkeeping,
                     // never a knowability stamp.
+                    //
+                    // An item the world model refuses — a body where a
+                    // headline goes, which the graph will not store
+                    // (WORLD-057) — is refused whole: not absorbed, no
+                    // event, and reported, for the reason a refused
+                    // alternative-data reading is. An item quietly dropped
+                    // looks exactly like a feed that never published.
                     let context = &self.context;
-                    self.world.update(|world| world.absorb_news(&item, context));
-                    for event in MarketEvent::from_news(&item) {
-                        self.push_market_event(event);
+                    match self.world.update(|world| world.absorb_news(&item, context)) {
+                        Ok(_) => {
+                            for event in MarketEvent::from_news(&item) {
+                                self.push_market_event(event);
+                            }
+                            absorbed += 1;
+                        }
+                        Err(error) => self
+                            .capture_problems
+                            .push(format!("a news item was refused: {}", error.message())),
                     }
-                    absorbed += 1;
                 }
                 SensedRecord::Fundamental(update) => {
                     self.define_fundamental_features(&update.metric, &update.provenance.source);
@@ -8895,17 +9339,28 @@ impl Platform {
     /// platform first hear of this instrument" and re-observing it must not
     /// rewrite that. `recorded_at` is the record's own knowable instant, never
     /// the wall clock.
+    ///
+    /// The graph refuses a node whose id is long enough to be a document
+    /// (WORLD-057). No instrument id is, so a refusal here is an upstream
+    /// bug, and it is reported at LEARN rather than swallowed.
     fn ensure_world_object(&mut self, object_id: &str, recorded_at: Timestamp) {
-        self.world.update(|world| {
-            if world.graph().node(object_id).is_none() {
-                world.graph_mut().add_node(Node::new(
-                    object_id,
-                    NodeKind::FinancialObject,
-                    object_id,
-                    recorded_at,
-                ));
+        let written = self.world.update(|world| {
+            if world.graph().node(object_id).is_some() {
+                return Ok(());
             }
+            world.graph_mut().add_node(Node::new(
+                object_id,
+                NodeKind::FinancialObject,
+                object_id,
+                recorded_at,
+            ))
         });
+        if let Err(error) = written {
+            self.capture_problems.push(format!(
+                "an instrument was not recorded in the world model: {}",
+                error.message()
+            ));
+        }
     }
 
     /// Hold the desk's bar series to the platform's own bound by rebuilding
@@ -9104,11 +9559,18 @@ impl Platform {
                 );
             }
         }
-        self.telemetry.metrics.observe_latency_ms(
-            names::CYCLE_DURATION_MS,
-            labels([]),
-            self.context.now().since(started_at).as_nanos() as f64 / 1_000_000.0,
-        );
+        let cycle_ms = self.context.now().since(started_at).as_nanos() as f64 / 1_000_000.0;
+        self.telemetry
+            .metrics
+            .observe_latency_ms(names::CYCLE_DURATION_MS, labels([]), cycle_ms);
+        // OBS-003: the cycle's own duration is searched for a level shift no
+        // static threshold names. The problem rides the LEARN stage like every
+        // other review's, since LEARN is what would notice a slowdown.
+        if let Some(problem) = self.watch_own_series(CYCLE_DURATION_SERIES, now, cycle_ms)
+            && let Some(learn) = report.stages.last_mut()
+        {
+            learn.problems.push(problem);
+        }
         // The gauge the `qip_kill_switch_tripped` alert policy queries. Set on
         // every cycle rather than only when it changes: a gauge written once at
         // the moment of a trip goes stale the instant the scrape interval
@@ -9541,7 +10003,7 @@ impl Platform {
     /// make the correction unreachable forever. Leaving it pending instead
     /// would re-report the same corrupt record on every cycle for the life of
     /// the process.
-    fn apply_due_corporate_actions(&mut self) -> usize {
+    fn apply_due_corporate_actions(&mut self, now: Timestamp) -> usize {
         let due: Vec<String> = self
             .corporate_actions_pending
             .iter()
@@ -9557,7 +10019,7 @@ impl Platform {
             let Some(action) = self.corporate_actions_pending.remove(&key) else {
                 continue;
             };
-            match self.apply_corporate_action(&action) {
+            match self.apply_corporate_action(&key, &action, now) {
                 Ok(()) => {
                     self.corporate_actions_applied.insert(key);
                     applied += 1;
@@ -9604,7 +10066,12 @@ impl Platform {
     /// Because cost is preserved exactly, [`RiskAggregates`]' at-cost gross and
     /// net do not move and need no second adjustment that could disagree with
     /// this one.
-    fn apply_corporate_action(&mut self, action: &CorporateAction) -> Result<()> {
+    fn apply_corporate_action(
+        &mut self,
+        key: &str,
+        action: &CorporateAction,
+        now: Timestamp,
+    ) -> Result<()> {
         let object = action.object_id.as_str();
         let bars = self.bar_history.get_mut(object).ok_or_else(|| {
             Error::invalid(format!(
@@ -9667,38 +10134,36 @@ impl Platform {
                  holding the platform still owns"
             )));
         }
-        let Some(lot) = self.capital.positions.get_mut(object) else {
+        // A book the log rebuilt has already taken this action in an earlier
+        // process. The series above still needed it — bars are re-fed to
+        // every process and held in memory only — and the lot must not have
+        // it twice.
+        if self.capital.actions_taken.contains(key) {
             return Ok(());
-        };
-        let quantity = lot.quantity.checked_mul(quantity_factor).ok_or_else(|| {
-            Error::numeric(format!(
-                "the corporate action on {object} multiplies a holding of {} by \
-                 {quantity_factor} and the product is not representable; correct the action",
-                lot.quantity
-            ))
-        })?;
-        let average_price = lot
-            .average_price
-            .checked_div(quantity_factor)
-            .ok_or_else(|| {
-                Error::numeric(format!(
-                    "the corporate action on {object} divides a cost basis of {} by \
-                 {quantity_factor} and the quotient is not representable; correct the action",
-                    lot.average_price
-                ))
-            })?;
-        lot.quantity = quantity;
-        lot.average_price = average_price;
-        Ok(())
+        }
+        // Refused first, then journalled, then applied, in the order every
+        // resume seam here keeps: the log has the record before the book
+        // moves, and never a record of an adjustment the book could not take.
+        self.capital.lot_after(object, quantity_factor)?;
+        self.journal_record(
+            LotAdjusted {
+                action: key.to_string(),
+                object_id: object.to_string(),
+                quantity_factor,
+            },
+            BOOK_ORIGIN,
+            now,
+        )?;
+        self.capital.adjust_lot(key, object, quantity_factor)
     }
 
-    fn stage_sense(&mut self, _now: Timestamp) -> StageOutcome {
+    fn stage_sense(&mut self, now: Timestamp) -> StageOutcome {
         // Before anything is counted: an action whose ex-date the tape has
         // crossed is applied to the history this stage is about to report and
         // to the lot the risk stages read. Here rather than in `observe`
         // because a batch may carry the action and the bar that makes it due in
         // any order, and an adjustment applied mid-batch would see half a tape.
-        let adjusted = self.apply_due_corporate_actions();
+        let adjusted = self.apply_due_corporate_actions(now);
         let pending_actions = self.corporate_actions_pending.len();
         let instruments = self.price_history.len();
         let prices: usize = self.price_history.values().map(Vec::len).sum();
@@ -9799,6 +10264,18 @@ impl Platform {
         let (state, documents) = {
             let world = self.world.read();
             (world.state_at(now, now), world.index().len())
+        };
+        // WORLD-009: conflicts between sources, as knowable now. Said on the
+        // stage because the relationship count beside it reads the same
+        // whether the sources agree or not, and a contradiction recorded and
+        // shown to nobody is the same as one never detected.
+        let contradiction_detail = if state.contradiction_count == 0 {
+            String::new()
+        } else {
+            format!(
+                "; {} contradiction(s) between sources recorded, both sides kept",
+                state.contradiction_count
+            )
         };
         let liquidity = if self.liquidity.observation_count() == 0 {
             String::new()
@@ -9976,7 +10453,7 @@ impl Platform {
             format!(
                 "world model holds {} instrument(s), {} entity(ies), {} relationship(s), \
                  {} causal claim(s), {} readable feature value(s), {} document(s)\
-                  {liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
+                  {contradiction_detail}{liquidity}{events}{chain}{credit}{precedence_detail}{crossing_detail}{review_detail}\
                  {second_order_detail}{statistics_detail}",
                 state.object_count,
                 state.entity_count,
@@ -10421,9 +10898,11 @@ impl Platform {
         self.queue.extend(found);
         // The queue is worked newest-highest-value first, and anything that
         // expired while waiting is dropped rather than silently worked late.
-        let before = self.queue.len();
-        self.queue.retain(|opportunity| opportunity.is_live(now));
-        let expired = before - self.queue.len();
+        let (live, lapsed): (Vec<Opportunity>, Vec<Opportunity>) = std::mem::take(&mut self.queue)
+            .into_iter()
+            .partition(|opportunity| opportunity.is_live(now));
+        self.queue = live;
+        let expired = self.capture_unworked(lapsed, now);
 
         let mut outcome = StageOutcome::ran(
             Stage::Discover,
@@ -10836,10 +11315,74 @@ impl Platform {
             .collect()
     }
 
+    /// Put every opportunity that lapsed without REASON ever taking it up on
+    /// the outcome capture, and return how many there were (MODEL-013).
+    ///
+    /// Until this the queue's `retain` dropped them and the stage reported a
+    /// count: the evaluation input held every fill and every refused order
+    /// and nothing at all for an opportunity the platform saw and never got
+    /// to, which is the path a queue that only works its head produces most
+    /// of. Each gets a decision id of its own, the opportunity's id, the
+    /// instant it was first seen and how long it waited. It is deliberately
+    /// not priced — see [`Action::ExpiredOpportunity`].
+    ///
+    /// An opportunity REASON did take up is not captured here, whatever
+    /// REASON concluded: its record is the routing REASON wrote, and filing
+    /// it as unworked as well would count one opportunity as two outcomes.
+    ///
+    /// The subject of the record is the instrument the opportunity names,
+    /// or, for one that names none, the series its anomaly was detected on —
+    /// what was observed, in either case, and never a placeholder.
+    fn capture_unworked(&mut self, lapsed: Vec<Opportunity>, now: Timestamp) -> usize {
+        let mut unworked = 0;
+        for opportunity in lapsed {
+            let id = opportunity.opportunity_id.as_str().to_string();
+            if self.worked_opportunities.remove(&id) {
+                continue;
+            }
+            unworked += 1;
+            let Some(subject) = opportunity.affected_objects.first().cloned().or_else(|| {
+                opportunity
+                    .affected_entities
+                    .first()
+                    .map(|entity| ObjectId::from_string(entity.clone()))
+            }) else {
+                self.capture_problems.push(format!(
+                    "opportunity {id} expired unworked and names no instrument or series, so \
+                     it could not be captured as an outcome"
+                ));
+                continue;
+            };
+            let correlation = self
+                .context
+                .ids()
+                .generate::<qip_core::lineage::CorrelationKind>(now);
+            self.capture(
+                now,
+                &correlation,
+                subject.clone(),
+                Action::ExpiredOpportunity {
+                    opportunity: opportunity.opportunity_id.clone(),
+                    object_id: subject,
+                    seen_at: opportunity.detected_at,
+                    age: now.since(opportunity.detected_at),
+                },
+                RealisedOutcome::nothing_happened(now),
+                "it lapsed in the queue before the REASON stage took it up",
+            );
+        }
+        unworked
+    }
+
     fn reason_about_the_queue(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
         let Some(opportunity) = self.queue.first().cloned() else {
             return StageOutcome::ran(Stage::Reason, 0, "nothing in the queue to reason about");
         };
+        // Taken up, whatever follows: a refusal to convene the panel is a
+        // decision about this opportunity, and one that later lapses must
+        // not then be filed as never having been looked at.
+        self.worked_opportunities
+            .insert(opportunity.opportunity_id.as_str().to_string());
 
         // Where this decision belongs on the intelligence ladder, asked before
         // anything is spent reaching it. Convening the organisation is the most
@@ -13646,6 +14189,15 @@ impl Platform {
                 // before a control decision is spent on it, and one that
                 // does not is submitted at a size the gate will admit rather
                 // than refused on every cycle for a grid the sizer never saw.
+                if let Err(error) = self.derivative_gate(leg.object_id.as_str()) {
+                    refused += 1;
+                    problems.push(format!(
+                        "{} leg {index} was refused before an order existed: {}",
+                        proposal.proposal_id.as_str(),
+                        error.message()
+                    ));
+                    continue;
+                }
                 let quantity = self.whole_lots(leg.object_id.as_str(), leg.quantity);
                 if !quantity.is_positive() {
                     refused += 1;
@@ -14514,9 +15066,9 @@ impl Platform {
             authorities
                 .iter()
                 .map(|authority| world.record_resolution_source(authority))
-                .collect::<BTreeSet<String>>()
-                .len()
-        });
+                .collect::<Result<BTreeSet<String>>>()
+                .map(|recorded| recorded.len())
+        })?;
 
         // Meta-learning, at the one instant the platform knows whether a claim
         // held: which *class* of claim was right, in which regime. Until this
@@ -15649,6 +16201,39 @@ impl Platform {
             // risk state real: the same fills the outcome capture records are
             // the fills the monitor's equity is built from, so the two can
             // never tell different stories.
+            //
+            // Journalled first, so the book is the fold of the log and a
+            // restart rebuilds it ([`Self::resume_book`]). A log that will
+            // not take the record does not stop the booking: the venue has
+            // already filled, and a book that left the fill out would read
+            // every limit low by exactly it. What it costs is said out loud
+            // instead — this is the one state a restart cannot rebuild.
+            if let Err(error) = self.journal_record(
+                FillBooked {
+                    order_id: result.order_id.to_string(),
+                    fill_id: fill.fill_id.to_string(),
+                    object_id: object_id.to_string(),
+                    venue: venue.to_string(),
+                    side,
+                    quantity: fill.quantity,
+                    price: fill.price,
+                    costs: fill.costs,
+                    at: fill.at,
+                    simulated: fill.simulated,
+                },
+                BOOK_ORIGIN,
+                now,
+            ) {
+                self.capture_problems.push(format!(
+                    "fill {} on order {} was booked and could not be journalled ({}); the book \
+                     now holds what the event log cannot rebuild and a restart would open \
+                     without it — archive the log to free its capacity before this process \
+                     stops",
+                    fill.fill_id,
+                    result.order_id,
+                    error.message()
+                ));
+            }
             let moved = self.capital.apply_fill(
                 object_id.as_str(),
                 side,
@@ -15658,6 +16243,43 @@ impl Platform {
                 fill.at,
             );
             self.aggregate_fill(object_id.as_str(), moved);
+        }
+
+        // The part of the order the venue did not fill (MODEL-039). The
+        // slices above are what traded; what did not trade was recorded
+        // nowhere, so an order filled in part and one filled whole left the
+        // same records and the shortfall — the path not taken inside a taken
+        // order — never reached evaluation. Read from the order manager's
+        // own book after it applied the fills, so the remainder is the
+        // ledger's and not the difference of two numbers handed to this
+        // method: the requested quantity may have been resized by risk
+        // before it reached the venue. Nothing is realised on this record:
+        // the money is on the fill records above, and a second outcome
+        // carrying it would count the cost twice.
+        let shortfall = self.orders.order(&result.order_id).and_then(|order| {
+            let filled = order.filled_quantity();
+            let remaining = order.remaining_quantity();
+            (filled.is_positive() && remaining.is_positive()).then_some((filled, remaining))
+        });
+        if let Some((filled, remaining)) = shortfall
+            && let Some(price) = weighted_fill_price(&result.fills)
+                .or_else(|| result.fills.last().map(|fill| fill.price))
+        {
+            self.capture_after(
+                placed.as_ref(),
+                now,
+                &correlation,
+                object_id.clone(),
+                Action::PartiallyFilled {
+                    order_id: result.order_id.clone(),
+                    venue: venue.clone(),
+                    filled,
+                    remaining,
+                    price,
+                },
+                RealisedOutcome::nothing_happened(now),
+                format!("{filled} filled and {remaining} left unfilled at the venue"),
+            );
         }
 
         // Kept for the twin, as a declined path is. The placement above is
@@ -15856,6 +16478,60 @@ impl Platform {
         }
     }
 
+    /// Grant the derivative permissions this platform trades under, for
+    /// `entity` in `jurisdiction`. Replaces any earlier grant whole.
+    pub fn authorise_derivatives(
+        &mut self,
+        entity: &str,
+        jurisdiction: Jurisdiction,
+        permissions: DerivativePermissions,
+    ) {
+        self.derivative_desk = Some((entity.to_string(), jurisdiction));
+        self.derivative_permissions = permissions;
+    }
+
+    /// Refuse, before an order object exists, a derivative this desk holds no
+    /// permission for. Not a derivative, or not in the universe: no claim.
+    fn derivative_gate(&self, object_id: &str) -> qip_core::error::Result<()> {
+        let Some(instrument_type) = self.derivative_types.get(object_id) else {
+            return Ok(());
+        };
+        match &self.derivative_desk {
+            Some((entity, jurisdiction)) => {
+                self.derivative_permissions
+                    .authorize_order(entity, *jurisdiction, *instrument_type)
+            }
+            None => Err(qip_core::error::Error::denied(format!(
+                "{object_id} is a derivative and no trading entity holds permissions; call \
+                 authorise_derivatives. It remains available to research and simulation"
+            ))),
+        }
+    }
+
+    /// [`Self::order_from`], refusing first a derivative this desk holds no
+    /// permission for, so no order object exists for it (COVERAGE-013).
+    pub fn order_for(
+        &mut self,
+        object_id: qip_core::ObjectId,
+        side: Side,
+        quantity: Decimal,
+        price: Decimal,
+        proposal_id: &str,
+        hypotheses: Vec<String>,
+        now: Timestamp,
+    ) -> qip_core::error::Result<Order> {
+        self.derivative_gate(object_id.as_str())?;
+        Ok(self.order_from(
+            object_id,
+            side,
+            quantity,
+            price,
+            proposal_id,
+            hypotheses,
+            now,
+        ))
+    }
+
     /// Build an order from a proposal leg, for the ACT stage.
     pub fn order_from(
         &mut self,
@@ -15949,7 +16625,43 @@ impl Platform {
         probe: &mut dyn SourceProbe,
         now: Timestamp,
     ) -> Result<SourceAssessment> {
+        // Read before anything registers: a target is something no source
+        // covered when the pass began, and a candidate this call registers
+        // must not erase the reason it was assessed.
+        let targets = self.discovery_targets(now)?;
         let decisions = self.data_finder.assess(candidates, probe, now)?;
+        // Before the catalogue, and raised on failure: see
+        // `source_lifecycle` for why a move the log does not hold must not
+        // be reported as a pass.
+        self.journal_source_transitions(&decisions, now)?;
+        // A source policy stopped is a dataset the mesh must stop offering.
+        // The catalogue is the one answer to "may this be read", and a
+        // quarantine that reached the finder's registry and not the
+        // catalogue left that answer at "yes" for a feed whose publisher had
+        // said no. A retirement is stopped the same way — the catalogue has
+        // no removal, and a later pass that registers the source again
+        // replaces the entry.
+        for transition in decisions
+            .iter()
+            .filter_map(RegistrationDecision::transition)
+        {
+            let dataset = format!("source.{}", transition.source_id);
+            if matches!(
+                transition.action,
+                LifecycleAction::Quarantined | LifecycleAction::Retired
+            ) && self.catalog.get(&dataset).is_some()
+            {
+                self.catalog.quarantine(
+                    &dataset,
+                    format!(
+                        "source {}: {}",
+                        transition.action.as_str(),
+                        transition.reason
+                    ),
+                    now,
+                )?;
+            }
+        }
         let mut catalogued = Vec::new();
         let mut catalogue_problems = Vec::new();
         for decision in &decisions {
@@ -15970,6 +16682,7 @@ impl Platform {
             }
         }
         Ok(SourceAssessment {
+            targets,
             decisions,
             catalogued,
             catalogue_problems,
@@ -16398,6 +17111,12 @@ impl Platform {
                     let would_have_earned = trade.map_or(Simulated::ZERO, |entry| {
                         entry.counterfactual_outcome.simulated_pnl()
                     });
+                    // The method is the priced record's own, so the score
+                    // cannot name a pricer the figure did not come from; a
+                    // set with no `trade` entry priced nothing and says so.
+                    let method = trade.map_or(EstimationMethod::Unrecorded, |entry| {
+                        entry.counterfactual_outcome.method()
+                    });
                     self.telemetry.metrics.count(
                         names::COUNTERFACTUALS_SCORED,
                         labels([("gate", gate.as_str())]),
@@ -16422,6 +17141,7 @@ impl Platform {
                         rules,
                         readings,
                         venue,
+                        method,
                     });
                     if self.declined_scores.len() > DECLINED_HISTORY {
                         let excess = self.declined_scores.len() - DECLINED_HISTORY;
@@ -19163,6 +19883,55 @@ mod decide_tests {
             .blocking()
             .iter()
             .any(|breach| breach.limit_name == limit_name)
+    }
+
+    #[test]
+    fn a_fill_that_gapped_past_the_pre_trade_assumption_is_charged_at_the_price_it_filled_at() {
+        // RISK-007. The pre-trade check sizes an order at the price it
+        // expects; the venue fills at the price it gives. If the book were
+        // charged the assumed notional, a gap through the cap would read as a
+        // book inside its limits and the post-trade monitor would continue.
+        let mut platform = shared_cause_platform();
+        let now = Timestamp::from_secs(1_760_000_000);
+        let quantity = Decimal::from_int(10_000);
+        let assumed = Decimal::from_int(80);
+        let filled = Decimal::from_int(115);
+
+        // The premise: at the assumed price the order is 800,000 of a
+        // ten-million book, 0.08 against the 0.10 position-weight cap, so the
+        // pre-trade verdict is a pass and nothing is even warning (0.085). Without it
+        // the breach below could be a cap that fires on everything.
+        let mut assumed_book = shared_cause_platform();
+        assumed_book
+            .aggregates
+            .apply_fill(DESK_STRATEGY, "GAP", &BTreeMap::new(), quantity * assumed)
+            .expect("aggregated");
+        assert!(!breaches(&assumed_book.risk_state(), "position-weight"));
+
+        // The fill, through the same two calls the fill-capture path makes.
+        let moved =
+            platform
+                .capital
+                .apply_fill("GAP", Side::Buy, filled, quantity, Decimal::ZERO, now);
+        assert_eq!(moved, quantity * filled, "the book is charged the fill");
+        platform.aggregate_fill("GAP", moved);
+
+        let post_trade = platform.risk_state();
+        assert!(
+            blocks(&post_trade, "position-weight"),
+            "1,150,000 filled against 10,000,000 is 0.115, past the 0.10 cap, and the \
+             post-trade state did not see it: {:?}",
+            LimitSet::conservative_default().check(&post_trade).breaches
+        );
+        let level = platform.autonomy.level();
+        let action = platform
+            .monitor
+            .observe(&post_trade, "platform", level, now);
+        assert_eq!(
+            action.as_str(),
+            "reduce_only",
+            "the monitor must act on the fill's breach: {action:?}"
+        );
     }
 
     #[test]
@@ -23257,6 +24026,7 @@ mod counterfactual_sizing_tests {
             rules: Vec::new(),
             readings: Vec::new(),
             venue: None,
+            method: EstimationMethod::default(),
         }
     }
 
@@ -23536,6 +24306,7 @@ mod rule_review_tests {
                 bound: 250_000.0,
             }],
             venue: None,
+            method: EstimationMethod::default(),
         }
     }
 
@@ -24522,6 +25293,7 @@ mod counterfactual_trial_seam_tests {
                 bound: 250_000.0,
             }],
             venue: None,
+            method: EstimationMethod::default(),
         }
     }
 
@@ -25936,20 +26708,26 @@ mod second_order_exposure_tests {
     fn write_the_supply_chain(platform: &mut Platform) {
         platform.world.update(|world| {
             for entity in ["KESTREL", "NORTHWIND", "HOLLOWAY"] {
-                world.graph_mut().add_node(Node::new(
-                    entity,
-                    NodeKind::Entity,
-                    entity,
-                    known_from(),
-                ));
+                world
+                    .graph_mut()
+                    .add_node(Node::entity(
+                        entity,
+                        qip_world_model::graph::EntityKind::Company,
+                        entity,
+                        known_from(),
+                    ))
+                    .unwrap();
             }
             for instrument in ["obj-NWD", "obj-HWY"] {
-                world.graph_mut().add_node(Node::new(
-                    instrument,
-                    NodeKind::FinancialObject,
-                    instrument,
-                    known_from(),
-                ));
+                world
+                    .graph_mut()
+                    .add_node(Node::new(
+                        instrument,
+                        NodeKind::FinancialObject,
+                        instrument,
+                        known_from(),
+                    ))
+                    .unwrap();
             }
             for (from, to, kind) in [
                 ("KESTREL", "NORTHWIND", RelationshipKind::Supplies),
@@ -25962,8 +26740,9 @@ mod second_order_exposure_tests {
                         Relationship::new(from, to, kind, 1.0, "fixture"),
                         known_from(),
                         known_from(),
+                        0.9,
                     )
-                    .with_confidence(0.9),
+                    .unwrap(),
                 );
             }
         });

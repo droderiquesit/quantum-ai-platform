@@ -19,10 +19,11 @@
 //!   message saying where it should have been worked instead.
 
 #![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
-use qip_brokers::adapter::VenueAdapter;
+use qip_brokers::adapter::{NativeInstruction, VenueAdapter};
 use qip_brokers::credential::{RequirementKind, requirements_of_kind, standard_requirements};
-use qip_brokers::exchange::{BookableFill, ExchangeSettings, SimulatedExchange};
+use qip_brokers::exchange::{BookableFill, ExchangeSettings, POST_ONLY, SimulatedExchange};
 use qip_brokers::ledger::{AccountLedger, MarginPolicy};
 use qip_brokers::{ConnectionPhase, VenueCredential};
 use qip_contracts::venue::VenueId;
@@ -1081,6 +1082,187 @@ fn a_cancel_is_never_refused_by_the_rate_limit_and_is_still_counted_against_it()
         exchange.rate_budget(start()).1,
         0,
         "and it is counted against the message allowance, which the venue does count"
+    );
+    Ok(())
+}
+
+// --- EXEC-012: a venue-native order type stays reachable ---------------------
+
+/// [`live_venue`], with or without the venue's native post-only order type.
+/// Same listings, same seeded book — 99.98 bid, 100.02 offered — so the two
+/// venues differ in the one declaration and in nothing else.
+fn venue_with_native(post_only: bool) -> Result<SimulatedExchange> {
+    let mut exchange = SimulatedExchange::new(venue(), ExchangeSettings::orderly(), 31, start());
+    if post_only {
+        exchange = exchange.with_post_only();
+    }
+    exchange.list(instrument());
+    for (side, price, size) in [
+        (Side::Sell, dec!("100.02"), 20),
+        (Side::Buy, dec!("99.98"), 20),
+    ] {
+        exchange.seed_liquidity(&object(), side, price, Decimal::from_int(size), start())?;
+    }
+    exchange.bring_up(&credential(), start())?;
+    Ok(exchange)
+}
+
+fn limit_buy(label: &str, price: Decimal) -> Order {
+    order_at(label, Side::Buy, 5, OrderType::Limit { price })
+}
+
+#[test]
+fn a_venues_native_post_only_order_reaches_it_through_a_declared_extension_and_keeps_its_native_meaning()
+-> Result<()> {
+    // The failure this prevents is the lowest common denominator: an order
+    // type one venue has and the common contract lacks is either dropped or
+    // sent as its nearest common relative, and then does something else at
+    // the venue. A post-only order sent as a plain limit *takes*.
+    let mut exchange = venue_with_native(true)?;
+    let ticket = exchange.ready(start())?;
+
+    // The premise, both halves. The common contract has no word for it...
+    assert!(
+        !exchange
+            .capabilities()
+            .supported_types
+            .iter()
+            .any(|declared| declared == POST_ONLY),
+        "the premise failed: post-only is a common order type, so it is no native extension"
+    );
+    // ...and the nearest thing it does have behaves differently: a plain
+    // limit at the offer executes.
+    let mut plain_venue = venue_with_native(true)?;
+    let plain_ticket = plain_venue.ready(start())?;
+    let plain =
+        plain_venue.submit_order(&plain_ticket, &limit_buy("plain", dec!("100.02")), start())?;
+    assert_eq!(
+        plain.filled_quantity(),
+        Decimal::from_int(5),
+        "the premise failed: a plain limit at the offer did not take, so post-only would be \
+         indistinguishable from it"
+    );
+
+    // The adapter declares the type as an extension...
+    let declared = exchange.native_extensions();
+    assert_eq!(
+        declared
+            .iter()
+            .map(|extension| extension.name.as_str())
+            .collect::<Vec<_>>(),
+        vec![POST_ONLY],
+        "the venue's native order type is not declared: {declared:?}"
+    );
+    let instruction = NativeInstruction::new(POST_ONLY);
+
+    // ...an order using it reaches the venue with its native meaning intact:
+    // at the offer it is rejected, where the plain limit above executed.
+    let crossing = limit_buy("post-only-crossing", dec!("100.02"));
+    let refusal = exchange
+        .submit_native(&ticket, &crossing, &instruction, start())
+        .expect_err("a post-only order at the offer was executed as a plain limit");
+    assert!(
+        refusal.message().contains("would take liquidity"),
+        "the venue refused the post-only order for some other reason: {}",
+        refusal.message()
+    );
+    assert!(
+        exchange.query_fills(None)?.is_empty(),
+        "a rejected post-only order traded"
+    );
+    assert!(
+        exchange.query_order(&crossing.order_id).is_err(),
+        "a rejected post-only order rests at the venue"
+    );
+    assert_eq!(
+        exchange.submitted_count(),
+        1,
+        "the instruction never reached the venue: it was refused before the venue saw it"
+    );
+
+    // ...and behind the touch it rests, as the order that was sent: the same
+    // side, quantity and price, not a translation of them.
+    let resting = limit_buy("post-only-resting", dec!("100.00"));
+    let ack = exchange.submit_native(&ticket, &resting, &instruction, start())?;
+    assert_eq!(ack.state.as_str(), "working");
+    assert!(
+        ack.fills.is_empty(),
+        "a post-only order behind the touch traded"
+    );
+    let at_venue = exchange.query_order(&resting.order_id)?;
+    assert_eq!(
+        (at_venue.side, at_venue.quantity, at_venue.limit),
+        (resting.side, resting.quantity, Some(dec!("100.00"))),
+        "the order at the venue is not the order that was sent"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_adapter_that_declares_no_native_extension_refuses_the_order_rather_than_sending_it_plain()
+-> Result<()> {
+    // The other half of EXEC-012's check. The dangerous outcome is not the
+    // refusal, it is the downgrade: the instruction dropped and the order
+    // sent as a plain limit, which the caller never asked for.
+    let mut exchange = venue_with_native(false)?;
+    let ticket = exchange.ready(start())?;
+    assert!(
+        exchange.native_extensions().is_empty(),
+        "the premise failed: this venue declares a native extension"
+    );
+
+    let order = limit_buy("unsupported", dec!("100.00"));
+    let refusal = exchange
+        .submit_native(&ticket, &order, &NativeInstruction::new(POST_ONLY), start())
+        .expect_err("an order carrying an undeclared native instruction was sent");
+    assert!(
+        refusal
+            .message()
+            .contains("does not declare the native extension post_only"),
+        "the refusal does not name the extension the adapter lacks: {}",
+        refusal.message()
+    );
+    assert_eq!(
+        exchange.submitted_count(),
+        0,
+        "the order reached the venue although the adapter does not declare the extension"
+    );
+    assert!(
+        exchange.query_order(&order.order_id).is_err(),
+        "the order was sent plain: it rests at a venue that was never told it was post-only"
+    );
+
+    // And the refusal was about the instruction, not the order: the same
+    // order through the common contract is one this venue takes.
+    let ack = exchange.submit_order(&ticket, &order, start())?;
+    assert_eq!(
+        ack.state.as_str(),
+        "working",
+        "the premise failed: the venue refuses this order whatever it carries"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_post_only_instruction_on_an_order_with_no_price_is_refused_rather_than_sent_as_a_market_order()
+-> Result<()> {
+    // A market order cannot rest, so "post-only" on one has no meaning the
+    // venue could honour; dropping the instruction would send an order that
+    // takes, which is the opposite of what was written.
+    let mut exchange = venue_with_native(true)?;
+    let ticket = exchange.ready(start())?;
+    let order = order_at("unpriced", Side::Buy, 5, OrderType::Market);
+    let refusal = exchange
+        .submit_native(&ticket, &order, &NativeInstruction::new(POST_ONLY), start())
+        .expect_err("a post-only market order was sent");
+    assert!(
+        refusal.message().contains("instruction for a limit order"),
+        "the refusal does not say why: {}",
+        refusal.message()
+    );
+    assert!(
+        exchange.query_fills(None)?.is_empty(),
+        "a post-only market order took liquidity"
     );
     Ok(())
 }

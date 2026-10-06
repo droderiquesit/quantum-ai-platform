@@ -300,6 +300,16 @@ pub struct RealisedTrade {
     /// "nobody determined it", which is what was true of it.
     #[serde(default)]
     pub term: HoldingTerm,
+    /// The selection that relieved the lot this trade closed (LEDGER-010).
+    ///
+    /// Two disposals of the same stack realise different gains under FIFO and
+    /// under highest-cost, so a trade that cannot say which one chose its lot
+    /// cannot be re-derived or audited. `None` only for a trade recorded
+    /// before the field existed, which reads as "nobody wrote it down" and
+    /// not as FIFO — the default selection would otherwise be asserted of
+    /// history it never governed.
+    #[serde(default)]
+    pub relief: Option<LotSelection>,
 }
 
 impl RealisedTrade {
@@ -471,6 +481,7 @@ pub fn close_lots_under(
             closed_at,
             was_long: lots[index].is_long(),
             term: terms[index],
+            relief: Some(selection),
         });
 
         consumed[index] = take;

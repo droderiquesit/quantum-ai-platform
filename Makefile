@@ -91,10 +91,14 @@ doc:
 deps:
 	./scripts/check-dependencies.sh
 
-# Runs on the diff, not the history. A secret already committed needs rotating,
-# not a build that fails forever on an old commit.
+# The tree, then every line any commit added. This comment said "runs on the
+# diff, not the history" while the target read the tree, so a credential
+# committed and later deleted passed it. A finding in an old commit that has
+# been read and rotated is recorded in scripts/secrets-reviewed.txt, which is
+# what keeps the history scan from failing for ever on it.
 secrets:
 	./scripts/check-secrets.sh
+	./scripts/check-secrets.sh --history
 
 # Needs the advisory database, so it is not in the offline set.
 audit:
@@ -189,7 +193,7 @@ help:
 	@echo "acceptance the workspace-level acceptance suite"
 	@echo "build      release build, locked"
 	@echo "deps       the dependency policy"
-	@echo "secrets    secret scan over the diff"
+	@echo "secrets    secret scan over the tree and over the whole history"
 	@echo "audit      cargo audit; needs the advisory database"
 	@echo "deny       cargo deny; licences, duplicate versions, sources; needs the advisory database"
 	@echo "sbom       cyclonedx bill of materials"

@@ -57,8 +57,45 @@
 //! * **The remembered snapshot** the diff is taken against: one per tracked
 //!   instrument, at most [`MAX_LEVELS_PER_SIDE`] per side.
 //!
+//! # What every line says about itself
+//!
+//! Each line leads with two facts the venue's publisher states and the
+//! decoder reads back rather than supplying: the publisher's own sequence
+//! number, and the venue's clock at publication. Until the wire carried
+//! them the decoder numbered each line as it decoded it and stamped the
+//! venue's time with the node's own receipt instant. A decoder that counts
+//! what it was handed can never see that it was handed too little, so the
+//! cell's sequencer — wired, and tested in isolation — could not fire in the
+//! one configuration that runs: a control that reads as present and is not.
+//! And two timestamps written from one value never differ, so the transit
+//! they exist to measure was zero by construction rather than by
+//! measurement. Read from the wire, a dropped, repeated or reordered line is
+//! the sequencer's to find, and the venue's instant is the venue's.
+//!
+//! The receipt stamp is the node's, and each decoder refuses a frame whose
+//! receipt instant is earlier than the last it stamped: a receipt clock that
+//! ran backwards would order this node's own observations wrongly, and
+//! stamping the later instant instead would be a correction nobody could
+//! see. One frame is one receipt — the venue is in this process and hands
+//! the whole frame over at once — so every line of a frame carries the same
+//! receipt instant, and that is what was observed, not a shortcut.
+//!
+//! # After a gap
+//!
+//! A gap the sequencer abandons resets every book at the venue, and a reset
+//! book answers nothing until it has been rebuilt. [`SimulatedFeed::publish`]
+//! rebuilds it by answering the cell's standing snapshot request with the
+//! venue's whole depth ([`Cell::apply_snapshot`]) before the difference is
+//! cut, because a difference against a snapshot the cell no longer holds
+//! would leave every level that did not happen to change missing for good.
+//! While a stream of the venue still has a gap open the request is left
+//! standing rather than answered: the cell would refuse it, and a refusal
+//! returned from here would end the pass before the pass reached the
+//! sequencer's deadline — the one thing that closes the gap.
+//!
 //! Nothing here reads a clock, opens a socket or touches a file. The venue
-//! is in this process and the frame is a `String`.
+//! is in this process and the frame is a `String`; the venue's instant is
+//! the one the pass last advanced its gateway to.
 
 use crate::gateway::SimulatedGateway;
 use qip_brokers::exchange::BookLevel;
@@ -74,7 +111,6 @@ use qip_orderbook::venue::VenueState;
 use qip_protocols::decoder::{Decoder, Diagnostics, SkipReason, SkipRecord};
 use qip_protocols::registry::FeedKey;
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 /// Names the venue feed the node's passes price from.
 pub const FEED_VARIABLE: &str = "QIP_VENUE_FEED";
@@ -87,7 +123,7 @@ pub const SIMULATED_FEED: &str = "simulated";
 pub const FEED_NAME: &str = "simulated-depth";
 
 /// The wire format's name, for the decoder's diagnostics.
-const PROTOCOL: &str = "qip.simulated-depth.1";
+const PROTOCOL: &str = "qip.simulated-depth.2";
 
 /// How many listed instruments the feed will track.
 pub const MAX_FEED_INSTRUMENTS: usize = 64;
@@ -154,6 +190,11 @@ pub struct FeedTick {
     pub instruments_omitted: usize,
     /// Level messages the cell was handed, including removals.
     pub messages: usize,
+    /// Books the cell had discarded — behind an abandoned sequence gap, or
+    /// crossed at the end of a frame — that this pass rebuilt from the
+    /// venue's own depth through [`Cell::apply_snapshot`]. Zero on every
+    /// ordinary pass.
+    pub resynchronised: usize,
 }
 
 /// The remembered top of one instrument's book, so the next pass publishes
@@ -176,6 +217,10 @@ pub struct SimulatedFeed {
     /// Instruments the venue listed that this feed would not track, in
     /// total, so the health surface can say a bound was hit.
     omitted_total: u64,
+    /// The publisher's own count of the lines it has put on the wire: the
+    /// venue sequence number of the last one. Written on each line and read
+    /// back by the decoder, never supplied by it.
+    sequence: u64,
 }
 
 impl SimulatedFeed {
@@ -186,6 +231,7 @@ impl SimulatedFeed {
             venue,
             published: BTreeMap::new(),
             omitted_total: 0,
+            sequence: 0,
         }
     }
 
@@ -206,6 +252,12 @@ impl SimulatedFeed {
     /// Instruments the venue listed that the feed refused to track, in total.
     pub fn omitted_total(&self) -> u64 {
         self.omitted_total
+    }
+
+    /// The venue sequence number of the last line this feed published; zero
+    /// before the first.
+    pub fn sequence(&self) -> u64 {
+        self.sequence
     }
 
     /// Bind this feed's decoder to the cell, and state the venue's
@@ -247,8 +299,72 @@ impl SimulatedFeed {
         now: Timestamp,
     ) -> Result<FeedTick> {
         let mut tick = FeedTick::default();
-        let mut frame = String::new();
-        for depth in gateway.quotes() {
+        let quotes = gateway.quotes();
+        // The venue was read, so its feed is alive whether or not anything
+        // moved. This feed publishes differences: a quiet market publishes
+        // nothing, and without this line the cell could not tell that from
+        // a feed that had died and would refuse every order under its
+        // silent-feed gate after five quiet seconds.
+        cell.feed_heartbeat(&self.venue, now);
+        // The cell's standing request for a snapshot, answered before the
+        // difference is cut: a book the cell discarded is rebuilt whole from
+        // the venue's depth as it stands, and remembered as published so the
+        // difference below is taken against what the cell now holds.
+        // Not while a gap is open at this venue: `apply_snapshot` refuses
+        // then, and that refusal propagated from here would abort every pass
+        // before `on_bytes` or `work` could hand the sequencer the clock that
+        // abandons the gap — a cell wedged by its own recovery. The request
+        // stands and the book stays discarded, so `stale_book` keeps refusing
+        // orders against it in the meantime.
+        let gapped = cell.sequence_gap_open_at(&self.venue);
+        for request in cell.snapshot_requests() {
+            if gapped || request.venue != self.venue {
+                continue;
+            }
+            let id = request.object_id.as_str();
+            let (Some(published), Some(depth)) = (
+                self.published.get_mut(id),
+                quotes
+                    .iter()
+                    .find(|depth| depth.object_id == request.object_id),
+            ) else {
+                // Not an instrument this feed publishes; whoever handed the
+                // cell that book answers for it.
+                continue;
+            };
+            let mut edits = Vec::new();
+            *published = Published::default();
+            for (side, levels, remembered) in [
+                (BookSide::Bid, &depth.bids, &mut published.bids),
+                (BookSide::Ask, &depth.asks, &mut published.asks),
+            ] {
+                for level in levels.iter().take(MAX_LEVELS_PER_SIDE) {
+                    if level.size <= Decimal::ZERO {
+                        continue;
+                    }
+                    remembered.insert(level.price, level.size);
+                    edits.push(MessageBody::LevelSet {
+                        side,
+                        price: level.price,
+                        quantity: level.size,
+                        order_count: None,
+                    });
+                }
+            }
+            cell.apply_snapshot(&self.venue, &request.object_id, &edits, now)?;
+            tick.resynchronised += 1;
+        }
+        let mut wire = Wire {
+            frame: String::new(),
+            sequence: self.sequence,
+            // The venue's clock, not this call's `now`: the instant the pass
+            // last advanced the gateway to. The pass hands both the same
+            // value, so the two agree in a running node — which is what a
+            // venue with no wire between it and the cell measures — and they
+            // are still two facts from two sources.
+            venue_time: gateway.now(),
+        };
+        for depth in quotes {
             let id = depth.object_id.as_str();
             // An id the wire cannot carry is an instrument the feed cannot
             // publish. Counted as omitted rather than escaped: an escaping
@@ -277,12 +393,29 @@ impl SimulatedFeed {
             let Some(published) = self.published.get_mut(id) else {
                 continue;
             };
-            tick.messages += diff_side(&mut published.bids, &depth.bids, id, 'B', &mut frame);
-            tick.messages += diff_side(&mut published.asks, &depth.asks, id, 'A', &mut frame);
+            tick.messages += diff_side(
+                &mut published.bids,
+                &depth.bids,
+                id,
+                BookSide::Bid,
+                &mut wire,
+            );
+            tick.messages += diff_side(
+                &mut published.asks,
+                &depth.asks,
+                id,
+                BookSide::Ask,
+                &mut wire,
+            );
         }
         self.omitted_total = self
             .omitted_total
             .saturating_add(tick.instruments_omitted as u64);
+        // Advanced whether or not the cell takes the frame: a frame the cell
+        // refused is a frame it did not see, and the hole its numbers leave
+        // is how the sequencer finds that out on the next one.
+        self.sequence = wire.sequence;
+        let frame = wire.frame;
         if tick.messages > 0 {
             let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
             if decoded != tick.messages {
@@ -300,6 +433,54 @@ impl SimulatedFeed {
     }
 }
 
+/// One level, as the venue's publisher writes it and the feed's decoder
+/// reads it:
+/// `sequence ⇥ venue_time_nanos ⇥ object_id ⇥ B|A ⇥ price ⇥ size ⇤`.
+///
+/// Public because it is the wire: a replay that injects a dropped, repeated
+/// or reordered line has to write lines the decoder will read, and a second
+/// encoder kept in a test would be a second place the format lives.
+pub fn level_line(
+    sequence: u64,
+    venue_time: Timestamp,
+    object_id: &str,
+    side: BookSide,
+    price: Decimal,
+    size: Decimal,
+) -> String {
+    let side = match side {
+        BookSide::Bid => 'B',
+        BookSide::Ask => 'A',
+    };
+    format!(
+        "{sequence}\t{}\t{object_id}\t{side}\t{price}\t{size}\n",
+        venue_time.as_nanos()
+    )
+}
+
+/// The frame one publication is building, and the two facts every line of
+/// it carries from the venue.
+struct Wire {
+    frame: String,
+    /// The sequence number of the last line written.
+    sequence: u64,
+    venue_time: Timestamp,
+}
+
+impl Wire {
+    fn level(&mut self, id: &str, side: BookSide, price: Decimal, size: Decimal) {
+        self.sequence = self.sequence.saturating_add(1);
+        self.frame.push_str(&level_line(
+            self.sequence,
+            self.venue_time,
+            id,
+            side,
+            price,
+            size,
+        ));
+    }
+}
+
 /// Publish one side's difference, top [`MAX_LEVELS_PER_SIDE`] only.
 ///
 /// Returns how many lines were written. `previous` is left holding what was
@@ -308,8 +489,8 @@ fn diff_side(
     previous: &mut BTreeMap<Decimal, Decimal>,
     current: &[BookLevel],
     id: &str,
-    side: char,
-    frame: &mut String,
+    side: BookSide,
+    wire: &mut Wire,
 ) -> usize {
     let mut written = 0;
     let mut next: BTreeMap<Decimal, Decimal> = BTreeMap::new();
@@ -321,15 +502,13 @@ fn diff_side(
     }
     for (price, size) in &next {
         if previous.get(price) != Some(size) {
-            // `writeln!` into a `String` cannot fail; the `let _` names that
-            // rather than pretending the result is being inspected.
-            let _ = writeln!(frame, "{id}\t{side}\t{price}\t{size}");
+            wire.level(id, side, *price, *size);
             written += 1;
         }
     }
     for price in previous.keys() {
         if !next.contains_key(price) {
-            let _ = writeln!(frame, "{id}\t{side}\t{price}\t0");
+            wire.level(id, side, *price, Decimal::ZERO);
             written += 1;
         }
     }
@@ -337,21 +516,27 @@ fn diff_side(
     written
 }
 
-/// The feed's decoder: one level per line, tab-separated.
+/// The feed's decoder: one level per line, tab-separated, as
+/// [`level_line`] writes it.
 ///
-/// `object_id ⇥ B|A ⇥ price ⇥ size ⇤`. Registered in the cell's protocol
-/// registry like any venue's decoder, so the frame the feed builds takes the
-/// path a packet would — sequenced, applied to the book, and fed to the
-/// feature graph — rather than being written into the book directly by the
-/// node, which would be a second way for a book to change that no replay
-/// could see.
+/// Registered in the cell's protocol registry like any venue's decoder, so
+/// the frame the feed builds takes the path a packet would — sequenced,
+/// applied to the book, and fed to the feature graph — rather than being
+/// written into the book directly by the node, which would be a second way
+/// for a book to change that no replay could see.
+///
+/// It supplies exactly one fact of its own, the receipt stamp. The sequence
+/// number and the venue's instant are read from the line: a decoder that
+/// numbered what it decoded would report every stream as contiguous, however
+/// much of it never arrived.
 #[derive(Debug)]
 struct DepthDecoder {
     venue: VenueId,
-    /// One stream, one partition: the feed is in-process and cannot lose or
-    /// reorder a frame, so per-instrument partitions would be structure for
-    /// a failure that cannot occur here.
-    sequence: u64,
+    /// The receipt instant of the last frame this decoder stamped, so the
+    /// next cannot be stamped earlier. One stream, one partition: the
+    /// sequence is the publisher's and is scoped to the feed, not to an
+    /// instrument.
+    last_receipt: Option<Timestamp>,
     consumed: usize,
     diagnostics: Diagnostics,
 }
@@ -360,26 +545,49 @@ impl DepthDecoder {
     fn new(venue: VenueId) -> Self {
         Self {
             venue,
-            sequence: 0,
+            last_receipt: None,
             consumed: 0,
             diagnostics: Diagnostics::default(),
         }
     }
 }
 
+/// One line as the decoder reads it.
+struct Level {
+    sequence: u64,
+    venue_time: Timestamp,
+    object_id: ObjectId,
+    side: BookSide,
+    price: Decimal,
+    size: Decimal,
+}
+
 /// One line's fields, or why it could not be read.
-fn parse_line(line: &str) -> std::result::Result<(ObjectId, BookSide, Decimal, Decimal), String> {
+fn parse_line(line: &str) -> std::result::Result<Level, String> {
     let mut fields = line.split('\t');
+    let sequence = fields.next();
+    let venue_time = fields.next();
     let id = fields.next().filter(|id| !id.is_empty());
     let side = fields.next();
     let price = fields.next();
     let size = fields.next();
-    let (Some(id), Some(side), Some(price), Some(size)) = (id, side, price, size) else {
-        return Err("a level needs four tab-separated fields".to_string());
+    let (Some(sequence), Some(venue_time), Some(id), Some(side), Some(price), Some(size)) =
+        (sequence, venue_time, id, side, price, size)
+    else {
+        return Err("a level needs six tab-separated fields".to_string());
     };
     if fields.next().is_some() {
-        return Err("a level has more than four fields".to_string());
+        return Err("a level has more than six fields".to_string());
     }
+    let sequence = sequence
+        .parse::<u64>()
+        .ok()
+        .filter(|sequence| *sequence > 0)
+        .ok_or_else(|| format!("sequence {sequence:?} is not a positive integer"))?;
+    let venue_time = venue_time
+        .parse::<i64>()
+        .map(Timestamp::from_nanos)
+        .map_err(|_| format!("venue time {venue_time:?} is not a count of nanoseconds"))?;
     let side = match side {
         "B" => BookSide::Bid,
         "A" => BookSide::Ask,
@@ -393,7 +601,14 @@ fn parse_line(line: &str) -> std::result::Result<(ObjectId, BookSide, Decimal, D
     if size.is_negative() {
         return Err(format!("size {size} is negative"));
     }
-    Ok((ObjectId::from_string(id), side, price, size))
+    Ok(Level {
+        sequence,
+        venue_time,
+        object_id: ObjectId::from_string(id),
+        side,
+        price,
+        size,
+    })
 }
 
 impl Decoder for DepthDecoder {
@@ -401,6 +616,25 @@ impl Decoder for DepthDecoder {
         let text = std::str::from_utf8(bytes).map_err(|error| {
             Error::invalid(format!("{PROTOCOL}: the frame is not text: {error}"))
         })?;
+        // The receipt stamp never runs backwards within this adapter. Refused
+        // rather than stamped at the later instant: the caller's clock is
+        // wrong, and a frame quietly restamped would hide that from the one
+        // reader — a latency measurement — the stamp exists for.
+        if let Some(last) = self.last_receipt
+            && captured_at < last
+        {
+            self.consumed = 0;
+            self.diagnostics.frames_refused = self.diagnostics.frames_refused.saturating_add(1);
+            return Err(Error::invalid(format!(
+                "{PROTOCOL}: a frame received at {} follows one this adapter stamped at {}; a \
+                 receipt stamp that runs backwards would order the node's own observations \
+                 wrongly, so nothing of the frame is consumed. Present it again once the \
+                 node's clock reads no earlier than the last receipt",
+                captured_at.to_rfc3339(),
+                last.to_rfc3339()
+            )));
+        }
+        self.last_receipt = Some(captured_at);
         let mut messages = Vec::new();
         let mut consumed = 0usize;
         for line in text.split_inclusive('\n') {
@@ -411,18 +645,19 @@ impl Decoder for DepthDecoder {
             let offset = consumed;
             consumed += line.len();
             match parse_line(line.trim_end_matches(['\n', '\r'])) {
-                Ok((object_id, side, price, quantity)) => {
-                    self.sequence = self.sequence.saturating_add(1);
+                Ok(level) => {
                     messages.push(MarketMessage::new(
-                        object_id,
-                        Origin::new(self.venue.clone(), FEED_NAME, 0, self.sequence),
+                        level.object_id,
+                        Origin::new(self.venue.clone(), FEED_NAME, 0, level.sequence),
                         MessageBody::LevelSet {
-                            side,
-                            price,
-                            quantity,
+                            side: level.side,
+                            price: level.price,
+                            quantity: level.size,
                             order_count: None,
                         },
-                        captured_at,
+                        // Two facts from two sources: the venue's instant as
+                        // the line states it, and this node's receipt.
+                        level.venue_time,
                         captured_at,
                     ));
                 }
@@ -456,5 +691,98 @@ impl Decoder for DepthDecoder {
 
     fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod tests {
+    //! The decoder's own two stamps (REFLEX-019), on the decoder itself: it
+    //! is private, and the receipt stamp it writes reaches nothing a test
+    //! outside this module can read.
+
+    use super::*;
+    use qip_core::{Duration, dec};
+
+    fn t(secs: i64) -> Timestamp {
+        Timestamp::from_secs(1_760_000_000 + secs)
+    }
+
+    fn line(sequence: u64, venue_time: Timestamp) -> String {
+        level_line(
+            sequence,
+            venue_time,
+            "obj-STAMP",
+            BookSide::Bid,
+            dec!("99"),
+            dec!("5"),
+        )
+    }
+
+    #[test]
+    fn a_decoded_level_carries_the_venues_instant_and_the_nodes_receipt_in_separate_fields()
+    -> Result<()> {
+        let mut decoder = DepthDecoder::new(VenueId::new("XLON"));
+        let venue_said = t(10);
+        let received = t(10).saturating_add(Duration::from_millis(3));
+        assert_ne!(
+            venue_said, received,
+            "the premise is two different instants"
+        );
+
+        let messages = decoder.decode(line(7, venue_said).as_bytes(), received)?;
+        assert_eq!(messages.len(), 1, "the premise is one decoded level");
+        let message = &messages[0];
+        assert_eq!(
+            message.venue_time, venue_said,
+            "the venue's instant was not read from the line"
+        );
+        assert_eq!(
+            message.capture_time, received,
+            "the receipt stamp is not the instant the node received the frame"
+        );
+        assert_eq!(message.transit(), Duration::from_millis(3));
+        assert_eq!(
+            message.origin.sequence, 7,
+            "the sequence is the decoder's own count, not the venue's number"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_frame_received_earlier_than_the_last_is_refused_and_consumes_nothing() -> Result<()> {
+        let mut decoder = DepthDecoder::new(VenueId::new("XLON"));
+        let first = decoder.decode(line(1, t(10)).as_bytes(), t(10))?;
+        assert_eq!(first.len(), 1, "the premise is a frame already stamped");
+        assert_eq!(decoder.diagnostics().frames_refused, 0);
+
+        // The node's clock reads a second earlier than its last receipt.
+        let frame = line(2, t(10));
+        let error = match decoder.decode(frame.as_bytes(), t(9)) {
+            Ok(messages) => panic!(
+                "a frame received before the last one was stamped anyway: {:?}",
+                messages
+                    .iter()
+                    .map(|message| message.capture_time)
+                    .collect::<Vec<_>>()
+            ),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "invalid");
+        assert!(
+            error.message().contains("runs backwards"),
+            "the refusal does not say why: {}",
+            error.message()
+        );
+        assert_eq!(decoder.consumed(), 0, "a refused frame was consumed");
+        assert_eq!(decoder.diagnostics().frames_refused, 1);
+
+        // Presented again at the last receipt instant — equal is not
+        // backwards — it is read whole, and the stamps never decreased.
+        let again = decoder.decode(frame.as_bytes(), t(10))?;
+        assert_eq!(again.len(), 1);
+        assert!(again[0].capture_time >= first[0].capture_time);
+        assert_eq!(decoder.consumed(), frame.len());
+        Ok(())
     }
 }
