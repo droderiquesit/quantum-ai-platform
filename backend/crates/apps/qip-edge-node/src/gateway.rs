@@ -607,15 +607,15 @@ impl Placer for SimulatedGateway {
 
     fn try_place(
         &mut self,
-        _order_id: &str,
-        _object_id: &ObjectId,
-        _venue: &VenueId,
-        _side: BookSide,
-        _quantity: Decimal,
-        _price: Decimal,
-        _at: Timestamp,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
     ) -> Result<bool> {
-        // Simulated gateway always accepts orders (brokers queue capacity not implemented yet)
+        self.place(order_id, object_id, venue, side, quantity, price, at)?;
         Ok(true)
     }
 
