@@ -277,6 +277,12 @@ impl AgentManifest {
                 self.id
             )));
         }
+        if self.name.trim().is_empty() {
+            return Err(Error::invalid(format!(
+                "agent {} has no name; the name is what appears in decisions and audits",
+                self.id
+            )));
+        }
         if self.purpose.trim().is_empty() {
             return Err(Error::invalid(format!(
                 "agent {} declares no purpose; an agent nobody can describe is an agent nobody reviews",

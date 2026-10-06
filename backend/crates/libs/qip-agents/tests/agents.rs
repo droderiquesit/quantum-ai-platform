@@ -299,6 +299,28 @@ fn a_brainspec_with_all_required_fields_validates_and_missing_models_is_refused(
         "manifest with all BrainSpec fields validates"
     );
 
+    // Empty name is refused (the name appears in decisions and audits).
+    let no_name = AgentManifest::research("macro", "", "reads the world", now())
+        .with_competencies(vec!["macro".to_string()])
+        .with_models(vec!["classical-baseline".to_string()]);
+    let error = no_name.validate().unwrap_err();
+    assert!(
+        error.message().contains("name"),
+        "empty name must be refused: {}",
+        error.message()
+    );
+
+    // Blank name is refused too (whitespace only is no name).
+    let blank_name = AgentManifest::research("macro", "  ", "reads the world", now())
+        .with_competencies(vec!["macro".to_string()])
+        .with_models(vec!["classical-baseline".to_string()]);
+    let error = blank_name.validate().unwrap_err();
+    assert!(
+        error.message().contains("name"),
+        "blank name must be refused: {}",
+        error.message()
+    );
+
     // Empty models list is refused (agent must declare model dependencies).
     let no_models = researcher("macro", "Macro", "reads the world", now()).with_models(vec![]);
     let error = no_models.validate().unwrap_err();
