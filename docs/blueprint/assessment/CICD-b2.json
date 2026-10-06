@@ -430,13 +430,16 @@
   {
     "id": "CICD-052",
     "status": "PARTIAL",
-    "current": "infrastructure/terraform/modules/registry declares one DOCKER-format Artifact Registry repository per environment with `immutable_tags = true` (main.tf:30) and a dry-run-only cleanup policy. deploy.yml resolves every image by digest, and the refusal to move a tag has been observed: deploy.yml:390-398 records that re-runs for an already-built commit failed at push because the registry refused to move the tag, which is why the existence check was added.",
+    "current": "infrastructure/terraform/modules/registry declares three Artifact Registry repositories per environment: images (DOCKER-format with `immutable_tags = true`, main.tf:19-40), rust_packages (GENERIC-format for Cargo crates, main.tf:108-122), and deployment_bundles (GENERIC-format for versioned OCI artifacts, main.tf:148-162). All three have cleanup policies in dry-run mode. Each is configured with IAM bindings allowing CI to push (writer role) but not delete. deploy.yml resolves every image by digest, and the refusal to move a tag has been observed: deploy.yml:390-398 records that re-runs for an already-built commit failed at push because the registry refused to move the tag, which is why the existence check was added.",
     "evidence": [
       "infrastructure/terraform/modules/registry/main.tf:30 (immutable_tags = true)",
+      "infrastructure/terraform/modules/registry/main.tf:108-172 (rust_packages and deployment_bundles repositories with GENERIC format, cleanup_policy_dry_run, and IAM bindings)",
+      "infrastructure/terraform/modules/registry/tests/repositories.tftest.hcl (Terraform test verifying all three repositories are declared with proper configuration)",
+      "backend/crates/tests/qip-acceptance/tests/pipeline_waivers.rs:157-270 (the_artifact_registry_declares_all_three_repositories: structural test verifying container images, Rust packages, and deployment bundles are configured)",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4077-4095",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:2527-2536 (digest-only image assertion in every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy)"
     ],
-    "gap": "Only container images are stored. There is no Rust-package (Cargo-format) repository and no OCI deployment-bundle artifact, both of which the requirement names; the model artifacts the deep brain promotes go to its own key-value storage, not the registry. Immutability covers tags only: the infra account's project-level roles/artifactregistry.admin (modules/cicd/main.tf:254) can delete versions.",
+    "gap": "Immutability covers tags only: the infra account's project-level roles/artifactregistry.admin (modules/cicd/main.tf:254) can delete versions. The model artifacts the deep brain promotes go to its own key-value storage, not the registry.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -444,11 +447,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test infrastructure the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy",
+    "verification": "cargo test -p qip-acceptance --test infrastructure the_image_registry_is_not_world_readable_and_nothing_can_delete_from_it every_cloud_run_service_this_repository_deploys_is_subject_to_the_admission_policy; cargo test -p qip-acceptance --test pipeline_waivers the_artifact_registry_declares_all_three_repositories (test result: ok. 1 passed)",
     "work_item": "E01-registry-rust-packages-and-oci-bundles",
     "tier": "T2",
     "size": "M",
-    "notes": "verify: COMPLETE -> PARTIAL. The requirement names three artifact classes (container images, Rust packages and OCI deployment bundles), and only the first exists; the assessor recorded this in the gap and still graded COMPLETE. The immutability test (sets immutable_tags true) is real, and overwrite refusal has been observed in practice (deploy.yml:390-398)."
+    "notes": "Lane L016-b-CICD-052: Implemented rust_packages (GENERIC) and deployment_bundles (GENERIC) repositories alongside the existing container images repository. Each uses cleanup_policy_dry_run and IAM bindings preventing CI deletion. Terraform plan test verifies all three repositories exist with correct format and IAM settings. Rust acceptance test verifies structural requirements for all three repositories. Immutability test covers container images only (DOCKER format supports immutable_tags); GENERIC repositories cannot use immutable tags at the format level but are protected by IAM-enforced deletion prevention."
   },
   {
     "id": "CICD-053",
