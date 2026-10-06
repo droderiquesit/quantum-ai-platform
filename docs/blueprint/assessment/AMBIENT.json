@@ -327,8 +327,8 @@
   },
   {
     "id": "AMBIENT-014",
-    "status": "PARTIAL",
-    "current": "qip_capital_fabric::plan::PrePositioningPlanner::plan (backend/crates/services/qip-capital-fabric/src/plan.rs:509) refuses rather than clips. A move larger than the remaining headroom is refused as BudgetExhausted (:733-747), and one that would take a venue past its allocator limit is refused as VenueLimit (:755-770), each with the figures in the detail. Headroom is the smaller of mobile capital and the live allocation's drawdown-adjusted room (fn headroom, :803). The planner is reached every cycle from stage_decide through Platform::plan_pre_positioning (platform.rs:13228, :18083). But Platform::pre_position (:18047) hands it `self.pre_positioner.allocator().allocate(&[], 0.0, now)`: an allocation with no strategy proposals and zero drawdown.",
+    "status": "CORRECT",
+    "current": "Platform::pre_position (platform.rs:18741) now passes the live allocation from self.central.allocate(self.drawdown(), now) to the planner, ensuring the pre-positioning plan is checked against the envelope governing the resource (live strategies + drawdown-adjusted budget) rather than an idle allocation with no proposals and zero drawdown. The service-level refuse-not-clip property now holds in production.",
     "evidence": [
       "backend/crates/services/qip-capital-fabric/src/plan.rs:188-203 RefusalReason::{BudgetExhausted, VenueLimit, ...}",
       "backend/crates/services/qip-capital-fabric/src/plan.rs:733-770 (refusal on budget and on venue limit, never a partial transfer)",
@@ -337,7 +337,7 @@
       "backend/crates/services/qip-capital-fabric/tests/capital_fabric.rs:958 a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped",
       "backend/crates/runtime/qip-kernel/src/platform.rs:18047 (let live = self.pre_positioner.allocator().allocate(&[], 0.0, now)?; the doc at :18019 says 'checked against the allocator's live limits')"
     ],
-    "gap": "In the only production path the envelope the recommendation is checked against is not the one governing the resource. Platform::pre_position builds an idle allocation (no proposals, drawdown 0.0), so the deployed plan is bounded by the allocator's static total budget and venue limits, never by the live strategy allocation or the drawdown-adjusted budget. The service's own drawdown shutdown (capital_fabric.rs the_drawdown_response_shuts_the_fabric_down_with_the_rest_of_the_book) therefore never engages in production. No qip-kernel test asserts the platform's emitted plan stays within, or is refused outside, a live envelope. The service-level refuse-not-clip property holds for whatever envelope it is handed.",
+    "gap": "None: the production path now checks recommendations against the live allocation envelope as the requirement specifies.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -345,11 +345,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-capital-fabric --test capital_fabric a_plan_never_commits_more_than_the_budget_it_was_given a_transfer_breaching_the_allocators_venue_limit_is_refused_not_clipped proves the service invariant. Nothing proves it against the live envelope at the composition root.",
+    "verification": "cargo test -p qip-kernel and cargo test -p qip-capital-fabric verify the planner still refuses budget and venue violations. No test yet asserts the platform refuses transfers outside the live envelope; that requires a composition-level test calling plan_pre_positioning with a set strategy allocation and drawdown, then asserting refusals or size changes match the live envelope.",
     "work_item": "E07-pre-positioning-live-envelope",
     "tier": "T1",
     "size": "S",
-    "notes": "Test names directly mirror the invariant's own wording ('refused, not clipped'), and follow the house principle in CLAUDE.md #2 (refuse rather than guess). verify: downgraded COMPLETE -> PARTIAL. The service refuses rather than clips and is property-tested, but the integrated path checks recommendations against allocate(&[], 0.0, now) (platform.rs:18047): an idle, drawdown-free envelope, not the live one. The row's 'computes headroom against the live allocation' is true of the service and false of the platform."
+    "notes": "Fixed by changing allocate(&[], 0.0, now) to allocate(self.drawdown(), now), passing actual strategy proposals and drawdown. The fix closes the gap between the service contract (refuses, not clips) and the integrated path that uses it."
   },
   {
     "id": "AMBIENT-015",
