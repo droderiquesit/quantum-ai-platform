@@ -36,7 +36,7 @@ Complete walkthrough of edge cell deployment across regions, covering:
 
 ### 3. Terraform configuration templates
 **Files:**
-- `infrastructure/environments/MULTI-REGION-TEMPLATE.tfvars` — Annotated template for 7-region deployment (us-east4, europe-west2, us-west1, +4 future regions)
+- `infrastructure/templates/MULTI-REGION-TEMPLATE.tfvars` — Annotated template for 7-region deployment (us-east4, europe-west2, us-west1, +4 future regions)
 - `infrastructure/terraform/modules/edge-cells-deployment/` — Multi-region orchestration module (fixed configuration error; now validates cleanly)
 - `infrastructure/terraform/modules/edge-mesh/` — Mesh networking module (firewall rules, peer connectivity, central plane ranges)
 
@@ -191,7 +191,7 @@ Total platform capital = sum of region_allocation values (per-region decision, n
 - `docs/operations/EDGE-CELL-DEPLOYMENT-SUMMARY.md` — This file
 
 ### New templates
-- `infrastructure/environments/MULTI-REGION-TEMPLATE.tfvars` — 7-region example
+- `infrastructure/templates/MULTI-REGION-TEMPLATE.tfvars` — 7-region example
 - `data/venue-registrations.template.json` — Venue record schema
 
 ### Fixed bugs
