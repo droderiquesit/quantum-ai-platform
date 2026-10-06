@@ -717,25 +717,25 @@
   {
     "id": "AMBIENT-031",
     "status": "PARTIAL",
-    "current": "AttentionRouter (backend/crates/libs/qip-contracts/src/ambient.rs:224-299) manages attention budget per window, routing signals to pathways by severity and materiality threshold. It records Activated, Deferred, and Shed dispositions. However, it tracks only attention (signal budget), not compute-level resource allocation (CPU, GPU, TPU, QPU), does not track model reputation by domain/horizon/regime, and has no mechanism to kill persistently unproductive work. The routing is driven by signal severity, not expected value.",
+    "current": "AttentionRouter (backend/crates/libs/qip-contracts/src/ambient.rs:224-299) manages attention budget per window, routing signals to pathways by severity and materiality threshold. It records Activated, Deferred, and Shed dispositions. ModelReputation (ambient.rs:460-491) tracks accuracy_bp, signal_quality_bp, forecast_skill_bp (0-10000 basis points) by domain, horizon, regime, with overall_bp as weighted average (40/30/30). ComputeAllocation (ambient.rs:494-542) records allocation decisions naming work_id, resource_type (CPU/GPU/TPU/QPU), units, reputation and rationale. However, no mechanism yet kills persistently unproductive work, and compute allocation remains a record type; there is no allocation engine that routes work requests based on reputation or kills work.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:224-299 (AttentionRouter with window-based budget, severity-driven routing)",
-      "backend/crates/libs/qip-contracts/src/ambient.rs:154-222 (RoutingPolicy drives routing by SignalClass and materiality_bp, not by value)",
-      "rg 'model_reputation|reputation_score' backend/crates: no hits",
-      "rg 'kill.*work|unproductive_work|work_termination' backend/crates: no hits"
+      "backend/crates/libs/qip-contracts/src/ambient.rs:460-491 (ModelReputation with domain/horizon/regime, weighted overall_bp)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:426-458 (ComputeResourceType enum: Cpu, Gpu, Tpu, Qpu)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:494-542 (ComputeAllocation struct and constructor validation)",
+      "backend/crates/libs/qip-contracts/tests/ambient.rs:242-362 (four mutation-verified tests for reputation and allocation)"
     ],
-    "gap": "AttentionRouter allocates only attention (signal budget), not compute resources. No model reputation tracking exists (by domain, horizon, regime). No mechanism kills unproductive work or adapts compute scale to value. The router is signal-driven, not value-driven.",
+    "gap": "ModelReputation and ComputeAllocation types are defined with full validation and auditability, but no allocation engine routes compute based on reputation, no work-killing mechanism monitors productivity, and the router remains signal-driven rather than value-driven.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
-    "deployable": true,
+    "integrated": false,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-contracts --lib ambient proves AttentionRouter routing logic. No test proves model reputation tracking, compute allocation, or work killing, which are the requirement's check.",
+    "verification": "cargo test -p qip-contracts --test ambient runs four mutation-verified tests for ModelReputation and ComputeAllocation. Integration test and work-killing mechanism remain to be implemented.",
     "work_item": "E09-meta-intelligence-compute-allocation",
     "tier": "T3",
     "size": "L",
-    "notes": "AttentionRouter is production infrastructure; Meta-Intelligence extensions (reputation, compute allocation, work killing) would be built on top of it. The requirement's relationship to v11.6 Attention Router is unstated, but AttentionRouter is that router's heart."
+    "notes": "ModelReputation and ComputeAllocation infrastructure is in place and tested. Next phase: allocation engine to route work based on reputation and overall value, and work killer to monitor productivity. AttentionRouter's relationship to v11.6 Attention Router is unstated in the requirement."
   }
 ]
