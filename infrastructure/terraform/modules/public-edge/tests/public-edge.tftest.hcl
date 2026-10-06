@@ -83,6 +83,24 @@ run "a_declared_hostname_creates_the_whole_edge_and_nothing_on_port_80" {
     condition     = google_compute_backend_bucket.static_shell[0].cdn_policy[0].cache_mode == "CACHE_ALL_STATIC"
     error_message = "the static shell's CDN does not cache with the explicit CACHE_ALL_STATIC mode"
   }
+
+  # GCP-056: Certificate Manager is used instead of classic managed SSL
+  # certificates. The certificate and certificate map are created together.
+  assert {
+    condition     = length(google_certificate_manager_certificate.edge) == 1
+    error_message = "no Certificate Manager certificate was created for the edge"
+  }
+
+  assert {
+    condition     = length(google_certificate_manager_certificate_map.edge) == 1
+    error_message = "no Certificate Manager certificate map was created for the edge"
+  }
+
+  # One map entry per hostname, to associate the certificate with each domain
+  assert {
+    condition     = length(google_certificate_manager_certificate_map_entry.edge) == 1
+    error_message = "no Certificate Manager certificate map entry was created for the hostname"
+  }
 }
 
 # A backend bucket takes only an edge-type policy. The attachment itself is an

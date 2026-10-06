@@ -365,32 +365,63 @@ resource "google_compute_url_map" "edge" {
   }
 }
 
-resource "google_compute_managed_ssl_certificate" "edge" {
+# --- Certificate Management ----------------------------------------------------
+#
+# Google's Certificate Manager issues managed certificates and assembles them
+# into a certificate map that the proxy uses. The map abstraction allows
+# certificate rotations without the proxy's lifecycle changing.
+
+resource "google_certificate_manager_certificate" "edge" {
   count = local.enabled
 
-  project = var.project_id
-  name    = local.name
+  project  = var.project_id
+  name     = local.name
+  location = "global"
 
   managed {
     domains = var.hostnames
   }
 
-  # Google will not reissue in place; a domain change replaces the
-  # certificate, and the replacement has to exist before the proxy stops
-  # naming the old one or the edge serves nothing for the minutes in between.
+  labels = var.labels
+
+  # Certificate Manager will not reissue in place; a domain change triggers a
+  # replacement. A certificate that has been marked for deletion is not deleted
+  # immediately, so removing a certificate from the map before destroying it
+  # here is safe.
   lifecycle {
     create_before_destroy = true
   }
 }
 
+resource "google_certificate_manager_certificate_map" "edge" {
+  count = local.enabled
+
+  project  = var.project_id
+  name     = local.name
+  location = "global"
+  labels   = var.labels
+}
+
+resource "google_certificate_manager_certificate_map_entry" "edge" {
+  for_each = local.enabled == 1 ? toset(var.hostnames) : toset([])
+
+  project          = var.project_id
+  name             = "${local.name}-${index(var.hostnames, each.value)}"
+  map              = google_certificate_manager_certificate_map.edge[0].name
+  location         = "global"
+  certificates     = [google_certificate_manager_certificate.edge[0].id]
+  hostname         = each.value
+  match_priority   = index(var.hostnames, each.value) + 1
+  skip_cleanup     = false
+}
+
 resource "google_compute_target_https_proxy" "edge" {
   count = local.enabled
 
-  project = var.project_id
-  name    = local.name
-  url_map = google_compute_url_map.edge[0].id
-
-  ssl_certificates = [google_compute_managed_ssl_certificate.edge[0].id]
+  project             = var.project_id
+  name                = local.name
+  url_map             = google_compute_url_map.edge[0].id
+  certificate_manager = google_certificate_manager_certificate_map.edge[0].id
 
   # TLS 1.2 and above, and no cipher Google classes as compatible-only. The
   # default profile admits TLS 1.0 for clients this platform does not have.
