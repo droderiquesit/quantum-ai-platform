@@ -509,5 +509,36 @@ mod tests {
             }
             other => panic!("expected Gauge for group_lag, got {other:?}"),
         }
+
+        // serving — a gauge, unlabelled: 1 when the broker is accepting
+        // requests, 0 when not. Not a counter (a 0/1 gauge that never gets
+        // reset would read "not serving" forever after a recovery), but a
+        // gauge that the broker sets at startup and when the listener stops.
+        assert_absent(&snapshot, names::EVENT_FABRIC_SERVING);
+        recorder.serving(true);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_SERVING);
+        assert_label_keys(found, &[]);
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 1.0, "serving=true gauge is 1.0");
+                }
+            }
+            other => panic!("expected Gauge for serving, got {other:?}"),
+        }
+        recorder.serving(false);
+        let snapshot = metrics.snapshot();
+        let found = find(&snapshot, names::EVENT_FABRIC_SERVING);
+        match &found.value {
+            MetricValue::Gauge(v) => {
+                #[allow(clippy::float_cmp)]
+                {
+                    assert_eq!(*v, 0.0, "serving=false gauge is 0.0");
+                }
+            }
+            other => panic!("expected Gauge for serving, got {other:?}"),
+        }
     }
 }

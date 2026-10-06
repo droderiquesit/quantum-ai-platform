@@ -49,7 +49,9 @@ pub use causal::{
     Retirement,
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
-pub use evidence::{AuthenticitySignal, EvidenceRecord, TemporalConsistency};
+pub use evidence::{
+    AuthenticitySignal, EvidenceRecord, GeographicConsistency, TemporalConsistency,
+};
 pub use execution_state::{ExecutionRecord, ExecutionState, VenueExecutionStats};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SecondOrderReview, SharedDriver, UnheldDependency,

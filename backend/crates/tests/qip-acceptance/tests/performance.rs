@@ -220,6 +220,21 @@ fn report(label: &str, operations: usize, elapsed: WallDuration, ceiling_micros:
 /// class, and the distinction being drawn here is between constant-ish and
 /// linear-in-N per operation, which is a factor of the size ratio and not a
 /// few percent.
+fn percentile(sorted_data: &[f64], percentile: f64) -> f64 {
+    if sorted_data.is_empty() {
+        return 0.0;
+    }
+    let index = (percentile / 100.0) * (sorted_data.len() - 1) as f64;
+    let lower = index.floor() as usize;
+    let upper = index.ceil() as usize;
+    if lower == upper {
+        sorted_data[lower]
+    } else {
+        let frac = index - lower as f64;
+        sorted_data[lower] * (1.0 - frac) + sorted_data[upper] * frac
+    }
+}
+
 fn report_scaling(
     label: &str,
     small: (usize, WallDuration),
@@ -230,7 +245,7 @@ fn report_scaling(
     let (large_ops, large_elapsed) = large;
     assert!(
         large_ops > small_ops,
-        "{label}: the larger run must feed more operations than the smaller one, \
+        "{label}: the larger run must feed more operations than the smaller one,\
          or this measures nothing"
     );
     let small_micros = small_elapsed.as_secs_f64() * 1e6 / small_ops as f64;
@@ -2016,6 +2031,53 @@ fn the_edge_feasibility_gate_costs_what_the_execution_measurements_say() -> Resu
         elapsed,
         20.0,
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "the execution measurements document names only tests this file holds and says what a number is not"]
+fn tick_to_order_p99_latency_is_published() -> Result<()> {
+    const PASSES: usize = 1_000;
+    let mut cell = edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?;
+    let mut gateway = PaperVenue {
+        fills: false,
+        ..PaperVenue::default()
+    };
+    let mut latencies_micros = Vec::with_capacity(PASSES);
+
+    for index in 0..PASSES {
+        let tick_time = start().saturating_add(Duration::from_millis(index as i64));
+        let began = Instant::now();
+        let _report = cell.work(tick_time, &mut gateway)?;
+        let elapsed = began.elapsed();
+        latencies_micros.push(elapsed.as_secs_f64() * 1e6);
+    }
+
+    latencies_micros.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let p50 = percentile(&latencies_micros, 50.0);
+    let p99 = percentile(&latencies_micros, 99.0);
+    let max = latencies_micros
+        .iter()
+        .cloned()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let probe = machine_probe_nanos();
+    println!(
+        "tick-to-order (Cell::work to Placer, {PASSES} passes): \
+         p50={p50:.3}us p99={p99:.3}us max={max:.3}us \
+         (probe={probe}ns over {PROBE_OPERATIONS} fixed ops, {} profile, this machine, single-threaded)",
+        profile()
+    );
+
+    assert!(
+        p99 < 10_000.0,
+        "tick-to-order p99 latency exceeded 10ms: {p99:.3}us. \
+         This is a local reflex path measurement (in-process, no network, single-threaded). \
+         Re-run this suite alone to distinguish machine load from code changes. \
+         The probe field ({probe}ns) cost over {PROBE_OPERATIONS} fixed operations should barely move if the code changed."
+    );
+
     Ok(())
 }
 

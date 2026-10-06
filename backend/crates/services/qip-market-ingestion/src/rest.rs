@@ -656,6 +656,7 @@ impl RestMarketDataAdapter {
             new_value: wire.new_value,
             effective_from: wire.effective_from,
             provenance,
+            evidence_unretrievable: false,
         };
         Ok((SensedRecord::ReferenceData(Box::new(update)), knowable))
     }

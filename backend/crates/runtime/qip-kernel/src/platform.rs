@@ -18882,13 +18882,11 @@ impl Platform {
                 )?)
                 .with_forecast(forecast);
         }
-        // Get the live allocation with the current drawdown. This ensures the
-        // pre-positioning plan respects the authority envelope that governs
-        // the actual resource state, not an idle envelope.
-        let live = self
-            .pre_positioner
-            .allocator()
-            .allocate(&[], self.drawdown(), now)?;
+        // The live allocation is built from the actual strategy proposals and
+        // the current drawdown, not from an idle allocation with no proposals
+        // and zero drawdown. This ensures the plan is checked against the
+        // envelope that governs the resource, not a static total.
+        let live = self.central.allocate(self.drawdown(), now)?;
         self.pre_positioner.plan(&request, &live, now)
     }
 

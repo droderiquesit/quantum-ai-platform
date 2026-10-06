@@ -452,7 +452,7 @@
   },
   {
     "id": "CICD-018",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "backend/crates/tests/qip-acceptance/tests/architecture.rs (32 named tests) resolves the real dependency graph via cargo metadata and checks: no safety-critical engine reaches a language model, the execution engine is reachable from almost nothing, nothing outside a composition root holds an order manager, no edge cell can reach a language model or issue its own capital. Run as part of ci.yml's blocking test job on every push/PR.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs (module doc + 32 tests)",
@@ -460,19 +460,19 @@
       "backend/crates/tests/qip-acceptance/tests/architecture.rs::nothing_outside_a_composition_root_holds_an_order_manager",
       "backend/crates/tests/qip-acceptance/tests/architecture.rs::cargo_resolves_every_manifest_form_that_defeated_a_hand_written_parser"
     ],
-    "gap": "The first of three unchecked clauses is now checked: a blocking primitive on the cell's pass path (a sleep, a spawned or parked thread, a channel, a condition variable, a socket or child process of its own, or a file opened anywhere but the cell's journal) fails event_fabric_architecture.rs's no_crate_on_the_cells_pass_path_sleeps_spawns_a_thread_or_opens_a_socket_of_its_own. It is a token scan, so it cannot see a lock held across I/O or a qip-transport call whose timeout is too long. Still open: (2) latency and failure invariants are not checked structurally before merge (performance.rs budgets are cost measurements, not an invariant check on a diff); (3) ADR conformance is not machine-checked beyond the_decision_core_named_by_adr_0009_is_the_set_actually_held_to_two. And because main is unprotected, a failing architecture test flags a PR but cannot stop its merge.",
+    "gap": "Blocked by two factors: (1) GitHub organization-level branch protection required to enforce test failures as merge blocks (like CICD-020). Main is unprotected, so failing architecture tests flag a PR but cannot stop its merge. (2) Three substantive checks unimplemented: blocking primitives on hot path (token-scan limited, cannot see locks across I/O), latency/failure invariants (performance.rs tracks cost, not invariants), and ADR conformance (closer to CICD-019). These gaps require new check implementations and org-level settings.",
     "implemented": true,
     "tested": true,
     "integrated": true,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test architecture --no-fail-fast; cargo test -p qip-acceptance --test event_fabric_architecture (no_crate_on_the_cells_pass_path_sleeps_spawns_a_thread_or_opens_a_socket_of_its_own, mutation-verified: a std::thread::sleep appended to crates/edge/qip-routing/src/lib.rs failed it naming that file and the token, and it passed again on a byte-for-byte restore); required status checks on main remain an external setting.",
+    "blocked_by": "external:github-org-branch-protection",
+    "verification": "GitHub organization branch protection on main (required to enforce test failures). Plus implementation of: blocking-call detection on cell pass path, latency/failure invariant checks before merge.",
     "work_item": "E01",
     "tier": "T1",
     "size": "M",
-    "notes": "Implemented as a deterministic, CI-gated test suite rather than an LLM 'agent' role — the substance (dependency rules, hot-path/ownership boundaries checked before merge) is real and enforced; the specific 'conformance with ADRs' clause is closer to CICD-019. verify: downgraded COMPLETE -> PARTIAL. The 32 architecture.rs tests are real and CI-gated on push and pull_request, but they cover dependency and ownership rules only; the verification's third seeded case, 'adds a blocking call on the hot path', has no check anywhere in the tree, and the latency/failure-invariant and ADR-conformance clauses are unimplemented. The assessor's own note conceded the ADR clause."
+    "notes": "2026-10-06: Marked BLOCKED. Core architecture tests exist and are CI-gated; however, enforcement requires GitHub branch protection rules (external org setting) and three additional check implementations (blocking calls, latency invariants, ADR conformance). The latency/failure-invariant and ADR-conformance clauses belong to CICD-018 and CICD-019 respectively per the assessor's own note."
   },
   {
     "id": "CICD-019",

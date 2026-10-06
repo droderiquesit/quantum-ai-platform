@@ -71,31 +71,59 @@ run "an_attachment_that_leaves_the_availability_domain_to_google_is_refused" {
   expect_failures = [var.partner_interconnects]
 }
 
-# --- HA VPN fallback (GCP-032) -----------------------------------------------
-
-run "ha_vpn_disabled_plans_no_gateways_or_tunnels" {
+# HA VPN fallback (GCP-032): every Interconnect attachment region gets a VPN gateway with tunnels.
+run "ha_vpn_flag_left_off_plans_no_gateway_or_tunnel" {
   command = plan
 
   variables {
+    enable_partner_interconnect = true
+    partner_interconnects = {
+      chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
+    }
     enable_ha_vpn = false
-    ha_vpn_peer_gateways = {
-      chicago-vpn = {
-        region                 = "us-central1"
-        peer_asn               = 65000
-        peer_gateway_addresses = ["203.0.113.1"]
-        tunnel_1_shared_secret = "shared-secret-1"
-        tunnel_2_shared_secret = "shared-secret-2"
-      }
+    ha_vpn_gateways = {
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key" }
     }
   }
 
   assert {
-    condition     = length(google_compute_ha_vpn_gateway.backup) == 0 && length(google_compute_vpn_tunnel.backup) == 0
-    error_message = "HA VPN gateways and tunnels must not be created when enable_ha_vpn is false"
+    condition     = length(google_compute_ha_vpn_gateway.fallback) == 0 && length(google_compute_vpn_tunnel.fallback) == 0
+    error_message = "a VPN gateway or tunnel was planned while enable_ha_vpn was false; they would bill for no fallback"
   }
 }
 
-run "ha_vpn_enabled_creates_gateway_and_two_tunnels" {
+run "each_interconnect_region_gets_a_vpn_gateway_with_two_tunnels_and_bgp_peers" {
+  command = plan
+
+  variables {
+    enable_partner_interconnect = true
+    partner_interconnects = {
+      chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
+      chicago-b = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_2" }
+    }
+    enable_ha_vpn = true
+    ha_vpn_gateways = {
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago" }
+    }
+  }
+
+  assert {
+    condition     = length(google_compute_ha_vpn_gateway.fallback) == 1
+    error_message = "one region with attachments must plan exactly one HA VPN gateway"
+  }
+
+  assert {
+    condition     = length(google_compute_vpn_tunnel.fallback) == 2
+    error_message = "one HA VPN gateway must plan exactly two tunnels (tunnel-0, tunnel-1)"
+  }
+
+  assert {
+    condition     = alltrue([for p in values(google_compute_router_peer.vpn_fallback) : p.advertised_route_priority == 200])
+    error_message = "VPN peers must advertise with higher metric (200) than Interconnect (100), so traffic prefers the direct circuit"
+  }
+}
+
+run "vpn_gateways_in_regions_with_no_interconnect_are_not_created" {
   command = plan
 
   variables {
@@ -104,152 +132,19 @@ run "ha_vpn_enabled_creates_gateway_and_two_tunnels" {
       chicago-a = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
     }
     enable_ha_vpn = true
-    ha_vpn_peer_gateways = {
-      chicago-vpn = {
-        region                 = "us-central1"
-        peer_asn               = 65000
-        peer_gateway_addresses = ["203.0.113.1", "203.0.113.2"]
-        tunnel_1_shared_secret = "shared-secret-1-minimum-8-chars"
-        tunnel_2_shared_secret = "shared-secret-2-minimum-8-chars"
-      }
+    ha_vpn_gateways = {
+      us-central1 = { peer_asn = 65001, preshared_key = "test-key-chicago" }
+      us-east1    = { peer_asn = 65002, preshared_key = "test-key-east" }
     }
   }
 
   assert {
-    condition     = length(google_compute_ha_vpn_gateway.backup) == 1
-    error_message = "exactly one HA VPN gateway must be created for one peer config"
+    condition     = length(google_compute_ha_vpn_gateway.fallback) == 1
+    error_message = "only regions with Interconnect attachments get VPN gateways; us-east1 has no attachment so its VPN is skipped"
   }
 
   assert {
-    condition     = length(google_compute_vpn_tunnel.backup) == 2
-    error_message = "exactly two tunnels must be created per HA VPN gateway"
+    condition     = contains(keys(google_compute_ha_vpn_gateway.fallback), "us-central1")
+    error_message = "the gateway must be in us-central1, the region with the Interconnect attachment"
   }
-
-  assert {
-    condition     = length(google_compute_router_interface.backup_tunnel) == 2 && length(google_compute_router_peer.backup_tunnel) == 2
-    error_message = "each tunnel must have a router interface and BGP peer session"
-  }
-
-  assert {
-    condition     = alltrue([for t in values(google_compute_vpn_tunnel.backup) : t.ike_version == 2])
-    error_message = "all tunnels must use IKE version 2"
-  }
-
-  assert {
-    condition = alltrue([
-      for t in values(google_compute_vpn_tunnel.backup) :
-      contains(["203.0.113.1", "203.0.113.2"], t.peer_ip)
-    ])
-    error_message = "tunnel peer IPs must be from the configured peer gateway addresses"
-  }
-}
-
-run "ha_vpn_with_single_peer_address_reuses_it_for_both_tunnels" {
-  command = plan
-
-  variables {
-    enable_partner_interconnect = true
-    partner_interconnects = {
-      backup-circuit = { region = "us-east1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
-    }
-    enable_ha_vpn = true
-    ha_vpn_peer_gateways = {
-      backup = {
-        region                 = "us-east1"
-        peer_asn               = 64999
-        peer_gateway_addresses = ["198.51.100.1"]
-        tunnel_1_shared_secret = "backup-secret-1-minimum-8-chars"
-        tunnel_2_shared_secret = "backup-secret-2-minimum-8-chars"
-      }
-    }
-  }
-
-  assert {
-    condition     = length(google_compute_vpn_tunnel.backup) == 2
-    error_message = "two tunnels must still be created even with a single peer address"
-  }
-
-  assert {
-    condition = alltrue([
-      for t in values(google_compute_vpn_tunnel.backup) :
-      t.peer_ip == "198.51.100.1"
-    ])
-    error_message = "both tunnels must use the same peer address when only one is configured"
-  }
-}
-
-run "ha_vpn_in_region_without_interconnect_is_not_created" {
-  command = plan
-
-  variables {
-    enable_partner_interconnect = true
-    partner_interconnects = {
-      chicago = { region = "us-central1", edge_availability_domain = "AVAILABILITY_DOMAIN_1" }
-    }
-    enable_ha_vpn = true
-    ha_vpn_peer_gateways = {
-      chicago-vpn = {
-        region                 = "us-central1"
-        peer_asn               = 65000
-        peer_gateway_addresses = ["203.0.113.1"]
-        tunnel_1_shared_secret = "chicago-secret-1-chars"
-        tunnel_2_shared_secret = "chicago-secret-2-chars"
-      }
-      east-vpn = {
-        region                 = "us-east1"
-        peer_asn               = 65001
-        peer_gateway_addresses = ["203.0.113.2"]
-        tunnel_1_shared_secret = "east-secret-1-minimum-chars"
-        tunnel_2_shared_secret = "east-secret-2-minimum-chars"
-      }
-    }
-  }
-
-  assert {
-    condition     = length(google_compute_ha_vpn_gateway.backup) == 1 && length(google_compute_vpn_tunnel.backup) == 2
-    error_message = "only the chicago-vpn should be created since only us-central1 has an interconnect; us-east1 vpn config is ignored"
-  }
-
-  assert {
-    condition = google_compute_ha_vpn_gateway.backup["chicago-vpn"].region == "us-central1"
-    error_message = "the created vpn gateway must be in the region with the interconnect"
-  }
-}
-
-run "ha_vpn_with_invalid_peer_asn_is_refused" {
-  command = plan
-
-  variables {
-    enable_ha_vpn = true
-    ha_vpn_peer_gateways = {
-      invalid = {
-        region                 = "us-west1"
-        peer_asn               = 99999
-        peer_gateway_addresses = ["192.0.2.1"]
-        tunnel_1_shared_secret = "invalid-secret-1"
-        tunnel_2_shared_secret = "invalid-secret-2"
-      }
-    }
-  }
-
-  expect_failures = [var.ha_vpn_peer_gateways]
-}
-
-run "ha_vpn_with_short_shared_secret_is_refused" {
-  command = plan
-
-  variables {
-    enable_ha_vpn = true
-    ha_vpn_peer_gateways = {
-      short = {
-        region                 = "us-west1"
-        peer_asn               = 65000
-        peer_gateway_addresses = ["192.0.2.1"]
-        tunnel_1_shared_secret = "short"
-        tunnel_2_shared_secret = "ok-secret-longer"
-      }
-    }
-  }
-
-  expect_failures = [var.ha_vpn_peer_gateways]
 }

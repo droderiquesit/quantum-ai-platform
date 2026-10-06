@@ -220,6 +220,7 @@ fn rates() -> Vec<SensedRecord> {
                     reference.saturating_add(Duration::from_hours(16)),
                 ),
                 quality: DataQuality::clean(),
+                evidence_unretrievable: false,
             }))
         })
         .collect()
@@ -1490,6 +1491,7 @@ fn macro_release(series: &str, ingested_at: Timestamp) -> SensedRecord {
             ingested_at,
         ),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }))
 }
 

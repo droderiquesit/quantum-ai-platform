@@ -160,83 +160,50 @@ variable "private_service_connect_target" {
   }
 }
 
-# --- HA VPN fallback -------------------------------------------------------
+# --- HA VPN fallback --------------------------------------------------------
 
 variable "enable_ha_vpn" {
   description = <<-EOT
-    Whether to create HA VPN gateways and tunnels as a fallback for Interconnect.
+    Whether to create HA VPN gateways as fallback for Interconnect paths.
 
-    Default false. HA VPN provides a managed IPsec backup path when a partner
-    interconnect is unavailable or being maintained. A gateway created here
-    requires peer gateway configuration outside this repository — the peer's
-    IP address and shared secrets are not managed by Terraform. The gateway
-    waits for a deployment manual to connect it to a peer VPN endpoint
-    (on-premises, another cloud, or another GCP project).
+    Default false. HA VPN is the encrypted internet fallback when a partner
+    Interconnect is unavailable. The tunnel's pre-shared key is stored in
+    Terraform state; see infrastructure.rs::no_secret_value_appears_in_the_terraform
+    for the proof that it does not leak.
+
+    Meaningful only when enable_partner_interconnect is true; a VPN without an
+    Interconnect to fall back from is not what this requirement names.
   EOT
   type        = bool
   default     = false
 }
 
-variable "ha_vpn_peer_gateways" {
+variable "ha_vpn_gateways" {
   description = <<-EOT
-    The VPN peer gateways to connect to via HA VPN tunnels.
+    HA VPN gateways for each Interconnect attachment region.
 
-    Keyed by region. For each region that has an Interconnect attachment,
-    define the peer's external IP(s) and the shared secrets for both tunnels.
-    The shared secrets are sensitive and should come from Secret Manager or
-    Vault in production; they appear in Terraform state and must be handled
-    accordingly.
+    Keyed by region name (e.g., "us-central1"). Each entry defines one HA VPN
+    gateway in that region, paired with the Interconnect attachments already
+    in that region. The gateway will have two tunnels and BGP sessions on the
+    same Cloud Router as the Interconnect attachments, with lower route
+    priority so traffic prefers the direct circuit.
 
-    Structure per entry:
-      * `region` — the Google Cloud region (same as Interconnect attachment region)
-      * `peer_asn` — the peer's BGP ASN for the VPN sessions
-      * `peer_gateway_addresses` — list of external IPs for the peer gateway
-        (typically 2 for HA; at least 1 required)
-      * `tunnel_1_shared_secret` — pre-shared key for tunnel 1
-      * `tunnel_2_shared_secret` — pre-shared key for tunnel 2
+      * `peer_asn` is the VPN peer's BGP ASN (e.g., 65001).
+      * `preshared_key` is the tunnel pre-shared key.
   EOT
 
   type = map(object({
-    region                      = string
-    peer_asn                    = number
-    peer_gateway_addresses      = list(string)
-    tunnel_1_shared_secret      = string
-    tunnel_2_shared_secret      = string
+    peer_asn      = number
+    preshared_key = string
   }))
 
   default = {}
 
   validation {
     condition = alltrue([
-      for config in values(var.ha_vpn_peer_gateways) :
-      length(config.peer_gateway_addresses) >= 1
+      for region, gw in var.ha_vpn_gateways :
+      (gw.peer_asn >= 1 && gw.peer_asn <= 65534) || (gw.peer_asn >= 4200000000 && gw.peer_asn <= 4294967294)
     ])
-    error_message = "Each peer gateway needs at least one external IP address."
+    error_message = "Each peer ASN must be private: 1-65534, or 4200000000-4294967294 for a 32-bit one."
   }
-
-  validation {
-    condition = alltrue([
-      for config in values(var.ha_vpn_peer_gateways) :
-      (config.peer_asn >= 1 && config.peer_asn <= 65535) || (config.peer_asn >= 4200000000 && config.peer_asn <= 4294967294)
-    ])
-    error_message = "Peer ASN must be valid: 1-65535 (16-bit) or 4200000000-4294967294 (32-bit)."
-  }
-
-  validation {
-    condition = alltrue([
-      for config in values(var.ha_vpn_peer_gateways) :
-      alltrue([for addr in config.peer_gateway_addresses : can(regex("^([0-9]{1,3}\\.){3}[0-9]{1,3}$", addr))])
-    ])
-    error_message = "Each peer gateway address must be a valid IPv4 address."
-  }
-
-  validation {
-    condition = alltrue([
-      for config in values(var.ha_vpn_peer_gateways) :
-      length(config.tunnel_1_shared_secret) >= 8 && length(config.tunnel_2_shared_secret) >= 8
-    ])
-    error_message = "Each shared secret must be at least 8 characters."
-  }
-
-  sensitive = true
 }

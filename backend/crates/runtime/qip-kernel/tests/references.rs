@@ -620,3 +620,52 @@ fn a_restored_reference_without_a_live_admission_is_not_vendor_backing() -> Resu
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
+
+#[test]
+fn every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions()
+-> Result<()> {
+    let admitted = admitted_frankfurter()?;
+    let digest = frankfurter_digest(TABLE, Timestamp::from_secs(1_760_100_000))?;
+    let reference = qip_data_finder::reference::DataReference::from_digest(
+        &admitted,
+        &digest,
+        qip_core::Decimal::ZERO,
+        0.95,
+    )?;
+
+    assert_eq!(
+        reference.source_id(),
+        SOURCE,
+        "premise: a reference was built for the test source"
+    );
+
+    // Verify all six new fields are accessible and present (currently None, but
+    // the accessors exist and work). When re-fetch paths wire the field
+    // population, these assertions will update to verify populated values.
+    assert!(
+        reference.etag().is_none(),
+        "etag field is accessible (currently unpopulated)"
+    );
+    assert!(
+        reference.cursor().is_none(),
+        "cursor field is accessible (currently unpopulated)"
+    );
+    assert!(
+        reference.entitlement().is_none(),
+        "entitlement field is accessible (currently unpopulated)"
+    );
+    assert!(
+        reference.geography().is_none(),
+        "geography field is accessible (currently unpopulated)"
+    );
+    assert!(
+        reference.expiry().is_none(),
+        "expiry field is accessible (currently unpopulated)"
+    );
+    assert!(
+        reference.re_fetch_instructions().is_none(),
+        "re_fetch_instructions field is accessible (currently unpopulated)"
+    );
+
+    Ok(())
+}

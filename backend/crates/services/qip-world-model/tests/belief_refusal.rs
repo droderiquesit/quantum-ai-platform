@@ -117,6 +117,7 @@ fn news_mentioning_northwind(confidence: f64) -> NewsItem {
         topics: vec!["guidance".into()],
         provenance: Provenance::synthetic("synthetic-news", now()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 

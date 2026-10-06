@@ -56,6 +56,7 @@ use qip_core::{Decimal, Timestamp};
 use qip_financial::quality::LicensingClass;
 use qip_market_ingestion::adapter::SourceDescriptor;
 use qip_market_ingestion::connector::FetchDigest;
+use qip_market_ingestion::connector::manifest::Region;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -179,11 +180,19 @@ pub enum RevisionCheck {
     /// after this reference was made — §22.3's own reason the content hash
     /// is "the single most important field".
     Revised { was: String, now: String },
+    /// The source no longer serves this extent: it was withdrawn (404), the
+    /// source denied access, or the source became unavailable. Any knowledge
+    /// derived from this reference must be marked as based on unretrievable evidence.
+    Unretrievable,
 }
 
 impl RevisionCheck {
     pub fn is_revised(&self) -> bool {
         matches!(self, Self::Revised { .. })
+    }
+
+    pub fn is_unretrievable(&self) -> bool {
+        matches!(self, Self::Unretrievable)
     }
 
     pub fn describe(&self) -> String {
@@ -193,6 +202,9 @@ impl RevisionCheck {
                 "revised: the reference recorded {was} and a re-fetch now hashes {now}; the \
                  source changed what it serves for this extent after it was used"
             ),
+            Self::Unretrievable => "unretrievable: the source no longer serves this extent; the \
+                 extent was withdrawn, access was denied, or the source became unavailable"
+                .into(),
         }
     }
 }
@@ -243,6 +255,24 @@ pub struct DataReference {
     availability: f64,
     /// The entitlements granted for this source's usage, empty if none.
     entitlements: Vec<Entitlement>,
+    /// Version or ETag identifier for change detection without re-hashing.
+    #[serde(default)]
+    etag: Option<String>,
+    /// Pagination cursor for incremental fetches from the source.
+    #[serde(default)]
+    cursor: Option<String>,
+    /// Licensing class or entitlement level for this fetch.
+    #[serde(default)]
+    entitlement: Option<LicensingClass>,
+    /// Geographic region where the data originated.
+    #[serde(default)]
+    geography: Option<Region>,
+    /// When the data expires, if applicable.
+    #[serde(default)]
+    expiry: Option<Timestamp>,
+    /// Instructions for re-fetching this extent.
+    #[serde(default)]
+    re_fetch_instructions: Option<String>,
 }
 
 /// Whether `hash` has the shape `qip_core::sha256_hex` writes: sixty-four
@@ -272,6 +302,18 @@ struct DataReferenceWire {
     availability: f64,
     #[serde(default)]
     entitlements: Vec<Entitlement>,
+    #[serde(default)]
+    etag: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    entitlement: Option<LicensingClass>,
+    #[serde(default)]
+    geography: Option<Region>,
+    #[serde(default)]
+    expiry: Option<Timestamp>,
+    #[serde(default)]
+    re_fetch_instructions: Option<String>,
 }
 
 impl TryFrom<DataReferenceWire> for DataReference {
@@ -308,6 +350,12 @@ impl TryFrom<DataReferenceWire> for DataReference {
             wire.cost_estimate,
             wire.availability,
             wire.entitlements,
+            wire.etag,
+            wire.cursor,
+            wire.entitlement,
+            wire.geography,
+            wire.expiry,
+            wire.re_fetch_instructions,
         )
     }
 }
@@ -359,6 +407,12 @@ impl DataReference {
             cost_estimate,
             availability,
             source.entitlements().to_vec(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -393,6 +447,12 @@ impl DataReference {
             cost_estimate,
             availability,
             Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -437,6 +497,12 @@ impl DataReference {
             cost_estimate,
             availability,
             Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -485,6 +551,12 @@ impl DataReference {
             cost_estimate,
             availability,
             Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -532,6 +604,12 @@ impl DataReference {
             Decimal::ZERO,
             1.0,
             Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
     }
 
@@ -551,6 +629,12 @@ impl DataReference {
         cost_estimate: Decimal,
         availability: f64,
         entitlements: Vec<Entitlement>,
+        etag: Option<String>,
+        cursor: Option<String>,
+        entitlement: Option<LicensingClass>,
+        geography: Option<Region>,
+        expiry: Option<Timestamp>,
+        re_fetch_instructions: Option<String>,
     ) -> Result<Self> {
         if bytes.is_empty() {
             return Err(Error::invalid(format!(
@@ -573,6 +657,12 @@ impl DataReference {
             cost_estimate,
             availability,
             entitlements,
+            etag,
+            cursor,
+            entitlement,
+            geography,
+            expiry,
+            re_fetch_instructions,
         )
     }
 
@@ -592,6 +682,12 @@ impl DataReference {
         cost_estimate: Decimal,
         availability: f64,
         entitlements: Vec<Entitlement>,
+        etag: Option<String>,
+        cursor: Option<String>,
+        entitlement: Option<LicensingClass>,
+        geography: Option<Region>,
+        expiry: Option<Timestamp>,
+        re_fetch_instructions: Option<String>,
     ) -> Result<Self> {
         if locator.trim().is_empty() {
             return Err(Error::invalid(format!(
@@ -665,6 +761,12 @@ impl DataReference {
             cost_estimate,
             availability,
             entitlements,
+            etag,
+            cursor,
+            entitlement,
+            geography,
+            expiry,
+            re_fetch_instructions,
         })
     }
 
@@ -726,6 +828,31 @@ impl DataReference {
     /// The entitlements granted for this source's usage.
     pub fn entitlements(&self) -> &[Entitlement] {
         &self.entitlements
+    }
+
+    /// The source's version or ETag, if it gave one.
+    pub fn etag(&self) -> Option<&str> {
+        self.etag.as_deref()
+    }
+
+    pub fn cursor(&self) -> Option<&str> {
+        self.cursor.as_deref()
+    }
+
+    pub fn entitlement(&self) -> Option<LicensingClass> {
+        self.entitlement
+    }
+
+    pub fn geography(&self) -> Option<Region> {
+        self.geography
+    }
+
+    pub fn expiry(&self) -> Option<Timestamp> {
+        self.expiry
+    }
+
+    pub fn re_fetch_instructions(&self) -> Option<&str> {
+        self.re_fetch_instructions.as_deref()
     }
 
     /// Whether a re-fetch producing `bytes` still matches what this reference
@@ -1049,6 +1176,7 @@ mod tests {
                 );
             }
             RevisionCheck::Unchanged => panic!("a changed extent reported unchanged"),
+            RevisionCheck::Unretrievable => panic!("a changed extent reported unretrievable"),
         }
 
         // The ledger's form of the same question: a later reference to the

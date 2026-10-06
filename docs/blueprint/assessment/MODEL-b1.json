@@ -418,7 +418,7 @@
   },
   {
     "id": "MODEL-016",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "qip_training::estimators::{StreamingDrift, degraded_models} (backend/crates/services/qip-training/src/estimators.rs:618-634) measures population-stability drift continuously; qip-deepbrain/src/learning.rs (1030-1120) joins drifted features to the models fitted on them, records the drift on the ModelCard (registry.record_drift), and in the same cadence re-fits and registers a new candidate (self.fit -> register_fit) — a real retraining response, reached from qip-deepbrain and tested.",
     "evidence": [
       "backend/crates/services/qip-training/src/estimators.rs:618-634",
@@ -434,16 +434,16 @@
     "deployable": true,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "Master Phase 9 Curriculum Engine",
     "verification": "backend/crates/apps/qip-deepbrain/src/learning.rs::a_model_whose_features_have_moved_records_drift_past_its_own_threshold",
     "work_item": "E09-curriculum-engine",
     "tier": "T3",
     "size": "L",
-    "notes": "The retraining half (P1, master Phase 2) is real and hardened. The curriculum-task half is out of scope until the Curriculum Engine exists. verify: status kept PARTIAL; gap corrected — it previously named only the missing Curriculum Engine, but of the four drift sources the requirement lists only feature drift reaches retraining."
+    "notes": "The retraining half (P1, master Phase 2) is real and hardened. The curriculum-task half is out of scope until the Curriculum Engine exists. verify: status kept PARTIAL; gap corrected — it previously named only the missing Curriculum Engine, but of the four drift sources the requirement lists only feature drift reaches retraining. | 2026-10-06 Updated: BLOCKED on master Phase 9 Curriculum Engine. Feature drift routing to retraining is implemented and tested. Fill/slippage error (measured via qip_venue_fill_error_bps in Platform::score_filled) and venue change detection exist but lack routing to retraining tasks. Curriculum Engine task routing requires Phase 9 infrastructure which does not exist yet."
   },
   {
     "id": "MODEL-017",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "DistilledModel::evaluate (backend/crates/edge/qip-strategy/src/model.rs:193-248) is a pure function with no I/O, no randomness and no HashMap-order dependency, evaluated identically for identical inputs; it runs in the hot lane (via Op::Model in a Cell's CompiledStrategy) and is the ModelForm every promoted model must take, so nothing outside this bounded, deterministic form can reach the hot or warm lane.",
     "evidence": [
       "backend/crates/edge/qip-strategy/tests/strategy.rs::a_model_evaluated_twice_and_after_a_wire_round_trip_is_bit_identical_on_generated_inputs -- mutation: wall-clock term added to linear evaluate -> failed; restored",
@@ -459,12 +459,12 @@
     "depends_on": [
       "MODEL-006"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-006 (signed packaging)",
     "verification": "Needed: a property test evaluating the same DistilledModel twice (and, if feasible, on two build targets) and asserting bit-identical f64 output",
     "work_item": "E10-bit-identical-model-eval-test",
     "tier": "T1",
     "size": "S",
-    "notes": "The existing instance is qip-strategy's DistilledModel per ADR 0083, as this requirement's own notes say. verify: status kept PARTIAL; tested corrected false -> true and gap corrected. The row said no test asserts bit-identical output across two evaluations; qip-training's serving tests do (a served distillate's score equals model.evaluate bit for bit), within one process. The cross-node and cost-bound halves remain unproven. | 2026-10-04: two of three open halves closed; left PARTIAL for the cross-node comparison."
+    "notes": "The existing instance is qip-strategy's DistilledModel per ADR 0083, as this requirement's own notes say. verify: status kept PARTIAL; tested corrected false -> true and gap corrected. The row said no test asserts bit-identical output across two evaluations; qip-training's serving tests do (a served distillate's score equals model.evaluate bit for bit), within one process. The cross-node and cost-bound halves remain unproven. | 2026-10-04: two of three open halves closed; left PARTIAL for the cross-node comparison. | 2026-10-06 Updated: BLOCKED on MODEL-006 (signed packaging). Cross-node bit-identity test stated as infeasible within single checkout. Depends on MODEL-006 signed packaging implementation."
   },
   {
     "id": "MODEL-018",
@@ -493,7 +493,7 @@
   },
   {
     "id": "MODEL-019",
-    "status": "MISSING",
+    "status": "BLOCKED",
     "current": "qip-training's generic drift-triggered refit cadence (see MODEL-016) recalibrates whichever model was fitted on a given subject's price bars, producing a new registered candidate rather than replacing the active model in place — this pattern already matches the 'candidate, never in place' discipline this requirement asks for. But nothing in that pipeline is calibrated specifically against execution/fill telemetry (realised slippage, impact, queue outcomes); it recalibrates against price-bar feature drift only.",
     "evidence": [
       "backend/crates/apps/qip-deepbrain/src/learning.rs:1030-1120 (recalibrates against price bars, not execution telemetry)",
@@ -510,16 +510,16 @@
       "MODEL-040",
       "MODEL-051"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-018, MODEL-040, MODEL-051",
     "verification": "Needed: a replay-driven recalibration run against simulated fill/slippage telemetry that emits a promotion candidate without touching the active calibration",
     "work_item": "E06-execution-model-recalibration",
     "tier": "T3",
     "size": "L",
-    "notes": "The 'candidate not in place' discipline this requirement needs already exists as a pattern (qip-training/qip-deepbrain) and can likely be reused once an execution-telemetry-calibrated model exists to recalibrate. verify: kept MISSING. The nearest things found are a precondition and a pattern, not an implementation: score_filled measures the twin's fill error per venue (qip_venue_fill_error_bps, platform.rs:16632) but ADR 0062 keeps it diagnostic and nothing recalibrates from it; and qip-risk's signed limit recalibration (ADR 0061) is the candidate-not-in-place pattern this would reuse, applied to risk limits rather than execution models."
+    "notes": "The 'candidate not in place' discipline this requirement needs already exists as a pattern (qip-training/qip-deepbrain) and can likely be reused once an execution-telemetry-calibrated model exists to recalibrate. verify: kept MISSING. The nearest things found are a precondition and a pattern, not an implementation: score_filled measures the twin's fill error per venue (qip_venue_fill_error_bps, platform.rs:16632) but ADR 0062 keeps it diagnostic and nothing recalibrates from it; and qip-risk's signed limit recalibration (ADR 0061) is the candidate-not-in-place pattern this would reuse, applied to risk limits rather than execution models. | 2026-10-06 Updated: BLOCKED on MODEL-018, MODEL-040, MODEL-051. MODEL-051 (post-validation Reflex Package Builder) does not exist."
   },
   {
     "id": "MODEL-020",
-    "status": "MISSING",
+    "status": "BLOCKED",
     "current": "qip-world-model (backend/crates/services/qip-world-model/src/world.rs:73) is a single WorldModel struct holding one knowledge graph, one causal graph and one feature store — there is no concept of multiple concurrent domain/regional/horizon/scenario models, no arbitration mechanism, and no disagreement measure between world models.",
     "evidence": [
       "backend/crates/services/qip-world-model/src/world.rs:73 (one WorldModel, not an ensemble)",
@@ -534,12 +534,12 @@
     "depends_on": [
       "MODEL-009"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-009",
     "verification": "Needed: two or more concurrent world models whose disagreement and arbitration weights are recorded on a forecast, each carrying a calibration score from resolved outcomes",
     "work_item": "E09-world-model-ensembles",
     "tier": "T3",
     "size": "XL",
-    "notes": "Master Phase 2 names the initial World Model Federation; today's single WorldModel is a solid foundation (causal graph, feature store, exposure analysis) but is architecturally one model, not a federation."
+    "notes": "Master Phase 2 names the initial World Model Federation; today's single WorldModel is a solid foundation (causal graph, feature store, exposure analysis) but is architecturally one model, not a federation. | 2026-10-06 Updated: BLOCKED on MODEL-009."
   },
   {
     "id": "MODEL-021",
@@ -573,7 +573,7 @@
   },
   {
     "id": "MODEL-022",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "Slow/central-lane surprise and anomaly models exist and run every cycle: qip-opportunity-engine's detectors score how far each observation sits from its recent expected distribution as a z-score — price move, volatility shift, volume spike, structural break, correlation breakdown, liquidity deterioration, fundamental and macro surprise against consensus, sentiment shift, alternative-data divergence, and a regime change from a GaussianHmm fitted per instrument (detector.rs:17-47,611). They are constructed by DetectorRegistry::standard (qip-kernel platform.rs:4521) and run from stage_discover (platform.rs:10288,10412). Nothing of the kind runs in the warm or hot lane, and there is no distilled ambient model, no persistent precursor or assumption model, and no standing expected-state model separate from the detectors' rolling windows.",
     "evidence": [
       "backend/crates/services/qip-opportunity-engine/src/detector.rs:1-47 (z-score detectors; AnomalyKind), 611 (GaussianHmm::fit)",
@@ -592,16 +592,16 @@
     "depends_on": [
       "MODEL-006"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-006 (signed packaging)",
     "verification": "Needed: a reflex cell evaluating a distilled ambient model every pass, emitting a surprise score for an injected anomaly with the full model running in the slow lane",
     "work_item": "E09-ambient-model-mesh",
     "tier": "T3",
     "size": "L",
-    "notes": "Master Phase 8 names the Ambient Model Mesh; episodic memory's surprise-weighted sampler is a related but distinct concept and does not satisfy this requirement. verify: upgraded MISSING -> PARTIAL. The assessor's search (struct Ambient|struct Surprise|AmbientForecast) was lexical and missed the opportunity engine's anomaly and surprise detectors, which are slow-lane surprise models against a rolling expectation, reached every cycle and tested. The fast-lane distilled half — the part the requirement's check exercises — is absent."
+    "notes": "Master Phase 8 names the Ambient Model Mesh; episodic memory's surprise-weighted sampler is a related but distinct concept and does not satisfy this requirement. verify: upgraded MISSING -> PARTIAL. The assessor's search (struct Ambient|struct Surprise|AmbientForecast) was lexical and missed the opportunity engine's anomaly and surprise detectors, which are slow-lane surprise models against a rolling expectation, reached every cycle and tested. The fast-lane distilled half — the part the requirement's check exercises — is absent. | 2026-10-06 Updated: BLOCKED on MODEL-006. Distilled form on fast lanes requires MODEL-006 signed packaging infrastructure."
   },
   {
     "id": "MODEL-023",
-    "status": "PARTIAL",
+    "status": "BLOCKED",
     "current": "qip_strategy::compile::StrategyCompiler::compile (backend/crates/edge/qip-strategy/src/compile.rs:263,696-729) lowers a validated Expr::Model to Op::Model only after checking the model's declared arity against the number of supplied inputs and that every input is statically typed as Type::Statistic — refusing both mismatches with a named error. The result carries a declared bounded cost (DistilledModel::cost) as part of the compiled artifact.",
     "evidence": [
       "backend/crates/edge/qip-strategy/src/compile.rs:263,696-729",
@@ -619,12 +619,12 @@
     "depends_on": [
       "MODEL-003"
     ],
-    "blocked_by": "",
+    "blocked_by": "MODEL-051",
     "verification": "backend/crates/edge/qip-strategy/tests/strategy.rs::a_model_given_an_input_that_is_not_a_statistic_is_refused_at_compile_time",
     "work_item": "E10-compiled-artifact-validation-reference",
     "tier": "T1",
     "size": "S",
-    "notes": "This requirement's own notes name qip-strategy's compile as the existing reflex-side compiler (ADR 0083); the neural-to-symbolic half grows with master Phase 9 and is not attempted here. verify: status kept PARTIAL; gap corrected — it called the ModelManifest 'currently unproduced', which is stale (qip-api mesh.rs:880,973 produces it from promote_model's record). | 2026-10-05 not built: the compiler runs before validation by design — a candidate is compiled so that it can be backtested — so 'compile nothing unvalidated' needs the post-validation Reflex Package Builder of MODEL-051, which does not exist."
+    "notes": "This requirement's own notes name qip-strategy's compile as the existing reflex-side compiler (ADR 0083); the neural-to-symbolic half grows with master Phase 9 and is not attempted here. verify: status kept PARTIAL; gap corrected — it called the ModelManifest 'currently unproduced', which is stale (qip-api mesh.rs:880,973 produces it from promote_model's record). | 2026-10-05 not built: the compiler runs before validation by design — a candidate is compiled so that it can be backtested — so 'compile nothing unvalidated' needs the post-validation Reflex Package Builder of MODEL-051, which does not exist. | 2026-10-06 Updated: BLOCKED on MODEL-051. Requires post-validation Reflex Package Builder (MODEL-051) which does not exist."
   },
   {
     "id": "MODEL-024",

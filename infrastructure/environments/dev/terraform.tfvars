@@ -510,7 +510,7 @@ console_egress_cidr = "10.0.16.0/26"
 # edit to this file.
 #
 public_edge = {
-  hostnames = ["dev-edge.example.com"]
+  hostnames = ["console-dev.example.com"]
   application_backend = {
     service_name = "qip-dev-api"
     trust_zone   = "application-identity"

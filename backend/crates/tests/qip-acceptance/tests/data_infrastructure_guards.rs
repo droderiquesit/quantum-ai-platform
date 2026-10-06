@@ -233,3 +233,69 @@ fn tick_037_retention_classes_are_governed() {
 
     let _ = repository_root();
 }
+/// FINOPS-013. The archive bucket's retention policy must be locked to prevent
+/// modification of the hash-chained event log. An unlocked policy allows deletion,
+/// which violates the immutability guarantee.
+#[test]
+fn the_archive_bucket_retention_policy_is_locked_to_prevent_modification() {
+    let archive_config = without_comments(&read("infrastructure/terraform/modules/data/main.tf"));
+    let archive_block = archive_config
+        .split("resource \"google_storage_bucket\" \"archive\" {")
+        .nth(1)
+        .expect("archive bucket resource exists")
+        .split("\nresource ")
+        .next()
+        .expect("split yields the archive block");
+
+    assert!(
+        archive_block.contains("is_locked"),
+        "archive bucket retention_policy does not declare is_locked"
+    );
+
+    let retention_lines: Vec<String> = archive_block
+        .lines()
+        .filter(|l| l.contains("is_locked"))
+        .map(collapsed)
+        .collect();
+
+    assert!(
+        !retention_lines.is_empty(),
+        "no is_locked setting found in archive bucket"
+    );
+
+    assert!(
+        retention_lines
+            .iter()
+            .all(|l| l.contains("true") || l.contains("var.")),
+        "archive bucket is_locked is not set to true or a variable; found: {:?}",
+        retention_lines
+    );
+}
+
+/// FINOPS-014. Derived data stores must have bounded retention or lifecycle rules.
+/// This test checks that training scratch buckets and other derived stores are
+/// not retained forever, preventing unbounded storage cost growth.
+#[test]
+fn the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores() {
+    let archive_config = without_comments(&read("infrastructure/terraform/modules/data/main.tf"));
+
+    // Training scratch bucket is explicitly declared as derived data.
+    // It should have either an expiration_time, lifecycle_rule, or TTL.
+    let has_training_scratch = archive_config.contains("google_storage_bucket\" \"training");
+
+    if has_training_scratch {
+        let training_block = archive_config
+            .split("resource \"google_storage_bucket\" \"training")
+            .nth(1)
+            .expect("training scratch bucket exists")
+            .split("\nresource ")
+            .next()
+            .unwrap_or("");
+
+        assert!(
+            training_block.contains("lifecycle_rule") || training_block.contains("expiration"),
+            "training scratch bucket has no lifecycle rule or expiration; \
+             derived data must not be retained forever (FINOPS-014)"
+        );
+    }
+}

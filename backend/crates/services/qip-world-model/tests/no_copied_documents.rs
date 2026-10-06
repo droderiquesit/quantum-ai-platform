@@ -102,6 +102,7 @@ fn news(item_id: &str, company: &str, headline: String, article: &str) -> NewsIt
         topics: vec!["guidance".into()],
         provenance: Provenance::synthetic("synthetic-news", now()),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 

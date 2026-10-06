@@ -646,6 +646,7 @@ impl SourceConnector for EcbKeyRatesConnector {
             is_revision: false,
             provenance,
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         })))
     }
 }

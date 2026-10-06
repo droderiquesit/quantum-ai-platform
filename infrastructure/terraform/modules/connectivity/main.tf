@@ -52,48 +52,6 @@ locals {
   # two attachments in one region share one, and an attachment in a region with
   # no router cannot be created at all.
   router_regions = toset([for attachment in values(local.attachments) : attachment.region])
-
-  # HA VPN gateways are created only when explicitly enabled AND the gateway's
-  # region has an Interconnect attachment to share the Cloud Router with. Like
-  # Interconnect, this is off by default — a gateway without a configured peer
-  # reads as a working backup path when it is not. The peer's configuration
-  # lives outside this repository, and an operator must complete it before the
-  # path carries traffic.
-  vpn_enabled = var.enable_ha_vpn
-  vpn_configs_input = var.enable_ha_vpn ? var.ha_vpn_peer_gateways : {}
-  # Only create VPN in regions that have Interconnect attachments (to share routers)
-  vpn_configs = {
-    for config_key, config in local.vpn_configs_input :
-    config_key => config
-    if contains(local.router_regions, config.region)
-  }
-
-  # Flatten VPN configs into tunnel specifications: one entry per tunnel,
-  # with config key, tunnel index, and derived link-local IP range.
-  vpn_tunnels = merge([
-    for config_key, config in local.vpn_configs : {
-      "${config_key}-1" = {
-        config_key      = config_key
-        tunnel_index    = 1
-        name            = "${local.prefix}-${config_key}-tunnel-1"
-        region          = config.region
-        peer_ip         = config.peer_gateway_addresses[0]
-        shared_secret   = config.tunnel_1_shared_secret
-        peer_asn        = config.peer_asn
-        link_local_base = 10 + (index(keys(local.vpn_configs), config_key) * 4)
-      }
-      "${config_key}-2" = {
-        config_key      = config_key
-        tunnel_index    = 2
-        name            = "${local.prefix}-${config_key}-tunnel-2"
-        region          = config.region
-        peer_ip         = length(config.peer_gateway_addresses) > 1 ? config.peer_gateway_addresses[1] : config.peer_gateway_addresses[0]
-        shared_secret   = config.tunnel_2_shared_secret
-        peer_asn        = config.peer_asn
-        link_local_base = 10 + (index(keys(local.vpn_configs), config_key) * 4) + 2
-      }
-    }
-  ]...)
 }
 
 # --- The Cloud Router -------------------------------------------------------
@@ -159,79 +117,6 @@ resource "google_compute_interconnect_attachment" "partner" {
   labels      = var.labels
 }
 
-# --- HA VPN fallback for Interconnect ----------------------------------------
-#
-# A backup path when partner interconnect is unavailable or being maintained.
-# The gateway and tunnels are created when the flag is on, but traffic flows
-# only when a peer VPN endpoint outside this repository has been configured
-# and the shared secrets transmitted to it by hand. An unconfigured gateway
-# wastes nothing and blocks nothing; it reads, to an operator reviewing the
-# infrastructure, as a defined fallback that awaits connection.
-
-resource "google_compute_ha_vpn_gateway" "backup" {
-  for_each = local.vpn_configs
-
-  project = var.project_id
-  name    = "${local.prefix}-vpn-${each.key}"
-  region  = each.value.region
-  network = var.network_id
-  type    = "IPV4"
-
-  labels = var.labels
-}
-
-# HA VPN requires two tunnels for redundancy and HA failover. Each tunnel
-# connects to an external IP on the peer's side. The first tunnel uses the
-# first peer address (or the first address if only one is configured), and
-# the second tunnel uses the second address (or the first address again).
-resource "google_compute_vpn_tunnel" "backup" {
-  for_each = local.vpn_tunnels
-
-  project       = var.project_id
-  name          = each.value.name
-  region        = each.value.region
-  vpn_gateway   = google_compute_ha_vpn_gateway.backup[each.value.config_key].id
-  peer_ip       = each.value.peer_ip
-  shared_secret = each.value.shared_secret
-  ike_version   = 2
-
-  labels = var.labels
-
-  depends_on = [google_compute_ha_vpn_gateway.backup]
-}
-
-# Each router interface is tied to a single VPN tunnel. The interface gets
-# a link-local address for the BGP session; by convention, Google Cloud uses
-# 169.254.x.y for these. Each config gets a /24 block; within it, tunnel-1
-# gets .0/30 and tunnel-2 gets .4/30.
-resource "google_compute_router_interface" "backup_tunnel" {
-  for_each = google_compute_vpn_tunnel.backup
-
-  name       = "${each.value.name}-iface"
-  router     = google_compute_router.interconnect[local.vpn_tunnels[each.key].region].name
-  region     = local.vpn_tunnels[each.key].region
-  ip_range   = "169.254.${local.vpn_tunnels[each.key].link_local_base}.0/30"
-  vpn_tunnel = each.value.name
-
-  depends_on = [google_compute_ha_vpn_gateway.backup, google_compute_vpn_tunnel.backup]
-}
-
-# BGP sessions on the tunnels allow dynamic routing. Each tunnel gets its own
-# session, and both carry the same routes. If one tunnel fails, traffic
-# reroutes to the other without reconfiguration.
-resource "google_compute_router_peer" "backup_tunnel" {
-  for_each = google_compute_router_interface.backup_tunnel
-
-  name            = "${local.vpn_tunnels[each.key].name}-peer"
-  router          = google_compute_router.interconnect[local.vpn_tunnels[each.key].region].name
-  region          = local.vpn_tunnels[each.key].region
-  peer_asn        = local.vpn_tunnels[each.key].peer_asn
-  interface_name  = each.value.name
-  peer_ip_address = "169.254.${local.vpn_tunnels[each.key].link_local_base + 1}.1"
-
-  depends_on = [google_compute_router_interface.backup_tunnel]
-}
-
 # --- Private Service Connect for Google APIs --------------------------------
 #
 # An internal address in this VPC that answers for Google APIs, so a request
@@ -282,3 +167,95 @@ resource "google_compute_global_forwarding_rule" "google_apis" {
   load_balancing_scheme = ""
   labels                = var.labels
 }
+
+# --- HA VPN gateways (GCP-032 fallback) ---------------------------------
+#
+# Encrypted internet fallback for Interconnect attachments. Both gateways and
+# tunnels are created in the same regions as the Interconnect attachments.
+# Routes over the Interconnect are preferred; VPN is a fallback only.
+
+locals {
+  # Map region to its Interconnect attachments, so we know which regions need VPN.
+  regions_with_attachments = toset([
+    for attachment in values(local.attachments) : attachment.region
+  ])
+
+  # Filters ha_vpn_gateways to only regions that have Interconnect attachments.
+  # A VPN without an Interconnect to fall back from is not meaningful.
+  vpn_gateways_needed = var.enable_ha_vpn && var.enable_partner_interconnect ? {
+    for region, gw in var.ha_vpn_gateways :
+    region => gw if contains(local.regions_with_attachments, region)
+  } : {}
+}
+
+resource "google_compute_ha_vpn_gateway" "fallback" {
+  for_each = local.vpn_gateways_needed
+
+  project = var.project_id
+  name    = "${local.prefix}-vpn-${each.key}"
+  region  = each.key
+  network = var.network_id
+
+  description = "HA VPN gateway for ${each.key} as fallback for Interconnect attachments."
+  labels      = var.labels
+}
+
+# Two tunnels per gateway for redundancy, each with its own external IP.
+resource "google_compute_vpn_tunnel" "fallback" {
+  for_each = merge([
+    for region, gw in local.vpn_gateways_needed : {
+      "${region}-0" = { region = region, index = 0, gw = gw }
+      "${region}-1" = { region = region, index = 1, gw = gw }
+    }
+  ]...)
+
+  project = var.project_id
+  name    = "${local.prefix}-vpn-${each.value.region}-${each.value.index}"
+  region  = each.value.region
+
+  vpn_gateway           = google_compute_ha_vpn_gateway.fallback[each.value.region].id
+  peer_external_gateway = null
+  shared_secret         = each.value.gw.preshared_key
+  router                = google_compute_router.interconnect[each.value.region].id
+
+  vpn_gateway_interface = each.value.index
+}
+
+# BGP sessions over VPN tunnels, with higher metric (lower preference) than Interconnect.
+# This way traffic prefers the direct circuit and only falls back to VPN if needed.
+resource "google_compute_router_interface" "vpn_fallback" {
+  for_each = merge([
+    for region, gw in local.vpn_gateways_needed : {
+      "${region}-0" = { region = region, index = 0 }
+      "${region}-1" = { region = region, index = 1 }
+    }
+  ]...)
+
+  project = var.project_id
+  name    = "${local.prefix}-vpn-${each.value.region}-${each.value.index}"
+  router  = google_compute_router.interconnect[each.value.region].name
+  region  = each.value.region
+
+  ip_range   = "169.254.${100 + index(keys(local.vpn_gateways_needed), each.value.region)}.${5 + each.value.index}/30"
+  vpn_tunnel = google_compute_vpn_tunnel.fallback[each.key].name
+}
+
+resource "google_compute_router_peer" "vpn_fallback" {
+  for_each = merge([
+    for region, gw in local.vpn_gateways_needed : {
+      "${region}-0" = { region = region, index = 0, gw = gw }
+      "${region}-1" = { region = region, index = 1, gw = gw }
+    }
+  ]...)
+
+  project = var.project_id
+  name    = "${local.prefix}-vpn-${each.value.region}-${each.value.index}"
+  router  = google_compute_router.interconnect[each.value.region].name
+  region  = each.value.region
+
+  peer_ip_address           = "169.254.${100 + index(keys(local.vpn_gateways_needed), each.value.region)}.${6 + each.value.index}"
+  peer_asn                  = each.value.gw.peer_asn
+  advertised_route_priority = 200 # Higher metric than Interconnect (100), so it is less preferred.
+  interface                 = google_compute_router_interface.vpn_fallback[each.key].name
+}
+

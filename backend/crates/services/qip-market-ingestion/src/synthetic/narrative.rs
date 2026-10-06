@@ -120,6 +120,7 @@ pub fn routine_story<R: Rng>(company: &SyntheticCompany, at: Timestamp, rng: &mu
         topics: vec!["corporate".into()],
         provenance: Provenance::synthetic(GENERATOR, at),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 
@@ -166,6 +167,7 @@ pub fn earnings_story<R: Rng>(
         topics: vec!["earnings".into(), "guidance".into()],
         provenance: Provenance::synthetic(GENERATOR, at),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 
@@ -223,6 +225,7 @@ pub fn supply_chain_story<R: Rng>(
         topics: vec!["supply_chain".into(), "operations".into()],
         provenance: Provenance::synthetic(GENERATOR, at),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 
@@ -261,6 +264,7 @@ pub fn macro_story(series_id: &str, region: &str, surprise: f64, at: Timestamp) 
         topics: vec!["macro".into(), "monetary_policy".into()],
         provenance: Provenance::synthetic("synthetic-macro-news", at),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 
@@ -299,6 +303,7 @@ pub fn fundamental<R: Rng>(
         is_restatement: false,
         provenance: Provenance::synthetic("synthetic-fundamentals", period_end),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 
@@ -323,6 +328,7 @@ pub fn macro_observation<R: Rng>(
         is_revision: false,
         provenance: Provenance::synthetic("synthetic-macro", reference_date),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 
@@ -352,6 +358,7 @@ pub fn alternative_reading<R: Rng>(
         proxies_for: Some("revenue".into()),
         provenance: Provenance::synthetic("synthetic-altdata", observed_at),
         quality: DataQuality::clean(),
+        evidence_unretrievable: false,
     }
 }
 

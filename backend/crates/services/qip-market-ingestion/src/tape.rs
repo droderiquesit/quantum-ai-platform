@@ -414,6 +414,7 @@ impl Tape {
                 provenance: Provenance::new(source.clone(), placed.at, placed.known_at)
                     .with_licensing(LicensingClass::Synthetic),
                 quality: DataQuality::default(),
+                evidence_unretrievable: false,
             };
             let issues = SensedRecord::Macro(Box::new(observation.clone())).validate();
             if !issues.is_empty() {
@@ -454,6 +455,7 @@ impl Tape {
                 provenance: Provenance::new(source.clone(), placed.at, placed.known_at)
                     .with_licensing(LicensingClass::Synthetic),
                 quality: DataQuality::default(),
+                evidence_unretrievable: false,
             };
             let issues = SensedRecord::AlternativeData(Box::new(point.clone())).validate();
             if !issues.is_empty() {

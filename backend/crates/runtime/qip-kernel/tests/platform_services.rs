@@ -359,6 +359,7 @@ fn the_sense_stage_ranks_sources_on_the_lead_they_measured_over_each_other() -> 
             is_revision: false,
             provenance: Provenance::new(source, reference, learned_at),
             quality: DataQuality::clean(),
+            evidence_unretrievable: false,
         }))
     };
     // The follower's record is fed first on purpose: the lead is the gap in
