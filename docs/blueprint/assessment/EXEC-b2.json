@@ -10,7 +10,7 @@
       "test an_order_in_a_mode_not_enabled_at_its_venue_is_refused_before_an_order_number_is_spent (qip-edge tests/telemetry.rs), mutation-verified: disabling the admit check made it fail at 'work(..).is_err()'",
       "test an_assembled_node_enables_order_taking_and_routing_at_its_venue_and_nothing_else (qip-edge-node tests/pass.rs), mutation-verified: enabling Derivatives in place of Routing failed it on 'Routing'"
     ],
-    "gap": "The edge cell refuses a disabled mode before an order exists, and the node wires it. Not closed: (1) qip-kernel's Platform::submit_order (central path) still demands no ModeAdmission; (2) a Cell built without with_mode_gate is ungated (opt-in, not fail-closed by construction); (3) the other six modes have no order path at all, so 'an order in each mode is refused' is demonstrated only for OrderTaking and Routing.",
+    "gap": "The edge cell refuses a disabled mode before an order exists, and the node wires it. Not closed: (1) qip-kernel's Platform::submit_order (central path) still demands no ModeAdmission -- requires adding ExecutionMode to Order or passing it separately, then calling gate.admit() before orders.submit(); (2) a Cell built without with_mode_gate is ungated (opt-in, not fail-closed by construction); (3) the other six modes have no order path at all, so 'an order in each mode is refused' is demonstrated only for OrderTaking and Routing. Central-path gating is left for its own architectural slice (Platform builder pattern + composition-root configuration).",
     "implemented": true,
     "tested": true,
     "integrated": true,
