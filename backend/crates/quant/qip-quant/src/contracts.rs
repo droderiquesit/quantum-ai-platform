@@ -62,12 +62,6 @@ impl DecisionRequest {
         }
 
         let num_variables = problem.n;
-        if num_variables == 0 {
-            return Err(Error::invalid(
-                "QUBO must have at least one variable to optimize",
-            ));
-        }
-
         Ok(Self {
             problem,
             portfolio_id,

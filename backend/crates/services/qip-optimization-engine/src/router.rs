@@ -387,7 +387,7 @@ impl ComputeRouter {
             chosen,
             weights,
             objective,
-            classical_objective: objective, // MUTATION: Using objective instead of classical_objective
+            classical_objective,
             rationale,
             quantum_note,
         })

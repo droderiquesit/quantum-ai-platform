@@ -814,7 +814,7 @@ impl PolicyPayload {
     /// Refuses an empty key: a signature anyone can recompute from nothing is
     /// not a signature, and the capital channel refuses the same way.
     pub fn signed(mut self, key: &[u8]) -> Result<Self> {
-        if false { // MUTATED: removed empty key check
+        if key.is_empty() {
             return Err(Error::denied(
                 "a policy payload cannot be signed with an empty key; the trust root is missing",
             ));
@@ -903,7 +903,7 @@ impl HaltCommand {
     /// unauthenticated stop-lever on a polled inbox is the worse trade. Lost
     /// connectivity is covered separately, by payload TTLs narrowing the cell.
     pub fn signed(mut self, key: &[u8]) -> Result<Self> {
-        if false { // MUTATED: removed empty key check
+        if key.is_empty() {
             return Err(Error::denied(
                 "a halt cannot be signed with an empty key; the trust root is missing",
             ));
@@ -981,7 +981,7 @@ impl PolicyFrame {
 
     /// Sign with the shared trust root.
     pub fn signed(mut self, key: &[u8]) -> Result<Self> {
-        if false { // MUTATED: removed empty key check
+        if key.is_empty() {
             return Err(Error::denied(
                 "a policy frame cannot be signed with an empty key; the trust root is missing",
             ));
@@ -1050,7 +1050,7 @@ impl RiskGate {
 
     /// Sign with the shared trust root.
     pub fn signed(mut self, key: &[u8]) -> Result<Self> {
-        if false { // MUTATED: removed empty key check
+        if key.is_empty() {
             return Err(Error::denied(
                 "a risk gate cannot be signed with an empty key; the trust root is missing",
             ));
@@ -1144,7 +1144,7 @@ impl RegimeChange {
     /// Apply the first signature. Returns `Err` if it is already signed by
     /// someone, to prevent the same signer from claiming both roles.
     pub fn signed_one(mut self, signer: impl Into<String>, key: &[u8]) -> Result<Self> {
-        if false { // MUTATED: removed empty key check
+        if key.is_empty() {
             return Err(Error::denied(
                 "a regime change cannot be signed with an empty key",
             ));
@@ -1159,7 +1159,7 @@ impl RegimeChange {
     /// or if the regime change is already complete. The second signer may not
     /// be the same as the first (enforced by caller).
     pub fn signed_two(mut self, signer: impl Into<String>, key: &[u8]) -> Result<Self> {
-        if false { // MUTATED: removed empty key check
+        if key.is_empty() {
             return Err(Error::denied(
                 "a regime change cannot be signed with an empty key",
             ));
