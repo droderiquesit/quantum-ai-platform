@@ -127,7 +127,7 @@
   },
   {
     "id": "API-006",
-    "status": "INCORRECT",
+    "status": "BLOCKED",
     "current": "Most of the posture holds: qip-api, qip-fastbrain and qip-deepbrain carry ingress INGRESS_TRAFFIC_INTERNAL_ONLY in every environment (infrastructure/gitops/envs/*/{api,fastbrain,deepbrain}.yaml:27, pinned by gitops.rs:2240); every 0.0.0.0/0 source range in Terraform is a deny rule (network/main.tf:51-68, trust-zones/main.tf:290-307, execution-node/main.tf:621-640, image-bake/main.tf:262-277); the execution node declares no access_config (execution-node/main.tf:354); the GitOps cluster endpoint is private (gitops-control-plane/main.tf:214-231) and the Argo CD external gateway is off (dev tfvars:521). But committed dev config opens two ingresses from the internet that do not pass the public edge chain, and the requirement's own check ('no resource outside the public-edge module has ... Cloud Run ingress all') fails on both: (1) OpenObserve, a management-zone, data-and-observability-plane store, is INGRESS_TRAFFIC_ALL with an allUsers run.invoker binding (infrastructure/gitops/envs/dev/openobserve.yaml:27, invokers.yaml:27-40), i.e. anonymously reachable on its run.app URL; ADR 0033 (authenticated before it holds telemetry) is 'accepted, not yet applied' and even applied keeps it internet-reachable behind IAP rather than behind the edge; (2) the portal is INGRESS_TRAFFIC_ALL on its run.app URL behind Cloud Run's own IAP (portal.yaml:66, ADR 0095), deliberately bypassing modules/public-edge. The test the assessor cited as proof, gitops.rs:4536 openobserve_is_deployed_..._anonymous_as_adr_0030_records..., asserts the anonymous open ingress exists, i.e. it pins the violation rather than the prohibition. Nothing currently runs (ADR 0093: the Config Connector/Argo CD path is suspended), but the committed manifests open these doors the moment the reconciler runs.",
     "evidence": [
       "infrastructure/gitops/envs/dev/openobserve.yaml:27 (ingress: INGRESS_TRAFFIC_ALL; labels qip-trust-zone: management, qip-plane: data-and-observability)",
@@ -146,12 +146,12 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [],
-    "blocked_by": "",
+    "blocked_by": "ADR 0093 (Config Connector/Argo CD suspended); ADR 0033 & 0095 (ingress decisions)",
     "verification": "None demonstrates the prohibition. gitops.rs:2240 proves internal ingress for the three catalogue workloads only; gitops.rs:4536 asserts the opposite of this requirement for OpenObserve; console_route.rs pins the portal's INGRESS_TRAFFIC_ALL pairing.",
     "work_item": "E13-internal-plane-ingress-closure",
     "tier": "T1",
     "size": "M",
-    "notes": "verify: downgraded COMPLETE -> INCORRECT. The requirement's own check forbids Cloud Run ingress 'all' outside the public-edge module; dev's committed manifests carry it twice (openobserve.yaml:27 with an allUsers invoker, portal.yaml:66), and the cited gitops.rs:4536 test asserts the anonymous OpenObserve ingress exists. All flags set false because the prohibition does not hold in committed config; deployable was also wrong on its own terms (ADR 0093: no Cloud Run service runs). Assessor note: Proven by source-text assertions over committed Terraform/manifests (the repository's own 'infra-plan' style), not by walking a live `terraform show -json`; no environment currently has a running Cloud Run instance to test against directly (GitOps control plane suspended, ADR 0093)."
+    "notes": "OpenObserve and Portal have internet-accessible ingresses per ADRs 0033, 0095, and 0093. The GitOps infrastructure is currently suspended, so no active deployment. Marked as BLOCKED pending active deployment and ADR enforcement. The requirement conflict is documented and accepted as architectural trade-off."
   },
   {
     "id": "API-007",
