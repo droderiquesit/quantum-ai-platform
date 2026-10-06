@@ -6,13 +6,14 @@
 //! - `GET /api/v1/ledger/{account}/postings?from=X&to=Y` → postings in range as text
 
 use crate::store::LedgerStore;
+use qip_contracts::ledger::Account;
 use qip_core::error::{Error, Result};
-use qip_transport::server::{Request, Response};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 /// The read-side HTTP API server for the ledger.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ReadApi {
     listen_addr: SocketAddr,
     store: Arc<LedgerStore>,
@@ -42,106 +43,149 @@ impl ReadApi {
     }
 
     /// Handle a GET request for the balance endpoint.
-    fn handle_balance(&self, request: &Request) -> Result<Response> {
-        let segments = request.segments();
-        if segments.len() < 5
-            || segments[0] != "api"
-            || segments[1] != "v1"
-            || segments[2] != "ledger"
-            || segments[4] != "balance"
-        {
-            return Err(Error::invalid("invalid balance endpoint path"));
-        }
-
-        let account = segments[3];
-        if account.is_empty() {
-            return Err(Error::invalid("account identifier required"));
-        }
-
-        // Query the store for balances (placeholder: would parse account properly)
-        let _balances = self.store.balances()?;
-
-        // Format as text response with account balance
-        let response_text = "balance: 0.00";
-        Ok(Response::text(200, response_text))
+    /// Account string format: "trading:cell/strategy", "venue:venue", or "fees:venue"
+    pub fn handle_balance(&self, account_str: &str, unit: &str) -> Result<String> {
+        let account = parse_account(account_str)?;
+        let balance = self.store.balance(&account, unit)?;
+        Ok(format!("{}", balance))
     }
 
     /// Handle a GET request for the postings endpoint.
-    fn handle_postings(&self, request: &Request) -> Result<Response> {
-        let segments = request.segments();
-        if segments.len() < 5
-            || segments[0] != "api"
-            || segments[1] != "v1"
-            || segments[2] != "ledger"
-            || segments[4] != "postings"
-        {
-            return Err(Error::invalid("invalid postings endpoint path"));
+    /// Account string format: "trading:cell/strategy", "venue:venue", or "fees:venue"
+    pub fn handle_postings(&self, account_str: &str, _from: u64, _to: u64) -> Result<String> {
+        let account = parse_account(account_str)?;
+
+        // Collect postings for this account from chain records
+        let chain_records = self.store.chain_records()?;
+        let mut postings = Vec::new();
+
+        for record in chain_records.iter() {
+            if let Some(event) = &record.event {
+                for posting in event.postings() {
+                    if posting.account == account {
+                        postings.push(format!(
+                            "{} {} {}",
+                            if posting.direction as u8 == 0 {
+                                "debit"
+                            } else {
+                                "credit"
+                            },
+                            posting.amount,
+                            posting.unit
+                        ));
+                    }
+                }
+            }
         }
 
-        let account = segments[3];
-        if account.is_empty() {
-            return Err(Error::invalid("account identifier required"));
+        if postings.is_empty() {
+            return Ok("no postings found".to_string());
         }
 
-        // Parse query parameters for from/to
-        let _from = request.query_param("from").unwrap_or("0");
-        let _to = request.query_param("to").unwrap_or("9999999999");
+        Ok(postings.join("\n"))
+    }
+}
 
-        // Query the store for events (placeholder)
-        let events = self.store.events()?;
-
-        // Format as text response
-        let response_text = format!("postings: {}", events.len());
-        Ok(Response::text(200, response_text))
+/// Parse an account string into an Account enum.
+fn parse_account(account_str: &str) -> Result<Account> {
+    if account_str.starts_with("trading:") {
+        let trading_parts: Vec<&str> = account_str[8..].split('/').collect();
+        if trading_parts.len() == 2 {
+            Ok(Account::Trading {
+                cell: trading_parts[0].to_string(),
+                strategy: trading_parts[1].to_string(),
+            })
+        } else {
+            Err(Error::invalid("invalid trading account format"))
+        }
+    } else if account_str.starts_with("venue:") {
+        Ok(Account::Venue {
+            venue: account_str[6..].to_string(),
+        })
+    } else if account_str.starts_with("fees:") {
+        Ok(Account::Fees {
+            venue: account_str[5..].to_string(),
+        })
+    } else {
+        Err(Error::invalid(
+            "account must start with trading:, venue:, or fees:",
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::LedgerTelemetry;
     use qip_core::{Clock, ManualClock, Timestamp};
-    use qip_ledgerd::store::LedgerStore;
-    use qip_ledgerd::telemetry::LedgerTelemetry;
     use qip_observability::metrics::Metrics;
     use qip_storage::EngineConfig;
-    use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    #[test]
-    fn query_endpoint_returns_ledger_state_as_text() {
-        // Create a temporary directory for the store
-        let temp_dir = std::env::temp_dir().join("qip-ledger-api-test");
+    fn temp_store() -> Arc<LedgerStore> {
+        let temp_dir =
+            std::env::temp_dir().join(format!("qip-ledger-api-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).expect("create test dir");
 
-        // Create a ledger store
         let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(Timestamp::from_secs(1_790_000_000)));
         let config = EngineConfig::new(clock);
         let metrics = Arc::new(Metrics::new("qip-ledgerd"));
-        let store = Arc::new(
+        Arc::new(
             LedgerStore::open(&temp_dir, config, LedgerTelemetry::new(metrics))
                 .expect("open store"),
-        );
+        )
+    }
 
-        // Create the read API
+    #[test]
+    fn empty_ledger_returns_zero_balance() {
+        let store = temp_store();
         let api = ReadApi::new("127.0.0.1:9091".parse().expect("valid socket"), store);
 
-        // Test that we can query the balance (returns 0.00 for empty ledger)
-        let request = Request {
-            method: qip_transport::server::Method::Get,
-            path: "/api/v1/ledger/account-1/balance".to_string(),
-            query: BTreeMap::new(),
-            headers: BTreeMap::new(),
-            body: Vec::new(),
-            peer: "127.0.0.1:12345".to_string(),
-        };
+        let balance = api
+            .handle_balance("venue:sim-xnys", "USD")
+            .expect("query succeeds");
+        assert_eq!(balance, "0", "empty ledger returns zero balance");
+    }
 
-        let response = api.handle_balance(&request);
-        assert!(response.is_ok(), "balance query succeeded");
-        let body = String::from_utf8(response.unwrap().body).expect("valid UTF-8");
-        assert!(body.contains("balance"), "response contains balance");
+    #[test]
+    fn read_api_returns_postings_as_text() {
+        let store = temp_store();
+        let api = ReadApi::new("127.0.0.1:9091".parse().expect("valid socket"), store);
 
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        let postings = api
+            .handle_postings("venue:sim-xnys", 0, u64::MAX)
+            .expect("query succeeds");
+        assert_eq!(
+            postings, "no postings found",
+            "empty ledger returns no postings"
+        );
+    }
+
+    #[test]
+    fn parse_account_handles_all_formats() {
+        let trading = parse_account("trading:cell-a/strategy-b").expect("parses trading");
+        assert!(matches!(
+            trading,
+            Account::Trading {
+                cell,
+                strategy
+            } if cell == "cell-a" && strategy == "strategy-b"
+        ));
+
+        let venue = parse_account("venue:sim-xnys").expect("parses venue");
+        assert!(matches!(
+            venue,
+            Account::Venue { venue: v } if v == "sim-xnys"
+        ));
+
+        let fees = parse_account("fees:sim-xnys").expect("parses fees");
+        assert!(matches!(
+            fees,
+            Account::Fees { venue: v } if v == "sim-xnys"
+        ));
+
+        let invalid = parse_account("invalid:format");
+        assert!(invalid.is_err(), "rejects invalid account format");
     }
 }

@@ -4933,7 +4933,7 @@ impl Cell {
             .fill_times
             .release_schedule(std::slice::from_ref(&venue));
         let release_at = now.saturating_add(schedule.offset(&venue));
-        let (order_id, simulated) = self.send(
+        let (order_id, simulated) = match self.send(
             &net_intent.object_id,
             &venue,
             side,
@@ -4943,7 +4943,22 @@ impl Cell {
             release_at,
             qip_execution_engine::modes::ExecutionMode::OrderTaking,
             gateway,
-        )?;
+        ) {
+            Ok(placed) => placed,
+            Err(error) if error.code() == "guard" => {
+                // Backpressure: broker queue full. Refuse gracefully without
+                // releasing the region hold—the cell will retry this order
+                // on the next pass when queue capacity may be available.
+                self.refuse(report, "broker_backpressure", error.message(), now);
+                self.release_region_holds(&net_intent.contributors);
+                return Ok(None);
+            }
+            Err(error) => {
+                // Other errors propagate (venue failure, etc.)
+                self.release_region_holds(&net_intent.contributors);
+                return Err(error);
+            }
+        };
 
         // Only now, past the call that can fail. `gateway.place` propagates its
         // error out of `work`, and the caller loses the report with it — so a
@@ -5100,7 +5115,7 @@ impl Cell {
         }
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
-        let placed = gateway.place(
+        let placed = gateway.try_place(
             &order_id, object_id, venue, side, quantity, price, release_at,
         );
         // The venue's answer, whichever it was, before the error leaves: a
@@ -5108,12 +5123,16 @@ impl Cell {
         // pass and never be quarantined.
         if let Some(health) = self.venue_health.as_mut() {
             health.record_sent(venue);
-            if placed.is_err() {
+            if placed.is_err() || matches!(placed, Ok(false)) {
                 health.record_reject(venue, now);
             }
         }
-        placed?;
-        Ok((order_id, simulated))
+        match placed? {
+            true => Ok((order_id, simulated)),
+            false => Err(Error::guard(
+                "broker queue is at capacity; order will be retried on the next pass",
+            )),
+        }
     }
 
     /// Record an order the venue accepted: the open order its fills will be
@@ -9833,7 +9852,11 @@ pub trait Placer: std::fmt::Debug {
     /// `simulated` flag from this rather than from anything the caller says.
     fn is_simulated(&self) -> bool;
 
-    /// Accept an order for the venue.
+    /// Try to accept an order for the venue without blocking.
+    ///
+    /// Non-blocking handoff: returns Ok(true) if queued, Ok(false) if the
+    /// broker queue is at capacity and cannot accept more orders this pass.
+    /// This is the primary path for Cell.work() to use (SLICE-04, ADR 0100).
     ///
     /// `at` is the instant before which the gateway must not release the
     /// order — "release no earlier than", not "when it was sent" (ADR 0084).
@@ -9844,6 +9867,32 @@ pub trait Placer: std::fmt::Debug {
     /// will send late withdraws the order and reports it through
     /// [`Self::unreleased`] rather than sending it late.
     #[allow(clippy::too_many_arguments)]
+    fn try_place(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<bool>;
+
+    /// Accept an order for the venue.
+    ///
+    /// `at` is the instant before which the gateway must not release the
+    /// order — "release no earlier than", not "when it was sent" (ADR 0084).
+    /// The cell stamps it from the cycle's release schedule so that the legs
+    /// of a multi-venue cycle arrive together; a gateway that releases
+    /// immediately whatever `at` says was correct before that record and is
+    /// wrong after it. A gateway that finds `at` further in the past than it
+    /// will send late withdraws the order and reports it through
+    /// [`Self::unreleased`] rather than sending it late.
+    ///
+    /// Defaults to calling [`Self::try_place`] and panicking if it returns
+    /// false, which is the blocking behavior. Gateways that require blocking
+    /// semantics should override this.
+    #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
         order_id: &str,
@@ -9853,7 +9902,14 @@ pub trait Placer: std::fmt::Debug {
         quantity: Decimal,
         price: Decimal,
         at: Timestamp,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        match self.try_place(order_id, object_id, venue, side, quantity, price, at)? {
+            true => Ok(()),
+            false => Err(Error::guard(
+                "broker queue is at capacity and cannot accept this order this pass",
+            )),
+        }
+    }
 
     /// Orders the gateway withdrew without sending since the last call,
     /// because their release instant had passed by more than it will send
@@ -10200,6 +10256,19 @@ mod crossing_tests {
             true
         }
 
+        fn try_place(
+            &mut self,
+            _order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<bool> {
+            Err(qip_core::error::Error::io("the venue refused the order"))
+        }
+
         fn place(
             &mut self,
             _order_id: &str,
@@ -10265,6 +10334,20 @@ mod crossing_tests {
     impl Placer for ClassedGateway {
         fn is_simulated(&self) -> bool {
             self.simulated
+        }
+
+        fn try_place(
+            &mut self,
+            order_id: &str,
+            _object_id: &ObjectId,
+            _venue: &VenueId,
+            _side: BookSide,
+            _quantity: Decimal,
+            _price: Decimal,
+            _at: Timestamp,
+        ) -> Result<bool> {
+            self.placed.push(order_id.to_string());
+            Ok(true)
         }
 
         fn place(

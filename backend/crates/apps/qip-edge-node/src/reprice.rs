@@ -831,6 +831,20 @@ impl Placer for RequotingPlacer<'_> {
         self.venue.is_simulated()
     }
 
+    fn try_place(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        at: Timestamp,
+    ) -> Result<bool> {
+        self.venue
+            .try_place(order_id, object_id, venue, side, quantity, price, at)
+    }
+
     fn place(
         &mut self,
         order_id: &str,

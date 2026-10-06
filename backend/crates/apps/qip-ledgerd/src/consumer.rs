@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 
 /// Consumes P1 outcomes from the event fabric's broker.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct FabricConsumer {
     broker_addr: SocketAddr,
     group_id: String,
@@ -42,6 +43,7 @@ impl FabricConsumer {
 }
 
 /// A stream of postings delivered from the fabric for the ledger to apply.
+#[derive(Debug)]
 pub struct PostingStream {
     // Placeholder: will hold consumer state and iterator logic
 }
