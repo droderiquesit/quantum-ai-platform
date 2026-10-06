@@ -198,6 +198,37 @@ pub fn standard_library() -> Vec<Scenario> {
             liquidity_multiplier: 4.0,
             historical: false,
         },
+        Scenario {
+            name: "energy-crisis-2024".to_string(),
+            description:
+                "2024: a sustained commodity and energy shock with supply disruptions and inflation repricing, testing exposure to commodity factors and tail correlations"
+                    .to_string(),
+            shocks: vec![
+                FactorShock::new("commodity", 0.45, 180.0),
+                FactorShock::new("equity", -0.18, 180.0),
+                FactorShock::new("rates", 0.020, 180.0),
+                FactorShock::new("credit", 0.04, 180.0),
+                FactorShock::new("volatility", 1.8, 180.0),
+            ],
+            stressed_correlation: Some(0.75),
+            liquidity_multiplier: 5.0,
+            historical: false,
+        },
+        Scenario {
+            name: "tail-risk-event".to_string(),
+            description:
+                "Hypothetical: an extreme tail event with sudden gap risk and systemic credit concerns, testing whether the book can withstand unmodeled factors and liquidity seizure"
+                    .to_string(),
+            shocks: vec![
+                FactorShock::new("equity", -0.40, 2.0),
+                FactorShock::new("credit", 0.10, 2.0),
+                FactorShock::new("volatility", 4.0, 2.0),
+                FactorShock::new("fx", -0.15, 2.0),
+            ],
+            stressed_correlation: Some(0.95),
+            liquidity_multiplier: 20.0,
+            historical: false,
+        },
     ]
 }
 
