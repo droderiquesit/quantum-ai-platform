@@ -286,13 +286,13 @@
   },
   {
     "id": "CICD-081",
-    "status": "MISSING",
-    "current": "Convention only: docs/claude/AUTONOMOUS_DELIVERY_WORKFLOW.md starts agent work from 'a stated outcome' (chief-orchestrator + vision-to-plan), but nothing records a goal id, an origin class (incident / backlog item / expansion gap) or a link from an agent-authored PR or commit to one.",
+    "status": "PARTIAL",
+    "current": ".github/pull_request_template.md carries a 'Goal ID' line and a 'Goal Origin' line naming the three origin classes (incident / backlog item / expansion gap). It is a prompt, not enforcement: GitHub renders it only in the web UI, so a PR opened through the API or `gh pr create --body` (how agents open PRs) never sees it, a person can delete it, and no CI check reads a PR body. backend/crates/tests/qip-acceptance/tests/cicd_governance.rs pins the template's two lines and the exact origin taxonomy so they cannot be removed silently.",
     "evidence": [
-      "no .github/*TEMPLATE* exists (find .github -iname '*template*' returns nothing)",
-      "grep -rn 'originating goal|scoped engineering goal|backlog item' .claude docs/plan .github returns no enforcement mechanism"
+      ".github/pull_request_template.md ('**Goal ID:**' and '**Goal Origin:** (incident / backlog item / expansion gap)')",
+      "backend/crates/tests/qip-acceptance/tests/cicd_governance.rs::pr_template_requires_goal_id_and_goal_origin"
     ],
-    "gap": "No PR template field, commit trailer, or CI check requires or verifies that an autonomous change names the incident, backlog item or expansion-gap it originated from.",
+    "gap": "Nothing requires or verifies that an agent-authored PR links to exactly one goal: no CI check parses the PR body, the template never reaches API-opened PRs, and main is unprotected (CICD-045), so even a check would flag rather than refuse.",
     "implemented": false,
     "tested": false,
     "integrated": false,
@@ -300,11 +300,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "none exists",
+    "verification": "cargo test -p qip-acceptance --test cicd_governance (pins the template only; the requirement's check 'each agent-authored PR links to exactly one goal' is not yet verifiable)",
     "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status unchanged (MISSING). Added the delivery-workflow convention to 'current'; it is prose, carries no origin taxonomy, and nothing checks linkage. No .github template or hook enforces it (.github holds only workflows; .claude/hooks has no such check). 2026-10-04: left MISSING. A required goal line on every pull request changes how every pull request is opened, which is the owner's decision, and with main unprotected (CICD-045) a check for it would flag and not refuse."
+    "notes": "verify: status unchanged (MISSING). Added the delivery-workflow convention to 'current'; it is prose, carries no origin taxonomy, and nothing checks linkage. No .github template or hook enforces it (.github holds only workflows; .claude/hooks has no such check). 2026-10-04: left MISSING. A required goal line on every pull request changes how every pull request is opened, which is the owner's decision, and with main unprotected (CICD-045) a check for it would flag and not refuse. 2026-10-06 (L019): MISSING -> PARTIAL. A PR template now prompts for the goal in the web UI; COMPLETE needs a CI check on the PR body that refuses anything but exactly one goal line, which still waits on CICD-045."
   },
   {
     "id": "CICD-082",

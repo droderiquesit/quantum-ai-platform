@@ -1190,3 +1190,60 @@ fn an_order_the_venue_filled_in_part_leaves_a_record_of_what_did_not_fill_and_re
     );
     Ok(())
 }
+
+#[test]
+fn one_cycle_records_a_placement_a_partial_fill_and_a_decline_on_one_verified_chain() -> Result<()>
+{
+    // MODEL-039 gap (2) asks for one cycle holding an action, a decline, a
+    // partial fill and a failure. The other tests here each prove one of
+    // those on its own; this one proves the first three land together on a
+    // single chain that still verifies, so a change that splits them across
+    // captures, or that breaks the chain when they interleave, is caught.
+    // A venue failure cannot be forced through the platform's own simulated
+    // broker, so the fourth kind is still the row's open gap.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(jump_bars("AAA", 120));
+    platform.observe(jump_bars("BBB", 120));
+
+    // The default venue fills 60%, so one desk order is both a placement and
+    // a partial fill.
+    let _filled_order = fill_one(&mut platform, start())?;
+
+    // A proposal with no hypotheses is declined before it becomes an order.
+    let declined = platform.order_from(
+        object("AAA"),
+        Side::Buy,
+        dec!("1000"),
+        dec!("100"),
+        "prop-invalid",
+        Vec::new(),
+        start(),
+    );
+    assert!(platform.submit_order(declined, start()).is_err());
+
+    platform.run_cycle(start());
+
+    let capture = platform.outcomes();
+    capture.verify()?;
+
+    let count = |pick: fn(&Action) -> bool| {
+        capture
+            .entries()
+            .iter()
+            .filter(|e| pick(&e.decision.action))
+            .count()
+    };
+    assert!(
+        count(|a| matches!(a, Action::OrderPlaced { .. })) > 0,
+        "no OrderPlaced entry on the chain"
+    );
+    assert!(
+        count(|a| matches!(a, Action::PartiallyFilled { .. })) > 0,
+        "no PartiallyFilled entry on the chain"
+    );
+    assert!(
+        count(|a| matches!(a, Action::Rejected { .. })) > 0,
+        "no Rejected entry on the chain"
+    );
+    Ok(())
+}

@@ -38,6 +38,7 @@ dependencies = [
  "qip-compliance",
  "qip-contracts",
  "qip-core",
+ "qip-cost-router",
  "qip-data-finder",
  "qip-edge",
  "qip-entity-resolution",
