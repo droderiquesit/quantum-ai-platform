@@ -1413,6 +1413,9 @@ pub struct Cell {
     /// When each discarded book was discarded, keyed like the books are —
     /// the start of the interval `BookResynchronised` closes.
     unreliable_since: BTreeMap<(String, String), Timestamp>,
+    /// Funding rates and borrow availability for instruments (REFLEX-021).
+    /// Updated each pass and exposed to the feasibility gate.
+    funding: crate::funding::FundingState,
 }
 
 /// A book the cell will not price from until the feed handler rebuilds it
@@ -1508,12 +1511,33 @@ impl Cell {
             unwithdrawable: BTreeSet::new(),
             open_gaps: BTreeMap::new(),
             unreliable_since: BTreeMap::new(),
+            funding: crate::funding::FundingState::new(),
             config,
         })
     }
 
     pub fn config(&self) -> &CellConfig {
         &self.config
+    }
+
+    /// Get access to the funding state for inspection.
+    pub fn funding_state(&self) -> &crate::funding::FundingState {
+        &self.funding
+    }
+
+    /// Update funding rate for an instrument.
+    pub fn set_funding_rate(&mut self, instrument: String, rate: crate::funding::FundingRate) {
+        self.funding.set_funding_rate(instrument, rate);
+    }
+
+    /// Update borrow availability for an instrument.
+    pub fn set_borrow_availability(
+        &mut self,
+        instrument: String,
+        availability: crate::funding::BorrowAvailability,
+    ) {
+        self.funding
+            .set_borrow_availability(instrument, availability);
     }
 
     /// Record into the composition root's registry rather than the silent one

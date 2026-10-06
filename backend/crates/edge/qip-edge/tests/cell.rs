@@ -959,3 +959,104 @@ fn a_feature_registration_past_the_engines_bound_is_refused_whole_and_one_inside
     );
     Ok(())
 }
+
+#[test]
+fn a_cell_can_track_funding_rates_for_instruments() -> Result<()> {
+    use qip_edge::cell::{Cell, CellConfig};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+
+    let rate = qip_edge::FundingRate::new(dec!("0.05"));
+    cell.set_funding_rate("BTC".to_string(), rate);
+
+    assert_eq!(
+        cell.funding_state().funding_rate("BTC"),
+        Some(rate),
+        "funding rate was not stored"
+    );
+    assert_eq!(
+        cell.funding_state().funding_rate("ETH"),
+        None,
+        "a missing instrument should return None"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cell_can_track_borrow_availability() -> Result<()> {
+    use qip_edge::cell::{Cell, CellConfig};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+
+    let qty = dec!("100");
+    let availability = qip_edge::BorrowAvailability::available(qty);
+    cell.set_borrow_availability("ETH".to_string(), availability);
+
+    let stored = cell.funding_state().borrow_availability("ETH").unwrap();
+    assert_eq!(
+        stored.quantity(),
+        Some(qty),
+        "borrow availability quantity was not stored"
+    );
+    Ok(())
+}
+
+#[test]
+fn mutation_funding_rate_update_actually_changes_value() -> Result<()> {
+    use qip_edge::cell::{Cell, CellConfig};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+
+    let rate1 = qip_edge::FundingRate::new(dec!("0.05"));
+    let rate2 = qip_edge::FundingRate::new(dec!("0.10"));
+
+    cell.set_funding_rate("BTC".to_string(), rate1);
+    cell.set_funding_rate("BTC".to_string(), rate2);
+
+    let stored = cell.funding_state().funding_rate("BTC").unwrap();
+    assert_eq!(stored, rate2, "latest rate was not stored");
+    assert_ne!(stored, rate1, "old rate was not replaced");
+    Ok(())
+}
+
+#[test]
+fn mutation_borrow_availability_unavailability_is_tracked() -> Result<()> {
+    use qip_edge::cell::{Cell, CellConfig};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+
+    let unavailable = qip_edge::BorrowAvailability::unavailable();
+    let available = qip_edge::BorrowAvailability::available(dec!("50"));
+
+    cell.set_borrow_availability("ETH".to_string(), unavailable);
+    let first = cell.funding_state().borrow_availability("ETH").unwrap();
+    assert_eq!(
+        first.quantity(),
+        None,
+        "unavailable should have no quantity"
+    );
+
+    cell.set_borrow_availability("ETH".to_string(), available);
+    let second = cell.funding_state().borrow_availability("ETH").unwrap();
+    assert!(
+        second.quantity().is_some(),
+        "available should have a quantity"
+    );
+    Ok(())
+}
