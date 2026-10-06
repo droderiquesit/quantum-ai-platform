@@ -597,6 +597,30 @@ impl AssetClassRegistry {
             BTreeSet::new(),
         )?);
 
+        // Prediction — Event-driven opportunity detection. Markets resolve to
+        // bitemporal outcomes; pricing is mark with method and confidence.
+        // Instant settlement upon resolution, 24/7 trading, families that react
+        // to events.
+        add(AssetClassRecord::new(
+            AssetClass::Prediction,
+            ValuationEngine::IlliquidValuation,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            GridRule::Negotiated,
+            TradingCalendar::Continuous,
+            MarginRegime::Isolated,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [
+                F::EventDriven,
+                F::StatisticalArbitrage,
+                F::Arbitrage,
+                F::ExecutionAlpha,
+            ]
+            .into_iter()
+            .collect(),
+            BTreeSet::new(),
+        )?);
+
         let registry = Self { records };
         registry.check_hedge_map()?;
         Ok(registry)
@@ -692,13 +716,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shipped_registry_holds_nine_classes_and_names_the_four_it_refuses() -> Result<()> {
-        // The premise first: `AssetClass` really does have thirteen variants,
-        // so "nine registered" is a statement about coverage and not about a
+    fn the_shipped_registry_holds_ten_classes_and_names_the_four_it_refuses() -> Result<()> {
+        // The premise first: `AssetClass` really does have fourteen variants,
+        // so "ten registered" is a statement about coverage and not about a
         // list that happens to be the whole enum.
-        assert_eq!(AssetClass::ALL.len(), 13);
+        assert_eq!(AssetClass::ALL.len(), 14);
         let registry = AssetClassRegistry::shipped()?;
-        assert_eq!(registry.len(), 9);
+        assert_eq!(registry.len(), 10);
         // Named rather than counted: a count would pass if the four swapped
         // for four others, and which four are unsupported is the finding.
         assert_eq!(
