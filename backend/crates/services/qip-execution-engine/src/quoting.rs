@@ -622,6 +622,42 @@ impl QuoteDecision {
     }
 }
 
+/// Venue-specific microstructure parameters for quoting.
+///
+/// Maps each venue to its own `QuotePolicy`, allowing market making to adapt
+/// to the characteristics of each trading venue. Different venues have different
+/// liquidity, microstructure, and fill probability patterns, so the same
+/// instrument may be quoted with different spreads, skews and confidence
+/// thresholds across venues (EXEC-022).
+#[derive(Clone, Debug, Default)]
+pub struct VenueQuotingModel {
+    policies: std::collections::BTreeMap<String, QuotePolicy>,
+}
+
+impl VenueQuotingModel {
+    /// Add or replace a venue-specific policy.
+    pub fn with_policy(mut self, venue: impl Into<String>, policy: QuotePolicy) -> Self {
+        self.policies.insert(venue.into(), policy);
+        self
+    }
+
+    /// Get the policy for a venue, or the default if none is configured.
+    pub fn policy_for<'a>(&'a self, venue: &str, default: &'a QuotePolicy) -> &'a QuotePolicy {
+        self.policies.get(venue).unwrap_or(default)
+    }
+
+    /// Quote using the venue-specific policy for this instrument at this venue.
+    pub fn quote_at_venue(
+        &self,
+        venue: &str,
+        default_policy: &QuotePolicy,
+        inputs: &QuoteInputs,
+    ) -> Result<QuoteDecision> {
+        let policy = self.policy_for(venue, default_policy);
+        quote(policy, inputs)
+    }
+}
+
 /// One pass of blueprint §29.1.
 ///
 /// `Err` for a malformed policy or reading — a caller bug, refused rather than
@@ -1482,5 +1518,128 @@ mod tests {
         let mut inverted = policy();
         inverted.max_half_spread_bps = inverted.base_half_spread_bps - 1.0;
         assert!(inverted.validate().is_err());
+    }
+
+    #[test]
+    fn each_venue_gets_its_own_microstructure_parameters_and_quotes_differently() {
+        // EXEC-022: venue-specific microstructure models. Different venues have
+        // different liquidity and fill patterns, so the same instrument at the
+        // same moment in time should be quoted differently when each venue has
+        // its own parameters. This test proves that different venues can use
+        // different spread, skew, and confidence thresholds.
+
+        // Base policy: tight spreads, high confidence requirement.
+        let mut tight_venue = policy();
+        tight_venue.base_half_spread_bps = 5.0;
+        tight_venue.minimum_confidence = 0.80;
+
+        // Wide spread policy for a different venue: takes more risk.
+        let mut wide_venue = policy();
+        wide_venue.base_half_spread_bps = 20.0;
+        wide_venue.minimum_confidence = 0.30;
+
+        // Create a venue model and install both policies.
+        let model = VenueQuotingModel::default()
+            .with_policy("tight_market", tight_venue.clone())
+            .with_policy("wide_market", wide_venue.clone());
+
+        // Same input: moderate confidence and microstructure signals.
+        let mut inputs = inputs();
+        inputs.belief_confidence = 0.50;
+        inputs.volatility_bps = 10.0;
+        inputs.adverse_selection_bps = 5.0;
+
+        // The tight market refuses to quote because confidence is below the bar.
+        let tight_decision = model.quote_at_venue("tight_market", &policy(), &inputs);
+        if let Ok(QuoteDecision::Withheld(Withheld::BeliefBelowBar { confidence, bar })) =
+            tight_decision
+        {
+            assert_eq!(confidence, 0.50);
+            assert_eq!(bar, 0.80);
+        } else {
+            panic!("expected tight market to refuse on belief");
+        }
+
+        // The wide market quotes because its confidence bar is lower.
+        let wide_decision = model.quote_at_venue("wide_market", &policy(), &inputs);
+        if let Ok(QuoteDecision::Quoted(pair)) = wide_decision {
+            // Wide venue quotes with a wider spread than its default policy
+            // would use if we directly called quote with tight_venue.
+            let tight_direct = quote(&tight_venue, &inputs);
+            if let Ok(QuoteDecision::Withheld(_)) = tight_direct {
+                // As expected: tight venue refuses, wide market quotes.
+            }
+            // Verify the wide market's spread is wider than tight.
+            assert!(pair.terms.base_bps >= 20.0 - 0.001); // floating point tolerance
+        } else {
+            panic!("expected wide market to quote");
+        }
+
+        // Test the same venue with a default: when no venue is configured, fall
+        // back to the default policy.
+        let empty_model = VenueQuotingModel::default();
+        let default_decision = empty_model.quote_at_venue("unknown_market", &policy(), &inputs);
+        if let Ok(QuoteDecision::Quoted(_)) = default_decision {
+            // Default policy allows this confidence level.
+        } else {
+            panic!("expected default policy to quote");
+        }
+    }
+
+    #[test]
+    fn venue_specific_models_can_vary_multiple_parameters_independently() {
+        // Prove that each venue parameter can be tuned independently to match
+        // that venue's microstructure characteristics. Mutation verification:
+        // removing the different parameters from each venue model should make
+        // this test fail because both venues would quote identically.
+
+        let mut venue_a_params = policy();
+        venue_a_params.base_half_spread_bps = 3.0;
+        venue_a_params.volatility_coefficient = 0.2;
+        venue_a_params.skew_bps_at_limit = 10.0;
+
+        let mut venue_b_params = policy();
+        venue_b_params.base_half_spread_bps = 15.0;
+        venue_b_params.volatility_coefficient = 0.8;
+        venue_b_params.skew_bps_at_limit = 50.0;
+
+        let model = VenueQuotingModel::default()
+            .with_policy("venue_a", venue_a_params.clone())
+            .with_policy("venue_b", venue_b_params.clone());
+
+        let mut test_inputs = inputs();
+        test_inputs.inventory = dec!("100");
+        test_inputs.volatility_bps = 20.0;
+
+        let quote_a = if let QuoteDecision::Quoted(pair) = model
+            .quote_at_venue("venue_a", &policy(), &test_inputs)
+            .unwrap()
+        {
+            *pair
+        } else {
+            panic!("venue_a should quote")
+        };
+
+        let quote_b = if let QuoteDecision::Quoted(pair) = model
+            .quote_at_venue("venue_b", &policy(), &test_inputs)
+            .unwrap()
+        {
+            *pair
+        } else {
+            panic!("venue_b should quote")
+        };
+
+        // Verify that the quotes are different because of different parameters.
+        // Venue A should have a tighter spread (base 3.0 vs 15.0).
+        assert!(
+            quote_a.terms.base_bps < quote_b.terms.base_bps,
+            "venue_a should have tighter base spread than venue_b"
+        );
+
+        // Venue B should have a larger skew (50.0 vs 10.0) due to inventory.
+        assert!(
+            quote_b.skew_bps.abs() > quote_a.skew_bps.abs(),
+            "venue_b should skew more aggressively than venue_a"
+        );
     }
 }
