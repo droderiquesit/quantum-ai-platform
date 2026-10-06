@@ -598,8 +598,9 @@ module "data" {
   environment = var.environment
   labels      = local.labels
 
-  key_ring_id = module.secrets.key_ring_id
-  network_id  = module.network.network_id
+  key_ring_id  = module.secrets.key_ring_id
+  network_id   = module.network.network_id
+  bucket_location = var.bucket_location
 
   # Every managed store is off unless a deployment says otherwise, because
   # this build implements three storage targets and refuses six. See the
