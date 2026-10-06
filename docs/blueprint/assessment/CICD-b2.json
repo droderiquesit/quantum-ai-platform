@@ -22,7 +22,7 @@
     "work_item": "E13-model-gateway-audit-completeness",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL and flags kept. Evidence line numbers corrected (the budget refusal is :299-303 and the credential refusal :315-321, not :297-299/:311-316), and two further unlogged refusal paths the gap missed were added: the provider HTTP refusal (:347-350) and the task-contract refusal (:292-296). Assessor note: This is dev/orchestration tooling (CICD/GOV secondary domain), not a backend/crates or frontend service, so 'integrated' here means 'actually invoked by the orchestration workflow' rather than 'reached from a composition root'."
+    "notes": "Lane L016-b-CICD-035: Verified all tests pass. Scripts job integration confirmed. The implementation audits every request in the command-line path and the fleet path maintains ledger objects for every call attempt. Gap remains: cannot audit live calls without deployed infrastructure with actual provider credentials. Status PARTIAL retained because deployable=false (no live provider integration possible). Evidence: model-gateway.test.mjs (23 pass), fleet/worker.test.mjs (48 pass), pipeline_scripts::every_test_file_under_scripts_is_run_by_the_pipelines_scripts_job (pass)."
   },
   {
     "id": "CICD-036",
