@@ -690,5 +690,52 @@
     "tier": "T3",
     "size": "S",
     "notes": "Shares its blocker and work item with AMBIENT-024; this row is the mesh's read side of that same gap. verify: changed BLOCKED(C4) -> MISSING. This is a contract, not a placement, and it names a 'Bigtable/Memory' tier. The read path can be built against an in-memory or in-tree K0, so C4 is not the reason it is absent. depends_on moved from AMBIENT-024 (the Bigtable placement row, still BLOCKED) to the mesh and surprise rows it actually needs."
+  },
+  {
+    "id": "AMBIENT-029",
+    "status": "PARTIAL",
+    "current": "CurriculumItem (backend/crates/libs/qip-contracts/src/expansion.rs:308-349) holds expected_information_value and expected_economic_value fields as input metadata, but nothing ranks candidate observations by those fields or stops acquisition when marginal value falls below cost. The curriculum is built from detected signals (Platform::stage_reason -> stage_learn -> learn_from -> strategy_manager.learn) by thematic grouping, not by expected-value ranking. No acquisition cost model or deadline enforcement exists.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/expansion.rs:308-349 (CurriculumItem with expected_information_value, expected_economic_value)",
+      "backend/crates/runtime/qip-kernel/src/platform.rs:platform_learn (curriculum building, not value-based ranking)",
+      "rg 'value_of_information|EVI|information_gain' backend/crates: no acquisition-decision sites"
+    ],
+    "gap": "No mechanism ranks candidate observations by expected value of information or stops acquisition at cost or deadline bounds. The observation and curriculum fields exist but nothing uses them to drive active sensing.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "No test exists. Would need an integration test asserting that given two candidate observations, the ranking matches expected_information_value and economic_value, and that acquisition halts at a cost or deadline threshold.",
+    "work_item": "E09-evidence-acquisition-by-evi",
+    "tier": "T2",
+    "size": "M",
+    "notes": "CurriculumItem structure is in place; acquisition mechanism is missing. Not blocked by any external dependency; can be built in-tree."
+  },
+  {
+    "id": "AMBIENT-031",
+    "status": "PARTIAL",
+    "current": "AttentionRouter (backend/crates/libs/qip-contracts/src/ambient.rs:224-299) manages attention budget per window, routing signals to pathways by severity and materiality threshold. It records Activated, Deferred, and Shed dispositions. However, it tracks only attention (signal budget), not compute-level resource allocation (CPU, GPU, TPU, QPU), does not track model reputation by domain/horizon/regime, and has no mechanism to kill persistently unproductive work. The routing is driven by signal severity, not expected value.",
+    "evidence": [
+      "backend/crates/libs/qip-contracts/src/ambient.rs:224-299 (AttentionRouter with window-based budget, severity-driven routing)",
+      "backend/crates/libs/qip-contracts/src/ambient.rs:154-222 (RoutingPolicy drives routing by SignalClass and materiality_bp, not by value)",
+      "rg 'model_reputation|reputation_score' backend/crates: no hits",
+      "rg 'kill.*work|unproductive_work|work_termination' backend/crates: no hits"
+    ],
+    "gap": "AttentionRouter allocates only attention (signal budget), not compute resources. No model reputation tracking exists (by domain, horizon, regime). No mechanism kills unproductive work or adapts compute scale to value. The router is signal-driven, not value-driven.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-contracts --lib ambient proves AttentionRouter routing logic. No test proves model reputation tracking, compute allocation, or work killing, which are the requirement's check.",
+    "work_item": "E09-meta-intelligence-compute-allocation",
+    "tier": "T3",
+    "size": "L",
+    "notes": "AttentionRouter is production infrastructure; Meta-Intelligence extensions (reputation, compute allocation, work killing) would be built on top of it. The requirement's relationship to v11.6 Attention Router is unstated, but AttentionRouter is that router's heart."
   }
 ]
