@@ -31,7 +31,7 @@ The event fabric drain thread — the producer that pulls from the bounded chann
 
 **Pressure signal as control, not as failure.** The cell knows what to do with spool pressure — it narrows — because the mirror already reads spool state every pass (ADR 0100, the seam where spool-pressure halt is applied). A stalled channel is legible as "spool is full", not as "something is wrong and we don't know what."
 
-## Cost
+## What it costs
 
 **Spool memory footprint.** Because the drain might not keep up with produce rate in the short term, the bounded channel must size for the worst case: peak produce rate multiplied by the maximum latency between drain wakeups. This is sized in configuration and proved in `a_spool_under_normal_load_returns_to_baseline` (ADR 0100 §8, test 8).
 

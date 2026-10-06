@@ -6,12 +6,28 @@ Orchestrates deployment of multiple regional edge cells, each running on a dedic
 
 The platform runs as **source-adjacent edge cells** (ADR 0008): one execution node per region, sitting next to the venues it trades. Cells decide locally within capital envelopes granted by the central plane.
 
-This module composes:
+**This module composes nothing and creates nothing.** It is the topology
+contract: it validates a set of cells (every zone inside its region, every
+cell configured for a venue, every regional capital ceiling a positive
+number) and derives the values the root hands to the modules that do create
+resources:
 
-1. **Execution nodes** (`modules/execution-node`) — one C3 or C3D machine per region
-2. **Edge mesh** (`modules/edge-mesh`) — inter-cell communication and firewall rules
-3. **Venue connectivity** — region-specific egress paths to market data and trading venues
-4. **Order routing** — how orders flow from cells to venues and fills flow back
+1. **Execution nodes** (`modules/execution-node`) — composed by the root's
+   `module "execution_node"`, one C3 or C3D machine per region
+2. **Edge mesh** (`modules/edge-mesh`) — takes `central_plane_ranges` and
+   `psc_addresses` from this module's outputs; not yet composed by the root
+
+It used to call both modules itself. A module calling a module is invisible to
+`terraform_contract.rs`'s correspondence scan, which reads only the root's
+calls, and that is how this one came to pass `isolated_cpus` and
+`telemetry_endpoint` to an `execution-node` that declares neither — a
+configuration `terraform validate` refuses and nothing ever ran. It would also
+have been a second set of nodes beside the root's. Composition is the root's
+job, one level deep.
+
+`tests/multi_region_deployment.tftest.hcl` plans it against a mocked provider
+and proves each gate both refuses and admits: `terraform init -backend=false
+&& terraform test` from this directory.
 
 ## Deployment Steps
 
@@ -54,7 +70,9 @@ Once a node has run for 2–4 weeks in shadow mode:
 Change one line in tfvars: `shadow_mode = true` → `shadow_mode = false`.
 
 This creates:
-- Venue egress firewall rules, opening paths to real venues
+- Venue egress firewall rules, opening paths to the configured venues — the
+  simulated venue and provider sandboxes only; every cell is paper-only
+  (ADR 0003) and `qip-edge-node` refuses any other venue feed at start-up
 - Venue ingress rules (coordination between cells and counterparties)
 - Health ingress rules, allowing the central plane and other cells to reach it
 
