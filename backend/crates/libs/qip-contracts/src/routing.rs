@@ -61,6 +61,7 @@ impl RoutingConfig {
 ///
 /// This type encapsulates the logic for choosing between quantum and classical
 /// solvers based on a DecisionRequest, availability, and performance metrics.
+#[derive(Debug)]
 pub struct QuantumRouter {
     config: RoutingConfig,
 }
@@ -143,7 +144,10 @@ mod tests {
     fn routing_config_classical_first() {
         let config = RoutingConfig::classical_first();
         assert_eq!(config.min_advantage_bps, i64::MAX);
-        assert_eq!(config.max_cost_multiplier, 0.0);
+        #[allow(clippy::float_cmp)]
+        {
+            assert_eq!(config.max_cost_multiplier, 0.0);
+        }
     }
 
     #[test]

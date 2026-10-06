@@ -1094,7 +1094,7 @@ impl RegimeChange {
         decided_at: Timestamp,
         signer_one: impl Into<String>,
     ) -> Result<Self> {
-        if confidence < 0.0 || confidence > 1.0 {
+        if !(0.0..=1.0).contains(&confidence) {
             return Err(Error::invalid(format!(
                 "regime change confidence {} is not a probability",
                 confidence
@@ -1116,7 +1116,7 @@ impl RegimeChange {
         Ok(format!(
             "regime1|{}|{}|{}|{}",
             length_prefixed(&self.regime),
-            self.confidence.to_string(),
+            self.confidence,
             self.decided_at.as_secs(),
             length_prefixed(&self.signer_one)
         ))
@@ -1128,7 +1128,7 @@ impl RegimeChange {
         Ok(format!(
             "regime2|{}|{}|{}|{}|{}|{}",
             length_prefixed(&self.regime),
-            self.confidence.to_string(),
+            self.confidence,
             self.decided_at.as_secs(),
             length_prefixed(&self.signer_one),
             length_prefixed(&self.signature_one),
