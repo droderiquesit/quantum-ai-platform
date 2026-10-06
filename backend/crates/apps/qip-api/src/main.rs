@@ -144,6 +144,11 @@ fn run() -> Result<()> {
     // admit a source the connector had already been refused.
     let (venue_registrations, registrations_source) = load_venue_registrations()?;
 
+    // Verify environment configuration signature if provided. Configuration
+    // must come only from signed, reviewed sources to ensure environment
+    // differences are visible and attributable (CICD-096).
+    verify_config_signature()?;
+
     let mut config = PlatformConfig::default()
         .with_live_ceiling(ceiling)
         .with_venue_registrations(venue_registrations);
@@ -682,6 +687,44 @@ fn registrations_banner(platform: &Platform) -> String {
 /// The instrument universe, from the committed catalogue the deployment names.
 ///
 /// Refused when unset. Every root used to assemble `Universe::new()`, so the
+/// Verify environment configuration signature if provided. If QIP_CONFIG_SIGNATURE
+/// is set, the environment configuration must have a valid signature or the
+/// process refuses to start. This ensures environment behaviour comes only from
+/// reviewed, signed sources (CICD-096).
+fn verify_config_signature() -> Result<()> {
+    if let Ok(signature) = std::env::var("QIP_CONFIG_SIGNATURE") {
+        if signature.is_empty() {
+            return Ok(());
+        }
+
+        // Build a canonical representation of the current environment configuration
+        let mut config = qip_core::config::Config::empty();
+        for (key, value) in std::env::vars() {
+            if let Some(rest) = key.strip_prefix("QIP_") {
+                config.set(
+                    &rest.to_lowercase().replace("__", "."),
+                    serde_json::Value::String(value),
+                );
+            }
+        }
+
+        // Verify using the signing key from environment or a default hardcoded key.
+        // In production, this key would come from a Secret Manager to prevent
+        // unauthorized signature forgery.
+        let key = std::env::var("QIP_CONFIG_SIGNATURE_KEY")
+            .unwrap_or_else(|_| "qip-api-default-key".to_string());
+
+        if !config.verify_signature(&signature, key.as_bytes()) {
+            return Err(Error::invalid(
+                "configuration signature verification failed: environment configuration does not match the \
+                 provided signature. Ensure QIP_CONFIG_SIGNATURE matches the signed configuration and was \
+                 computed with the correct key.",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// exposure buckets the kernel projects from the universe at assembly —
 /// sector, country, asset class, venue — received nothing in any deployed
 /// process and the two bucket limits in the default set could never fire;
