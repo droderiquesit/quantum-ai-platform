@@ -153,3 +153,37 @@ fn the_build_stage_installs_nothing_the_digest_does_not_pin() {
         "the build stage must start from a digest-pinned base: {from_build:?}"
     );
 }
+
+#[test]
+fn codeql_analysis_is_configured_for_security_scanning() {
+    let workflows = workflows();
+    let codeql_workflow = workflows
+        .iter()
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|n| n == "codeql-analysis.yml" || n == "codeql-analysis.yaml")
+        })
+        .expect("CodeQL workflow file (codeql-analysis.yml) must exist");
+    let content = read(codeql_workflow.to_str().expect("valid path"));
+    assert!(
+        content.contains("github/codeql-action/init"),
+        "CodeQL workflow must use github/codeql-action/init to initialize analysis"
+    );
+    assert!(
+        content.contains("github/codeql-action/analyze"),
+        "CodeQL workflow must use github/codeql-action/analyze to perform analysis"
+    );
+    assert!(
+        content.contains("rust") || content.contains("Rust"),
+        "CodeQL analysis must include Rust language for code scanning"
+    );
+    assert!(
+        content.contains("branches:")
+            && (content.contains("main") || content.contains("\\\"main\\\"")),
+        "CodeQL workflow must run on the main branch for continuous security scanning"
+    );
+    assert!(
+        content.contains("pull_request") || content.contains("pull-request"),
+        "CodeQL workflow must run on pull requests to catch security issues before merge"
+    );
+}
