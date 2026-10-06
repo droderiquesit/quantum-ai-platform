@@ -590,6 +590,66 @@ fn a_gateway_that_reaches_a_socket_still_reports_the_requirement_the_code_cannot
     Ok(())
 }
 
+/// What keeps a REST gateway out of the cell's pass is the narrowing, not the
+/// gateway's own report about itself.
+///
+/// The comment on `RestGateway`'s `Placer` impl said, until this test landed,
+/// that `Cell::send` refuses a live-class gateway at `GATE_LIVE_VENUE` from
+/// `is_simulated`. That was false: `is_simulated` is `true` for every adapter
+/// class, so the gate never fires on this gateway, and a reader who believed
+/// the comment would have counted a fence that does not exist. The premise
+/// below asserts exactly that, so the test is about the two seams that do
+/// hold: `simulated_mut` (the pass loop's narrowing) and
+/// `simulated_for_feed` (the start-up refusal of a simulated feed on any
+/// other gateway). The third seam, `run_pass` taking `&mut SimulatedGateway`,
+/// is held by the compiler.
+#[test]
+fn a_rest_gateway_cannot_reach_the_pass_path_although_it_reports_itself_simulated() -> Result<()> {
+    let venue_server = TestVenue::routed(vec![health_route()]);
+    let choice = live_choice(&venue_server.url())?;
+    let mut gateway = NodeGateway::Live(RestGateway::connect(&choice, at())?);
+
+    // The premise: this gateway reaches a socket and still calls itself paper,
+    // so nothing that asks `is_simulated` can be what keeps it out.
+    assert!(gateway.reaches_a_socket());
+    assert!(
+        gateway.is_simulated(),
+        "the premise is that the REST gateway reports itself simulated; if it no longer \
+         does, `Cell::send` may now refuse it and this test's subject has changed"
+    );
+
+    // The pass loop's narrowing yields nothing to pass.
+    assert!(
+        gateway.simulated_mut().is_none(),
+        "the pass loop would hand a REST gateway to `run_pass`'s caller"
+    );
+
+    // And start-up refuses the only configuration that would build a pass
+    // loop around it, by class and by naming what to unset.
+    let refusal = match gateway.simulated_for_feed() {
+        Ok(_) => panic!("a simulated feed was admitted on a REST gateway"),
+        Err(error) => error,
+    };
+    assert_eq!(refusal.code(), "denied", "{refusal:?}");
+    assert!(
+        refusal
+            .message()
+            .contains("Unset QIP_VENUE_ADAPTER or unset QIP_VENUE_FEED"),
+        "the refusal must name the variables that resolve it: {}",
+        refusal.message()
+    );
+
+    // Nothing above sent an order.
+    assert!(venue_server.requests_to("POST", "/v1/orders").is_empty());
+
+    // The control: the simulated gateway passes both seams, so neither is a
+    // refusal of everything.
+    let mut simulated = NodeGateway::open(&read(&lookup(&[]), false)?, venue(), at())?;
+    assert!(simulated.simulated_mut().is_some());
+    assert!(simulated.simulated_for_feed().is_ok());
+    Ok(())
+}
+
 #[test]
 fn the_simulated_gateway_still_places_and_reports_that_nothing_left_the_process() -> Result<()> {
     let choice = read(&lookup(&[]), false)?;
