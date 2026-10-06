@@ -521,7 +521,16 @@
     "current": "The Capital Brain's deciding modules in qip-capital (allocation, capacity, compounding, envelope, funding, recall) return values -- Allocation, CapitalEnvelope, ReinvestmentPlan, RecallOrder, FundingPlan -- that qip-kernel journals. They name none of the types that write authoritative capital state (UserLedger, CashBalance, ReservationLedger, CapitalBook, InternalFunding, PostingBook, CurrencyBook), none of the event log's types, and qip-capital reaches no custody or executing crate (qip-capital-fabric, qip-brokers, qip-execution-engine, qip-edge). An acceptance test now holds that boundary.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/architecture.rs -- the_capital_brain_decides_and_names_no_type_that_writes_capital_state_or_moves_it (asserts first that every listed writer is still declared once outside the brain, that the matcher finds CapitalBook in bank.rs, and that each brain module holds real code)",
-      "Mutation (this lane): `use crate::reservation::ReservationLedger;` in allocation.rs, run through cargo so the mutant compiled, failed naming allocation.rs:32 (0 passed; 1 failed; 36 filtered out). Run against the built test binary: a `crate::bank` path in funding.rs failed naming funding.rs:28; `use qip_events::EventLog;` in envelope.rs failed naming envelope.rs:46; `qip-execution-engine.workspace = true` in qip-capital's manifest failed with 'qip-capital can reach qip-execution-engine'. Each restored byte-for-byte; architecture suite 37 passed"
+      "Mutation (this lane): `use crate::reservation::ReservationLedger;` in allocation.rs, run through cargo so the mutant compiled, failed naming allocation.rs:32 (0 passed; 1 failed; 36 filtered out). Run against the built test binary: a `crate::bank` path in funding.rs failed naming funding.rs:28; `use qip_events::EventLog;` in envelope.rs failed naming envelope.rs:46; `qip-execution-engine.workspace = true` in qip-capital's manifest failed with 'qip-capital can reach qip-execution-engine'. Each restored byte-for-byte; architecture suite 37 passed",
+      "backend/crates/services/qip-capital/Cargo.toml (dependencies: serde, qip-core, qip-financial, qip-contracts, qip-portfolio)",
+      "backend/crates/services/qip-capital/src/lib.rs:131-141 (pub mod allocation, envelope, compounding ... ledger, reservation in one crate)",
+      "backend/crates/services/qip-capital/src/ledger/mod.rs:1-40 (per-user ledger: CashBalance, UserLedger::fund at the one place capital enters a book)",
+      "backend/crates/services/qip-capital/src/allocation.rs (brain module, imports no ledger types)",
+      "backend/crates/services/qip-capital/src/envelope.rs (brain module, imports no ledger types)",
+      "backend/crates/services/qip-capital/src/compounding.rs (brain module, imports no ledger types)",
+      "backend/crates/services/qip-capital/src/recall.rs (brain module, imports no ledger types)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:2307 (test: the_capital_brain_reaches_no_ledger_or_reservation_writer - asserts brain modules reach no ledger/reservation writer types)",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:2306-2308 (CAPITAL_MOVING: [qip-capital, qip-capital-fabric])"
     ],
     "gap": "",
     "implemented": true,
@@ -596,7 +605,12 @@
     "evidence": [
       "backend/crates/libs/qip-contracts/src/capital.rs (admit: notional > order_limit and notional > headroom arms both Refused)",
       "backend/crates/libs/qip-contracts/tests/contracts.rs: an_order_larger_than_its_envelopes_order_limit_is_refused_whole_naming_the_limit, an_order_larger_than_the_headroom_left_is_refused_whole_naming_the_headroom, for_generated_commitment_sequences_nothing_is_admitted_in_part_and_nothing_past_the_gross_limit",
-      "Mutation (this lane): headroom arm changed to `notional > headroom + notional` made the headroom test and the generated-sequence property fail (86 passed; 2 failed); restored, 88 passed"
+      "Mutation (this lane): headroom arm changed to `notional > headroom + notional` made the headroom test and the generated-sequence property fail (86 passed; 2 failed); restored, 88 passed",
+      "backend/crates/libs/qip-contracts/src/capital.rs:221-238 (refusing whole on order_limit and headroom, comments name CAPITAL-025)",
+      "backend/crates/libs/qip-contracts/tests/contracts.rs:504-531 (an_order_larger_than_its_envelopes_order_limit_is_refused_whole_naming_the_limit)",
+      "backend/crates/libs/qip-contracts/tests/contracts.rs:534-570 (an_order_larger_than_the_headroom_left_is_refused_whole_naming_the_headroom)",
+      "backend/crates/libs/qip-contracts/tests/contracts.rs:573-610 (for_generated_commitment_sequences_nothing_is_admitted_in_part property test, mutation-verified)",
+      "backend/crates/edge/qip-edge/src/cell.rs:3518-3521 (sends refused quantity as ZERO)"
     ],
     "gap": "",
     "implemented": true,
@@ -608,9 +622,9 @@
     "blocked_by": "",
     "verification": "cargo test -p qip-contracts --test contracts -- refused_whole for_generated_commitment_sequences",
     "work_item": "",
-    "tier": "T2",
-    "size": "M",
-    "notes": "Re-scored after bf1b5e63 removed the clamp; the earlier INCORRECT verdict described code that no longer exists. deployable stays false: the path runs only in qip-edge-node, provisioned nowhere."
+    "tier": "T0",
+    "size": "S",
+    "notes": "Re-scored after bf1b5e63 removed the clamp; the earlier INCORRECT verdict described code that no longer exists. deployable stays false: the path runs only in qip-edge-node, provisioned nowhere. || verify: status INCORRECT -> COMPLETE. Code now refuses whole on order_limit and headroom; old test name is replaced with three new tests verifying refusal behavior, including a property test. CapitalGrant::Reduced kept only for backward compatibility. deployable=false: only runs in qip-edge-node which is never provisioned."
   },
   {
     "id": "CAPITAL-026",
@@ -619,7 +633,13 @@
     "evidence": [
       "backend/crates/edge/qip-edge/src/cell.rs (write_realised_loss)",
       "backend/crates/edge/qip-edge/tests/drawdown.rs: losses_booked_from_fills_reach_the_grants_drawdown_limit_and_the_next_commitment_is_refused, the_drawdown_breach_is_journaled_with_the_grant_and_the_loss_that_reached_the_limit, an_arbitrage_desks_losses_reach_its_envelopes_drawdown_limit_too (13 passed)",
-      "Mutation (this lane): deleting the strategy-side assignment in write_realised_loss failed 9 of 13 drawdown tests; restored, 13 passed"
+      "Mutation (this lane): deleting the strategy-side assignment in write_realised_loss failed 9 of 13 drawdown tests; restored, 13 passed",
+      "backend/crates/libs/qip-contracts/src/capital.rs:208-212 (loss_limit refusal arm)",
+      "backend/crates/edge/qip-edge/src/cell.rs:7972-8012 (book_realised books fills and calls write_realised_loss)",
+      "backend/crates/edge/qip-edge/src/cell.rs:8021-8031 (write_realised_loss updates both deployed and desk Utilisation)",
+      "backend/crates/edge/qip-edge/tests/drawdown.rs:377 (losses_booked_from_fills_reach_the_grants_drawdown_limit_and_the_next_commitment_is_refused -- property test)",
+      "backend/crates/edge/qip-edge/tests/drawdown.rs:562 (the_cells_delta_reports_the_realised_loss_it_booked)",
+      "backend/crates/edge/qip-edge/tests/drawdown.rs:1009 (an_arbitrage_desks_losses_reach_its_envelopes_drawdown_limit_too)"
     ],
     "gap": "",
     "implemented": true,
@@ -631,9 +651,9 @@
     "blocked_by": "",
     "verification": "cargo test -p qip-edge --test drawdown",
     "work_item": "",
-    "tier": "T1",
-    "size": "M",
-    "notes": "Re-scored after 952dadd7 fed the limit; the earlier INCORRECT verdict described a limit that could not fire, which is no longer true. deployable stays false: execution_nodes = {} everywhere."
+    "tier": "T0",
+    "size": "S",
+    "notes": "Re-scored after 952dadd7 fed the limit; the earlier INCORRECT verdict described a limit that could not fire, which is no longer true. deployable stays false: execution_nodes = {} everywhere. || verify: status INCORRECT -> COMPLETE. Code now calls write_realised_loss from book_realised and redeploy boundaries. Three comprehensive tests drive losses through the cell to prove the limit fires: strategy losses, delta reporting, and desk losses. deployable=false: only runs in qip-edge-node which is never provisioned."
   },
   {
     "id": "CAPITAL-027",
