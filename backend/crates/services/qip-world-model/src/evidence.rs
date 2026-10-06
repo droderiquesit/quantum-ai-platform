@@ -4,6 +4,7 @@
 //! that carries complete provenance, authenticity signals, licensing, and links to
 //! related evidence. This prevents raw text from becoming facts (EVID-013, EVID-014).
 
+use qip_core::error::{Error, Result};
 use qip_core::time::Timestamp;
 use std::collections::BTreeMap;
 
@@ -39,7 +40,15 @@ pub struct EvidenceRecord {
     pub corroborates: Vec<String>,
     /// Links to evidence this contradicts, keyed by evidence ID.
     pub contradicts: Vec<String>,
-    /// Temporal consistency check result (EVID-010).
+    /// When the claim says the event it describes happened, if it says.
+    /// Distinct from `source_timestamp`: a report published at noon may
+    /// describe a halt at nine.
+    pub claimed_at: Option<Timestamp>,
+    /// Evidence IDs of events this claim's event depends on, which must
+    /// therefore have happened no later than it (EVID-010 event ordering).
+    pub caused_by: Vec<String>,
+    /// Temporal consistency check result (EVID-010), written by
+    /// [`EvidenceRecord::check_temporal_consistency`].
     pub temporal_consistency: Option<TemporalConsistency>,
     /// Additional metadata (vendor confidence, entity mentions, etc.).
     pub metadata: BTreeMap<String, String>,
@@ -56,22 +65,32 @@ impl EvidenceRecord {
         license: String,
         statement: String,
         confidence: f64,
-    ) -> Result<Self, String> {
+    ) -> Result<Self> {
         // Validate mandatory fields
         if source_identity.trim().is_empty() {
-            return Err("source_identity is required".to_string());
+            return Err(Error::invalid(
+                "source_identity is required; a claim without it has no provenance",
+            ));
         }
         if extraction_method.trim().is_empty() {
-            return Err("extraction_method is required".to_string());
+            return Err(Error::invalid(
+                "extraction_method is required; a claim without it has no provenance",
+            ));
         }
         if license.trim().is_empty() {
-            return Err("license is required".to_string());
+            return Err(Error::invalid(
+                "license is required; a claim without it has no provenance",
+            ));
         }
         if statement.trim().is_empty() {
-            return Err("statement is required".to_string());
+            return Err(Error::invalid(
+                "statement is required; a claim without it has no provenance",
+            ));
         }
         if !(0.0..=1.0).contains(&confidence) {
-            return Err(format!("confidence must be in [0, 1], got {}", confidence));
+            return Err(Error::invalid(format!(
+                "confidence must be in [0, 1], got {confidence}"
+            )));
         }
 
         Ok(EvidenceRecord {
@@ -87,6 +106,8 @@ impl EvidenceRecord {
             statement,
             corroborates: Vec::new(),
             contradicts: Vec::new(),
+            claimed_at: None,
+            caused_by: Vec::new(),
             temporal_consistency: None,
             metadata: BTreeMap::new(),
         })
@@ -134,13 +155,98 @@ impl EvidenceRecord {
         self
     }
 
+    /// Record when the claim says its event happened.
+    pub fn with_claimed_at(mut self, at: Timestamp) -> Self {
+        self.claimed_at = Some(at);
+        self
+    }
+
+    /// Record that this claim's event depends on the event in `evidence_id`.
+    pub fn with_cause(mut self, evidence_id: String) -> Self {
+        if !evidence_id.is_empty() {
+            self.caused_by.push(evidence_id);
+        }
+        self
+    }
+
+    /// Check this claim against a physically possible timeline, the ordering
+    /// of the events it depends on, and the state already known when it
+    /// arrived (EVID-010), and return the first conflict with the fact it
+    /// conflicts with.
+    ///
+    /// Before this existed the evidence type had a slot for the outcome and
+    /// nothing that computed one, so every record carried `None` and a claim
+    /// dated after its own publication read the same as a sound one.
+    ///
+    /// `prior` is the evidence already held; a cause or contradiction link
+    /// naming an ID not in it cannot be judged, and the result says
+    /// `Unverifiable` rather than `Consistent`, because a check that could
+    /// not run is not a check that passed.
+    pub fn check_temporal_consistency(&self, prior: &[EvidenceRecord]) -> TemporalConsistency {
+        // Ingested before it was published: no possible timeline.
+        if self.ingestion_timestamp < self.source_timestamp {
+            return TemporalConsistency::ViolatesPhysicalTimeline {
+                published_at: self.source_timestamp,
+                ingested_at: self.ingestion_timestamp,
+            };
+        }
+        // A source reporting an event dated after its own publication.
+        if let Some(claimed_at) = self.claimed_at
+            && claimed_at > self.source_timestamp
+        {
+            return TemporalConsistency::PostdatesSource {
+                claimed_at,
+                published_at: self.source_timestamp,
+            };
+        }
+        let find = |id: &str| prior.iter().find(|p| p.id == id);
+        let mut unverifiable = false;
+        for cause_id in &self.caused_by {
+            let (Some(cause), Some(effect_at)) = (find(cause_id), self.claimed_at) else {
+                unverifiable = true;
+                continue;
+            };
+            let cause_at = cause.claimed_at.unwrap_or(cause.source_timestamp);
+            if cause_at > effect_at {
+                return TemporalConsistency::ViolatesEventOrdering {
+                    cause_id: cause_id.clone(),
+                    cause_at,
+                };
+            }
+        }
+        for prior_id in &self.contradicts {
+            let Some(known) = find(prior_id) else {
+                unverifiable = true;
+                continue;
+            };
+            if known.ingestion_timestamp <= self.ingestion_timestamp {
+                return TemporalConsistency::ContradictsPriorState {
+                    prior_id: prior_id.clone(),
+                    prior_timestamp: known.ingestion_timestamp,
+                };
+            }
+        }
+        if unverifiable {
+            TemporalConsistency::Unverifiable
+        } else {
+            TemporalConsistency::Consistent
+        }
+    }
+
+    /// Run [`Self::check_temporal_consistency`] and record its outcome on
+    /// the record, replacing any earlier outcome.
+    pub fn checked(mut self, prior: &[EvidenceRecord]) -> Self {
+        self.temporal_consistency = Some(self.check_temporal_consistency(prior));
+        self
+    }
+
     /// Verify all required fields are present. Used to refuse claims
     /// with incomplete provenance before they enter the world model.
     pub fn is_complete(&self) -> bool {
-        !self.source_identity.is_empty()
-            && !self.extraction_method.is_empty()
-            && !self.license.is_empty()
-            && !self.statement.is_empty()
+        !self.source_identity.trim().is_empty()
+            && !self.extraction_method.trim().is_empty()
+            && !self.license.trim().is_empty()
+            && !self.statement.trim().is_empty()
             && self.confidence >= 0.0
             && self.confidence <= 1.0
     }
@@ -164,21 +270,34 @@ pub enum AuthenticitySignal {
 /// Temporal consistency check result for an evidence claim.
 ///
 /// Records whether a claim is consistent with known prior state, event ordering,
-/// and physically possible timelines. EVID-010 requires this check to be recorded
-/// on every evidence item.
+/// and physically possible timelines, and on failure names the conflicting fact.
+/// EVID-010 requires this check to be recorded on every evidence item.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum TemporalConsistency {
     /// Claim is consistent with prior known state and event ordering.
     Consistent,
-    /// Claim precedes its source publication time (retroactive claim).
-    PrecedesSource,
-    /// Claim contradicts prior known state at that time.
-    ContradictsPriorState { prior_timestamp: Timestamp },
-    /// Claim violates event ordering constraints.
-    ViolatesEventOrdering,
-    /// Claim violates physically possible timeline.
-    ViolatesPhysicalTimeline,
-    /// Check could not be performed (insufficient historical context).
+    /// The claimed event is dated after the source that reports it was published.
+    PostdatesSource {
+        claimed_at: Timestamp,
+        published_at: Timestamp,
+    },
+    /// Claim contradicts evidence already known when it arrived.
+    ContradictsPriorState {
+        prior_id: String,
+        prior_timestamp: Timestamp,
+    },
+    /// The claimed event precedes an event it names as its cause.
+    ViolatesEventOrdering {
+        cause_id: String,
+        cause_at: Timestamp,
+    },
+    /// The claim was ingested before its source published it.
+    ViolatesPhysicalTimeline {
+        published_at: Timestamp,
+        ingested_at: Timestamp,
+    },
+    /// Check could not be performed (a linked item is not held, or the claim
+    /// has a cause but no date of its own).
     Unverifiable,
 }
 
@@ -186,12 +305,16 @@ pub enum TemporalConsistency {
 mod tests {
     use super::*;
 
-    fn sample_evidence() -> EvidenceRecord {
+    fn at(secs: i64) -> Timestamp {
+        Timestamp::from_secs(secs)
+    }
+
+    fn record(id: &str, published: i64, ingested: i64) -> EvidenceRecord {
         EvidenceRecord::new(
-            "evidence:001".to_string(),
+            id.to_string(),
             "https://example.com/feed".to_string(),
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
+            at(published),
+            at(ingested),
             "regex_extraction".to_string(),
             "research_only".to_string(),
             "Apple announced earnings".to_string(),
@@ -200,84 +323,48 @@ mod tests {
         .unwrap()
     }
 
+    fn sample_evidence() -> EvidenceRecord {
+        record("evidence:001", 100, 200)
+    }
+
+    fn refusal(source: &str, method: &str, license: &str, statement: &str, c: f64) -> String {
+        EvidenceRecord::new(
+            "id".to_string(),
+            source.to_string(),
+            Timestamp::EPOCH,
+            Timestamp::EPOCH,
+            method.to_string(),
+            license.to_string(),
+            statement.to_string(),
+            c,
+        )
+        .unwrap_err()
+        .to_string()
+    }
+
     #[test]
     fn an_evidence_record_refuses_empty_source_identity() {
-        let result = EvidenceRecord::new(
-            "id".to_string(),
-            "".to_string(),
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
-            "method".to_string(),
-            "license".to_string(),
-            "statement".to_string(),
-            0.5,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("source_identity"));
+        assert!(refusal("", "m", "l", "s", 0.5).contains("source_identity is required"));
     }
 
     #[test]
     fn an_evidence_record_refuses_empty_extraction_method() {
-        let result = EvidenceRecord::new(
-            "id".to_string(),
-            "source".to_string(),
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
-            "".to_string(),
-            "license".to_string(),
-            "statement".to_string(),
-            0.5,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("extraction_method"));
+        assert!(refusal("src", " ", "l", "s", 0.5).contains("extraction_method is required"));
     }
 
     #[test]
     fn an_evidence_record_refuses_empty_license() {
-        let result = EvidenceRecord::new(
-            "id".to_string(),
-            "source".to_string(),
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
-            "method".to_string(),
-            "".to_string(),
-            "statement".to_string(),
-            0.5,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("license"));
+        assert!(refusal("src", "m", "", "s", 0.5).contains("license is required"));
     }
 
     #[test]
     fn an_evidence_record_refuses_empty_statement() {
-        let result = EvidenceRecord::new(
-            "id".to_string(),
-            "source".to_string(),
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
-            "method".to_string(),
-            "license".to_string(),
-            "".to_string(),
-            0.5,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("statement"));
+        assert!(refusal("src", "m", "l", "", 0.5).contains("statement is required"));
     }
 
     #[test]
     fn an_evidence_record_refuses_invalid_confidence() {
-        let result = EvidenceRecord::new(
-            "id".to_string(),
-            "source".to_string(),
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
-            "method".to_string(),
-            "license".to_string(),
-            "statement".to_string(),
-            1.5,
-        );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("confidence"));
+        assert!(refusal("src", "m", "l", "s", 1.5).contains("confidence must be in [0, 1]"));
     }
 
     #[test]
@@ -302,20 +389,10 @@ mod tests {
     }
 
     #[test]
-    fn mutation_an_evidence_record_with_missing_source_is_still_refused() {
-        let result = EvidenceRecord::new(
-            "id".to_string(),
-            "source".to_string(),
-            Timestamp::EPOCH,
-            Timestamp::EPOCH,
-            "method".to_string(),
-            "license".to_string(),
-            "statement".to_string(),
-            0.5,
-        );
-        assert!(result.is_ok());
-        let mut record = result.unwrap();
-        record.source_identity = String::new();
+    fn a_record_whose_source_is_blanked_after_construction_is_incomplete() {
+        let mut record = sample_evidence();
+        assert!(record.is_complete());
+        record.source_identity = "   ".to_string();
         assert!(!record.is_complete());
     }
 
@@ -325,81 +402,108 @@ mod tests {
         assert_eq!(record.temporal_consistency, None);
     }
 
+    // EVID-010: the check itself. Each violation names the conflicting fact.
+
     #[test]
-    fn a_record_with_consistent_temporal_check_records_that() {
-        let record = sample_evidence().with_temporal_consistency(TemporalConsistency::Consistent);
+    fn a_consistent_claim_passes_the_temporal_check_unflagged() {
+        let cause = record("cause", 10, 20).with_claimed_at(at(5));
+        let older = record("older", 10, 300);
+        let claim = record("claim", 100, 200)
+            .with_claimed_at(at(50))
+            .with_cause("cause".to_string())
+            .with_contradiction("older".to_string())
+            .checked(&[cause, older]);
+        // `older` contradicts the claim but arrived after it, so it was not
+        // prior state when the claim was ingested.
         assert_eq!(
-            record.temporal_consistency,
+            claim.temporal_consistency,
             Some(TemporalConsistency::Consistent)
         );
     }
 
     #[test]
-    fn a_record_with_temporal_violation_records_the_specific_violation() {
-        let record =
-            sample_evidence().with_temporal_consistency(TemporalConsistency::PrecedesSource);
+    fn a_claim_ingested_before_its_source_published_violates_the_physical_timeline() {
+        let claim = record("claim", 200, 100).checked(&[]);
         assert_eq!(
-            record.temporal_consistency,
-            Some(TemporalConsistency::PrecedesSource)
+            claim.temporal_consistency,
+            Some(TemporalConsistency::ViolatesPhysicalTimeline {
+                published_at: at(200),
+                ingested_at: at(100),
+            })
         );
     }
 
     #[test]
-    fn a_record_can_record_prior_state_contradiction() {
-        let record = sample_evidence().with_temporal_consistency(
+    fn a_claim_dated_after_its_source_was_published_is_flagged() {
+        let claim = record("claim", 100, 200).with_claimed_at(at(150));
+        assert_eq!(
+            claim.check_temporal_consistency(&[]),
+            TemporalConsistency::PostdatesSource {
+                claimed_at: at(150),
+                published_at: at(100),
+            }
+        );
+        // The same claim dated at its publication instant is sound.
+        let sound = record("claim", 100, 200).with_claimed_at(at(100));
+        assert_eq!(
+            sound.check_temporal_consistency(&[]),
+            TemporalConsistency::Consistent
+        );
+    }
+
+    #[test]
+    fn a_claim_that_precedes_its_cause_names_the_cause() {
+        let cause = record("cause", 90, 95).with_claimed_at(at(80));
+        let claim = record("claim", 100, 200)
+            .with_claimed_at(at(60))
+            .with_cause("cause".to_string());
+        assert_eq!(
+            claim.check_temporal_consistency(std::slice::from_ref(&cause)),
+            TemporalConsistency::ViolatesEventOrdering {
+                cause_id: "cause".to_string(),
+                cause_at: at(80),
+            }
+        );
+    }
+
+    #[test]
+    fn a_claim_contradicting_state_known_before_it_arrived_names_that_state() {
+        let known = record("known", 10, 150);
+        let claim = record("claim", 100, 200).with_contradiction("known".to_string());
+        assert_eq!(
+            claim.check_temporal_consistency(std::slice::from_ref(&known)),
             TemporalConsistency::ContradictsPriorState {
-                prior_timestamp: Timestamp::EPOCH,
-            },
-        );
-        match record.temporal_consistency {
-            Some(TemporalConsistency::ContradictsPriorState { .. }) => (),
-            _ => panic!("Expected ContradictsPriorState"),
-        }
-    }
-
-    #[test]
-    fn a_record_can_record_event_ordering_violation() {
-        let record =
-            sample_evidence().with_temporal_consistency(TemporalConsistency::ViolatesEventOrdering);
-        assert_eq!(
-            record.temporal_consistency,
-            Some(TemporalConsistency::ViolatesEventOrdering)
+                prior_id: "known".to_string(),
+                prior_timestamp: at(150),
+            }
         );
     }
 
     #[test]
-    fn a_record_can_record_physical_timeline_violation() {
-        let record = sample_evidence()
-            .with_temporal_consistency(TemporalConsistency::ViolatesPhysicalTimeline);
+    fn a_link_to_evidence_not_held_is_unverifiable_rather_than_consistent() {
+        let claim = record("claim", 100, 200)
+            .with_claimed_at(at(50))
+            .with_cause("missing".to_string());
         assert_eq!(
-            record.temporal_consistency,
-            Some(TemporalConsistency::ViolatesPhysicalTimeline)
+            claim.check_temporal_consistency(&[]),
+            TemporalConsistency::Unverifiable
+        );
+        let undated = record("claim", 100, 200).with_cause("cause".to_string());
+        let cause = record("cause", 10, 20);
+        assert_eq!(
+            undated.check_temporal_consistency(&[cause]),
+            TemporalConsistency::Unverifiable
         );
     }
 
     #[test]
-    fn a_record_can_record_unverifiable_temporal_check() {
-        let record = sample_evidence().with_temporal_consistency(TemporalConsistency::Unverifiable);
-        assert_eq!(
-            record.temporal_consistency,
-            Some(TemporalConsistency::Unverifiable)
-        );
-    }
-
-    #[test]
-    fn mutation_temporal_consistency_when_set_is_not_overwritten() {
-        let mut record =
-            sample_evidence().with_temporal_consistency(TemporalConsistency::Consistent);
-        // Attempting to mutate should fail if we check properly
-        assert_eq!(
-            record.temporal_consistency,
-            Some(TemporalConsistency::Consistent)
-        );
-        // Verify mutation by changing it
-        record.temporal_consistency = Some(TemporalConsistency::Unverifiable);
-        assert_eq!(
-            record.temporal_consistency,
-            Some(TemporalConsistency::Unverifiable)
-        );
+    fn a_recheck_replaces_an_earlier_temporal_result() {
+        let claim = record("claim", 200, 100)
+            .with_temporal_consistency(TemporalConsistency::Consistent)
+            .checked(&[]);
+        assert!(matches!(
+            claim.temporal_consistency,
+            Some(TemporalConsistency::ViolatesPhysicalTimeline { .. })
+        ));
     }
 }
