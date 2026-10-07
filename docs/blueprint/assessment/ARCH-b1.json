@@ -1,7 +1,7 @@
 [
   {
     "id": "ARCH-001",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_edge::cell::Cell (backend/crates/edge/qip-edge/src/cell.rs, 9040 lines) is the fast reflex hot path, composed by backend/crates/apps/qip-edge-node/src/main.rs (a separate binary/composition root). backend/crates/apps/qip-deepbrain/src/main.rs is the slow cognitive node (research/evolution/learning, minute-scale cadence, no ceiling on cycle length). They are structurally separate Cargo binaries with separate Cargo.toml, separate main.rs, and separate deploy artefacts (deploy.yml:236-278 builds qip-deepbrain for Cloud Run and qip-edge-node as the attested artefact of a Compute Engine execution node, ADR 0024), so they can be built and released independently.",
     "evidence": [
       "backend/crates/apps/qip-edge-node/src/main.rs:1-44 (module doc: 'decides without asking the central plane')",
@@ -26,7 +26,7 @@
   },
   {
     "id": "ARCH-002",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_contracts::policy::{PolicyPayload, PolicyItem} (backend/crates/libs/qip-contracts/src/policy.rs:1-70) declares a typed slot for each of blueprint §41.5's twelve items (TrainedModels, CompiledPlan, BeliefPriors, EpisodicDigest, CausalDigest, RegimeState, CapitalGrants, ...) plus ADR 0080's Dispositions, delivered to a cell over qip_edge::mesh::PolicyDownlink (backend/crates/edge/qip-edge/src/mesh.rs:993) and qip_edge::mesh::CapitalDownlink (mesh.rs:669), each verified against the cell's own key before being applied — packages, not calls. qip-api populates most slots each cycle: backend/crates/apps/qip-api/src/mesh.rs:903/926 capital_grants, :930 risk_envelope, :935 cycle_whitelist, :947 episodic_digest, :954 belief_priors, :964 causal_digest, :973 trained_models (promoted distillate manifest, ADR 0083), :983 feasibility_constraints, :996 adversary_profiles, :1025 dispositions.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/policy.rs:1-70",
