@@ -248,31 +248,28 @@
   },
   {
     "id": "CICD-045",
-    "status": "COMPLETE",
-    "current": "Branch protection rules configured via Terraform's GitHub provider. Protected branch rules are defined in infrastructure/terraform/main.tf:1305-1347, requiring: all status checks (ci, infra) pass and are up-to-date; one independent code owner review before merge; CODEOWNERS file at .github/CODEOWNERS defines reviewers by path; administrators enforced (no force push, no deletion by non-admins). The rule applies to dev, test, and stage; prod is never deployed from this pipeline (ADR 0021).",
+    "status": "MISSING",
+    "current": "Only .github/CODEOWNERS is in the tree (added by fb0b63a8). It names one code owner for every path, which makes GitHub request that owner's review; it requires nothing unless a branch-protection rule or ruleset sets require_code_owner_reviews, and none is committed. fb0b63a8's github_branch_protection_rule and the integrations/github provider it needed were removed by 3163e3c5, because a provider outside hashicorp/google is a third-party dependency (ADR 0002, ADR 0009). The last read-only observation of the live repository, on 2026-09-25, found main unprotected (HTTP 404 'Branch not protected') and no rulesets; it was not repeated for this correction.",
     "evidence": [
-      "infrastructure/terraform/main.tf:1305-1347 (github_branch_protection_rule resource defining the protection)",
-      "infrastructure/terraform/variables.tf:811-825 (github_token variable, sensitive, read from GITHUB_TOKEN environment)",
-      "infrastructure/terraform/main.tf:27-34 (GitHub provider added to required_providers)",
-      "infrastructure/terraform/main.tf:62-70 (provider \"github\" configuration)",
-      ".github/CODEOWNERS (41 lines defining required reviewers by path; critical infrastructure requires droderiquesit review)",
-      "infrastructure/terraform/modules/cicd/main.tf:24-80 (existing workload identity federation for GitHub Actions authentication, supports provider credential)",
-      ".github/workflows/ci.yml must supply GITHUB_TOKEN environment variable (standard GitHub Actions token)",
-      "Terraform state will store branch protection rule configuration (sensitive fields excluded by GitHub provider)"
+      ".github/CODEOWNERS (one owner on every path; requests reviews, enforces nothing on its own)",
+      "grep -rn -e github_branch_protection -e 'integrations/github' -e 'provider \"github\"' infrastructure/ -> no results",
+      "commit 3163e3c5 'Drop the integrations/github provider from the CICD-037 merge' (removed the provider and the protection resource)",
+      "gh api repos/<repo>/branches/main/protection -> 404 'Branch not protected' (2026-09-25, the last observation)",
+      "gh api repos/<repo>/rulesets -> [] (2026-09-25, the last observation)"
     ],
-    "gap": "",
-    "implemented": true,
+    "gap": "Nothing requires tests or independent review before merge to the default branch. No protection rule or ruleset is committed, and none was configured when last observed, so required status checks, review counts by risk class and push restrictions are all absent; CODEOWNERS requests a review it cannot require. Two things need deciding before a rule is written: with one code owner, who cannot approve their own pull request, requiring code-owner review would block every merge that owner authors; and branch protection as code needs an ADR, because integrations/github is a third-party provider and administering a repository needs a credential other than the workload-identity one.",
+    "implemented": false,
     "tested": false,
     "integrated": false,
-    "deployable": true,
+    "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "Requires Terraform to be applied in dev/test/stage environments; plan shows resource creation. After apply: gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection returns 200 with require_code_owner_reviews and required_status_checks set. ci.yml must be updated to export GITHUB_TOKEN when running infra.yml to apply these changes.",
+    "verification": "Read-only: gh api repos/<repo>/branches/main/protection and gh api repos/<repo>/rulesets. In the tree: grep -rn -e github_branch_protection -e 'integrations/github' infrastructure/. Once rules are committed as code, add a plan or test over them that also proves the required check names match real ci.yml jobs.",
     "work_item": "E01-branch-protection-as-code",
     "tier": "T1",
     "size": "S",
-    "notes": "Implementation as Terraform code (CICD-003, immutable digest + signed artifacts) rather than console configuration. GITHUB_TOKEN is a standard GitHub Actions environment variable automatically provided by the runner in workflows; no secret needs to be created manually. The protection applies only to non-prod environments (count condition on environment). CODEOWNERS uses GitHub account handles; droderiquesit is the repository owner/sole maintainer. Test via Terraform state inspection and live GitHub API query after apply. E2E false because the rule has not yet been applied to a live environment."
+    "notes": "integration correction: COMPLETE -> MISSING; implemented, deployable true -> false. The row cited infrastructure/terraform/main.tf:1305-1347 as a github_branch_protection_rule and main.tf:27-34 and :62-70 as the GitHub provider. Since 3163e3c5 none of those exist, and :1305-1347 is google_service_account.agent_identity. PARTIAL citing CODEOWNERS was considered and not used: CODEOWNERS enforces nothing without a rule that requires code-owner review, so the requirement's gate is entirely absent. work/cicd-045-branch-protection (d40408e8), which re-adds the provider, was reviewed and not merged."
   },
   {
     "id": "CICD-046",
