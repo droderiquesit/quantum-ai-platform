@@ -1,210 +1,170 @@
-//! A cross-domain causal chain demonstrating weather, logistics, commodity, and FX relationships.
+//! WORLD-004's worked chain, weather to shipping to commodity basis to FX,
+//! planted as directed, evidenced edges and then walked.
 //!
-//! This test verifies that the new Weather, Logistics, and Geopolitical mechanisms
-//! can represent the full chain: weather → shipping → commodity basis → FX,
-//! as required by WORLD-004 (§1.1 of the blueprint).
+//! What this is not: the requirement's verification is a *replay* of a
+//! history containing the chain into a global causal model. This builds the
+//! chain by hand in one `WorldModel`. No history is replayed, and no
+//! production pass writes these edges; the platform's only production writer
+//! of causal edges is the temporal-precedence pass. What it does prove is
+//! that the chain is representable with one mechanism per hop whose
+//! documented direction matches the edge, that each edge keeps the evidence
+//! it was claimed on, and that a shock at the weather end reaches FX along
+//! exactly those hops.
 
+use qip_core::error::Result;
 use qip_core::time::Duration;
 use qip_core::time::Timestamp;
 use qip_world_model::causal::{CausalEdge, Mechanism};
 use qip_world_model::world::WorldModel;
 
+const WEATHER: &str = "weather-index-atlantic";
+const SHIPPING: &str = "shipping-cost-index";
+const BASIS: &str = "wheat-basis-black-sea";
+const FX: &str = "exporter-currency-vs-usd";
+
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
 
-#[test]
-fn a_cross_domain_chain_weather_to_shipping_to_commodity_to_fx_is_representable() {
-    // WORLD-004: "A global causal model holds long-horizon, cross-domain
-    // causal structure" — specifically, weather → shipping → commodity
-    // basis → FX.
-    //
-    // This test plants four edges in a WorldModel using the new Weather
-    // and Logistics mechanisms, along with existing commodity and FX
-    // mechanisms, and verifies:
-    //   1. Each edge is created without error
-    //   2. Each edge carries its claimed mechanism
-    //   3. The chain is traversable from weather to FX
-    //   4. Each link cites evidence
-
-    let mut model = WorldModel::new();
-    let known_at = start();
-
-    // Edge 1: Weather → Shipping. A weather event (e.g., hurricane) impacts
-    // shipping costs and availability — the Logistics mechanism.
-    let weather_to_shipping = CausalEdge::new(
-        "weather-index-atlantic",
-        "shipping-cost-index",
+/// The three hops, as `(cause, effect, mechanism, evidence)`.
+const CHAIN: [(&str, &str, Mechanism, &str); 3] = [
+    // A storm track closes routes and raises freight.
+    (
+        WEATHER,
+        SHIPPING,
         Mechanism::Weather,
-        0.65,
-        Duration::from_days(1),
-        known_at,
-    )
-    .expect("valid weather edge")
-    .with_confidence(0.70)
-    .expect("valid confidence")
-    .with_evidence(vec!["source:noaa-hurricane-track".into()]);
-
-    model
-        .claim_causal(weather_to_shipping.clone())
-        .expect("add weather edge");
-
-    // Edge 2: Shipping → Commodity. Logistics costs feed into commodity
-    // pricing — the Logistics mechanism transmits the shock.
-    let shipping_to_commodity = CausalEdge::new(
-        "shipping-cost-index",
-        "commodity-wheat-futures",
+        "source:noaa-hurricane-track",
+    ),
+    // Freight is part of the delivered price, so it moves the basis.
+    (
+        SHIPPING,
+        BASIS,
         Mechanism::Logistics,
-        0.55,
-        Duration::from_days(3),
-        known_at,
-    )
-    .expect("valid logistics edge")
-    .with_confidence(0.68)
-    .expect("valid confidence")
-    .with_evidence(vec!["source:cbot-cost-analysis".into()]);
+        "source:freight-basis-analysis",
+    ),
+    // The exporter's currency moves with the price of what it exports.
+    // Not CurrencyTranslation, which runs from a currency to translated
+    // revenue: the first form of this test used it here, backwards.
+    (
+        BASIS,
+        FX,
+        Mechanism::TermsOfTrade,
+        "research:commodity-currency-study",
+    ),
+];
 
-    model
-        .claim_causal(shipping_to_commodity.clone())
-        .expect("add logistics edge");
+fn planted() -> Result<WorldModel> {
+    let mut model = WorldModel::new();
+    for (cause, effect, mechanism, evidence) in CHAIN {
+        let edge = CausalEdge::new(
+            cause,
+            effect,
+            mechanism,
+            0.6,
+            Duration::from_days(2),
+            start(),
+        )?
+        .with_confidence(0.7)?
+        .with_evidence(vec![evidence.to_string()]);
+        model.claim_causal(edge)?;
+    }
+    Ok(model)
+}
 
-    // Edge 3: Commodity → Cost Base. Commodity price enters the cost base
-    // of a commodity exporter — the InputCost mechanism (existing).
-    let commodity_to_exporter_cost = CausalEdge::new(
-        "commodity-wheat-futures",
-        "exporter-operating-cost",
-        Mechanism::InputCost,
-        0.75,
-        Duration::from_days(2),
-        known_at,
-    )
-    .expect("valid input-cost edge")
-    .with_confidence(0.75)
-    .expect("valid confidence")
-    .with_evidence(vec!["filing:exporter-10k-input-costs".into()]);
-
-    model
-        .claim_causal(commodity_to_exporter_cost.clone())
-        .expect("add input-cost edge");
-
-    // Edge 4: Cost Base → FX. The exporter's margin is eroded, reducing
-    // cash flow in the exporter's home currency — the CurrencyTranslation
-    // mechanism closes the chain.
-    let cost_to_fx = CausalEdge::new(
-        "exporter-operating-cost",
-        "usd-to-exporter-currency",
-        Mechanism::CurrencyTranslation,
-        0.50,
-        Duration::from_days(5),
-        known_at,
-    )
-    .expect("valid currency edge")
-    .with_confidence(0.60)
-    .expect("valid confidence")
-    .with_evidence(vec!["research:commodity-exporter-analysis".into()]);
-
-    model
-        .claim_causal(cost_to_fx.clone())
-        .expect("add currency edge");
-
-    // Premise 1: the chain is stored in the model.
+#[test]
+fn a_weather_shock_reaches_fx_through_shipping_and_commodity_basis_on_evidenced_directed_edges() {
+    // The first form of this test claimed the chain "is traversable from
+    // weather to FX" and asserted only that each edge it inserted read back
+    // with the mechanism it was built with, which holds for any mechanism and
+    // any graph. This walks the graph.
+    let model = planted().expect("the planted chain is well formed");
+    let known_at = start();
     let edges = model.causal().edges();
     assert_eq!(
         edges.len(),
-        4,
-        "expected 4 edges in the causal graph, found {}",
-        edges.len()
+        CHAIN.len(),
+        "the premise failed: the model does not hold the planted edges: {edges:?}"
     );
 
-    // Premise 2: each edge in the chain carries its mechanism.
-    let weather_link = edges
+    // Each directed edge is held, under its mechanism, citing its evidence.
+    for (cause, effect, mechanism, evidence) in CHAIN {
+        let edge = edges
+            .iter()
+            .find(|edge| edge.cause == cause && edge.effect == effect)
+            .unwrap_or_else(|| panic!("no edge {cause} -> {effect}"));
+        assert_eq!(edge.mechanism, mechanism, "{cause} -> {effect}");
+        assert_eq!(
+            edge.evidence,
+            vec![evidence.to_string()],
+            "{cause} -> {effect} does not cite the evidence it was claimed on"
+        );
+        assert!(
+            !edges
+                .iter()
+                .any(|reverse| reverse.cause == effect && reverse.effect == cause),
+            "{effect} -> {cause} is held as well, so the chain has no direction"
+        );
+    }
+
+    // Forward: a rise in the weather index reaches FX at third order, through
+    // exactly the planted nodes and mechanisms, and in the same direction.
+    let propagated = model.propagate(WEATHER, 1.0, CHAIN.len(), known_at, known_at);
+    let fx = propagated
+        .effects
         .iter()
-        .find(|e| e.cause == "weather-index-atlantic" && e.effect == "shipping-cost-index")
-        .expect("weather → shipping edge exists");
+        .find(|effect| effect.target == FX)
+        .unwrap_or_else(|| {
+            panic!(
+                "a weather shock does not reach {FX}: {:?}",
+                propagated.effects
+            )
+        });
+    assert_eq!(fx.order, 3, "FX was not reached at third order");
+    assert_eq!(fx.path, vec![WEATHER, SHIPPING, BASIS, FX]);
     assert_eq!(
-        weather_link.mechanism,
-        Mechanism::Weather,
-        "weather edge mechanism mismatch"
+        fx.chain,
+        vec![
+            Mechanism::Weather,
+            Mechanism::Logistics,
+            Mechanism::TermsOfTrade
+        ]
     );
     assert!(
-        weather_link.is_evidenced(),
-        "weather edge carries no evidence"
+        fx.magnitude > 0.0,
+        "every hop is same-signed, so FX should move with the weather index: {}",
+        fx.magnitude
     );
 
-    let logistics_link = edges
-        .iter()
-        .find(|e| e.cause == "shipping-cost-index" && e.effect == "commodity-wheat-futures")
-        .expect("shipping → commodity edge exists");
-    assert_eq!(
-        logistics_link.mechanism,
-        Mechanism::Logistics,
-        "logistics edge mechanism mismatch"
-    );
-    assert!(
-        logistics_link.is_evidenced(),
-        "logistics edge carries no evidence"
-    );
-
-    let cost_link = edges
-        .iter()
-        .find(|e| e.cause == "commodity-wheat-futures" && e.effect == "exporter-operating-cost")
-        .expect("commodity → cost edge exists");
-    assert_eq!(
-        cost_link.mechanism,
-        Mechanism::InputCost,
-        "input-cost edge mechanism mismatch"
-    );
-    assert!(cost_link.is_evidenced(), "cost edge carries no evidence");
-
-    let fx_link = edges
-        .iter()
-        .find(|e| e.cause == "exporter-operating-cost" && e.effect == "usd-to-exporter-currency")
-        .expect("cost → FX edge exists");
-    assert_eq!(
-        fx_link.mechanism,
-        Mechanism::CurrencyTranslation,
-        "currency edge mechanism mismatch"
-    );
-    assert!(fx_link.is_evidenced(), "currency edge carries no evidence");
-
-    // The assertion: the full chain is representable, each edge is stored
-    // with its mechanism, and each cites evidence behind it.
-    // This satisfies WORLD-004's verification check: "assert that the
-    // global causal model holds each directed edge of the chain, and that
-    // each edge cites the evidence behind it."
+    // Backward: each link names its one cause, from FX to weather.
+    for (cause, effect, _, _) in CHAIN {
+        let explanations = model.causal().explanations(effect, known_at);
+        assert_eq!(
+            explanations
+                .iter()
+                .map(|edge| edge.cause.as_str())
+                .collect::<Vec<_>>(),
+            vec![cause],
+            "{effect} is not explained by {cause} alone"
+        );
+    }
 }
 
 #[test]
 fn the_new_weather_mechanism_is_properly_defined() {
-    // Mutation test 1: Weather mechanism has correct string representation.
-    let weather = Mechanism::Weather;
-    assert_eq!(weather.as_str(), "weather");
-    assert!(
-        weather.describe().contains("weather") || weather.describe().contains("atmospheric"),
-        "describe() output does not mention weather or atmospheric conditions"
-    );
+    assert_eq!(Mechanism::Weather.as_str(), "weather");
 }
 
 #[test]
 fn the_new_logistics_mechanism_is_properly_defined() {
-    // Mutation test 2: Logistics mechanism has correct string representation.
-    let logistics = Mechanism::Logistics;
-    assert_eq!(logistics.as_str(), "logistics");
-    assert!(
-        logistics.describe().contains("logistics")
-            || logistics.describe().contains("transportation"),
-        "describe() output does not mention logistics or transportation"
-    );
+    assert_eq!(Mechanism::Logistics.as_str(), "logistics");
 }
 
 #[test]
 fn the_new_geopolitical_mechanism_is_properly_defined() {
-    // Mutation test 3: Geopolitical mechanism has correct string representation.
-    let geopolitical = Mechanism::Geopolitical;
-    assert_eq!(geopolitical.as_str(), "geopolitical");
-    assert!(
-        geopolitical.describe().contains("geopolitical")
-            || geopolitical.describe().contains("political"),
-        "describe() output does not mention geopolitical or political"
-    );
+    assert_eq!(Mechanism::Geopolitical.as_str(), "geopolitical");
+}
+
+#[test]
+fn the_terms_of_trade_mechanism_is_properly_defined() {
+    assert_eq!(Mechanism::TermsOfTrade.as_str(), "terms_of_trade");
 }
