@@ -39,7 +39,9 @@ fn compliance_checks_license_posture() {
 #[test]
 fn compliance_refuses_unlicensed_sources() {
     let root = repo_root();
-    let finder_path = root.join("crates/services/qip-data-finder/src").join("lib.rs");
+    let finder_path = root
+        .join("crates/services/qip-data-finder/src")
+        .join("lib.rs");
 
     if finder_path.exists() {
         let content = fs::read_to_string(&finder_path).unwrap_or_default();

@@ -18,7 +18,11 @@ fn capital_library_defines_grants() {
     let root = repo_root();
     let capital_path = root.join("crates/libs/qip-capital/src").join("lib.rs");
 
-    if capital_path.exists() { assert!(true); } else { assert!(true, "Capital system will be defined in implementation"); }
+    if capital_path.exists() {
+        assert!(true);
+    } else {
+        assert!(true, "Capital system will be defined in implementation");
+    }
 }
 
 #[test]

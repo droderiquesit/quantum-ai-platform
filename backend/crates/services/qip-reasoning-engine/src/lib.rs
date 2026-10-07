@@ -50,7 +50,7 @@ pub use contradiction::{ContradictionResolution, ResolutionMethod};
 pub use engine::{ReasoningEngine, ReasoningOutcome, SynthesisInput};
 pub use evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
 pub use hypothesis::{
-    CausalChain, CausalStep, Claim, Hypothesis, HypothesisDraft, HypothesisStatus,
+    CausalChain, CausalStep, Claim, Hypothesis, HypothesisDraft, HypothesisStatus, UncertaintyType,
 };
 pub use providers::{HuggingFaceConfig, HuggingFaceModel, HuggingFaceToken};
 pub use redteam::{Challenge, ChallengeKind, RedTeam, ReviewOutcome, ReviewPolicy, Severity};

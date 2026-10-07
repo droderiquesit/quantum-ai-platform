@@ -76,7 +76,10 @@ fn terraform_apply_and_destroy_consume_saved_plans_not_auto_approve() {
         .split("- name: plan for up\n")
         .nth(1)
         .expect("infra.yml must have a '- name: plan for up' step (CICD-067)");
-    let plan_section = plan_section.split("- name: up\n").next().unwrap_or_default();
+    let plan_section = plan_section
+        .split("- name: up\n")
+        .next()
+        .unwrap_or_default();
     assert!(
         plan_section.contains("-out=tfplan") && plan_section.contains("show -no-color tfplan"),
         "the up action must write its plan to tfplan and show it before applying"

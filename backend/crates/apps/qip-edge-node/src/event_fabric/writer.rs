@@ -206,6 +206,7 @@ pub fn is_outcome(decision: &Decision) -> bool {
     match decision {
         Decision::OrderSent { .. }
         | Decision::Filled { .. }
+        | Decision::Hedged { .. }
         | Decision::OrderExpired { .. }
         | Decision::MassCancelled { .. }
         | Decision::VenueWithdrawn { .. }

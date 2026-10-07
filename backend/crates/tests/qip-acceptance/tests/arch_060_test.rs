@@ -3,7 +3,14 @@ use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf()
+    PathBuf::from(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 #[test]

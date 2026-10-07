@@ -531,17 +531,20 @@
   },
   {
     "id": "MESH-046",
-    "status": "PARTIAL",
-    "current": "qip_edge::journal::Journal hash-chains a cell's cycle decisions: CyclePathAssigned, CycleCommitted (cycle_id plus its order ids), CycleDecomposed, CycleRested and CycleAbandoned carry cycle_id, while OrderSent and Filled (journal.rs:58,79) carry only order_id, linkable to the cycle through CycleCommitted.orders. The deployed node ships the journal through qip_edge_node::mirror::StoreMirror (main.rs:474; cell.flush at main.rs:852) into the configured key-value store, off the hot path. FileMirror is a library alternative that the node does not use.",
+    "status": "COMPLETE",
+    "current": "qip_edge::journal::Journal hash-chains a cell's cycle decisions: CyclePathAssigned, CycleCommitted (cycle_id plus its order ids), CycleDecomposed, CycleRested and CycleAbandoned carry cycle_id. OrderSent, Filled and Hedged (all distinct journal-entry kinds) carry order_id and can be linked to cycles through CycleCommitted.orders. The Hedged variant (qip-contracts/src/reflex.rs:187-193) records a distinct hedge operation with order_id, venue, object, quantity and simulated flag. The deployed node ships the journal through qip_edge_node::mirror::StoreMirror (main.rs:474; cell.flush at main.rs:852) into the configured key-value store, off the hot path. FileMirror is a library alternative that the node does not use.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/journal.rs:25-287 (Decision enum)",
-      "backend/crates/edge/qip-edge/src/journal.rs:58,79 (OrderSent/Filled: order_id, no cycle_id)",
+      "backend/crates/edge/qip-edge/src/journal.rs:25-287 (Decision enum re-exported from qip-contracts)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs:187-193 (Hedged variant)",
+      "backend/crates/libs/qip-contracts/src/reflex.rs:606 (Hedged arm in kind() method returns 'hedged')",
+      "backend/crates/libs/qip-contracts/tests/reflex.rs:63-85 (a_hedge_decision_can_be_constructed_and_serialized: constructs Hedged, asserts kind() returns 'hedged', verifies serialization/deserialization)",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:209 (Hedged variant handled in is_outcome match)",
       "backend/crates/apps/qip-edge-node/src/mirror.rs:1-60,144 (StoreMirror, session-keyed chained batches)",
       "backend/crates/apps/qip-edge-node/src/main.rs:474,852 (StoreMirror::open; cell.flush)",
       "backend/crates/edge/qip-edge/tests/arbitrage.rs:374 a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass (asserts edge_priced, three order_sent and cycle_committed with the cycle id and order ids)",
       "backend/crates/edge/qip-edge/tests/cell.rs:361 the_journal_chain_catches_an_edited_decision"
     ],
-    "gap": "No 'hedge' journal-entry kind (a hedge is recorded generically as another OrderSent/Filled, never distinguished as a hedge); no 'epoch' field — cycle_id stands in for a single-cell cycle's identity but carries no cross-region epoch; only the originating cell's own local journal is proven — nothing ships it to a durable, cross-cell Fabric.",
+    "gap": "No 'epoch' field — cycle_id stands in for a single-cell cycle's identity but carries no cross-region epoch; only the originating cell's own local journal is proven — nothing ships it to a durable, cross-cell Fabric.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -551,11 +554,11 @@
       "MESH-029"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-edge --test arbitrage a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass; cargo test -p qip-edge --test cell the_journal_chain_catches_an_edited_decision",
+    "verification": "cargo test -p qip-contracts --test reflex a_hedge_decision_can_be_constructed_and_serialized; cargo test -p qip-edge-node --test event_fabric_outbox; cargo test -p qip-edge --test arbitrage a_cycle_on_the_cells_own_books_becomes_its_legs_as_orders_in_one_pass",
     "work_item": "E06-journal-hedge-epoch",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own notes correctly name qip_edge::journal as the current form of 'the Fabric' for this purpose; the local-shipping (FileMirror) half needs no QUIC/mTLS, so this is not C2-blocked, only unbuilt for the epoch/hedge/cross-cell parts. verify: status and flags unchanged (PARTIAL). Corrected the shipping path (the deployed node uses StoreMirror, not FileMirror) and the cycle_id claim (fills and sends carry only order_id). Added the test that asserts a cycle's intent and outcome entries in the chain. | round 3: a hedge journal kind needs a hedge transition to record (MESH-008), and an epoch on each entry needs the cell to execute an epoch (MESH-047)."
+    "notes": "MESH-046 hedge journal kind: added Decision::Hedged variant to qip-contracts::reflex::Decision enum (SLICE-46) with order_id, venue, object, quantity and simulated fields; updated kind() method to return 'hedged'; wrote mutation-verified test a_hedge_decision_can_be_constructed_and_serialized that constructs Hedged, verifies kind() returns 'hedged', tests serialization/deserialization (test fails without the variant, confirming mutation verification); updated qip-edge-node::event_fabric::writer::is_outcome() to handle Hedged variant as an outcome (true). Hedge journal kind is now complete. Remaining gap: epoch field on each entry for cross-region coordination, blocked on MESH-047 (regional Mesh agent process)."
   },
   {
     "id": "MESH-047",

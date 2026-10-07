@@ -47,6 +47,8 @@ pub struct SynthesisInput {
     /// The base rate for the class. Supplied rather than chosen here, so it
     /// cannot be tuned to the conclusion.
     pub prior: f64,
+    /// Classification of the source of uncertainty per CONTRACT-010.
+    pub uncertainty_type: crate::UncertaintyType,
     pub falsifiers: Vec<String>,
     pub leading_alternative: String,
     pub horizon: Duration,
@@ -215,6 +217,7 @@ impl ReasoningEngine {
             chain: input.chain,
             evidence,
             prior: input.prior,
+            uncertainty_type: input.uncertainty_type,
             falsifiers: input.falsifiers,
             leading_alternative: input.leading_alternative,
             horizon: input.horizon,

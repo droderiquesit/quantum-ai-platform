@@ -60,3 +60,30 @@ fn a_journal_entry_digest_is_unchanged_by_the_move_to_the_contract_layer() {
          every journal a cell has already sealed would fail to verify"
     );
 }
+
+#[test]
+fn a_hedge_decision_can_be_constructed_and_serialized() {
+    // MESH-046: record hedge operations in the journal
+    let hedged = Decision::Hedged {
+        order_id: "hedge-1".to_string(),
+        venue: "NYSE".to_string(),
+        object: "SPY".to_string(),
+        quantity: "100".to_string(),
+        simulated: false,
+    };
+
+    // Assert the variant is recognized and the kind() method returns "hedged"
+    assert_eq!(hedged.kind(), "hedged");
+
+    // Assert the variant can be serialized to JSON
+    let json = serde_json::to_string(&hedged).expect("hedge should serialize");
+    assert!(json.contains("\"order_id\":\"hedge-1\""));
+    assert!(json.contains("\"venue\":\"NYSE\""));
+    assert!(json.contains("\"object\":\"SPY\""));
+    assert!(json.contains("\"quantity\":\"100\""));
+    assert!(json.contains("\"simulated\":false"));
+
+    // Assert the serialized form can be deserialized back
+    let deserialized: Decision = serde_json::from_str(&json).expect("hedge should deserialize");
+    assert_eq!(deserialized.kind(), "hedged");
+}

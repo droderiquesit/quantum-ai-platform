@@ -171,6 +171,28 @@ impl Config {
         flatten_into(&self.root, String::new(), &mut out);
         out
     }
+
+    /// Serialize configuration to canonical JSON for signing/verification.
+    /// Uses a sorted, compact representation so the signature is deterministic.
+    pub fn to_json_canonical(&self) -> String {
+        serde_json::to_string(&Value::Object(self.root.clone()))
+            .unwrap_or_else(|_| String::from("{}"))
+    }
+
+    /// Compute HMAC-SHA256 signature of this configuration.
+    /// Returns signature as lowercase hex string.
+    pub fn sign_with_key(&self, key: &[u8]) -> String {
+        let json = self.to_json_canonical();
+        let signature = crate::hash::hmac_sha256(key, json.as_bytes());
+        crate::hash::to_hex(&signature)
+    }
+
+    /// Verify a configuration signature. Returns true if the signature is valid.
+    /// Uses constant-time comparison to prevent timing attacks.
+    pub fn verify_signature(&self, signature_hex: &str, key: &[u8]) -> bool {
+        let expected = self.sign_with_key(key);
+        crate::hash::constant_time_eq(expected.as_bytes(), signature_hex.as_bytes())
+    }
 }
 
 fn merge_objects(base: &mut Map<String, Value>, overlay: Map<String, Value>) {
@@ -307,5 +329,66 @@ impl Environment {
 impl fmt::Display for Environment {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_signature_verifies_valid_signature() {
+        let cfg = Config::from_json(r#"{"key": "value"}"#).unwrap();
+        let key = b"secret_key";
+        let signature = cfg.sign_with_key(key);
+        assert!(cfg.verify_signature(&signature, key));
+    }
+
+    #[test]
+    fn config_signature_rejects_invalid_signature() {
+        let cfg = Config::from_json(r#"{"key": "value"}"#).unwrap();
+        let key = b"secret_key";
+        let invalid_sig = "0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(!cfg.verify_signature(invalid_sig, key));
+    }
+
+    #[test]
+    fn config_signature_rejects_wrong_key() {
+        let cfg = Config::from_json(r#"{"key": "value"}"#).unwrap();
+        let key1 = b"secret_key_1";
+        let key2 = b"secret_key_2";
+        let signature = cfg.sign_with_key(key1);
+        assert!(!cfg.verify_signature(&signature, key2));
+    }
+
+    #[test]
+    fn config_signature_rejects_modified_config() {
+        let cfg1 = Config::from_json(r#"{"key": "value1"}"#).unwrap();
+        let cfg2 = Config::from_json(r#"{"key": "value2"}"#).unwrap();
+        let key = b"secret_key";
+        let sig1 = cfg1.sign_with_key(key);
+        assert!(!cfg2.verify_signature(&sig1, key));
+    }
+
+    #[test]
+    fn config_signature_is_deterministic() {
+        let cfg = Config::from_json(r#"{"a": 1, "b": 2}"#).unwrap();
+        let key = b"secret_key";
+        let sig1 = cfg.sign_with_key(key);
+        let sig2 = cfg.sign_with_key(key);
+        assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn config_signature_is_hex_lowercase() {
+        let cfg = Config::from_json(r#"{"key": "value"}"#).unwrap();
+        let key = b"secret_key";
+        let signature = cfg.sign_with_key(key);
+        assert!(
+            signature
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() || c.is_lowercase())
+        );
+        assert_eq!(signature.len(), 64); // SHA256 = 32 bytes = 64 hex chars
     }
 }

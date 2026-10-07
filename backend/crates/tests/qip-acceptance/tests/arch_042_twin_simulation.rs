@@ -18,7 +18,11 @@ fn twin_library_defines_counterfactual() {
     let root = repo_root();
     let twin_path = root.join("crates/libs/qip-twin/src").join("lib.rs");
 
-    if twin_path.exists() { assert!(true); } else { assert!(true, "Twin will be defined in implementation"); }
+    if twin_path.exists() {
+        assert!(true);
+    } else {
+        assert!(true, "Twin will be defined in implementation");
+    }
 }
 
 #[test]

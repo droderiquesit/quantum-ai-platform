@@ -254,6 +254,37 @@ impl HypothesisStatus {
     }
 }
 
+/// The source of uncertainty in a hypothesis.
+///
+/// Used to classify uncertainty so beliefs can be downweighted or invalidated
+/// when their evidence sources are found poisoned or stale (ADR §28).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UncertaintyType {
+    /// Randomness irreducible by more data; inherent in the system.
+    Aleatoric,
+    /// Lack of knowledge that could be resolved by more observation.
+    Epistemic,
+    /// Uncertainty arising from the model's own limitations or calibration.
+    Model,
+}
+
+impl UncertaintyType {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Aleatoric => "aleatoric",
+            Self::Epistemic => "epistemic",
+            Self::Model => "model",
+        }
+    }
+}
+
+impl fmt::Display for UncertaintyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// An investment hypothesis.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Hypothesis {
@@ -304,6 +335,8 @@ pub struct Hypothesis {
     pub leading_alternative: String,
     /// Horizon over which the claim should resolve.
     pub horizon: Duration,
+    /// The source of uncertainty in this hypothesis.
+    pub uncertainty_type: UncertaintyType,
     /// Agent runs that contributed.
     pub contributors: Vec<String>,
     /// Model references the hypothesis depended on.
@@ -324,6 +357,7 @@ pub struct HypothesisDraft {
     pub chain: CausalChain,
     pub evidence: EvidenceSet,
     pub prior: f64,
+    pub uncertainty_type: UncertaintyType,
     pub falsifiers: Vec<String>,
     pub leading_alternative: String,
     pub horizon: Duration,
@@ -401,6 +435,7 @@ impl Hypothesis {
             falsifiers: draft.falsifiers,
             leading_alternative: draft.leading_alternative,
             horizon: draft.horizon,
+            uncertainty_type: draft.uncertainty_type,
             contributors: draft.contributors,
             models: draft.models,
         };
@@ -433,6 +468,14 @@ impl Hypothesis {
 
     pub fn expires_at(&self) -> Timestamp {
         self.as_of.saturating_add(self.horizon)
+    }
+
+    /// Whether the hypothesis has expired and should be refused reads.
+    ///
+    /// A hypothesis is expired when its TTL (as_of + horizon) has passed.
+    /// This prevents using stale beliefs past their validity horizon.
+    pub fn is_expired(&self, now: Timestamp) -> bool {
+        now > self.expires_at()
     }
 
     /// Whether the horizon has passed and the claim can be scored.
@@ -601,6 +644,11 @@ impl Hypothesis {
                 self.hypothesis_id.as_str()
             )));
         }
+        // uncertainty_type is required per CONTRACT-010 to classify the source
+        // of uncertainty (aleatoric/epistemic/model) for downweighting or
+        // invalidating beliefs when their evidence sources are found poisoned.
+        // As an enum, it always has a valid value.
+
         // A factor outside (0, 1] is not an accuracy: above one it would let
         // a component raise its own weight, and at or below zero it would
         // silence or invert the evidence rather than discount it.

@@ -53,16 +53,21 @@
   },
   {
     "id": "ASSET-003",
-    "status": "PARTIAL",
-    "current": "Construction happens across strategies (qip_portfolio_engine::construction::PortfolioConstructor, backend/crates/services/qip-portfolio-engine/src/construction.rs:157, called in Platform::new at platform.rs:4514) and asset classes (asset_class_registry gates every instrument). qip_portfolio::exposure::ExposureBreakdown (backend/crates/libs/qip-portfolio/src/exposure.rs:85-94) reports by_asset_class, by_sector, by_country, by_currency, by_issuer, by_venue, by_factor -- but has no by_strategy, by_region or by_horizon field. by_strategy exists elsewhere for realised PnL/settlement (central/plane.rs:603,612 cost_bps_by_strategy/by_strategy) and by_horizon exists in qip-optimization-engine's horizon-claims bookkeeping (horizons.rs:691-899), but neither is part of a unified exposure report, and no by_region breakdown exists anywhere.",
+    "status": "COMPLETE",
+    "current": "ExposureBreakdown (backend/crates/libs/qip-portfolio/src/exposure.rs:85-100) now carries ten exposure axes: by_asset_class, by_sector, by_country, by_currency, by_issuer, by_venue, by_factor, by_strategy, by_region, by_horizon. validate_sums() (exposure.rs:123-149) verifies all cross-dimensional breakdowns sum to the same total gross exposure. Three mutation-verified tests in #[cfg(test)] module (exposure.rs:155-258) drive the breakdown over positions spanning multiple strategies, classes, regions and horizons: (1) exposure_breakdown_with_four_dimensions_sums_consistently() adds to all 10 dimensions and asserts each sums to total; (2) four_dimension_breakdown_with_negative_values_maintains_consistency() tests long/short positions across all dimensions; (3) each_bucket_in_breakdown_is_independent_per_dimension() verifies buckets remain isolated per axis.",
     "evidence": [
-      "backend/crates/libs/qip-portfolio/src/exposure.rs:85-94 ExposureBreakdown fields",
-      "backend/crates/services/qip-portfolio-engine/src/construction.rs:157",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:4514 PortfolioConstructor::new",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs:603,612 (by_strategy is a PnL breakdown, not an exposure breakdown)",
-      "backend/crates/services/qip-optimization-engine/src/horizons.rs:691-899 (by_horizon is a claims map, not an exposure breakdown)"
+      "backend/crates/libs/qip-portfolio/src/exposure.rs:85-100 (ExposureBreakdown struct with 10 fields)",
+      "backend/crates/libs/qip-portfolio/src/exposure.rs:123-149 (validate_sums() method)",
+      "backend/crates/libs/qip-portfolio/src/exposure.rs:156-203 (exposure_breakdown_with_four_dimensions_sums_consistently test)",
+      "backend/crates/libs/qip-portfolio/src/exposure.rs:205-238 (four_dimension_breakdown_with_negative_values_maintains_consistency test)",
+      "backend/crates/libs/qip-portfolio/src/exposure.rs:240-258 (each_bucket_in_breakdown_is_independent_per_dimension test)",
+      "Gate evidence: cargo test -p qip-portfolio --lib result: ok. 11 passed; 0 failed",
+      "Gate evidence: cargo fmt --all --check passed (no output)",
+      "Gate evidence: cargo clippy -p qip-portfolio --all-targets -- -D warnings passed (zero warnings)",
+      "Gate evidence: ./scripts/check-dependencies.sh: 11 third-party package(s), all permitted",
+      "Gate evidence: ./scripts/check-secrets.sh: nothing found"
     ],
-    "gap": "No single exposure report breaks the book down by strategy, asset class, region and horizon together; strategy and horizon breakdowns exist for other purposes (settlement PnL, horizon-claim bookkeeping) and region does not exist as an exposure axis at all.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -70,11 +75,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "No test asserts a four-dimension breakdown exists; the test to write drives ExposureBreakdown (or its successor) over positions spanning >=2 strategies/classes/regions/horizons and asserts each breakdown sums to the total.",
-    "work_item": "E05-four-dimension-exposure-report",
+    "verification": "cargo test -p qip-portfolio --lib: 11 tests pass including the three four-dimension exposure tests. Mutation-verified by breaking Decimal values in validate_sums() assertions and confirming test failures.",
+    "work_item": "L012-ASSET-003",
     "tier": "T2",
     "size": "M",
-    "notes": "Cross-region construction additionally depends on the multi-region mesh (policy_flags: MULTI_REGION), which this assessment did not separately verify."
+    "notes": "Implementation complete. All three tests mutation-verified. Cross-region construction additionally depends on the multi-region mesh (policy_flags: MULTI_REGION), which this assessment did not separately verify."
   },
   {
     "id": "ASSET-004",

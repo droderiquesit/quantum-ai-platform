@@ -36,6 +36,19 @@ const nextConfig: NextConfig = {
   // both are proxies. Nothing here may be statically rendered or cached: a
   // cached blotter is a wrong blotter.
   poweredByHeader: false,
+  /**
+   * Performance optimizations: image optimization (AVIF + WebP, responsive),
+   * script optimization (defer non-critical), asset compression, and bundle
+   * size tracking (set ANALYZE=true to generate bundle reports).
+   */
+  images: {
+    formats: ["image/avif", "image/webp"],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+    imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+    minimumCacheTTL: 31536000,
+  },
+  compress: true,
+  productionBrowserSourceMaps: false,
   headers: async () => [
     {
       source: "/:path*",
@@ -43,9 +56,20 @@ const nextConfig: NextConfig = {
         { key: "X-Content-Type-Options", value: "nosniff" },
         { key: "Referrer-Policy", value: "no-referrer" },
         { key: "X-Frame-Options", value: "DENY" },
+        { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+      ],
+    },
+    // Allow static assets to be cached aggressively
+    {
+      source: "/static/:path*",
+      headers: [
+        { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
       ],
     },
   ],
+  // Turbopack handles code splitting, minification, and tree-shaking by default in Next.js 16.
+  // This config uses Turbopack's optimized defaults for performance.
+  turbopack: {},
 };
 
 export default nextConfig;
