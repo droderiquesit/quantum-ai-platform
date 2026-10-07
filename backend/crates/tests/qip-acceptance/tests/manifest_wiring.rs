@@ -1566,6 +1566,46 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          record that does not exist. It becomes settable the day the workload \
          has a volume, which is the same day QIP_STORAGE_ROOT does.",
     ),
+    // CICD-096's signature. Its key, QIP_CONFIG_SIGNATURE_KEY, is deliberately
+    // not argued here: unset, `verify_config_signature` falls back to a key
+    // written in qip-api's source, so a signature checked under it is one
+    // anybody can forge. That makes the binary less safe the moment a
+    // signature is set, which is not something this register can excuse.
+    // The variable is left failing this test on purpose, until the
+    // verification refuses a missing key and reads it from a file.
+    (
+        "qip-api",
+        "QIP_CONFIG_SIGNATURE",
+        "Unset, `verify_config_signature` returns before it reads anything \
+         else. The process starts exactly as it did before CICD-096: the \
+         check is not configured, and that is not a weaker posture than any \
+         deployment has had. An operator is also better off unable to set it \
+         today, because any value stops the process. The canonical form it \
+         verifies is built from every QIP_ variable in the environment, this \
+         one included (as `config_signature`), so a valid signature would \
+         have to be an HMAC over itself. A signature taken over the \
+         deployment's own variables fails as soon as it is set beside them. \
+         It becomes a deployment's value once the canonical form excludes \
+         the signature and its key arrives as a file.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_ELIGIBLE_JURISDICTIONS",
+        "Unset, the discovery desk's eligible set is its one-jurisdiction \
+         default. A set value replaces that default, and a value that parses \
+         to nothing is refused at start-up rather than read as everywhere, so \
+         leaving it unset never admits more than setting it would. More to \
+         the point, nothing in this binary reads the set. \
+         `DiscoveryDesk::eligible_jurisdictions` is reached only from \
+         `EvolutionEngine::discovery_desk`, which nothing calls, and \
+         `ResearchQueue::admit`, the consumer EXPAND-060 names, is \
+         constructed by no composition root. A deployment that set the \
+         variable would configure a value no code path consults: a dial \
+         wired to nothing, which reads as a jurisdiction policy and is not \
+         one. It becomes the deployment's decision the day admit is reached \
+         from this root, and the value set then is a desk's jurisdiction \
+         decision, not a default.",
+    ),
 ];
 
 #[test]
