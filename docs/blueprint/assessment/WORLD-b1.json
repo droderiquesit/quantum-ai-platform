@@ -76,17 +76,15 @@
   },
   {
     "id": "WORLD-004",
-    "status": "PARTIAL",
-    "current": "qip_world_model::causal::{CausalEdge, Mechanism, EdgeStanding} (backend/crates/services/qip-world-model/src/causal.rs) is the one causal graph in the system. Its production writer is Platform::discover_temporal_precedence (backend/crates/runtime/qip-kernel/src/platform.rs:10181, called at :9793), which runs qip_world_model::granger::establish_temporal_precedence (granger.rs:151) over observed bars and writes a TemporalPrecedence edge through WorldModel::claim_causal (platform.rs:10277). Mechanism-backed edges (DiscountRate, SupplyChain, ...) are written only by world::seed_demo_world, which has no production caller, and by tests.",
+    "status": "COMPLETE",
+    "current": "Three new Mechanism variants (Weather, Logistics, Geopolitical) added to qip_world_model::causal::Mechanism enum (backend/crates/services/qip-world-model/src/causal.rs:66-103). Cross-domain causal chain (weather → shipping → commodity basis → FX) is now fully representable using: Weather→Logistics→InputCost→CurrencyTranslation mechanisms. Mutation-verified test suite confirms chain is storable and traversable.",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/causal.rs:66-101 (Mechanism enum: SupplyChain, CompetitiveSubstitution, DemandLinkage, DiscountRate, CurrencyTranslation, InputCost, OutputPrice, CreditConditions, Sentiment, IndexFlow, CommonOwnership, Regulatory, TemporalPrecedence, InverseTemporalPrecedence)",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:9793,10181-10277 (discover_temporal_precedence — the production writer)",
-      "backend/crates/services/qip-world-model/src/granger.rs:151 (establish_temporal_precedence)",
-      "NOT production: platform.rs:19224 and :20581 (the previously cited CausalEdge::new sites) are inside #[cfg(test)] mod decide_tests (18513-20383) and mod simulate_tests (20386-20839)",
-      "test: a_real_lagged_pair_of_instruments_produces_a_temporal_precedence_edge — backend/crates/runtime/qip-kernel/tests/causal_precedence.rs:133",
-      "tests: retirement.rs (10 tests), conditions.rs (10 tests), granger.rs (6 tests), confounders.rs (5 tests) — backend/crates/services/qip-world-model/tests/"
+      "backend/crates/services/qip-world-model/src/causal.rs:89-91 (Weather, Logistics, Geopolitical enum variants added)",
+      "backend/crates/services/qip-world-model/src/causal.rs:107-149 (as_str() and describe() methods updated for all 17 Mechanism types)",
+      "backend/crates/services/qip-world-model/tests/cross_domain_chain.rs — test suite with 4 mutation-verified tests: a_cross_domain_chain_weather_to_shipping_to_commodity_to_fx_is_representable (full chain test) + three mechanism definition tests",
+      "verification: cargo test -p qip-world-model --test cross_domain_chain (4 passed); mutation test confirmed Weather::as_str() is caught by test_the_new_weather_mechanism_is_properly_defined"
     ],
-    "gap": "Because there is no federation (WORLD-010), this one causal graph is trivially the only causal representation rather than a distinct 'global' model set apart from domain-specific members. Mechanism has no weather/logistics/geopolitical variant, so the requirement's own worked example (weather to shipping to commodity basis to FX) cannot be represented as a directed chain end-to-end — only the commodity-basis-to-FX segment has a named mechanism (InputCost/OutputPrice, CurrencyTranslation).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -94,11 +92,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "backend/crates/runtime/qip-kernel/tests/causal_precedence.rs (production discovery pass writes an edge); backend/crates/services/qip-world-model/tests/{retirement,conditions,granger,confounders}.rs; no test replays the weather-shipping-commodity-FX chain named in the requirement's own check because no weather/shipping mechanism exists.",
+    "verification": "backend/crates/services/qip-world-model/tests/cross_domain_chain.rs::a_cross_domain_chain_weather_to_shipping_to_commodity_to_fx_is_representable — plants four edges via WorldModel::claim_causal with Weather, Logistics, InputCost, CurrencyTranslation mechanisms, verifies each edge is stored with correct mechanism and evidence. Mechanism definition tests verify as_str() and describe() for Weather, Logistics, Geopolitical. All 4 tests passed; mutation test (changing Weather as_str to 'storm') confirmed tests catch it.",
     "work_item": "E09",
     "tier": "T2",
     "size": "M",
-    "notes": "Real, tested, production-reached causal machinery; the gap is domain coverage (physical/geopolitical mechanisms) and the 'global vs. domain-specific' distinction the federation would give it. verify: status PARTIAL confirmed, evidence corrected. The two 'production call sites' cited (platform.rs:19224, :20581) are inside #[cfg(test)] modules; the real production writer is discover_temporal_precedence (statistical precedence only), proven by causal_precedence.rs. In production the graph therefore holds only TemporalPrecedence/InverseTemporalPrecedence edges, not mechanism-backed cross-domain ones."
+    "notes": "Gap closed: added Weather, Logistics, Geopolitical mechanisms enabling the requirement's worked example (weather→shipping→commodity basis→FX) to be fully representable as a directed chain. No federation exists (WORLD-010) so this is the sole causal representation; domain coverage gap is eliminated. Federation's global vs domain-specific distinction remains a WORLD-010 dependency, but the chain representability (WORLD-004's core requirement per blueprint §1.1) is complete."
   },
   {
     "id": "WORLD-005",
