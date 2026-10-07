@@ -1346,3 +1346,62 @@ resource "github_branch_protection" "main" {
     teams = []
   }
 }
+
+# Cloud Audit Logs for CICD-037: "No autonomous change is invisible."
+#
+# Every runtime mutation (gcloud run deploy, kubectl apply, terraform apply)
+# is audited so that an autonomous agent's changes are visible, attributable
+# and revertible. Audit logs are the durable record of who changed what and
+# when; they are the observability layer for the invariant that no invisible
+# change reaches production.
+#
+# The audit is configured at the project level and covers all services that
+# can make runtime mutations: Compute Run, Kubernetes Engine, and the GCP
+# infrastructure itself. Each service records Admin activity (enable/disable
+# services, create/delete resources) and Data operations (deploy a service,
+# update a configuration).
+
+resource "google_project_iam_audit_config" "cloud_run" {
+  project = var.project_id
+  service = "run.googleapis.com"
+
+  # Audit all Admin operations (deploy, delete, update run services).
+  audit_log_config {
+    log_type = "ADMIN_WRITE"
+  }
+
+  # Audit data access operations for complete visibility.
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
+resource "google_project_iam_audit_config" "gke" {
+  project = var.project_id
+  service = "container.googleapis.com"
+
+  # Audit all Admin operations (create/delete clusters, update configurations).
+  audit_log_config {
+    log_type = "ADMIN_WRITE"
+  }
+
+  # Audit data access (kubectl apply, edit, delete).
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
+resource "google_project_iam_audit_config" "infrastructure" {
+  project = var.project_id
+  service = "compute.googleapis.com"
+
+  # Audit all Admin operations (instance creation, deletion, updates).
+  audit_log_config {
+    log_type = "ADMIN_WRITE"
+  }
+
+  # Audit data operations for execution nodes.
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
