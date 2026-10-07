@@ -2699,9 +2699,8 @@ fn every_catalogue_workload_egresses_all_traffic_through_the_vpc_and_portal_uses
         for (key, entry, service, _) in run_services(&environment) {
             let describe = service.describe();
             let egress_config =
-                text_at(&service.value, &["spec", "template", "vpcAccess", "egress"])
-                    .map(String::from);
-            if let Some(entry) = entry {
+                text_at(&service.value, &["spec", "template", "vpcAccess", "egress"]);
+            if let Some(_entry) = entry {
                 // Catalogue workload: must use ALL_TRAFFIC
                 assert_eq!(
                     egress_config.as_deref(),

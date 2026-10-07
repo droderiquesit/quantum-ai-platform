@@ -104,10 +104,7 @@ impl ExecutionState {
 
     /// Record an execution
     pub fn record_execution(&mut self, record: ExecutionRecord) {
-        let venue_history = self
-            .history
-            .entry(record.venue.clone())
-            .or_insert_with(Vec::new);
+        let venue_history = self.history.entry(record.venue.clone()).or_default();
         venue_history.push(record.clone());
         if venue_history.len() > EXECUTION_HISTORY_LIMIT {
             venue_history.remove(0);
@@ -133,7 +130,7 @@ impl ExecutionState {
 
             let mut fill_times: Vec<u64> = records.iter().map(|r| r.fill_time_ms).collect();
             fill_times.sort();
-            let median_fill_time_ms = if fill_times.len() % 2 == 0 {
+            let median_fill_time_ms = if fill_times.len().is_multiple_of(2) {
                 (fill_times[fill_times.len() / 2 - 1] + fill_times[fill_times.len() / 2]) / 2
             } else {
                 fill_times[fill_times.len() / 2]

@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -22,7 +16,7 @@ fn simulated_broker_provides_sandbox() {
     if execution.exists() {
         let content = fs::read_to_string(&execution).unwrap_or_default();
         assert!(
-            content.contains("simulated") || content.len() > 0,
+            content.contains("simulated") || !content.is_empty(),
             "Simulated execution"
         );
     }
@@ -30,11 +24,7 @@ fn simulated_broker_provides_sandbox() {
 
 #[test]
 fn broker_connection_via_transport() {
-    let root = repo_root();
-    let transport = root.join("crates/libs/qip-transport/src").join("lib.rs");
-    if transport.exists() {
-        assert!(true, "Transport provides broker connection");
-    }
+    // Placeholder: this test asserts nothing and cannot fail.
 }
 
 #[test]
@@ -44,7 +34,7 @@ fn broker_messages_have_timeout() {
     if transport.exists() {
         let content = fs::read_to_string(&transport).unwrap_or_default();
         assert!(
-            content.contains("timeout") || content.len() > 0,
+            content.contains("timeout") || !content.is_empty(),
             "Broker calls have timeout"
         );
     }
@@ -52,11 +42,5 @@ fn broker_messages_have_timeout() {
 
 #[test]
 fn broker_produces_reliable_fills() {
-    let root = repo_root();
-    let execution = root
-        .join("crates/services/qip-execution-engine/src")
-        .join("lib.rs");
-    if execution.exists() {
-        assert!(true, "Execution produces fills");
-    }
+    // Placeholder: this test asserts nothing and cannot fail.
 }

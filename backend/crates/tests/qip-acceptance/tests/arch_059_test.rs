@@ -1,16 +1,9 @@
-use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -30,12 +23,10 @@ fn requirement_59_part_2() {
 fn requirement_59_part_3() {
     let root = repo_root();
     let kernel = root.join("crates/runtime/qip-kernel/src/lib.rs");
-    if kernel.exists() {
-        assert!(true, "Kernel exists");
-    }
+    assert!(kernel.exists(), "Kernel exists");
 }
 
 #[test]
 fn requirement_59_part_4() {
-    assert!(true, "Architecture test 59 passing");
+    // Placeholder: this test asserts nothing and cannot fail.
 }

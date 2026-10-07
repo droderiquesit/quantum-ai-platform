@@ -117,15 +117,22 @@ fn producer(produces: Arc<AtomicUsize>) -> Producer {
 /// This benchmark verifies batched produce can sustain that rate.
 const P2_TARGET_RECORDS_PER_SEC: u64 = 100_000;
 
-/// Measure throughput of batched produce at P2 target rate.
+/// Batched produce at the P2 arrival rate fills every batch to `max_records`.
 ///
-/// Sends `record_count` records through the batcher at approximately
-/// P2_TARGET_RECORDS_PER_SEC rate and measures actual records/second and
-/// transport writes, verifying batching saves writes while meeting throughput.
+/// Sends `RECORDS` records through the batcher with arrival times spaced at
+/// `P2_TARGET_RECORDS_PER_SEC` on a simulated clock, and counts transport
+/// writes. Everything asserted is deterministic: the arrival times are
+/// computed, not measured, so the batcher's cuts land on the same records
+/// every run.
 ///
-/// Assertion: throughput >= P2 target, writes << records (batching effective).
+/// Asserted: every record reaches the broker exactly once, and the records
+/// per write are within 10% of `max_records`. **Not asserted: throughput.** The
+/// elapsed wall-clock time is printed and nothing compares it with the P2
+/// target. This doc comment used to say the test asserted throughput at or
+/// above that target, and it never did. It used to be skipped by default as a
+/// benchmark, but nothing in it depends on the machine, so it runs with every
+/// suite.
 #[test]
-#[ignore] // run with `cargo test --ignored -- --nocapture` to execute
 fn batched_produce_at_p2_market_journal_rate() {
     const RECORDS: u64 = 10_000;
     const BATCH_SIZE: usize = 500;
@@ -197,15 +204,26 @@ fn batched_produce_at_p2_market_journal_rate() {
         BATCH_SIZE,
         efficiency
     );
+    // Exactly, because the clock is simulated. Records arrive every 10 us, so
+    // 500 of them span 5 ms, inside the 10 ms linger: `max_records` cuts every
+    // batch. The efficiency floor above holds just as well for a batcher that
+    // ignored `max_records` and cut only on linger (about a thousand records a
+    // write), and the bound on the buffer would be gone with nothing failing.
+    assert_eq!(
+        writes as u64,
+        RECORDS / BATCH_SIZE as u64,
+        "max_records did not cut every batch at {BATCH_SIZE} records"
+    );
 }
 
 /// Verify batching dramatically reduces transport overhead vs. unbatched produce.
 ///
 /// Without batching, every record triggers a transport write, leading to
-/// per-record overhead. This benchmark demonstrates the overhead reduction
-/// achieved by batching.
+/// per-record overhead. Here the linger bound, not `max_records`, cuts every
+/// batch: one record arrives per simulated millisecond against a 5 ms
+/// linger. The write count is therefore a fixed function of the inputs, and
+/// the test runs with every suite rather than on request.
 #[test]
-#[ignore]
 fn batching_reduces_per_record_transport_overhead() {
     const RECORDS: u64 = 1000;
     const BATCH_SIZE: usize = 100;
@@ -263,29 +281,13 @@ fn batching_reduces_per_record_transport_overhead() {
         batched_writes,
         unbatched_writes
     );
-}
-
-/// Full throughput report showing P2 market journal batching meets SLA.
-#[test]
-#[ignore]
-fn p2_market_journal_batching_report() {
-    println!("\n=== P2 Market Journal Batching Report ===\n");
-    println!("Requirement: Batched produce reaches P2 target rate (100k records/sec)");
-    println!("Mechanism: Batch accumulation with configurable max_records and max_linger");
-    println!();
-    println!("Configuration:");
-    println!("  Max records per batch: 500 (amortizes transport setup)");
-    println!("  Max linger time: 10ms (bounds latency per record)");
-    println!("  Target rate: {} records/sec", P2_TARGET_RECORDS_PER_SEC);
-    println!();
-    println!("Expected behavior:");
-    println!("  - Without batching: 1 transport write per record");
-    println!("  - With batching: ~1 write per 500 records");
-    println!("  - Overhead reduction: ~99.8%");
-    println!(
-        "  - Throughput: ≥ {} records/sec at p99",
-        P2_TARGET_RECORDS_PER_SEC
+    // Exactly, for the same reason: a window opened by record n is due at
+    // n + 5 ms, so every batch holds five records. The bound above is also met
+    // by a batcher whose linger never fires (ten writes of a hundred), which
+    // is a buffer that holds a record for as long as traffic is thin.
+    assert_eq!(
+        batched_writes,
+        unbatched_writes / 5,
+        "the 5 ms linger did not cut every batch at five records"
     );
-    println!();
-    println!("Verification: Run the benchmarks to confirm on target hardware");
 }

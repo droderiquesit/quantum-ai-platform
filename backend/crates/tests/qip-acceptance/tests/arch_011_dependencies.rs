@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -36,17 +30,15 @@ fn no_async_runtime_in_crates() {
     // Search for forbidden async runtimes
     let services_path = root.join("crates/services");
     if let Ok(entries) = fs::read_dir(&services_path) {
-        for entry in entries {
-            if let Ok(e) = entry {
-                let cargo_path = e.path().join("Cargo.toml");
-                if cargo_path.exists() {
-                    let content = fs::read_to_string(&cargo_path).unwrap_or_else(|_| String::new());
+        for e in entries.flatten() {
+            let cargo_path = e.path().join("Cargo.toml");
+            if cargo_path.exists() {
+                let content = fs::read_to_string(&cargo_path).unwrap_or_else(|_| String::new());
 
-                    assert!(
-                        !content.contains("tokio") && !content.contains("async-std"),
-                        "Workspace must use blocking I/O with timeouts, not async runtime (ADR 0001)"
-                    );
-                }
+                assert!(
+                    !content.contains("tokio") && !content.contains("async-std"),
+                    "Workspace must use blocking I/O with timeouts, not async runtime (ADR 0001)"
+                );
             }
         }
     }
@@ -61,7 +53,7 @@ fn http_client_uses_blocking_io() {
     let transport_content = fs::read_to_string(&transport_cargo).unwrap_or_else(|_| String::new());
 
     assert!(
-        transport_content.contains("qip-transport") || transport_content.len() > 0,
+        transport_content.contains("qip-transport") || !transport_content.is_empty(),
         "qip-transport must exist for blocking I/O HTTP client"
     );
 }
@@ -76,7 +68,7 @@ fn json_serialization_via_serde() {
 
     // At minimum qip-core should depend on serde for types
     assert!(
-        core_content.len() > 0,
+        !core_content.is_empty(),
         "qip-core Cargo.toml must exist and define types"
     );
 }

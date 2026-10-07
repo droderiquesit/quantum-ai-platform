@@ -2695,7 +2695,7 @@ fn economic_exposure_reconciles_against_settled_ownership_with_fills_that_fail_s
     // Premise: settlement was refused, so no position is booked.
     let desk = platform.user_ledger().desk();
     assert_eq!(
-        settled(&platform, &desk, &strategy),
+        settled(&platform, desk, &strategy),
         None,
         "a refused fill was booked to the desk"
     );
@@ -2746,7 +2746,7 @@ fn economic_exposure_reconciles_against_settled_ownership_with_a_settled_holding
     // the requirement names: 'a settled holding with no economic position'.
     // The break is recorded for investigation.
     assert!(
-        ingestion.settlement.breaks.len() > 0,
+        !ingestion.settlement.breaks.is_empty(),
         "an orphaned fill should raise a reconciliation break"
     );
 
@@ -2761,7 +2761,7 @@ fn economic_exposure_reconciles_against_settled_ownership_with_a_settled_holding
     // is not recorded, preserving auditability.
     let desk = platform.user_ledger().desk();
     assert_eq!(
-        settled(&platform, &desk, &strategy),
+        settled(&platform, desk, &strategy),
         None,
         "an orphaned fill should not be booked"
     );

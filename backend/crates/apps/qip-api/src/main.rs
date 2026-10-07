@@ -36,8 +36,6 @@ use qip_storage::ChainArchive;
 use qip_storage::settings::StorageSettings;
 use std::sync::{Arc, Mutex};
 
-mod initialize_schemas;
-
 /// Variables this binary used to read, with the refusal each now produces.
 ///
 /// A retired variable has three possible fates and only one of them is safe.
@@ -262,13 +260,6 @@ fn run() -> Result<()> {
         limits,
         Box::new(qip_training::serve::InTreeProvider),
     )?;
-
-    // Initialize the event schema registry with all 3 P0 control frames
-    // (CapitalGrantFrame, PolicyFrame, HaltFrame) at startup. Only these
-    // implement EventBody; the six reflex types are bound through
-    // event_fabric::bindings. Failures are caught early rather than at the
-    // first event.
-    initialize_schemas::initialize_event_schemas()?;
 
     // The trust root, before anything is served: install the operator's
     // envelope key when the deployment provides one, and refuse to run
@@ -709,47 +700,22 @@ fn registrations_banner(platform: &Platform) -> String {
     lines.join("; ")
 }
 
+/// CICD-096: refuse to start on a configuration whose signature does not
+/// verify. Reads the values; `qip_api::config_signature::check` decides, so the
+/// decision is testable. The key is read through `qip_core::secret`, so a
+/// deployment mounts it as a file rather than placing it in the environment.
+fn verify_config_signature() -> Result<()> {
+    let signature = std::env::var("QIP_CONFIG_SIGNATURE").ok();
+    if signature.as_deref().is_none_or(str::is_empty) {
+        return Ok(());
+    }
+    let key = qip_core::secret::from_environment("QIP_CONFIG_SIGNATURE_KEY")?;
+    qip_api::config_signature::check(std::env::vars(), signature.as_deref(), key.as_deref())
+}
+
 /// The instrument universe, from the committed catalogue the deployment names.
 ///
 /// Refused when unset. Every root used to assemble `Universe::new()`, so the
-/// Verify environment configuration signature if provided. If QIP_CONFIG_SIGNATURE
-/// is set, the environment configuration must have a valid signature or the
-/// process refuses to start. This ensures environment behaviour comes only from
-/// reviewed, signed sources (CICD-096).
-fn verify_config_signature() -> Result<()> {
-    if let Ok(signature) = std::env::var("QIP_CONFIG_SIGNATURE") {
-        if signature.is_empty() {
-            return Ok(());
-        }
-
-        // Build a canonical representation of the current environment configuration
-        let mut config = qip_core::config::Config::empty();
-        for (key, value) in std::env::vars() {
-            if let Some(rest) = key.strip_prefix("QIP_") {
-                config.set(
-                    &rest.to_lowercase().replace("__", "."),
-                    serde_json::Value::String(value),
-                );
-            }
-        }
-
-        // Verify using the signing key from environment or a default hardcoded key.
-        // In production, this key would come from a Secret Manager to prevent
-        // unauthorized signature forgery.
-        let key = std::env::var("QIP_CONFIG_SIGNATURE_KEY")
-            .unwrap_or_else(|_| "qip-api-default-key".to_string());
-
-        if !config.verify_signature(&signature, key.as_bytes()) {
-            return Err(Error::invalid(
-                "configuration signature verification failed: environment configuration does not match the \
-                 provided signature. Ensure QIP_CONFIG_SIGNATURE matches the signed configuration and was \
-                 computed with the correct key.",
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// exposure buckets the kernel projects from the universe at assembly —
 /// sector, country, asset class, venue — received nothing in any deployed
 /// process and the two bucket limits in the default set could never fire;

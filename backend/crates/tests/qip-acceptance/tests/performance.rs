@@ -2034,50 +2034,110 @@ fn the_edge_feasibility_gate_costs_what_the_execution_measurements_say() -> Resu
     Ok(())
 }
 
+/// The latency distribution of an edge work pass that sends an order:
+/// `Cell::work` from entry to return, with the order handed to the placer and
+/// its fill confirmed inside it. Published as p50, p99 and max for ARCH-014.
+///
+/// **Printed, and asserted against no clock.** This test was named
+/// `tick_to_order_p99_latency_is_published`, asserted `p99 < 10ms`, and was
+/// skipped by default, because a percentile of single passes on a shared
+/// machine moves with the machine. A skipped test is a waived gate. It was
+/// also measuring something other than its name. No market message is fed, so
+/// nothing here begins at a tick, and this file's module doc refuses that
+/// claim by name. Its venue never filled, so open orders piled up and the
+/// cell refused all but the first 256 of its 1,000 timed passes: its p99 was
+/// mostly the cost of a refusal.
+///
+/// What is asserted instead cannot vary with the machine:
+///
+/// * every timed pass sent exactly one order and confirmed exactly one fill,
+///   and the venue accepted one order per pass, so each sample is a pass that
+///   reached the placer rather than one that found nothing to do;
+/// * the drop copy reconciled clean and the cell never halted, because a
+///   halted cell sends nothing and a quiet pass reads as fast; and
+/// * the distribution has one sample per pass and its percentiles are
+///   ordered, so the helper cannot publish a p99 below the p50.
+///
+/// `an_edge_work_pass_costs_the_same_per_pass_however_many_passes_the_cell_has_already_run`
+/// holds the complexity property this figure would otherwise be read for.
 #[test]
-#[ignore = "the execution measurements document names only tests this file holds and says what a number is not"]
-fn tick_to_order_p99_latency_is_published() -> Result<()> {
+fn an_edge_pass_that_sends_an_order_publishes_its_latency_distribution() -> Result<()> {
     const PASSES: usize = 1_000;
     let mut cell = edge_cell(&[("alpha", SignalKind::Enter, "100", PricingPolicy::Marketable)])?;
     let mut gateway = PaperVenue {
-        fills: false,
+        fills: true,
         ..PaperVenue::default()
     };
     let mut latencies_micros = Vec::with_capacity(PASSES);
 
-    for index in 0..PASSES {
-        let tick_time = start().saturating_add(Duration::from_millis(index as i64));
+    // The same start and step as `run_passes`, whose callers already prove
+    // this fixture sends an order on every pass.
+    let mut now = start().saturating_add(Duration::from_secs(2));
+    for pass in 0..PASSES {
         let began = Instant::now();
-        let _report = cell.work(tick_time, &mut gateway)?;
-        let elapsed = began.elapsed();
-        latencies_micros.push(elapsed.as_secs_f64() * 1e6);
+        let report = cell.work(now, &mut gateway)?;
+        latencies_micros.push(began.elapsed().as_secs_f64() * 1e6);
+
+        assert_eq!(
+            report.orders.len(),
+            1,
+            "timed pass {pass} sent {} orders, so its sample is not the latency of a pass that \
+             reached the placer (refusals: {:?})",
+            report.orders.len(),
+            report.refusals
+        );
+        assert_eq!(
+            report.fills.len(),
+            1,
+            "timed pass {pass} confirmed {} fills",
+            report.fills.len()
+        );
+        // Outside the sample: the other half of the pass, so the next pass
+        // starts from a cell with nothing open.
+        for fill in &report.fills {
+            cell.observe_drop_copy(DropCopyFill {
+                order_id: fill.order_id.clone(),
+                venue: fill.venue.clone(),
+                quantity: fill.quantity,
+                price: fill.price,
+                at: now,
+            });
+        }
+        let breaks = cell.reconcile(now);
+        assert!(
+            breaks.is_empty(),
+            "pass {pass}: the drop copy disagreed with the order-entry channel: {breaks:?}"
+        );
+        assert!(!cell.is_halted(), "pass {pass}: the cell halted");
+        now = now.saturating_add(Duration::from_millis(1));
     }
+    assert_eq!(
+        gateway.accepted, PASSES,
+        "the venue did not accept one order per timed pass"
+    );
+    assert_eq!(
+        latencies_micros.len(),
+        PASSES,
+        "the distribution does not hold one sample per pass"
+    );
 
-    latencies_micros.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
+    latencies_micros.sort_by(f64::total_cmp);
     let p50 = percentile(&latencies_micros, 50.0);
     let p99 = percentile(&latencies_micros, 99.0);
-    let max = latencies_micros
-        .iter()
-        .cloned()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let max = latencies_micros[PASSES - 1];
+    assert!(
+        p50 <= p99 && p99 <= max,
+        "the percentiles are out of order (p50={p50}, p99={p99}, max={max}); the helper is \
+         publishing a figure the samples do not support"
+    );
 
     let probe = machine_probe_nanos();
     println!(
-        "tick-to-order (Cell::work to Placer, {PASSES} passes): \
+        "edge work pass sending one order (Cell::work, placer inside, {PASSES} passes): \
          p50={p50:.3}us p99={p99:.3}us max={max:.3}us \
          (probe={probe}ns over {PROBE_OPERATIONS} fixed ops, {} profile, this machine, single-threaded)",
         profile()
     );
-
-    assert!(
-        p99 < 10_000.0,
-        "tick-to-order p99 latency exceeded 10ms: {p99:.3}us. \
-         This is a local reflex path measurement (in-process, no network, single-threaded). \
-         Re-run this suite alone to distinguish machine load from code changes. \
-         The probe field ({probe}ns) cost over {PROBE_OPERATIONS} fixed operations should barely move if the code changed."
-    );
-
     Ok(())
 }
 

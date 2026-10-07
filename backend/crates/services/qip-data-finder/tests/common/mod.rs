@@ -173,7 +173,7 @@ pub(crate) fn tradeable_source(id: &str, at: Timestamp) -> Result<RegisteredSour
         Usage::Trade,
     );
     let scores = SourceScores::new(1.0, 1.0, 1.0, 1.0, 1.0)?;
-    let routing = Routing::decide(&legality.overall(), &scores);
+    let routing = Routing::decide(legality.overall(), &scores);
     let policy = SourcePolicy::assemble(
         source.candidate().identity().publisher(),
         AGENT,
@@ -223,7 +223,7 @@ pub(crate) fn unentitled_source(id: &str, at: Timestamp) -> Result<RegisteredSou
         Usage::Derive,
     );
     let scores = SourceScores::new(1.0, 1.0, 1.0, 1.0, 1.0)?;
-    let routing = Routing::decide(&legality.overall(), &scores);
+    let routing = Routing::decide(legality.overall(), &scores);
     let policy = SourcePolicy::assemble(
         source.candidate().identity().publisher(),
         AGENT,

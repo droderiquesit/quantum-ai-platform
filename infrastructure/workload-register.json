@@ -208,6 +208,29 @@
         "detail": "Declared behind a flag no environment sets; nothing is provisioned."
       },
       "degraded_mode": "Absent by default. Training runs in-process in qip_training::local and needs none of it, so its absence degrades nothing."
+    },
+    {
+      "workload": "event-fabric-broker",
+      "runtime": "compute-engine",
+      "declared_by": "infrastructure/terraform/modules/event-fabric-broker",
+      "state_owner": "None in use. As designed, qip-fabricd, the sole writer of every partition's batch chain (ADR 0100 §2), journalling to the block device qip_storage_journal_device names (default /dev/sdb) mounted at /var/lib/qip/journal (modules/event-fabric-broker/startup.sh.tftpl). As declared, nothing holds that state: the module's instance template exists only where enabled is true, enabled defaults to false, no module block in infrastructure/terraform/main.tf instantiates the module, and the template declares a boot disk and no second disk, so the journal device it names is not one this configuration provides.",
+      "upstream": [
+        {
+          "peer": "event-fabric producers and consumers, finding the broker through the _qip-event-fabric._tcp SRV record and the A record the module writes from broker_internal_addresses (modules/event-fabric-broker/main.tf)",
+          "protocol": "qip-transport::event_fabric's HTTP/1.1 client over plaintext TCP inside the VPC, on broker_port (default 9200) (ADR 0100 §1, §7); unwired, because nothing instantiates the module"
+        }
+      ],
+      "downstream": [
+        {
+          "peer": "the journal device",
+          "protocol": "local block-device writes, fsynced before every acknowledgement (ADR 0100 §3, RF1)"
+        }
+      ],
+      "scaling": {
+        "model": "disabled",
+        "detail": "Behind enabled, which defaults to false until FABRIC-086's consensus record exists (modules/event-fabric-broker/variables.tf), and instantiated by no module block in the root. Even with enabled true it declares an instance template and two DNS records and no instance group or instance, so it would start no machine. ADR 0100 §3 sizes the first build at one broker and one disk per region."
+      },
+      "degraded_mode": "Not deployed, so there is no broker to lose: ADR 0100 §8's first slice runs with enabled = false on a configured address (modules/event-fabric-broker/README.md). As designed, a lost broker is that region's fabric gone until it returns, because RF1 has no replica to fail over to; producers keep every record in their spool until the broker reports it archived, and FABRIC-077 and FABRIC-086 are not met by this build (ADR 0100 §3)."
     }
   ]
 }

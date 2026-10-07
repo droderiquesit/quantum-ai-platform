@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -19,9 +13,7 @@ fn central_plane_embedded_in_kernel() {
     let kernel = root
         .join("crates/runtime/qip-kernel/src")
         .join("central/plane.rs");
-    if kernel.exists() {
-        assert!(true, "Central plane in kernel");
-    }
+    assert!(kernel.exists(), "Central plane in kernel");
 }
 
 #[test]
@@ -33,7 +25,7 @@ fn central_plane_aggregates_cell_reports() {
     if platform.exists() {
         let content = fs::read_to_string(&platform).unwrap_or_default();
         assert!(
-            content.contains("cell") || content.len() > 0,
+            content.contains("cell") || !content.is_empty(),
             "Platform ingests cell reports"
         );
     }
@@ -48,7 +40,7 @@ fn central_detects_reconciliation_breaks() {
     if platform.exists() {
         let content = fs::read_to_string(&platform).unwrap_or_default();
         assert!(
-            content.contains("reconcil") || content.len() > 0,
+            content.contains("reconcil") || !content.is_empty(),
             "Central detects breaks"
         );
     }
@@ -61,7 +53,7 @@ fn central_publishes_policy_via_mesh() {
     if mesh.exists() {
         let content = fs::read_to_string(&mesh).unwrap_or_default();
         assert!(
-            content.contains("Downlink") || content.len() > 0,
+            content.contains("Downlink") || !content.is_empty(),
             "Policy distributed via mesh"
         );
     }

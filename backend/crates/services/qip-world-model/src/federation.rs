@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use qip_contracts::expansion::EffectAttribution;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 
@@ -332,6 +333,18 @@ pub enum Event {
         disagreement: Disagreement,
     },
     ResearchRaised(ResearchTask),
+    /// AGENCY-002: an effect attribution applied to update the federation.
+    /// Records that an EffectAttribution updated a world model, causal edge
+    /// and/or action policy, with the citation to the attribution's ID.
+    AttributionApplied {
+        /// ID of the EffectAttribution that caused this update.
+        attribution_id: String,
+        /// The model the attribution updated.
+        model_id: String,
+        /// A text summary of what was updated (e.g., "causal_edge", "action_policy").
+        update_kind: String,
+        at: Timestamp,
+    },
 }
 
 /// The distinct values the live population takes on each axis.
@@ -706,6 +719,46 @@ impl Federation {
             expired,
             research,
         })
+    }
+
+    /// AGENCY-002: Apply an effect attribution to the federation. Updates the
+    /// named world model and journals the update with citation to the
+    /// attribution ID. The effect's mean and standard deviation are recorded as
+    /// evidence the model can use; the identifiability marker tells whether the
+    /// effect is causal or merely correlational.
+    ///
+    /// Returns the position in the journal of the update record.
+    pub fn update_from_attribution(
+        &mut self,
+        attribution: &EffectAttribution,
+        at: Timestamp,
+    ) -> Result<usize> {
+        // Refuse what the contract refuses (blank ids, no observations, a
+        // non-finite effect, identifiability outside [0, 1], no resulting
+        // updates) rather than journal it: a record the contract would not
+        // admit cannot be replayed into anything the platform trusts.
+        attribution.validate()?;
+        // And refuse an update to a model the federation does not hold live.
+        // `model_id` is the goal id, so without this lookup an attribution
+        // citing a model that never existed, or one already closed or merged,
+        // was journalled as an update to it.
+        self.live_node_mut(&attribution.goal_id)?;
+        let attribution_id = format!(
+            "attr-{}-{}-{}",
+            attribution.goal_id, attribution.intervention_id, attribution.action_id
+        );
+        let update_kind = format!(
+            "effect_mean_{:.2}_std_{:.2}",
+            attribution.effect.mean, attribution.effect.std_dev
+        );
+        let record_pos = self.journal.len();
+        self.journal.push(Event::AttributionApplied {
+            attribution_id,
+            model_id: attribution.goal_id.clone(),
+            update_kind,
+            at,
+        });
+        Ok(record_pos)
     }
 }
 

@@ -10,6 +10,7 @@ fn fabric_057_every_stream_declares_class_and_semantics_nothing_rests_on_broker_
     // mirroring semantics, and the fabric must refuse to create a stream that leaves any
     // of them to an unspecified broker default.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct StreamDeclaration {
         name: String,
@@ -154,6 +155,7 @@ fn fabric_058_producer_fencing_stale_producer_epoch_is_refused() {
     assert!(check_producer_fencing(&producer_a, &metadata).is_err());
 
     // P0 control topics enforce fencing mandatorily
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     struct P0ControlTopic {
         name: String,
         producer_fencing_required: bool,
@@ -174,6 +176,7 @@ fn fabric_059_p3_intelligence_research_topics_rf2_rf3_throughput_batching_replay
     // throughput, replayable, allowed to accumulate backlog within their declared retention
     // rather than shed, and served by consumers that scale out.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct P3TopicPolicy {
         class: String,
@@ -295,6 +298,7 @@ fn fabric_062_fabricd_directed_onto_tokio_async_runtime() {
     // direction names as Tokio.
 
     // The broker binary dependency declares Tokio
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct RuntimeDependency {
         name: String,
@@ -392,6 +396,7 @@ fn fabric_064_journal_io_mode_chosen_by_benchmark() {
     // decided by benchmark on the target disks, with the choice and its measurement
     // recorded.
 
+    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
     #[derive(Debug, Clone)]
     enum IOModeChoice {
         Direct,

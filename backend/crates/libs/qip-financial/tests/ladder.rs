@@ -735,8 +735,9 @@ fn classification_never_returns_the_resting_rung_because_no_instrument_property_
             is_negotiated: false,
         },
     ];
-    // Premise: this really does cover every class.
-    assert_eq!(AssetClass::ALL.len(), 14);
+    // Premise: this really does cover every class. Fifteen since COMMERCE-021
+    // added `PhysicalProduct`; `qip-kernel`'s registry test pins the same count.
+    assert_eq!(AssetClass::ALL.len(), 15);
 
     for class in AssetClass::ALL {
         for profile in &profiles {

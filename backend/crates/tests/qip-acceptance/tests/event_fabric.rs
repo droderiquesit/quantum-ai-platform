@@ -22,13 +22,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_acceptance::repository_root;
-use qip_core::error::Result;
-use qip_core::{Context, EventId, Lineage, Timestamp};
-use qip_events::envelope::{AnyEvent, Envelope, EventBody};
-use qip_events::topic::Topic;
-use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use qip_core::EventId;
+use std::collections::BTreeSet;
 
 // --- FABRIC-001 through FABRIC-025: envelope, hashing, immutability ----------
 
@@ -154,8 +149,20 @@ fn event_log_structure_supports_hash_chaining() {
 /// cannot be mutated after sealing.
 #[test]
 fn sealed_event_envelopes_are_immutable() {
-    let envelope_code = repository_root().join("backend/crates/libs/qip-events/src/envelope.rs");
-    let content = std::fs::read_to_string(&envelope_code).expect("read envelope.rs");
+    // The sealed envelope is CONTRACT-036's `FabricEnvelope`, in the fabric
+    // module: private fields, one `seal` constructor and accessors. The
+    // bus's `Envelope` in `src/envelope.rs` is an in-process value built by
+    // `Envelope::new` and is not what goes on the wire, which is where this
+    // test used to look.
+    let envelope_code =
+        repository_root().join("backend/crates/libs/qip-events/src/event_fabric/envelope.rs");
+    let content = std::fs::read_to_string(&envelope_code).expect("read event_fabric/envelope.rs");
+    // Premise: this is the file that declares the sealed type.
+    assert!(
+        content.contains("pub struct FabricEnvelope {"),
+        "{} no longer declares FabricEnvelope",
+        envelope_code.display()
+    );
 
     // Verify Envelope::seal exists and takes ownership
     assert!(
@@ -338,9 +345,12 @@ fn deterministic_event_ids_plus_sequence_plus_epoch_enable_dedup() {
 
     if !sink_code.is_file() {
         // Ledger might be in edge or another service
+        // ADR 0100's ledger posting logic lives in `qip-portfolio`, where
+        // `PaperFill::try_from` reads a cell's P1 `OutcomeRecord`.
         let alternatives = vec![
             "backend/crates/edge/qip-routing/src/ledger.rs",
             "backend/crates/runtime/qip-kernel/src/ledger.rs",
+            "backend/crates/libs/qip-portfolio/src/ledger.rs",
         ];
         let mut found = false;
         for alt in alternatives {
@@ -363,21 +373,30 @@ fn deterministic_event_ids_plus_sequence_plus_epoch_enable_dedup() {
 /// with durability constraints.
 #[test]
 fn topic_classes_define_durability_constraints() {
-    let topic_code = repository_root().join("backend/crates/libs/qip-events/src/retention.rs");
+    // P0-P4 are ADR 0100 §5's `QosClass`, declared with their overload
+    // behaviour in the fabric's stream policy. `retention.rs` is ADR 0089's
+    // retention table, a different axis, and names no P-class.
+    let topic_code =
+        repository_root().join("backend/crates/libs/qip-events/src/event_fabric/policy.rs");
     assert!(
         topic_code.is_file(),
-        "retention.rs must define topic classes/durability at {}",
+        "policy.rs must define topic classes/durability at {}",
         topic_code.display()
     );
 
-    let content = std::fs::read_to_string(&topic_code).expect("read retention.rs");
+    let content = std::fs::read_to_string(&topic_code).expect("read event_fabric/policy.rs");
+    assert!(
+        content.contains("pub enum QosClass {"),
+        "{} no longer declares QosClass",
+        topic_code.display()
+    );
 
     // Verify topic classes are defined (P0, P1, P2, P3, P4)
     let classes = vec!["P0", "P1", "P2", "P3", "P4"];
     for class in classes {
         assert!(
             content.contains(class),
-            "Topic class {} must be defined in retention policy",
+            "Topic class {} must be defined in the fabric stream policy",
             class
         );
     }
@@ -637,42 +656,51 @@ fn qip_events_has_no_async_runtime_dependency() {
 fn qip_events_follows_dependency_policy_two_only() {
     let cargo = repository_root().join("backend/crates/libs/qip-events/Cargo.toml");
     let content = std::fs::read_to_string(&cargo).expect("read qip-events Cargo.toml");
+    let workspace = repository_root().join("backend/Cargo.toml");
+    let workspace = std::fs::read_to_string(&workspace).expect("read the workspace Cargo.toml");
 
-    // Parse [dependencies] section
-    let deps_start = content.find("[dependencies]");
-    let deps_end = content
-        .find("[dev-dependencies]")
-        .or_else(|| content.find("[build-dependencies]"))
-        .unwrap_or(content.len());
-
-    let deps_section = if let Some(start) = deps_start {
-        &content[start..deps_end]
-    } else {
-        return; // No dependencies
-    };
-
-    // Only serde and serde_json should be present
-    let allowed = ["serde", "serde_json"];
-    let lines: Vec<&str> = deps_section
-        .lines()
-        .filter(|line| line.contains("="))
-        .collect();
+    // The [dependencies] table only. It ends at the next table header, which
+    // in this manifest is `[lints]`; reading to the end of the file took
+    // `workspace = true` under `[lints]` for a dependency.
+    let mut in_dependencies = false;
+    let mut lines = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_dependencies = line == "[dependencies]";
+        } else if in_dependencies && line.contains('=') {
+            lines.push(line);
+        }
+    }
+    // Premise: the table was found and read, so the loop below is not vacuous.
+    assert!(
+        !lines.is_empty(),
+        "no [dependencies] entries were read from {}",
+        cargo.display()
+    );
 
     for line in lines {
-        let mut is_allowed = false;
-        for allowed_crate in &allowed {
-            if line.contains(allowed_crate) {
-                is_allowed = true;
-                break;
-            }
-        }
-        // Internal workspace crates are OK (path dependencies)
-        let is_internal = line.contains("path");
+        let name = line
+            .split(['.', '=', ' '])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        let is_allowed = name == "serde" || name == "serde_json";
+        // In-tree crates are declared once in the workspace manifest with a
+        // `path` and inherited as `name.workspace = true`. ADR 0002/0009
+        // govern what comes from a registry, not what lives in this tree, and
+        // `scripts/check-dependencies.sh` admits these on the same ground.
+        let is_internal = workspace.lines().any(|declared| {
+            let declared = declared.trim();
+            declared.starts_with(&format!("{name} ="))
+                && declared.contains("path =")
+                && declared.contains("\"crates/")
+        });
 
         assert!(
             is_allowed || is_internal,
             "qip-events dependency '{}' violates ADR 0002/0009 (only serde/serde_json allowed)",
-            line.trim()
+            line
         );
     }
 }
@@ -682,12 +710,32 @@ fn qip_events_follows_dependency_policy_two_only() {
 /// The workspace forbids unsafe code. This test asserts qip-events forbids it.
 #[test]
 fn event_fabric_forbids_unsafe_code() {
+    // The forbid is not an attribute in `lib.rs`: it is the workspace lint
+    // table's `unsafe_code = "forbid"`, which a crate holds only by opting in
+    // with `[lints] workspace = true`. Both halves are checked, because a
+    // crate that dropped the opt-in would compile `unsafe` with the
+    // workspace's line still present.
     let lib_code = repository_root().join("backend/crates/libs/qip-events/src/lib.rs");
-    let content = std::fs::read_to_string(&lib_code).expect("read lib.rs");
+    let lib = std::fs::read_to_string(&lib_code).expect("read lib.rs");
+    let cargo = repository_root().join("backend/crates/libs/qip-events/Cargo.toml");
+    let manifest = std::fs::read_to_string(&cargo).expect("read qip-events Cargo.toml");
+    let workspace = repository_root().join("backend/Cargo.toml");
+    let workspace = std::fs::read_to_string(&workspace).expect("read the workspace Cargo.toml");
 
+    let inherits_workspace_lints = manifest.contains("[lints]\nworkspace = true");
+    let workspace_forbids = workspace
+        .split("[workspace.lints.rust]")
+        .nth(1)
+        .and_then(|table| table.split("\n[").next())
+        .is_some_and(|table| {
+            table
+                .lines()
+                .any(|line| line.trim() == "unsafe_code = \"forbid\"")
+        });
     assert!(
-        content.contains("#![forbid(unsafe_code)]") || content.contains("forbid"),
-        "qip-events must forbid unsafe code"
+        lib.contains("#![forbid(unsafe_code)]") || (inherits_workspace_lints && workspace_forbids),
+        "qip-events must forbid unsafe code: inherits the workspace lints {inherits_workspace_lints}, \
+         the workspace forbids unsafe_code {workspace_forbids}"
     );
 }
 

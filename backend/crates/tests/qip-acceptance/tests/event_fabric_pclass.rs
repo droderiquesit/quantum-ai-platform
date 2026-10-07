@@ -18,10 +18,11 @@ fn every_event_fabric_topic_declares_a_pclass() {
         (Topic::SettlementRecorded, QosClass::P1Outcomes),
         (Topic::ReflexOutcomeRecorded, QosClass::P1Outcomes),
         (Topic::ReflexChainSpan, QosClass::P1Outcomes),
+        // A declared gap: P1, the class its fabric binding writes it on.
+        (Topic::EventFabricGap, QosClass::P1Outcomes),
         // P2MarketJournal: reflex journal entries, throttled
         (Topic::ReflexJournalRecorded, QosClass::P2MarketJournal),
         (Topic::MarketEventApplied, QosClass::P2MarketJournal),
-        (Topic::EventFabricGap, QosClass::P2MarketJournal),
         // P3Research: world model, research/knowledge, backlog allowed
         (Topic::WorldModelSnapshot, QosClass::P3Research),
         (Topic::OutcomeObserved, QosClass::P3Research),

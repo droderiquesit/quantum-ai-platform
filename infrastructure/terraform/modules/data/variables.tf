@@ -174,8 +174,10 @@ variable "bucket_location" {
   default     = "US" # Dual-region US
 
   validation {
-    condition = can(regex("^[A-Z0-9]+$", var.bucket_location)) &&
-               length(var.bucket_location) > 0
+    condition = (
+      can(regex("^[A-Z0-9]+$", var.bucket_location)) &&
+      length(var.bucket_location) > 0
+    )
     error_message = "bucket_location must be a valid GCS location (e.g., 'US', 'EU', 'NAM4')."
   }
 }

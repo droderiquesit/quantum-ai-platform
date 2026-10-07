@@ -93,10 +93,7 @@ impl LeadLagState {
 
     /// Record a price move at a venue
     pub fn record_move(&mut self, venue: VenueId, at: Timestamp, direction: bool, magnitude: f64) {
-        let moves = self
-            .recent_moves
-            .entry(venue.clone())
-            .or_insert_with(Vec::new);
+        let moves = self.recent_moves.entry(venue.clone()).or_default();
         moves.push(PriceMoveEvent {
             venue: venue.clone(),
             at,

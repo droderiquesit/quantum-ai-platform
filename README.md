@@ -89,7 +89,7 @@ backend/         the Rust workspace: Cargo.toml, toolchain pins, and
   crates/
     libs/        shared, dependency-light, no I/O side effects
     services/    one per stage of the loop
-    agents/      the eighteen-agent investment organisation
+    agents/      the investment organisation: a nineteen-agent roster, eighteen implemented
     quant/       signals and the strategy SDK
     runtime/     the composition root
     apps/        the four deployables

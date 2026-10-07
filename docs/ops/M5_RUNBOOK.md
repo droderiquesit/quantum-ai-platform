@@ -42,7 +42,8 @@ curl -s http://ledger:8002/api/v1/ledger/balances | jq '.[] | {account, balance,
 
 **API:**
 ```bash
-curl -s http://api:8000/api/v1/ledger/balances | jq '. | length'
+API=http://api:8000
+curl -s "$API/api/v1/ledger/balances" | jq '. | length'
 # Should match ledger's count
 ```
 

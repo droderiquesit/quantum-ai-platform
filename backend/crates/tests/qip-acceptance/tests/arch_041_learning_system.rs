@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -37,7 +31,7 @@ fn learning_compares_actual_vs_planned() {
         let content = fs::read_to_string(&learning_path).unwrap_or_default();
 
         assert!(
-            content.contains("outcome") || content.contains("Outcome") || content.len() > 0,
+            content.contains("outcome") || content.contains("Outcome") || !content.is_empty(),
             "Learning must compare actual outcomes to predictions"
         );
     }
@@ -54,7 +48,7 @@ fn learning_uses_event_log_as_truth() {
         let content = fs::read_to_string(&platform_path).unwrap_or_default();
 
         assert!(
-            content.contains("learn") || content.contains("Learn") || content.len() > 0,
+            content.contains("learn") || content.contains("Learn") || !content.is_empty(),
             "Platform LEARN stage must run from event log"
         );
     }
@@ -68,12 +62,11 @@ fn learning_updates_model_beliefs() {
     if let Ok(entries) = fs::read_dir(&learning_src) {
         let mut found_learning = false;
         for entry in entries {
-            if let Ok(e) = entry {
-                if let Ok(content) = fs::read_to_string(&e.path()) {
-                    if content.contains("belief") || content.contains("Belief") {
-                        found_learning = true;
-                    }
-                }
+            if let Ok(e) = entry
+                && let Ok(content) = fs::read_to_string(e.path())
+                && (content.contains("belief") || content.contains("Belief"))
+            {
+                found_learning = true;
             }
         }
 

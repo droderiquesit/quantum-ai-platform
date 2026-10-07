@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -52,16 +46,14 @@ fn invalid_inputs_refused_not_clamped() {
     let risk_path = root.join("crates/services/qip-risk-engine/src");
     if let Ok(entries) = fs::read_dir(&risk_path) {
         let mut found_validation = false;
-        for entry in entries {
-            if let Ok(e) = entry {
-                let p = e.path();
-                if p.is_file() && p.to_string_lossy().ends_with(".rs") {
-                    if let Ok(content) = fs::read_to_string(&p) {
-                        if content.contains("Error") || content.contains("Result") {
-                            found_validation = true;
-                        }
-                    }
-                }
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_file()
+                && p.to_string_lossy().ends_with(".rs")
+                && let Ok(content) = fs::read_to_string(&p)
+                && (content.contains("Error") || content.contains("Result"))
+            {
+                found_validation = true;
             }
         }
         assert!(

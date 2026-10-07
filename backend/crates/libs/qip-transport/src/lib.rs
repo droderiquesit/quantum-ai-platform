@@ -25,7 +25,12 @@
 //! ADR 0011 says plainly that "retries, backpressure, at-least-once delivery,
 //! dead-lettering, ordering guarantees — every one of these is now code in
 //! `qip-transport` that has to be right". Each is a module here, and each
-//! states what it does *not* do:
+//! states what it does *not* do. The last two rows are not on ADR 0011's
+//! list and are here because they shipped: [`breaker`] keeps one peer's
+//! outage from spending the thread that serves the others, and [`spool`] is
+//! the durable half that [`MeshPublisher::REQUIREMENTS`] says production must
+//! add. A reliability module with no row is a feature nobody can trace, and
+//! `tests/reliability.rs` reads this table to refuse one.
 //!
 //! | property | where | what it is, exactly |
 //! |---|---|---|
@@ -34,6 +39,8 @@
 //! | at-least-once | [`mesh`] | duplicates are possible in both directions and **detectable** by idempotency key; consumers must be idempotent |
 //! | dead letters | [`deadletter`] | an exhausted message is recorded with its frame and its reason, never silently dropped |
 //! | ordering | [`mesh`] | per-publisher FIFO with head-of-line blocking; no global order, no per-key order across publishers |
+//! | circuit breaking | [`breaker`] | per peer, never global: opens after [`breaker::BreakerPolicy::failure_threshold`] consecutive failures, half-opens after the cooldown, closes after [`breaker::BreakerPolicy::success_threshold`] probe successes; a failed probe reopens with a longer cooldown |
+//! | durability across restart | [`spool`] | a bounded, persistent outbound queue: persist, send, forget, so a crash produces a duplicate rather than a loss; **refuses** at capacity like [`queue`]; one publisher per namespace |
 //!
 //! ## Delivery is at-least-once. It is not exactly-once.
 //!

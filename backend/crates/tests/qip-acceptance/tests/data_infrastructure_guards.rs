@@ -188,10 +188,14 @@ fn tick_037_retention_classes_are_governed() {
         "TICK-037: Internal data (Irreplaceable class) must transition storage classes but never delete"
     );
 
-    // Verify no Delete action applies to internal data.
+    // Verify no Delete action applies to internal data, one rule at a time.
+    // The split is on the rule block: GCS spells the condition
+    // `matches_prefix`, so splitting on "prefix_match" found no boundary and
+    // judged the whole file as one rule, where the market rule's Delete
+    // always sat beside the internal prefix.
     let mut found_internal = false;
     let mut found_delete = false;
-    for section in text.split("prefix_match") {
+    for section in text.split("lifecycle_rule") {
         if section.contains("lake/class=internal/") {
             found_internal = true;
             if section.contains("Delete") {

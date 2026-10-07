@@ -148,6 +148,7 @@ fn fabric_039_order_is_strict_within_a_partition_and_never_promised_globally() {
     assert_eq!(partition_1_offsets[0], 0);
 
     // No global offset claim: consumers derive order from metadata
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Clone)]
     struct Record {
         partition: u32,

@@ -5103,10 +5103,20 @@ impl Cell {
         // wanted, so a netted order still spends each strategy's own envelope
         // rather than one strategy's. The split sums exactly to the order, so
         // the envelopes together are charged what was actually sent.
+        //
+        // Each charge is journaled against the grant that took it, from the
+        // same figure, so the chain cannot cite one amount while the envelope
+        // was charged another (CAPITAL-006).
+        let mut grants = Vec::new();
         for (strategy, share) in net_intent.split_fill(quantity) {
             if let Some(deployed) = self.deployed.get_mut(strategy.as_str()) {
-                deployed.utilisation.gross_committed += share * price;
+                let committed = share * price;
+                deployed.utilisation.gross_committed += committed;
                 deployed.utilisation.orders_sent += 1;
+                grants.push((
+                    deployed.envelope.signature().to_string(),
+                    committed.to_string(),
+                ));
             }
         }
         // Beside the envelope charge and for the same reason it is here: the
@@ -5133,6 +5143,7 @@ impl Cell {
                 region_committed,
             },
             schedule.equalised(),
+            grants,
             now,
         );
         // The venue may have filled some of it on acceptance. Those reports
@@ -5279,7 +5290,18 @@ impl Cell {
     /// order belongs to, journaled beside `release_at` so an operator reading
     /// the chain sees that a leg was held for four milliseconds on purpose
     /// and not that the node was slow.
-    fn record_sent(&mut self, working: Working, equalised: bool, now: Timestamp) {
+    ///
+    /// `grants` is what each grant was charged for this order, as
+    /// [`Decision::OrderSent`] documents; the caller charged them and passes
+    /// the same figures, so the record is the charge and not a second account
+    /// of it.
+    fn record_sent(
+        &mut self,
+        working: Working,
+        equalised: bool,
+        grants: Vec<(String, String)>,
+        now: Timestamp,
+    ) {
         let order = &working.order;
         self.journal.record(
             Decision::OrderSent {
@@ -5289,6 +5311,7 @@ impl Cell {
                 simulated: order.simulated,
                 release_at: Some(order.release_at),
                 equalised,
+                grants,
             },
             now,
         );
@@ -8228,6 +8251,24 @@ impl Cell {
             );
             return Err(error);
         };
+        // A leg was admitted against the arbitrage desk's envelope and is
+        // charged to it below, so that is the grant the chain cites. Not the
+        // leg's strategy looked up among the deployed: the desk is not
+        // deployed, so that lookup cites nothing on every leg, and where a
+        // deployed strategy shares the desk's id it cites a grant the leg
+        // never drew on. One figure is both the charge and its record.
+        let committed = quantity * price;
+        let grants: Vec<(String, String)> = self
+            .desk
+            .as_ref()
+            .map(|installed| {
+                (
+                    installed.desk.envelope().signature().to_string(),
+                    committed.to_string(),
+                )
+            })
+            .into_iter()
+            .collect();
         self.record_sent(
             Working {
                 order: OpenOrder {
@@ -8261,11 +8302,12 @@ impl Cell {
                 region_committed: Decimal::ZERO,
             },
             schedule.equalised(),
+            grants,
             now,
         );
         if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
             let utilisation = desk.utilisation_mut();
-            utilisation.gross_committed += quantity * price;
+            utilisation.gross_committed += committed;
             utilisation.orders_sent += 1;
         }
         report.orders.push(PlacedOrder {

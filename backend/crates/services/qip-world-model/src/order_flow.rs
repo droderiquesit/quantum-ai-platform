@@ -135,10 +135,7 @@ impl OrderFlowState {
 
     /// Absorb a new flow observation
     pub fn absorb(&mut self, observation: FlowObservation) {
-        let venues = self
-            .history
-            .entry(observation.venue.clone())
-            .or_insert_with(Vec::new);
+        let venues = self.history.entry(observation.venue.clone()).or_default();
         venues.push(observation);
         if venues.len() > FLOW_HISTORY_PER_VENUE {
             venues.remove(0);

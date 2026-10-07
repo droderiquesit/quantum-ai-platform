@@ -11,10 +11,13 @@
 #   * Nothing is public. A private registry that anyone can pull from tells an
 #     attacker exactly what is running and lets them read it.
 #
-# No customer-managed key here, deliberately. A container image is not secret
-# material — it is the output of a build anyone with the repository can
-# reproduce. What matters is that it cannot be replaced or removed, which is
-# what immutable tags and the absence of a delete permission give.
+# No customer-managed key on the image repository, deliberately. A container
+# image is not secret material — it is the output of a build anyone with the
+# repository can reproduce. What matters is that it cannot be replaced or
+# removed, which is what immutable tags and the absence of a delete
+# permission give. `security_controls.rs` records it as an open SEC-046 gap,
+# not an accepted one. The two GENERIC repositories further down are keyed;
+# the key and its grant are declared beside them.
 
 resource "google_artifact_registry_repository" "images" {
   project       = var.project_id
@@ -98,6 +101,50 @@ resource "google_artifact_registry_repository_iam_member" "pull" {
   member     = "serviceAccount:${each.value}"
 }
 
+# The key for the two GENERIC repositories (SEC-046).
+#
+# A deployment bundle carries the configuration a deployment ran under and
+# the policy it was bound by, and the Rust packages are what a reproducible
+# build is reproduced from. Under Google's default key nobody here could
+# disable either when it mattered, and no audit log of this platform's would
+# record the key's use. Ninety-day rotation and the root's protection level,
+# as every other key in the ring.
+resource "google_kms_crypto_key" "registry" {
+  name            = "qip-${var.environment}-registry"
+  key_ring        = var.key_ring_id
+  rotation_period = "7776000s"
+
+  version_template {
+    algorithm        = "GOOGLE_SYMMETRIC_ENCRYPTION"
+    protection_level = var.kms_protection_level
+  }
+
+  # Destroying the key leaves every package and bundle listed and unreadable,
+  # which is deletion that no delete permission was needed for.
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  labels = var.labels
+}
+
+# Artifact Registry encrypts and decrypts as its own service agent, not as
+# the caller, so the agent holds the key and nothing else does. The agent is
+# created lazily; the identity forces it to exist before the grant names it.
+resource "google_project_service_identity" "artifact_registry" {
+  provider = google-beta
+  project  = var.project_id
+  service  = "artifactregistry.googleapis.com"
+}
+
+resource "google_kms_crypto_key_iam_member" "artifact_registry_agent" {
+  crypto_key_id = google_kms_crypto_key.registry.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:service-${var.project_number}@gcp-sa-artifactregistry.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service_identity.artifact_registry]
+}
+
 # Rust package repository for Cargo-published crates.
 #
 # The platform's Rust libraries are published as a private registry for
@@ -111,9 +158,15 @@ resource "google_artifact_registry_repository" "rust_packages" {
   description   = "Rust packages for the qip ${var.environment} platform."
   format        = "GENERIC"
 
+  # Customer-managed, from the environment's ring. The grant comes first: a
+  # repository created before its agent can use the key is refused.
+  kms_key_name = google_kms_crypto_key.registry.id
+
   cleanup_policy_dry_run = true
 
   labels = var.labels
+
+  depends_on = [google_kms_crypto_key_iam_member.artifact_registry_agent]
 }
 
 # CI can push Rust packages.
@@ -157,9 +210,14 @@ resource "google_artifact_registry_repository" "deployment_bundles" {
   description   = "Deployment bundles for the qip ${var.environment} platform."
   format        = "GENERIC"
 
+  # The same key as the Rust packages, behind the same grant.
+  kms_key_name = google_kms_crypto_key.registry.id
+
   cleanup_policy_dry_run = true
 
   labels = var.labels
+
+  depends_on = [google_kms_crypto_key_iam_member.artifact_registry_agent]
 }
 
 # CI can push deployment bundles.

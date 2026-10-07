@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -22,7 +16,7 @@ fn fills_attributed_to_original_order() {
         let content = fs::read_to_string(&events_path).unwrap_or_default();
 
         assert!(
-            content.contains("Fill") || content.contains("fill") || content.len() > 0,
+            content.contains("Fill") || content.contains("fill") || !content.is_empty(),
             "Events must define fills with order attribution"
         );
     }
@@ -37,7 +31,7 @@ fn partial_fills_tracked_separately() {
         let content = fs::read_to_string(&edge_path).unwrap_or_default();
 
         assert!(
-            content.contains("partial") || content.contains("quantity") || content.len() > 0,
+            content.contains("partial") || content.contains("quantity") || !content.is_empty(),
             "Cell must track partial fills against order quantity"
         );
     }
@@ -52,7 +46,7 @@ fn fill_timestamp_recorded_from_venue() {
         let content = fs::read_to_string(&events_path).unwrap_or_default();
 
         assert!(
-            content.contains("time") || content.contains("timestamp") || content.len() > 0,
+            content.contains("time") || content.contains("timestamp") || !content.is_empty(),
             "Fills must record venue-reported timestamp"
         );
     }
@@ -69,7 +63,7 @@ fn fill_price_used_for_cost_tracking() {
         let content = fs::read_to_string(&platform_path).unwrap_or_default();
 
         assert!(
-            content.contains("fill") || content.contains("Fill") || content.len() > 0,
+            content.contains("fill") || content.contains("Fill") || !content.is_empty(),
             "Platform must process fill prices for cost calculation"
         );
     }

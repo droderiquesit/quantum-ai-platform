@@ -697,9 +697,7 @@ impl CentralPlane {
                 ) {
                     return None;
                 }
-                let Some(next) = stage.next() else {
-                    return None;
-                };
+                let next = stage.next()?;
                 if next.requires_human_approval() {
                     return None;
                 }

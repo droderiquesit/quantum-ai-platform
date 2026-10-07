@@ -1,28 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
 fn quantum_service_exists() {
-    let root = repo_root();
-    let quantum_path = root
-        .join("crates/services")
-        .join("qip-quantum-optimization/src/lib.rs");
-
-    if quantum_path.exists() {
-        assert!(true, "Quantum optimization service found");
-    }
+    // Placeholder: this test asserts nothing and cannot fail.
 }
 
 #[test]
@@ -53,7 +40,7 @@ fn quantum_results_validated_against_baseline() {
         let content = fs::read_to_string(&platform_path).unwrap_or_default();
 
         assert!(
-            content.contains("quantum") || content.contains("Quantum") || content.len() > 0,
+            content.contains("quantum") || content.contains("Quantum") || !content.is_empty(),
             "Platform must validate quantum results against classical baseline"
         );
     }
@@ -69,7 +56,7 @@ fn qiskit_integration_for_qaoa() {
         let content = fs::read_to_string(&cargo_lock).unwrap_or_default();
 
         assert!(
-            content.len() > 0,
+            !content.is_empty(),
             "Cargo.lock must exist for reproducible builds"
         );
     }

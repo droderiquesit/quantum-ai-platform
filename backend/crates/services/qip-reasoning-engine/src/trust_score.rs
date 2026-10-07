@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn source_trust_starts_at_ceiling() {
         let trust = SourceTrust::new("reuters", 0.9, Timestamp::from_secs(1_760_000_000)).unwrap();
-        assert_eq!(trust.current_score, 0.9);
+        assert!((trust.current_score - 0.9).abs() < 1e-10);
         assert_eq!(trust.corroborations, 0);
         assert_eq!(trust.contradictions, 0);
     }
@@ -303,8 +303,8 @@ mod tests {
 
         // Should move 10% of gap to ceiling: (0.9 - 0.70) * 0.10 = 0.02
         assert_eq!(update.outcome, TrustOutcome::Corroborated);
-        assert_eq!(update.new_score, 0.72);
-        assert_eq!(trust.current_score, 0.72);
+        assert!((update.new_score - 0.72).abs() < 1e-10);
+        assert!((trust.current_score - 0.72).abs() < 1e-10);
         assert_eq!(trust.corroborations, 1);
     }
 
@@ -339,7 +339,7 @@ mod tests {
                 Timestamp::from_secs(1_760_001_000),
             )
             .unwrap();
-        assert_eq!(trust.current_score, 0.81);
+        assert!((trust.current_score - 0.81).abs() < 1e-10);
 
         // One contradiction moves down by 0.81 * 0.20 = 0.162, net effect
         trust

@@ -44,8 +44,8 @@ run "explicit_lock_true_standard_retention" {
   command = plan
 
   variables {
-    retention_days       = 2557
-    retention_locked     = true
+    retention_days          = 2557
+    retention_locked        = true
     writer_service_accounts = {}
     reader_service_accounts = {}
   }
@@ -65,8 +65,8 @@ run "longer_retention_period_remains_locked" {
   command = plan
 
   variables {
-    retention_days       = 3650  # ~10 years
-    retention_locked     = true
+    retention_days          = 3650 # ~10 years
+    retention_locked        = true
     writer_service_accounts = {}
     reader_service_accounts = {}
   }
@@ -80,25 +80,28 @@ run "longer_retention_period_remains_locked" {
   }
 }
 
-# --- Mutation: setting retention_locked=false is allowed to plan ----------
-# (but represents a warning that the store is no longer structurally protected)
+# --- Mutation: setting retention_locked=false is refused at plan ----------
+#
+# This run was named `retention_locked_false_plans_but_loses_structural_protection`
+# and asserted the plan admitted `false` with an unlocked policy. It was
+# written (02c434be) against a module that already refused `false`: GOV-023
+# (03a3b7db), earlier the same day, added the validation on
+# `retention_locked`, and `immutable-retention.tftest.hcl` proves it fires.
+# An evidence store that can be planned unlocked is append-only by
+# convention, which is what GOV-023 exists to stop, so the run keeps its
+# inputs and now proves the refusal rather than the opposite of it.
 
-run "retention_locked_false_plans_but_loses_structural_protection" {
+run "retention_locked_false_is_refused_and_never_plans_unlocked" {
   command = plan
 
   variables {
-    retention_days       = 2557
-    retention_locked     = false  # Mutation: structural protection removed
+    retention_days          = 2557
+    retention_locked        = false # Mutation: structural protection removed
     writer_service_accounts = {}
     reader_service_accounts = {}
   }
 
-  assert {
-    condition = (
-      google_storage_bucket.evidence.retention_policy[0].is_locked == false
-    )
-    error_message = "is_locked must reflect the variable value (this config loses structural protection)"
-  }
+  expect_failures = [var.retention_locked]
 }
 
 # --- Versioning is enabled by default ----------
@@ -127,8 +130,11 @@ run "uniform_bucket_level_access_enforced" {
     reader_service_accounts = {}
   }
 
+  # A boolean argument on `google_storage_bucket`, not a block: the `[0].enabled`
+  # this read is the shape of the older `bucket_policy_only` block and has no
+  # index to take.
   assert {
-    condition     = google_storage_bucket.evidence.uniform_bucket_level_access[0].enabled == true
+    condition     = google_storage_bucket.evidence.uniform_bucket_level_access == true
     error_message = "uniform bucket-level access must be enabled"
   }
 }

@@ -150,8 +150,8 @@ run "path_rules_use_source_zone_network_for_egress" {
 
   variables {
     zones = {
-      "execution"       = { region = "us-east4", subnet_cidr = "10.90.8.0/24" }
-      "control-fabric"  = { region = "us-east4", subnet_cidr = "10.90.7.0/24" }
+      "execution"      = { region = "us-east4", subnet_cidr = "10.90.8.0/24" }
+      "control-fabric" = { region = "us-east4", subnet_cidr = "10.90.7.0/24" }
     }
 
     permitted_paths = {
@@ -224,4 +224,20 @@ run "public_ingress_rules_use_zone_network" {
     condition     = alltrue([for _, rule in google_compute_firewall.public_ingress : rule.network == "projects/tz-three-networks-harness/global/networks/service" if strcontains(rule.name, "public-edge-https")])
     error_message = "Public ingress rule should use zone's network (Service for public-edge)"
   }
+}
+
+# The refusing half, which this file did not have. Placement is a lookup by
+# zone name, so a misspelt execution zone would have no network the hot path
+# was meant for. The module refuses a name outside §46.1's thirteen at plan,
+# before any subnet is placed on any of the three networks.
+run "a_misspelt_execution_zone_is_refused_rather_than_placed" {
+  command = plan
+
+  variables {
+    zones = {
+      "executon" = { region = "us-east4", subnet_cidr = "10.90.8.0/24" }
+    }
+  }
+
+  expect_failures = [var.zones]
 }

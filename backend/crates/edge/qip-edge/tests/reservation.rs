@@ -28,7 +28,7 @@ use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Labels, Metrics, labels};
 use qip_orderbook::venue::VenueState;
-use qip_risk_engine::autonomy::{AutonomyLevel, Identification, OperatorIdentity};
+use qip_risk_engine::autonomy::{AutonomyLevel, OperatorIdentity};
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::compile::{CompiledStrategy, StrategyCompiler};
 use qip_strategy::ir::{Expr, Rule, StrategySpec};

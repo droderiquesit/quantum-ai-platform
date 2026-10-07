@@ -1,16 +1,9 @@
-use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -21,15 +14,15 @@ fn arch_75_final_validation_1() {
 
 #[test]
 fn arch_75_final_validation_2() {
-    assert!(true, "ARCH-075 complete");
+    // Placeholder: this test asserts nothing and cannot fail.
 }
 
 #[test]
 fn arch_75_final_validation_3() {
-    assert!(true, "All tests passing");
+    // Placeholder: this test asserts nothing and cannot fail.
 }
 
 #[test]
 fn arch_75_blueprint_complete() {
-    assert!(true, "Architecture requirement 75 satisfied");
+    // Placeholder: this test asserts nothing and cannot fail.
 }

@@ -56,8 +56,13 @@ run "one_cell_in_shadow_mode_is_admitted" {
     error_message = "A cell in shadow mode has no venue paths."
   }
 
+  # The Google APIs range is the restricted VIP, 199.36.153.4/30 — the
+  # module's default since SEC-072 (`4e5d3727`), which moved every module off
+  # the private VIP (199.36.153.8/30) because only the restricted one serves
+  # APIs a VPC Service Controls perimeter can protect. This assertion still
+  # named the private range.
   assert {
-    condition     = output.central_plane_ranges == tolist(["10.250.0.0/24", "199.36.153.8/30"])
+    condition     = output.central_plane_ranges == tolist(["10.250.0.0/24", "199.36.153.4/30"])
     error_message = "The central plane ranges are every trust-zone subnet followed by the Google APIs range, and nothing else."
   }
 }

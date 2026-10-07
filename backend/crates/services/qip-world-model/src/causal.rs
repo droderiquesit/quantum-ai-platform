@@ -88,6 +88,19 @@ pub enum Mechanism {
     CommonOwnership,
     /// Regulatory action applying across an industry.
     Regulatory,
+    /// A weather event or atmospheric condition affecting supply chain logistics or commodity production.
+    Weather,
+    /// Transportation costs or logistics availability affecting commodity markets or downstream pricing.
+    Logistics,
+    /// A geopolitical event affecting trade flows, sanctions, or regulatory environment.
+    Geopolitical,
+    /// A commodity price moving the currency of the economy that exports it.
+    ///
+    /// The commodity-to-currency link in WORLD-004's worked chain (weather,
+    /// shipping, commodity basis, FX). [`Self::CurrencyTranslation`] runs the
+    /// other way, a currency move altering translated revenue, so a chain
+    /// that reached FX through it named the effect as the cause.
+    TermsOfTrade,
     /// Established only by lagged statistical precedence (blueprint §9.2's
     /// Granger-style method, via [`crate::granger::establish_temporal_precedence`]),
     /// same direction. No economic channel is proposed — the effect is that
@@ -118,6 +131,10 @@ impl Mechanism {
             Self::IndexFlow => "index_flow",
             Self::CommonOwnership => "common_ownership",
             Self::Regulatory => "regulatory",
+            Self::Weather => "weather",
+            Self::Logistics => "logistics",
+            Self::Geopolitical => "geopolitical",
+            Self::TermsOfTrade => "terms_of_trade",
             Self::TemporalPrecedence => "temporal_precedence",
             Self::InverseTemporalPrecedence => "inverse_temporal_precedence",
         }
@@ -138,6 +155,16 @@ impl Mechanism {
             Self::IndexFlow => "index membership forces mechanical buying or selling",
             Self::CommonOwnership => "shared holders liquidate correlated positions",
             Self::Regulatory => "a regulatory action applies across the industry",
+            Self::Weather => {
+                "a weather event or atmospheric condition affects supply chain or commodity production"
+            }
+            Self::Logistics => {
+                "transportation costs or logistics availability moves commodity markets or downstream pricing"
+            }
+            Self::Geopolitical => {
+                "a geopolitical event affects trade flows or regulatory environment"
+            }
+            Self::TermsOfTrade => "an export commodity's price moves its exporter's currency",
             Self::TemporalPrecedence => {
                 "the cause's past co-moves with the effect's future, established only by a \
                  lagged statistical test — no mechanism is proposed"
@@ -156,6 +183,12 @@ impl Mechanism {
     /// lag coefficient names an opposite move rather than a shared one.
     /// Treating either as same-signed would produce a thesis pointed exactly
     /// backwards.
+    ///
+    /// [`Self::Weather`], [`Self::Logistics`], [`Self::Geopolitical`] and
+    /// [`Self::TermsOfTrade`] fall under the default and are same-signed.
+    /// That is a choice, not a finding: a sanction can raise a commodity's
+    /// price and weaken an importer's currency at once, and an edge that
+    /// inverts its cause cannot be claimed under any of the four.
     pub fn preserves_sign(&self) -> bool {
         !matches!(
             self,

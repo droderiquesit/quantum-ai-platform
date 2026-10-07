@@ -151,9 +151,9 @@ resource "google_storage_bucket" "archive" {
   # while expiring raw captures to avoid unbounded growth (TICK-037).
   lifecycle_rule {
     condition {
-      age             = 30
-      prefix_match    = ["lake/class=market/"]
-      matches_storage = ["STANDARD"]
+      age                   = 30
+      matches_prefix        = ["lake/class=market/"]
+      matches_storage_class = ["STANDARD"]
     }
     action {
       type          = "SetStorageClass"
@@ -165,8 +165,8 @@ resource "google_storage_bucket" "archive" {
   # for transient market history per TICK-037; raw bytes not kept beyond this).
   lifecycle_rule {
     condition {
-      age          = 90
-      prefix_match = ["lake/class=market/"]
+      age            = 90
+      matches_prefix = ["lake/class=market/"]
     }
     action {
       type = "Delete"
@@ -179,9 +179,9 @@ resource "google_storage_bucket" "archive" {
   # Transition to COLDLINE for cost optimization but never delete (TICK-037).
   lifecycle_rule {
     condition {
-      age             = 180
-      prefix_match    = ["lake/class=internal/"]
-      matches_storage = ["STANDARD"]
+      age                   = 180
+      matches_prefix        = ["lake/class=internal/"]
+      matches_storage_class = ["STANDARD"]
     }
     action {
       type          = "SetStorageClass"
@@ -193,9 +193,9 @@ resource "google_storage_bucket" "archive" {
   # Not prefixed by class=, so stored at lake root or in other paths.
   lifecycle_rule {
     condition {
-      age             = 365
-      matches_storage = ["STANDARD"]
-      prefix_match    = ["lake/"]
+      age                   = 365
+      matches_storage_class = ["STANDARD"]
+      matches_prefix        = ["lake/"]
     }
     action {
       type          = "SetStorageClass"
@@ -205,9 +205,9 @@ resource "google_storage_bucket" "archive" {
 
   lifecycle_rule {
     condition {
-      age             = 730
-      matches_storage = ["NEARLINE"]
-      prefix_match    = ["lake/"]
+      age                   = 730
+      matches_storage_class = ["NEARLINE"]
+      matches_prefix        = ["lake/"]
     }
     action {
       type          = "SetStorageClass"

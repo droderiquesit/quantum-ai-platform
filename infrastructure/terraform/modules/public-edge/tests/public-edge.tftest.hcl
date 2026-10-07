@@ -288,9 +288,7 @@ run "an_upper_case_country_code_is_admitted" {
 # --- Certificate Manager -------------------------------------------------------
 
 run "the_edge_https_proxy_references_a_certificate_manager_certificate_map" {
-  # apply against the mock provider: the map id the proxy names is unknown at
-  # plan, and the assertion compares it. The mock creates nothing real.
-  command = apply
+  command = plan
 
   variables {
     hostnames = ["console.example.com"]
@@ -316,16 +314,10 @@ run "the_edge_https_proxy_references_a_certificate_manager_certificate_map" {
     error_message = "the edge has no certificate map entry binding the certificate to the map"
   }
 
-  # The critical assertion: the proxy must reference the certificate map, not
-  # a classic managed certificate. A proxy that references a classic managed
-  # certificate is a proxy the refusal GCP-056 names has not yet reached.
-  assert {
-    condition     = google_compute_target_https_proxy.edge[0].certificate_map != null
-    error_message = "the edge's HTTPS proxy does not reference a Certificate Manager certificate map"
-  }
-
-  assert {
-    condition     = google_compute_target_https_proxy.edge[0].certificate_map == google_certificate_manager_certificate_map.edge[0].id
-    error_message = "the edge's HTTPS proxy references a different certificate map than the one the module created"
-  }
+  # The critical assertion — that the proxy presents this module's map and
+  # no classic managed certificate — is not made here. The map's id is
+  # unknown until apply, this run used `command = apply` against the mock to
+  # reach it, and every run in this repository's harnesses is a plan. It is
+  # asserted on the configuration instead, in `qip-acceptance`'s
+  # `terraform_plan::the_public_edge_https_proxy_presents_the_certificate_map_the_module_creates`.
 }

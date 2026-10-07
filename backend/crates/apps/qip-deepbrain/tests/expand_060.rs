@@ -103,5 +103,7 @@ fn expand_060_requirement_is_validated_by_expansion_test() {
     //
     // This test file exists to demonstrate that the EXPAND-060 infrastructure
     // (deriving and exposing these sets from production sources) is in place.
-    assert!(true); // Placeholder; the real validation is in expansion tests
+    //
+    // Placeholder: this test asserts nothing and cannot fail; the real
+    // validation is in the expansion tests named above.
 }

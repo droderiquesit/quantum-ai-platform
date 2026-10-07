@@ -814,7 +814,16 @@ resource "google_compute_instance_template" "standby" {
 
   machine_type = var.machine_type
   labels       = var.labels
-  tags         = [local.standby_node_tag]
+
+  # The primary's tag as well as its own. The standby is promoted to hold the
+  # same cell, so it reaches exactly what the primary reaches — Google APIs,
+  # the central plane and, out of shadow mode, the venues — through the
+  # primary's rules rather than copies of them, and its shell is the one IAP
+  # rule. Copies were how it once had a second rule opening port 22 and three
+  # egress allows no test read (2026-10-06). Its own tag carries only what is
+  # the standby's alone: the fencing ingress, its health-check allow, and a
+  # deny-all each way that stays in force if the shared tag is ever dropped.
+  tags = [local.node_tag, local.standby_node_tag]
 
   dynamic "reservation_affinity" {
     for_each = google_compute_reservation.standby
@@ -931,7 +940,7 @@ resource "google_compute_instance_group_manager" "standby" {
   }
 
   auto_healing_policies {
-    health_check = google_compute_health_check.standby[0].id
+    health_check      = google_compute_health_check.standby[0].id
     initial_delay_sec = 300
   }
 
@@ -940,7 +949,9 @@ resource "google_compute_instance_group_manager" "standby" {
   }
 }
 
-# Standby firewall rules (deny-all egress, Google APIs, health checks)
+# Standby firewall rules: its own deny-all in each direction and its own
+# health-check allow. Every other allow it needs is the primary's, reached
+# through the shared tag on its template.
 resource "google_compute_firewall" "standby_deny_egress" {
   count = var.standby_enabled ? 1 : 0
 
@@ -956,67 +967,6 @@ resource "google_compute_firewall" "standby_deny_egress" {
   }
 
   destination_ranges = ["0.0.0.0/0"]
-  target_tags        = [local.standby_node_tag]
-
-  log_config {
-    metadata = "INCLUDE_ALL_METADATA"
-  }
-}
-
-resource "google_compute_firewall" "standby_google_apis" {
-  count = var.standby_enabled ? 1 : 0
-
-  project = var.project_id
-  name    = "${local.standby_name}-google-apis"
-  network = var.network_id
-
-  direction = "EGRESS"
-  priority  = 1000
-
-  allow {
-    protocol = "tcp"
-    ports    = ["443"]
-  }
-
-  destination_ranges = [var.google_apis_range]
-  target_tags        = [local.standby_node_tag]
-}
-
-resource "google_compute_firewall" "standby_central_plane" {
-  count = var.standby_enabled && length(var.central_plane_ranges) > 0 ? 1 : 0
-
-  project = var.project_id
-  name    = "${local.standby_name}-central-plane"
-  network = var.network_id
-
-  direction = "EGRESS"
-  priority  = 1000
-
-  allow {
-    protocol = "tcp"
-    ports    = ["443", "8080"]
-  }
-
-  destination_ranges = var.central_plane_ranges
-  target_tags        = [local.standby_node_tag]
-}
-
-resource "google_compute_firewall" "standby_venues" {
-  for_each = var.standby_enabled && !var.shadow_mode ? var.venues : {}
-
-  project = var.project_id
-  name    = "${local.standby_name}-venue-${lower(each.key)}"
-  network = var.network_id
-
-  direction = "EGRESS"
-  priority  = 1000
-
-  allow {
-    protocol = "tcp"
-    ports    = [tostring(each.value.port)]
-  }
-
-  destination_ranges = [each.value.cidr]
   target_tags        = [local.standby_node_tag]
 
   log_config {
@@ -1040,25 +990,6 @@ resource "google_compute_firewall" "standby_health_checks" {
   }
 
   source_ranges = ["35.191.0.0/16", "130.211.0.0/22"]
-  target_tags   = [local.standby_node_tag]
-}
-
-resource "google_compute_firewall" "standby_iap_ssh" {
-  count = var.standby_enabled ? 1 : 0
-
-  project = var.project_id
-  name    = "${local.standby_name}-iap-ssh"
-  network = var.network_id
-
-  direction = "INGRESS"
-  priority  = 1000
-
-  allow {
-    protocol = "tcp"
-    ports    = ["22"]
-  }
-
-  source_ranges = ["35.235.240.0/20"]
   target_tags   = [local.standby_node_tag]
 }
 

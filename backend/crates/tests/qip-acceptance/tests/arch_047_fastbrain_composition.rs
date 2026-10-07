@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -42,13 +36,13 @@ fn fastbrain_no_quantum_logic() {
     let fastbrain_src = root.join("crates/apps/qip-fastbrain/src");
     if let Ok(entries) = fs::read_dir(&fastbrain_src) {
         for entry in entries {
-            if let Ok(e) = entry {
-                if let Ok(content) = fs::read_to_string(&e.path()) {
-                    assert!(
-                        !content.contains("quantum") || !content.contains("qiskit"),
-                        "FastBrain has no quantum path"
-                    );
-                }
+            if let Ok(e) = entry
+                && let Ok(content) = fs::read_to_string(e.path())
+            {
+                assert!(
+                    !content.contains("quantum") || !content.contains("qiskit"),
+                    "FastBrain has no quantum path"
+                );
             }
         }
     }
@@ -56,9 +50,5 @@ fn fastbrain_no_quantum_logic() {
 
 #[test]
 fn fastbrain_warm_path_only() {
-    let root = repo_root();
-    let main_rs = root.join("crates/apps/qip-fastbrain/src").join("main.rs");
-    if main_rs.exists() {
-        assert!(true, "FastBrain warm execution only");
-    }
+    // Placeholder: this test asserts nothing and cannot fail.
 }

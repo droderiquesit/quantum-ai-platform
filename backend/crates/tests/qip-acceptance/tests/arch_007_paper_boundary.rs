@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -58,8 +52,8 @@ fn composition_roots_refuse_live_at_startup() {
             .join(format!("crates/apps/{}/src", binary))
             .join("main.rs");
         if main_path.exists() {
-            let content =
-                fs::read_to_string(&main_path).expect(&format!("could not read {}", binary));
+            let content = fs::read_to_string(&main_path)
+                .unwrap_or_else(|_| panic!("could not read {}", binary));
 
             assert!(
                 content.contains("AutonomyLevel") || content.contains("autonomy"),

@@ -1357,7 +1357,7 @@ fn a_market_memory_marked_model_derived_without_version_is_refused() {
         volume_pct_adv: 1.0,
         spread_move_bps: None,
         at: start(),
-        measured_at: start().saturating_add(Duration::from_secs(1 * 60)),
+        measured_at: start().saturating_add(Duration::from_secs(60)),
         model_version: None,
         model_derived: true,
     };
@@ -1401,7 +1401,7 @@ fn a_market_memory_with_empty_id_is_refused() {
         volume_pct_adv: 1.0,
         spread_move_bps: None,
         at: start(),
-        measured_at: start().saturating_add(Duration::from_secs(1 * 60)),
+        measured_at: start().saturating_add(Duration::from_secs(60)),
         model_version: None,
         model_derived: false,
     };
@@ -1442,7 +1442,7 @@ fn failure_and_market_memory_types_serialize_and_deserialize_with_lineage() {
         volume_pct_adv: 1.5,
         spread_move_bps: Some(5.0),
         at: start(),
-        measured_at: start().saturating_add(Duration::from_secs(1 * 60)),
+        measured_at: start().saturating_add(Duration::from_secs(60)),
         model_version: Some("v2.0.0".to_string()),
         model_derived: false,
     };

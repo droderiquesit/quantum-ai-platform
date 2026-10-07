@@ -10,8 +10,7 @@ use qip_contracts::venue::VenueId;
 use qip_core::{Currency, dec};
 
 #[test]
-fn a_capital_transfer_through_an_active_corridor_is_sized_across_two_asset_classes()
--> Result<(), Box<dyn std::error::Error>> {
+fn a_capital_transfer_through_an_active_corridor_is_sized_across_two_asset_classes() {
     // A corridor moves capital between two locations that differ in currency.
     // The transfer gate vetos unless the purpose (stated as deviation reduction)
     // is well-formed: target < current, proving the transfer lowers risk.
@@ -47,7 +46,8 @@ fn a_capital_transfer_through_an_active_corridor_is_sized_across_two_asset_class
     // Act: state a transfer purpose as deviation reduction.
     // Current expected shortfall: $10,000. Target: $5,000.
     // Deviation after < deviation before: the transfer reduces risk.
-    let purpose = StatedPurpose::new(dec!("10000"), dec!("5000"))?;
+    let purpose = StatedPurpose::new(dec!("10000"), dec!("5000"))
+        .expect("two non-negative deviations state a purpose");
 
     // Assert: the purpose articulates a risk reduction.
     assert!(
@@ -58,11 +58,10 @@ fn a_capital_transfer_through_an_active_corridor_is_sized_across_two_asset_class
     // Assert: a stated purpose can represent a transfer that does not reduce deviation.
     // The gate structure itself (a veto mechanism) will reject such intents,
     // using reduces_deviation() to check the purpose; the gate is in ADR 0021.
-    let non_reducing_purpose = StatedPurpose::new(dec!("5000"), dec!("10000"))?;
+    let non_reducing_purpose = StatedPurpose::new(dec!("5000"), dec!("10000"))
+        .expect("two non-negative deviations state a purpose");
     assert!(
         !non_reducing_purpose.reduces_deviation(),
         "a purpose that increases deviation fails the reduces_deviation check"
     );
-
-    Ok(())
 }

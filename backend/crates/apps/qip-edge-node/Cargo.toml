@@ -63,10 +63,6 @@ qip-routing.workspace = true
 # is this binary's own reflex-ring-to-spool-to-drain composition, so the
 # envelope type is a production dependency here, not a test-only fixture.
 qip-events.workspace = true
-# Event venue adapters: prediction markets and other event-based venues feed
-# directly to the cell on the hot path (EXEC-038). The adapter contract and
-# the synthetic venue for testing live here.
-qip-prediction.workspace = true
 
 [dev-dependencies]
 # ADR 0100 § 1's broker library (qip-streaming::event_fabric). Dev-only: this

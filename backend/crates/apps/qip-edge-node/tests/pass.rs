@@ -14,7 +14,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::CapitalEnvelope;
-use qip_contracts::message::MessageBody;
 use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
@@ -34,7 +33,6 @@ use qip_edge::telemetry::{
     CellMetrics, EDGE_FILLS_CONFIRMED, EDGE_ORDERS_REPRICED, EDGE_SETTLEMENT_UNPROJECTED,
 };
 use qip_edge_node::allocation::RegionCapital;
-use qip_edge_node::event_venues::EventVenue;
 use qip_edge_node::feed::{FEED_VARIABLE, FeedChoice, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::mesh::{MeshLink, MeshSettings};
@@ -48,7 +46,6 @@ use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::{Labels, labels, names};
-use qip_prediction::adapter::{SyntheticPredictionVenue, SyntheticVenueConfig};
 use qip_routing::reprice::RepricePolicy;
 use qip_storage::kv::{KeyValueStore, MemoryKeyValueStore};
 use qip_strategy::catalogue::FeatureCatalogue;
@@ -3462,7 +3459,7 @@ fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
         "the scan is not reading the serve loop"
     );
     assert!(
-        main.contains("PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?"),
+        main.contains("PassMeter::new(Arc::clone(context.metrics), REQUEST_TIMEOUT)?"),
         "the meter is no longer built on the scraped registry and the request allowance"
     );
     assert!(
@@ -3474,93 +3471,4 @@ fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
         1,
         "a second call to run_pass would be a pass nothing times"
     );
-}
-
-/// Event venues feed prediction market and commerce messages on the hot path
-/// (EXEC-038), bypassing the Fabric to reach the cell with no intermediate
-/// routing. This test proves that a synthetic event venue adapter can be
-/// instantiated and polled for messages, generating LevelSet market data
-/// the cell can consume on the pass that receives them.
-#[test]
-fn event_venue_adapter_consumes_simulated_venue_messages_on_the_pass() -> Result<()> {
-    // An event venue adapter for a prediction market, created from the
-    // deterministic synthetic venue for testing.
-    let config = SyntheticVenueConfig::demo(42)?;
-    let synthetic = SyntheticPredictionVenue::new(config, t(0))?;
-    let mut event_venue = EventVenue::new(Box::new(synthetic))?;
-
-    // First poll: market is listed and initial depth is published.
-    let update1 = event_venue.poll(t(10))?;
-    assert!(
-        !update1.messages.is_empty(),
-        "first poll should publish market listing and depth"
-    );
-
-    // Filter to LevelSet messages (first poll includes MarketListed).
-    let level_sets: Vec<_> = update1
-        .messages
-        .iter()
-        .filter(|(_, msg)| matches!(msg, MessageBody::LevelSet { .. }))
-        .collect();
-    assert!(
-        !level_sets.is_empty(),
-        "event venue should produce LevelSet messages"
-    );
-
-    // Verify both bid and ask sides are present in the messages.
-    let has_bids = level_sets.iter().any(|(_, msg)| {
-        matches!(
-            msg,
-            MessageBody::LevelSet {
-                side: qip_contracts::message::BookSide::Bid,
-                ..
-            }
-        )
-    });
-    let has_asks = level_sets.iter().any(|(_, msg)| {
-        matches!(
-            msg,
-            MessageBody::LevelSet {
-                side: qip_contracts::message::BookSide::Ask,
-                ..
-            }
-        )
-    });
-    assert!(
-        has_bids && has_asks,
-        "LevelSet messages should include both bids and asks"
-    );
-
-    // Verify prices and quantities are positive.
-    for (_, msg) in &level_sets {
-        if let MessageBody::LevelSet {
-            price, quantity, ..
-        } = msg
-        {
-            assert!(
-                price.is_positive(),
-                "level price should be positive: {price}"
-            );
-            assert!(
-                quantity.is_positive(),
-                "level quantity should be positive: {quantity}"
-            );
-        }
-    }
-
-    // On a later poll, past the synthetic venue's step interval, new depth
-    // updates are published. This demonstrates the adapter's ability to track
-    // market state changes over time.
-    let update2 = event_venue.poll(t(600))?;
-    let level_sets2: Vec<_> = update2
-        .messages
-        .iter()
-        .filter(|(_, msg)| matches!(msg, MessageBody::LevelSet { .. }))
-        .collect();
-    assert!(
-        !level_sets2.is_empty(),
-        "second poll should publish depth updates after step interval"
-    );
-
-    Ok(())
 }

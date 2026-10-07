@@ -929,9 +929,12 @@ fn hedge_is_not_a_contractual_demand() -> Result<()> {
     assert!(!DemandKind::Hedge.is_contractual());
     let asymmetry = ShortfallAsymmetry::for_kind(DemandKind::Hedge)?;
     let cash_asymmetry = ShortfallAsymmetry::for_kind(DemandKind::Cash)?;
+    // Bit-identical, not approximately equal: the hedge arm must take the
+    // cash arm's constant, and `to_bits` keeps the exact comparison without
+    // tripping `clippy::float_cmp`.
     assert_eq!(
-        asymmetry.multiple(),
-        cash_asymmetry.multiple(),
+        asymmetry.multiple().to_bits(),
+        cash_asymmetry.multiple().to_bits(),
         "hedge should apply the same asymmetry as cash (non-contractual demand)"
     );
     let margin_asymmetry = ShortfallAsymmetry::for_kind(DemandKind::Margin)?;

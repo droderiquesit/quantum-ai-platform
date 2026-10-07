@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -37,7 +31,7 @@ fn cost_router_implements_determinism_gates() {
         let content = fs::read_to_string(&cost_router_path).unwrap_or_default();
 
         assert!(
-            content.contains("Determinism") || content.len() > 0,
+            content.contains("Determinism") || !content.is_empty(),
             "Cost router must implement Determinism gates"
         );
     }
@@ -54,7 +48,7 @@ fn determinism_required_refuses_model_output() {
         let content = fs::read_to_string(&cost_router_path).unwrap_or_default();
 
         assert!(
-            content.contains("Required") || content.len() > 0,
+            content.contains("Required") || !content.is_empty(),
             "Determinism::Required must make model output structurally impossible"
         );
     }
@@ -71,7 +65,7 @@ fn cost_router_records_rung_selection() {
         let content = fs::read_to_string(&platform_path).unwrap_or_default();
 
         assert!(
-            content.contains("cost") || content.contains("Cost") || content.len() > 0,
+            content.contains("cost") || content.contains("Cost") || !content.is_empty(),
             "Platform must record cost router decisions for auditability"
         );
     }

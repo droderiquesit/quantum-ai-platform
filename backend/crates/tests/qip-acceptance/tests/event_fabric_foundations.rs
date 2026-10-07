@@ -76,12 +76,6 @@ fn fabric_005_reflex_mesh_coordination_stays_off_the_fabric() {
         component_state.get(&ComponentType::RefexMesh),
         Some(&ComponentState::Severed)
     );
-
-    // Both cells keep journaling to and receiving control from their regional fabric
-    let outcomes_journaled = vec!["outcome-1", "outcome-2", "outcome-3"];
-    let control_received = vec!["policy-v5", "grant-100k"];
-    assert!(!outcomes_journaled.is_empty());
-    assert!(!control_received.is_empty());
 }
 
 #[test]

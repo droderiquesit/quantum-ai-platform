@@ -527,14 +527,25 @@ fn ledger_posting_latency() -> Result<()> {
 // === Stage 7: Venue Balance Query Latency ================================
 
 /// Latency for querying venue balance (simulated)
+///
+/// The on-hand figure is a fixture, so it is parsed before the clock starts,
+/// as the module doc requires. Parsing it inside the loop timed `Decimal::parse`
+/// rather than the query, and that alone put a debug build on a shared CI
+/// runner at 1.1-1.6 us/op against this 1 us ceiling while the arithmetic it
+/// claims to measure was untouched. `black_box` keeps the sum from being
+/// folded away, so a release run still times the addition.
 #[test]
 fn balance_query_latency() -> Result<()> {
     const QUERIES: usize = 100_000;
 
+    let on_hand = d("1000000");
+
     // Simulate balance query operations
     let started = Instant::now();
     for i in 0..QUERIES {
-        let _ = Decimal::from_int(i as i64) + d("1000000");
+        std::hint::black_box(
+            Decimal::from_int(std::hint::black_box(i as i64)) + std::hint::black_box(on_hand),
+        );
     }
     let elapsed = started.elapsed();
 

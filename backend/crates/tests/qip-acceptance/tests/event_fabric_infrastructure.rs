@@ -62,6 +62,7 @@ fn fabric_070_admin_tooling_partitions_drains_leadership_repairs_compacts() {
     // broker, to move partitions, drain leadership from a broker, enforce retention, repair
     // under-replicated partitions and perform offline compaction.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct PartitionAssignment {
         partition_id: u32,
@@ -70,7 +71,7 @@ fn fabric_070_admin_tooling_partitions_drains_leadership_repairs_compacts() {
     }
 
     // Initial assignment
-    let mut assignments = vec![
+    let mut assignments = [
         PartitionAssignment {
             partition_id: 0,
             leader: 1,
@@ -107,6 +108,7 @@ fn fabric_070_admin_tooling_partitions_drains_leadership_repairs_compacts() {
     assert!(!still_leads);
 
     // Admin operation: repair under-replicated partition
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     struct PartitionState {
         assignment: PartitionAssignment,
         in_sync_replicas: Vec<u32>,
@@ -169,6 +171,7 @@ fn fabric_080_credit_window_flow_control_paces_every_session() {
     // FABRIC-080: The fabric must use credit/window flow control on every session, so a
     // sender transmits only within credit its receiver has granted.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct FlowControlSession {
         sender_id: String,
@@ -217,6 +220,7 @@ fn fabric_085_broker_journals_on_persistent_hyperdisk_local_ssd_cache_only() {
     // append and read throughput; local SSD and page cache may be used only for transient
     // acceleration.
 
+    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
     #[derive(Debug, Clone)]
     enum StorageType {
         PersistentHyperdisk,
@@ -294,6 +298,7 @@ fn fabric_106_archiver_reaches_cloud_storage_over_private_google_api_access() {
     // FABRIC-106: fabric-archive must write to Cloud Storage only through private Google API
     // access, with no public-internet path.
 
+    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
     #[derive(Debug, Clone, PartialEq)]
     enum NetworkRoute {
         PrivateGoogleApi,
@@ -328,6 +333,7 @@ fn fabric_095_fabric_consumers_and_sinks_run_on_dedicated_node_pools() {
     // FABRIC-095: Fabric consumers and sink workers must run on dedicated GKE node pools that
     // no other warm service shares.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct KubernetesNodePool {
         name: String,
@@ -373,6 +379,7 @@ fn fabric_100_lost_regional_fabric_rebuilt_from_surviving_replicas_and_gcs_archi
     // FABRIC-100: A lost regional fabric must be rebuildable from surviving replicas and its
     // Cloud Storage segment archive while healthy regions continue.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct RegionalFabricRecovery {
         region: String,
@@ -404,6 +411,7 @@ fn fabric_104_regional_services_publish_policy_envelopes_grants_research_to_fabr
     // capital-grant events as P0 control, the financial outcome events they originate
     // (such as settlement events) as P1, and research, world and knowledge events as P3.
 
+    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
     #[derive(Debug)]
     enum EventType {
         Policy,
@@ -455,6 +463,7 @@ fn fabric_105_regional_services_consume_partitions_in_consumer_groups_with_repla
     // FABRIC-105: Regional warm services must consume the fabric's ordered partitions by
     // asynchronous pull/stream in consumer groups, with replay.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct ConsumerGroupMembership {
         group_id: String,
@@ -479,6 +488,7 @@ fn fabric_105_regional_services_consume_partitions_in_consumer_groups_with_repla
     }
 
     // Consumer state: offset tracking for replay
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct ConsumerOffset {
         consumer_id: String,
@@ -511,6 +521,7 @@ fn fabric_110_ambient_and_dev_agents_publish_only_at_p3_p4() {
     // engineering events into the fabric at the P3 Intelligence/Research and P4 Telemetry
     // classes only, and ACLs must refuse them P0 control and P1 outcome topics.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct AgentIdentity {
         agent_id: String,
@@ -573,6 +584,7 @@ fn fabric_111_package_controller_announces_activations_as_p0_control_through_fab
     // FABRIC-111: Model, policy and package activation announcements must be published by the
     // Release/Package Controller, and by no other producer, as P0 critical-control records.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct PackageActivationAnnouncement {
         package_id: String,
