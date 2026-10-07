@@ -30,6 +30,7 @@ pub mod finding;
 pub mod governance;
 pub mod manifest;
 pub mod memory;
+pub mod registry;
 pub mod research;
 pub mod runtime;
 pub mod tools;
@@ -43,6 +44,9 @@ pub use finding::{
 pub use governance::{AuditTrail, GovernanceFinding, Roster, Severity};
 pub use manifest::{AgentManifest, AgentRole, EscalationPolicy};
 pub use memory::{Episode, EpisodeOutcome, Lesson, PromotionPolicy, ResearchMemory};
+pub use registry::{
+    ModelFamilyRegistry, ModelFamilySpec, Registry, SpecialistRegistry, ToolRegistry, ToolSpec,
+};
 pub use runtime::{
     Agent, AgentContext, AgentHost, AgentRunRecord, Gated, Reading, RunStatus, Upstream,
 };
