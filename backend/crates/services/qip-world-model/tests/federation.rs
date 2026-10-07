@@ -6,7 +6,7 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_contracts::expansion::{Effect, EffectAttribution};
+use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::federation::{
@@ -606,21 +606,7 @@ fn an_effect_attribution_journals_an_attributed_update_citing_the_attribution_id
 
     // Create an EffectAttribution representing the observed effect of a
     // simulated intervention with proper goal, intervention, and action IDs.
-    let attribution = EffectAttribution {
-        goal_id: "goal-1".into(),
-        intervention_id: "intervention-99".into(),
-        action_id: "action-42".into(),
-        observations: vec![],
-        counterfactual_method: "simulated".into(),
-        effect: Effect {
-            mean: 0.047,
-            std_dev: 0.012,
-        },
-        confounders: vec![],
-        side_effects: vec![],
-        identifiability: 0.85,
-        resulting_updates: vec![],
-    };
+    let attribution = valid_attribution("goal-1");
 
     let before_len = f.journal().len();
     let result_pos = f.update_from_attribution(&attribution, at(100))?;
@@ -698,6 +684,85 @@ fn an_effect_attribution_with_empty_goal_id_is_refused_naming_the_field() -> Res
         err.message().to_string().contains("goal"),
         "error names the missing field: {}",
         err.message()
+    );
+    Ok(())
+}
+
+/// An attribution the contract admits: every list names at least one entry,
+/// as `EffectAttribution::validate` requires.
+fn valid_attribution(goal: &str) -> EffectAttribution {
+    EffectAttribution {
+        goal_id: goal.into(),
+        intervention_id: "intervention-99".into(),
+        action_id: "action-42".into(),
+        observations: vec![HorizonObservation {
+            horizon_ms: 60_000,
+            value: 0.047,
+        }],
+        counterfactual_method: "simulated".into(),
+        effect: Effect {
+            mean: 0.047,
+            std_dev: 0.012,
+        },
+        confounders: vec!["none identified".into()],
+        side_effects: vec!["none observed".into()],
+        identifiability: 0.85,
+        resulting_updates: vec![format!("{goal} effect prior")],
+    }
+}
+
+#[test]
+fn an_attribution_to_a_model_the_federation_does_not_hold_is_refused_and_not_journalled()
+-> Result<()> {
+    // The failure this prevents: `model_id` is the attribution's goal id,
+    // and nothing looked it up, so an update citing a model that never
+    // existed was journalled as an update to it.
+    let mut f = Federation::new();
+    register(&mut f, plain("goal-1", 1_000))?;
+    let before = f.journal().len();
+    assert!(
+        f.update_from_attribution(&valid_attribution("goal-1"), at(100))
+            .is_ok(),
+        "premise: the same attribution to a registered model is admitted"
+    );
+    let admitted = f.journal().len();
+    assert_eq!(
+        admitted,
+        before + 1,
+        "premise: the admitted one is journalled"
+    );
+
+    let refused = f.update_from_attribution(&valid_attribution("no-such-model"), at(101));
+    assert!(
+        refused.is_err(),
+        "an attribution to an unregistered model is refused"
+    );
+    assert_eq!(
+        f.journal().len(),
+        admitted,
+        "and nothing is journalled for it"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_attribution_the_contract_refuses_is_refused_and_not_journalled() -> Result<()> {
+    // The failure this prevents: the method checked only for a blank goal id
+    // and journalled attributions with no observation behind them.
+    let mut f = Federation::new();
+    register(&mut f, plain("goal-1", 1_000))?;
+    let mut unobserved = valid_attribution("goal-1");
+    unobserved.observations.clear();
+    let before = f.journal().len();
+    assert!(
+        unobserved.validate().is_err(),
+        "premise: the contract itself refuses an attribution with no observation"
+    );
+    assert!(f.update_from_attribution(&unobserved, at(100)).is_err());
+    assert_eq!(
+        f.journal().len(),
+        before,
+        "nothing journalled for a refused attribution"
     );
     Ok(())
 }

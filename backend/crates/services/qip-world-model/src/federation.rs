@@ -733,11 +733,16 @@ impl Federation {
         attribution: &EffectAttribution,
         at: Timestamp,
     ) -> Result<usize> {
-        if attribution.goal_id.trim().is_empty() {
-            return Err(Error::invalid(
-                "an effect attribution names the goal it resulted from",
-            ));
-        }
+        // Refuse what the contract refuses (blank ids, no observations, a
+        // non-finite effect, identifiability outside [0, 1], no resulting
+        // updates) rather than journal it: a record the contract would not
+        // admit cannot be replayed into anything the platform trusts.
+        attribution.validate()?;
+        // And refuse an update to a model the federation does not hold live.
+        // `model_id` is the goal id, so without this lookup an attribution
+        // citing a model that never existed, or one already closed or merged,
+        // was journalled as an update to it.
+        self.live_node_mut(&attribution.goal_id)?;
         let attribution_id = format!(
             "attr-{}-{}-{}",
             attribution.goal_id, attribution.intervention_id, attribution.action_id
