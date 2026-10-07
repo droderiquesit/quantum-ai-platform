@@ -10177,6 +10177,45 @@ impl Platform {
             }
         }
 
+        // A book the log rebuilt has already taken this action in an earlier
+        // process. The series above still needed it — bars are re-fed to
+        // every process and held in memory only — and the lot must not have
+        // it twice.
+        if self.capital.actions_taken.contains(key) {
+            return Ok(());
+        }
+
+        // Cash dividend: credit the dividend amount to cash.
+        if let qip_market::corporate_action::CorporateActionKind::CashDividend { amount } =
+            &action.kind
+        {
+            if let Some(lot) = self.capital.positions.get(object) {
+                let dividend_total = lot.quantity.checked_mul(*amount).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "the dividend of {amount} per share on {object} with quantity {} overflows; \
+                         correct the action or the holding",
+                        lot.quantity
+                    ))
+                })?;
+                self.capital.cash = self.capital.cash.checked_add(dividend_total).ok_or_else(|| {
+                    Error::numeric(format!(
+                        "adding {dividend_total} to cash overflows; the platform's equity is too large"
+                    ))
+                })?;
+                self.capital.actions_taken.insert(key.to_string());
+                self.journal_record(
+                    LotAdjusted {
+                        action: key.to_string(),
+                        object_id: object.to_string(),
+                        quantity_factor: Decimal::ONE,
+                    },
+                    BOOK_ORIGIN,
+                    now,
+                )?;
+                return Ok(());
+            }
+        }
+
         let quantity_factor = action.quantity_adjustment_factor();
         if quantity_factor == Decimal::ONE {
             return Ok(());
@@ -10187,13 +10226,6 @@ impl Platform {
                  supply a strictly positive factor — a non-positive one would flip or void a \
                  holding the platform still owns"
             )));
-        }
-        // A book the log rebuilt has already taken this action in an earlier
-        // process. The series above still needed it — bars are re-fed to
-        // every process and held in memory only — and the lot must not have
-        // it twice.
-        if self.capital.actions_taken.contains(key) {
-            return Ok(());
         }
         // Refused first, then journalled, then applied, in the order every
         // resume seam here keeps: the log has the record before the book
@@ -26714,6 +26746,28 @@ mod corporate_action_tests {
             Decimal::from_int(100),
             "a cash dividend wrote down the cost basis by its yield; the book is held at cost and \
              the dividend paid cash, so nothing about what the shares cost has changed"
+        );
+    }
+
+    #[test]
+    fn a_cash_dividend_credits_the_dividend_amount_to_cash() {
+        let mut platform = platform();
+        let cash_before = platform.capital.cash;
+        hold_a_hundred_shares(&mut platform);
+        let mut records = bars_before_the_ex_date();
+        records.push(action(CorporateActionKind::CashDividend {
+            amount: dec!("5.2"),
+        }));
+        records.push(bar_on_the_ex_date());
+        platform.observe(records);
+
+        platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+        let cash_after = platform.capital.cash;
+        assert_eq!(
+            cash_after,
+            cash_before + (Decimal::from_int(100) * dec!("5.2")),
+            "a cash dividend of 5.20 per share on 100 shares should credit 520 to cash"
         );
     }
 

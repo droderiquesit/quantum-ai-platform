@@ -164,6 +164,34 @@ pub struct BondDetails {
     pub inflation_index: Option<String>,
 }
 
+impl BondDetails {
+    /// Generate coupon dates from issue date to maturity based on coupon frequency.
+    pub fn coupon_schedule(&self) -> Vec<Timestamp> {
+        if self.coupon_frequency == CouponFrequency::Zero {
+            // Zero-coupon bond pays only at maturity
+            return vec![self.maturity];
+        }
+
+        let mut coupons = Vec::new();
+        let interval_days = match self.coupon_frequency {
+            CouponFrequency::Zero => unreachable!(),
+            CouponFrequency::Annual => 365,
+            CouponFrequency::SemiAnnual => 183,
+            CouponFrequency::Quarterly => 91,
+            CouponFrequency::Monthly => 30,
+        };
+
+        let interval = Duration::from_days(interval_days);
+        let mut current_date = self.issue_date.saturating_add(interval);
+        while current_date < self.maturity {
+            coupons.push(current_date);
+            current_date = current_date.saturating_add(interval);
+        }
+        coupons.push(self.maturity);
+        coupons
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CouponFrequency {

@@ -30,9 +30,9 @@ pub mod graph;
 pub mod inference;
 pub mod lead_lag;
 pub mod liquidity;
-pub mod reaction;
 pub mod order_flow;
 pub mod price_impact;
+pub mod reaction;
 pub mod relationship;
 pub mod resolution_source;
 pub mod spawning;
@@ -78,9 +78,9 @@ pub use liquidity::{
     Concentration, DepthObservation, LiquidityDrift, LiquidityMap, LiquidityTopology, VenueDepth,
     VenueShift,
 };
-pub use reaction::ReactionEpisode;
 pub use order_flow::{FlowDirection, FlowObservation, OrderFlowState};
 pub use price_impact::{ImpactMap, ImpactObservation, ImpactState, VenueImpactModel};
+pub use reaction::ReactionEpisode;
 pub use relationship::{Relationship, RelationshipKind};
 pub use resolution_source::{RESOLUTION_SOURCE_PREFIX, ResolutionSourceClaim};
 pub use spawning::{WorldModelBranch, WorldModelSpawner};
