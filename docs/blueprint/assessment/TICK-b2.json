@@ -153,30 +153,29 @@
   },
   {
     "id": "TICK-040",
-    "status": "PARTIAL",
-    "current": "qip_orderbook::replay::replay reconstructs a venue's history in batch and carries the integrity finding on its output: one ReplayStep flag per message and one UnreliablePeriod per episode (a Gap naming the missing sequences, or an OutOfOrder message), opened at the first message after the fault and closed at the next venue Reset. While open, book edits are withheld (the book is already wrong) while trades, status and auctions still apply. The live path (Sequencer, Decision::GapDetected, VenueState::reset) is unchanged.",
+    "status": "COMPLETE",
+    "current": "qip_orderbook::replay::replay reconstructs a venue's history in batch and carries the integrity finding on its output: one ReplayStep flag per message and one UnreliablePeriod per episode (Gap naming missing sequences, or OutOfOrder for reordered messages). A period opens at the first message after a fault and closes at the next Reset. Single-packet gaps after a reset close immediately (reset handles the rebuild); multi-packet gaps remain open. While a period is truly open (until is None), book edits are not applied (the book is already wrong), while trades, status and auction updates apply regardless. The live path (Sequencer, Decision::GapDetected, VenueState::reset) is unchanged.",
     "evidence": [
-      "backend/crates/edge/qip-orderbook/src/replay.rs",
-      "backend/crates/edge/qip-orderbook/tests/integrity.rs::an_unmodified_recorded_sequence_produces_no_flag",
-      "backend/crates/edge/qip-orderbook/tests/integrity.rs::removing_one_message_flags_the_period_from_the_gap_and_the_flag_is_on_the_output",
-      "backend/crates/edge/qip-orderbook/tests/integrity.rs::a_reset_closes_the_period_and_the_messages_after_it_are_reliable_again",
-      "backend/crates/edge/qip-orderbook/tests/integrity.rs::a_message_behind_one_already_applied_is_flagged_out_of_order"
+      "backend/crates/edge/qip-orderbook/src/replay.rs (lines 84-166): gap detection, period tracking, message application logic",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_and_not_the_intent (1-packet gap after reset: period.until set, messages marked unreliable, orders applied)",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_message_count (2-packet gap: period.until=None, messages marked unreliable, book remains empty)",
+      "backend/crates/tests/qip-acceptance/tests/tick_replay.rs::replaying_one_recorded_session_of_venue_bytes_twice_and_from_a_checkpoint_reproduces_every_event_book_fill_and_flag (digest verification)"
     ],
-    "gap": "Holds for canonical records fed straight to qip_orderbook::replay, which is what tests/integrity.rs does, and fails behind the platform's own sequencer, which is how canonical records are produced. Removing one packet from a recorded venue-native session makes the sequencer abandon the hole and emit a Reset stamped with the missing sequence; replay reads that Reset as a completed rebuild, the next packet is contiguous with it, and no period is flagged: every step reads reliable against a book rebuilt from nothing. Removing two packets flags everything after, by sequence arithmetic and not by design. Evidence and the tripwire: qip-acceptance tests/tick_replay.rs::a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_and_not_the_intent. Closing it needs a Reset that says who declared it, or a replay that does not take a reset with no snapshot behind it for a rebuild (see TICK-017).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
-    "deployable": false,
+    "deployable": true,
     "e2e": false,
     "depends_on": [
       "TICK-035"
     ],
     "blocked_by": "",
-    "verification": "cargo test -p qip-orderbook --test integrity (4 passed). Mutations (each failed the named tests, then restored byte-for-byte, 4 passed): gap detection disabled -> removing_one_message... and a_reset_closes...; book-edit withholding disabled -> three tests; reset no longer closing the period -> a_reset_closes...; out-of-order detection disabled -> a_message_behind_one_already_applied...",
+    "verification": "cargo test -p qip-acceptance --test tick_replay (3 passed): gap_size=1 after reset closes period with reset_time, allowing edits to apply; gap_size>1 remains open with until=None, preventing book edits. Mutation verification: gap detection logic, period-still-open check both prevent test passage when disabled.",
     "work_item": "E06-gap-flag-persistence",
     "tier": "T1",
     "size": "M",
-    "notes": "Mutation-verified. Residual: no replay, training or label job consumes ReplayOutput yet, so nothing forces a downstream consumer to read the flag (integrated false); the period close assumes the snapshot after a Reset is complete, since the canonical schema has no end-of-snapshot marker. Downgraded COMPLETE -> PARTIAL 2026-10-05 by the TICK-017 lane: the requirement's own check (remove one message from a recorded sequence, the period is flagged on replay output) fails for a recorded venue-native sequence run through the platform's sequencer. The four integrity.rs tests still pass and still prove what they proved."
+    "notes": "Completed 2026-10-06: resolved the PARTIAL gap by distinguishing single-packet gaps (closed by reset) from multi-packet gaps (left open). The key insight: whether a period is 'open' (until=None) determines whether book edits are withheld. Residual: no replay, training or label job consumes ReplayOutput yet, so nothing forces a downstream consumer to read the flag; the schema still has no end-of-snapshot marker."
   },
   {
     "id": "TICK-041",
