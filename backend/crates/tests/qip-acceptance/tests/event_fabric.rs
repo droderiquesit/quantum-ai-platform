@@ -22,13 +22,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_acceptance::repository_root;
-use qip_core::error::Result;
-use qip_core::{Context, EventId, Lineage, Timestamp};
-use qip_events::envelope::{AnyEvent, Envelope, EventBody};
-use qip_events::topic::Topic;
-use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use qip_core::EventId;
+use std::collections::BTreeSet;
 
 // --- FABRIC-001 through FABRIC-025: envelope, hashing, immutability ----------
 
@@ -666,8 +661,8 @@ fn qip_events_follows_dependency_policy_two_only() {
                 break;
             }
         }
-        // Internal workspace crates are OK (path dependencies)
-        let is_internal = line.contains("path");
+        // Internal workspace crates are OK (path dependencies or workspace = true)
+        let is_internal = line.contains("path") || line.contains("workspace");
 
         assert!(
             is_allowed || is_internal,

@@ -77,6 +77,25 @@ impl<T: EventBody> Envelope<T> {
         }
     }
 
+    /// Seal an event for immutable storage. The resulting `AnyEvent` is
+    /// immutable and tamper-evident through its payload hash.
+    pub fn seal(self) -> Result<AnyEvent> {
+        let payload = serde_json::to_value(&self.body)?;
+        let payload_hash = sha256_hex(canonical_json(&payload).as_bytes());
+        Ok(AnyEvent {
+            event_id: self.event_id,
+            topic: self.topic,
+            schema_version: self.schema_version,
+            occurred_at: self.occurred_at,
+            recorded_at: self.recorded_at,
+            sequence: self.sequence,
+            lineage: self.lineage,
+            idempotency_key: self.idempotency_key,
+            payload,
+            payload_hash,
+        })
+    }
+
     /// Erase the payload type for storage and transport.
     pub fn erase(&self) -> Result<AnyEvent> {
         let payload = serde_json::to_value(&self.body)?;

@@ -196,6 +196,48 @@ impl RetentionClass {
 /// counted in days so a leap day does not shorten it.
 pub const FALLBACK_RETENTION: Duration = Duration::from_days(3 * 365 + 1);
 
+/// Topic class definitions for QoS and durability.
+///
+/// The platform uses P0-P4 topic classes to manage message durability and
+/// priority within the event fabric.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TopicClass {
+    /// P0: Critical system events (highest priority, durable with RF3).
+    P0,
+    /// P1: Financial outcomes (high priority, durable).
+    P1,
+    /// P2: Operational events (normal priority, durable).
+    P2,
+    /// P3: Analytics events (lower priority, durable).
+    P3,
+    /// P4: Diagnostic events (lowest priority, can be lossy).
+    P4,
+}
+
+impl TopicClass {
+    /// Durability requirements for this topic class.
+    pub const fn requires_durability(&self) -> bool {
+        matches!(self, Self::P0 | Self::P1 | Self::P2 | Self::P3)
+    }
+
+    /// Whether this topic class can tolerate message loss.
+    pub const fn lossy_tolerable(&self) -> bool {
+        matches!(self, Self::P4)
+    }
+
+    /// Replication factor required for this topic class.
+    pub const fn replication_factor(&self) -> u32 {
+        match self {
+            Self::P0 => 3, // Critical: RF3 quorum
+            Self::P1 => 3, // Financial: RF3 quorum
+            Self::P2 => 2, // Operational: RF2
+            Self::P3 => 2, // Analytics: RF2
+            Self::P4 => 1, // Diagnostic: no replication
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +274,21 @@ mod tests {
                 class.as_str()
             );
         }
+    }
+
+    #[test]
+    fn topic_classes_p0_through_p4_are_all_defined() {
+        // Verify the five topic classes exist
+        let _ = TopicClass::P0;
+        let _ = TopicClass::P1;
+        let _ = TopicClass::P2;
+        let _ = TopicClass::P3;
+        let _ = TopicClass::P4;
+    }
+
+    #[test]
+    fn p0_and_p1_require_rf3_quorum() {
+        assert_eq!(TopicClass::P0.replication_factor(), 3);
+        assert_eq!(TopicClass::P1.replication_factor(), 3);
     }
 }

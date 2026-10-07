@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! `qip-events` — the strongly-typed event backbone.
 //!
 //! Everything the platform does is an event, and every investment decision must
