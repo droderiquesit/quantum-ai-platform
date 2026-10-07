@@ -124,12 +124,12 @@ impl PartitionTail {
 /// The test will hang on backpressure.
 #[test]
 fn the_decision_thread_uses_bounded_channel_try_send_never_blocking() -> Result<()> {
-    use std::sync::mpsc::{TrySendError, channel};
+    use std::sync::mpsc::{TrySendError, sync_channel};
     use std::time::Instant;
 
     // Create a bounded channel sized for the spool (simulating ADR 0103 §2)
     const CAPACITY: usize = 100;
-    let (sender, receiver) = channel::<u64>();
+    let (sender, receiver) = sync_channel::<u64>(CAPACITY);
 
     // Fill the channel to capacity
     for i in 0..CAPACITY {
@@ -174,10 +174,10 @@ fn the_decision_thread_uses_bounded_channel_try_send_never_blocking() -> Result<
 /// The test will detect the panic/log.
 #[test]
 fn backpressure_treated_as_control_signal_not_error() -> Result<()> {
-    use std::sync::mpsc::channel;
+    use std::sync::mpsc::sync_channel;
 
     const CAPACITY: usize = 50;
-    let (sender, _receiver) = channel::<Vec<u8>>();
+    let (sender, _receiver) = sync_channel::<Vec<u8>>(CAPACITY);
 
     // Fill the channel
     for i in 0..CAPACITY {
@@ -212,11 +212,11 @@ fn backpressure_treated_as_control_signal_not_error() -> Result<()> {
 /// The test will fill the channel and verify the backpressure was recorded.
 #[test]
 fn spool_backpressure_applies_before_next_cell_pass() -> Result<()> {
-    use std::sync::mpsc::channel;
+    use std::sync::mpsc::sync_channel;
     use std::sync::{Arc, Mutex};
 
     const CAPACITY: usize = 10;
-    let (sender, _receiver) = channel::<Vec<u8>>();
+    let (sender, _receiver) = sync_channel::<Vec<u8>>(CAPACITY);
 
     // Simulate the journal spool under load
     let backpressure_recorded = Arc::new(Mutex::new(false));
@@ -507,11 +507,11 @@ fn the_ledger_and_its_chain_tails_remain_in_sync_after_every_crash() -> Result<(
     // This simulates writing balances without partition tails
 
     // Before crash: write consistent state
-    store.put("balance:trading", "5000".as_bytes())?;
-    store.put("balance:venue", "0".as_bytes())?;
+    store.put("balance:trading", serde_json::json!("5000"))?;
+    store.put("balance:venue", serde_json::json!("0"))?;
     store.put(
         &format!("partition_tail:{}", PARTITION_KEY),
-        "tail-hash-100".as_bytes(),
+        serde_json::json!("tail-hash-100"),
     )?;
 
     // Simulate crash: process dies
@@ -529,12 +529,12 @@ fn the_ledger_and_its_chain_tails_remain_in_sync_after_every_crash() -> Result<(
 
     // Verify the values match expectations
     assert_eq!(
-        String::from_utf8(balance_trading.unwrap()).unwrap(),
+        balance_trading.unwrap().as_str().unwrap(),
         "5000",
         "balance was corrupted by crash"
     );
     assert_eq!(
-        String::from_utf8(partition_tail.unwrap()).unwrap(),
+        partition_tail.unwrap().as_str().unwrap(),
         "tail-hash-100",
         "partition tail was lost by crash"
     );

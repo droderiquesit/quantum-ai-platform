@@ -670,8 +670,10 @@ fn feature_evaluation_costs_the_same_per_message_however_many_the_engine_has_alr
     // Load-invariant, unlike the ceiling above: both halves are measured on
     // this machine moments apart, so contention divides out of the ratio
     // instead of being subtracted from the margin.
-    const SMALL: usize = 5_000;
-    const LARGE: usize = 25_000;
+    // Updated to match REFLEX-023 requirement: 10^3 vs 10^6 to catch
+    // cost growth with history length. Cost ratio must stay <= 2.0.
+    const SMALL: usize = 1_000;
+    const LARGE: usize = 1_000_000;
     let symbols = ["ACME", "BOREAS", "CERES", "DORIS"];
 
     let feed = |total: usize| -> Result<(WallDuration, usize)> {
