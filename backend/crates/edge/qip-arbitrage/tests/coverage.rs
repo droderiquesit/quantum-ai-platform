@@ -14,8 +14,9 @@
 
 use qip_arbitrage::coverage::{Tradable, TradableRegistry};
 use qip_arbitrage::graph::{ArbitrageGraph, EdgeKind, Node, VenueFacts};
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::BookSide;
-use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, ObjectId, Timestamp};
@@ -64,8 +65,20 @@ fn represent(graph: &mut ArbitrageGraph, tradable: &Tradable) -> Result<()> {
                 BookSide::Ask => (quote, base),
             };
             graph.add_trade(
-                Node::new(from, venue.clone()),
-                Node::new(to, venue.clone()),
+                Node::new(
+                    from,
+                    venue.clone(),
+                    Representation::Spot,
+                    SettlementStage::T0,
+                    Region::Global,
+                ),
+                Node::new(
+                    to,
+                    venue.clone(),
+                    Representation::Spot,
+                    SettlementStage::T0,
+                    Region::Global,
+                ),
                 Decimal::ONE,
                 Decimal::ZERO,
                 market.clone(),
@@ -133,13 +146,41 @@ fn has_directed_edge(graph: &ArbitrageGraph, tradable: &Tradable) -> bool {
                 BookSide::Ask => (quote, base),
             };
             matches!(&edge.kind, EdgeKind::Trade { .. })
-                && edge.from == Node::new(from, venue.clone())
-                && edge.to == Node::new(to, venue.clone())
+                && edge.from
+                    == Node::new(
+                        from,
+                        venue.clone(),
+                        Representation::Spot,
+                        SettlementStage::T0,
+                        Region::Global,
+                    )
+                && edge.to
+                    == Node::new(
+                        to,
+                        venue.clone(),
+                        Representation::Spot,
+                        SettlementStage::T0,
+                        Region::Global,
+                    )
         }
         Tradable::Transfer { object, from, to } => {
             matches!(edge.kind, EdgeKind::Transfer)
-                && edge.from == Node::new(object.clone(), from.clone())
-                && edge.to == Node::new(object.clone(), to.clone())
+                && edge.from
+                    == Node::new(
+                        object.clone(),
+                        from.clone(),
+                        Representation::Spot,
+                        SettlementStage::T0,
+                        Region::Global,
+                    )
+                && edge.to
+                    == Node::new(
+                        object.clone(),
+                        to.clone(),
+                        Representation::Spot,
+                        SettlementStage::T0,
+                        Region::Global,
+                    )
         }
     })
 }

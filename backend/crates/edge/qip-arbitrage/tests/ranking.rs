@@ -22,8 +22,9 @@ use qip_arbitrage::netedge::EdgeAssumptions;
 use qip_arbitrage::plan::PlanSettings;
 use qip_arbitrage::scan::{OpportunityScanner, RejectionStage, SizePolicy};
 use qip_arbitrage::search::{PathCandidate, SearchSettings, confirm_exact};
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::BookSide;
-use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
 use qip_core::{Decimal, ObjectId, Timestamp};
@@ -44,7 +45,13 @@ fn object(name: &str) -> ObjectId {
 }
 
 fn node(name: &str) -> Node {
-    Node::new(object(name), VenueId::new(VENUE))
+    Node::new(
+        object(name),
+        VenueId::new(VENUE),
+        Representation::Spot,
+        SettlementStage::T0,
+        Region::Global,
+    )
 }
 
 fn levels(levels: &[(Decimal, Decimal)]) -> Vec<BookLevel> {

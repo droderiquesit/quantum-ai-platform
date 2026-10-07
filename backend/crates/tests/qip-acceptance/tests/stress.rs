@@ -46,9 +46,10 @@ use qip_arbitrage::scan::{OpportunityScanner, RejectionStage, SizePolicy};
 use qip_arbitrage::search::{SearchSettings, search_candidates};
 use qip_contracts::capital::{CapitalEnvelope, CapitalGrant, Utilisation};
 use qip_contracts::edge::{DeductionKind, LegStep};
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::signal::StrategyId;
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{AgentRunId, HypothesisId, ModelId, ObjectId};
 use qip_core::time::{Duration, Timestamp};
@@ -342,7 +343,15 @@ fn triangular(asks: &[(&str, &str)]) -> Result<(ArbitrageGraph, StaticLiquidity)
         cx.clone(),
         VenueFacts::new(VenueClass::CryptoExchange, VenueStatus::Open),
     );
-    let node = |name: &str| Node::new(ObjectId::from_string(name), cx.clone());
+    let node = |name: &str| {
+        Node::new(
+            ObjectId::from_string(name),
+            cx.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        )
+    };
 
     graph.add_trade(
         node("USDT"),

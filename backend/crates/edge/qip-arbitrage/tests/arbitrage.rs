@@ -22,8 +22,9 @@ use qip_arbitrage::pricing::price_path;
 use qip_arbitrage::scan::{OpportunityScanner, RejectionStage, SizePolicy};
 use qip_arbitrage::search::{SearchSettings, confirm_exact, search_candidates};
 use qip_contracts::edge::{Deduction, DeductionKind, NetEdge};
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::BookSide;
-use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::time::Duration;
 use qip_core::{Decimal, ObjectId, Timestamp};
@@ -46,7 +47,13 @@ fn venue(name: &str) -> VenueId {
 }
 
 fn node(object_name: &str, venue_name: &str) -> Node {
-    Node::new(object(object_name), venue(venue_name))
+    Node::new(
+        object(object_name),
+        venue(venue_name),
+        Representation::Spot,
+        SettlementStage::T0,
+        Region::Global,
+    )
 }
 
 fn book(

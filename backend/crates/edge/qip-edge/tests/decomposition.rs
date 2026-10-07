@@ -25,10 +25,11 @@ use qip_arbitrage::{
     SizePolicy, VenueFacts,
 };
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
 use qip_contracts::signal::StrategyId;
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
@@ -68,7 +69,13 @@ fn d(literal: &str) -> Decimal {
 }
 
 fn node(object_name: &str) -> Node {
-    Node::new(object(object_name), venue())
+    Node::new(
+        object(object_name),
+        venue(),
+        Representation::Spot,
+        SettlementStage::T0,
+        Region::Global,
+    )
 }
 
 fn book(market: &str, bid: (&str, &str), ask: (&str, &str)) -> Result<VenueState> {

@@ -33,11 +33,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_contracts::capital::{CapitalEnvelope, Utilisation};
-use qip_contracts::intent::Intent;
+use qip_contracts::intent::{Intent, Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::PolicyPayload;
 use qip_contracts::signal::{SignalKind, StrategyId};
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_contracts::{FeatureKey, FeatureValue, FeatureVector, Revision};
 use qip_core::error::{Error, Result};
 use qip_core::ids::{FillId, ObjectId, OrderId};
@@ -801,7 +801,15 @@ fn arbitrage_detection_costs_what_the_budget_says() -> Result<()> {
         cx.clone(),
         VenueFacts::new(VenueClass::CryptoExchange, VenueStatus::Open),
     );
-    let node = |name: &str| Node::new(ObjectId::from_string(name), cx.clone());
+    let node = |name: &str| {
+        Node::new(
+            ObjectId::from_string(name),
+            cx.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        )
+    };
     for (from, to, rate, market, side) in [
         ("USDT", "ETH", "0.000333328", "ETHUSDT", BookSide::Ask),
         ("ETH", "BTC", "0.050505", "ETHBTC", BookSide::Bid),

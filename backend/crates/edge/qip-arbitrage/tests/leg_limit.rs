@@ -16,8 +16,9 @@ use qip_arbitrage::netedge::EdgeAssumptions;
 use qip_arbitrage::plan::PlanSettings;
 use qip_arbitrage::scan::{OpportunityScanner, RejectionStage, ScanReport, SizePolicy};
 use qip_arbitrage::search::{MAX_CYCLE_EDGES, MIN_CYCLE_EDGES, SearchSettings, search};
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::BookSide;
-use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_market::book::{BookLevel, OrderBook};
@@ -57,8 +58,20 @@ fn ring(legs: usize) -> Result<(ArbitrageGraph, StaticLiquidity)> {
             ("0.9999", "1", "1")
         };
         graph.add_trade(
-            Node::new(object(&format!("O{hop}")), venue.clone()),
-            Node::new(object(&format!("O{}", (hop + 1) % legs)), venue.clone()),
+            Node::new(
+                object(&format!("O{hop}")),
+                venue.clone(),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
+            Node::new(
+                object(&format!("O{}", (hop + 1) % legs)),
+                venue.clone(),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
             d(rate),
             Decimal::ZERO,
             object(&market),

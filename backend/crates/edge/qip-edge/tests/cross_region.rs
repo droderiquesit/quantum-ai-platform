@@ -46,12 +46,13 @@ use qip_arbitrage::{
     SizePolicy, VenueFacts,
 };
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{
     BeliefPriors, CausalDigest, EpisodicDigest, InventoryTargets, PolicyPayload, Slot,
 };
 use qip_contracts::signal::StrategyId;
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
@@ -171,8 +172,20 @@ fn cross_region_graph() -> Result<ArbitrageGraph> {
         );
     }
     graph.add_trade(
-        Node::new(object("USDT"), venue()),
-        Node::new(object("BTC"), venue()),
+        Node::new(
+            object("USDT"),
+            venue(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("BTC"),
+            venue(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("BTCUSDT"),
@@ -189,8 +202,20 @@ fn cross_region_graph() -> Result<ArbitrageGraph> {
         TRANSFER_OBSERVATIONS,
     )?;
     graph.add_trade(
-        Node::new(object("BTC"), venue_two()),
-        Node::new(object("USDT"), venue_two()),
+        Node::new(
+            object("BTC"),
+            venue_two(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("USDT"),
+            venue_two(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("BTCUSDT"),

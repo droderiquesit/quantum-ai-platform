@@ -24,8 +24,9 @@
 //! search in [`crate::search`] needs to know about only one of them.
 
 use crate::arith::mul;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::BookSide;
-use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -40,11 +41,26 @@ use std::collections::BTreeMap;
 pub struct Node {
     pub object: ObjectId,
     pub venue: VenueId,
+    pub representation: Representation,
+    pub settlement_stage: SettlementStage,
+    pub region: Region,
 }
 
 impl Node {
-    pub fn new(object: ObjectId, venue: VenueId) -> Self {
-        Self { object, venue }
+    pub fn new(
+        object: ObjectId,
+        venue: VenueId,
+        representation: Representation,
+        settlement_stage: SettlementStage,
+        region: Region,
+    ) -> Self {
+        Self {
+            object,
+            venue,
+            representation,
+            settlement_stage,
+            region,
+        }
     }
 
     /// A stable label for logs and rejection messages.

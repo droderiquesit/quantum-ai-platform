@@ -171,3 +171,30 @@ impl Origin {
         self.stream_key() == previous.stream_key() && self.sequence == previous.sequence + 1
     }
 }
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Region {
+    #[default]
+    Global,
+    NorthAmerica,
+    Europe,
+    Apac,
+    LatinAmerica,
+    MiddleEastAfrica,
+}
+
+impl Region {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::NorthAmerica => "north_america",
+            Self::Europe => "europe",
+            Self::Apac => "apac",
+            Self::LatinAmerica => "latin_america",
+            Self::MiddleEastAfrica => "middle_east_africa",
+        }
+    }
+}

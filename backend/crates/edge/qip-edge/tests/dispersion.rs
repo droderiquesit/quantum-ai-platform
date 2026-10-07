@@ -22,10 +22,11 @@ use qip_arbitrage::{
     SizePolicy, VenueFacts,
 };
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
 use qip_contracts::signal::StrategyId;
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;

@@ -19,12 +19,13 @@ use qip_arbitrage::{
     SizePolicy, VenueFacts,
 };
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{
     BeliefPriors, CausalDigest, EpisodicDigest, FeasibilityConstraints, PolicyPayload, Slot,
 };
 use qip_contracts::signal::StrategyId;
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
@@ -63,7 +64,13 @@ fn d(literal: &str) -> Decimal {
 }
 
 fn node(object_name: &str) -> Node {
-    Node::new(object(object_name), venue())
+    Node::new(
+        object(object_name),
+        venue(),
+        Representation::Spot,
+        SettlementStage::T0,
+        Region::Global,
+    )
 }
 
 /// A two-sided book for one market, built from feed messages.
@@ -780,8 +787,20 @@ fn a_desk_whose_graph_reaches_a_venue_the_cell_cannot_is_refused_at_installation
         VenueFacts::new(VenueClass::Exchange, VenueStatus::Open),
     );
     graph.add_trade(
-        Node::new(object("USD"), elsewhere.clone()),
-        Node::new(object("ACME"), elsewhere.clone()),
+        Node::new(
+            object("USD"),
+            elsewhere.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("ACME"),
+            elsewhere.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("ACME"),
@@ -790,8 +809,20 @@ fn a_desk_whose_graph_reaches_a_venue_the_cell_cannot_is_refused_at_installation
         0,
     )?;
     graph.add_trade(
-        Node::new(object("ACME"), elsewhere.clone()),
-        Node::new(object("USD"), elsewhere),
+        Node::new(
+            object("ACME"),
+            elsewhere.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("USD"),
+            elsewhere,
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("ACME"),
@@ -1057,8 +1088,20 @@ fn a_policy_payload_cannot_make_a_venue_this_cell_is_not_configured_for_reachabl
         VenueFacts::new(VenueClass::Exchange, VenueStatus::Open),
     );
     graph.add_trade(
-        Node::new(object("USD"), elsewhere.clone()),
-        Node::new(object("ACME"), elsewhere.clone()),
+        Node::new(
+            object("USD"),
+            elsewhere.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("ACME"),
+            elsewhere.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("ACME"),
@@ -1067,8 +1110,20 @@ fn a_policy_payload_cannot_make_a_venue_this_cell_is_not_configured_for_reachabl
         0,
     )?;
     graph.add_trade(
-        Node::new(object("ACME"), elsewhere.clone()),
-        Node::new(object("USD"), elsewhere),
+        Node::new(
+            object("ACME"),
+            elsewhere.clone(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("USD"),
+            elsewhere,
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("ACME"),

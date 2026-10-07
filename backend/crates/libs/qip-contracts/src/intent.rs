@@ -48,7 +48,9 @@ use std::collections::BTreeMap;
 /// to change later — adding it afterwards means re-deriving every key already
 /// written to a journal — and it becomes live the moment instruments carry a
 /// representation. Until then, the row it protects is empty.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Representation {
     #[default]
@@ -63,6 +65,33 @@ impl Representation {
             Self::Spot => "spot",
             Self::Perpetual => "perpetual",
             Self::Future => "future",
+        }
+    }
+}
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementStage {
+    #[default]
+    T0,
+    T1,
+    T2,
+    T3,
+    T5,
+    SN,
+}
+
+impl SettlementStage {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::T0 => "T0",
+            Self::T1 => "T1",
+            Self::T2 => "T2",
+            Self::T3 => "T3",
+            Self::T5 => "T5",
+            Self::SN => "SN",
         }
     }
 }

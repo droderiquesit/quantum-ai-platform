@@ -36,8 +36,9 @@
 
 use qip_arbitrage::graph::{ArbitrageGraph, Node, VenueFacts};
 use qip_arbitrage::search::{SearchSettings, search_candidates};
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::BookSide;
-use qip_contracts::venue::{VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Region, VenueClass, VenueId, VenueStatus};
 use qip_core::time::Duration;
 use qip_core::{Decimal, ObjectId, Timestamp};
 use qip_routing::path::{EdgeClass, ExecutionPath, MirrorFacts, PathPolicy};
@@ -286,8 +287,20 @@ fn profitable_two_venue_graph() -> ArbitrageGraph {
     }
     graph
         .add_trade(
-            Node::new(object("USD"), venue("XNAS")),
-            Node::new(object("BTC"), venue("XNAS")),
+            Node::new(
+                object("USD"),
+                venue("XNAS"),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
+            Node::new(
+                object("BTC"),
+                venue("XNAS"),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
             rate("0.00002"),
             Decimal::ZERO,
             object("BTCUSD"),
@@ -308,8 +321,20 @@ fn profitable_two_venue_graph() -> ArbitrageGraph {
         .expect("a transfer edge");
     graph
         .add_trade(
-            Node::new(object("BTC"), venue("XLON")),
-            Node::new(object("USD"), venue("XLON")),
+            Node::new(
+                object("BTC"),
+                venue("XLON"),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
+            Node::new(
+                object("USD"),
+                venue("XLON"),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
             rate("51000"),
             Decimal::ZERO,
             object("BTCUSD"),
