@@ -10123,7 +10123,38 @@ impl Platform {
             }
         }
 
+        let cash_per_share = action.cash_per_share();
         let quantity_factor = action.quantity_adjustment_factor();
+
+        // A book the log rebuilt has already taken this action in an earlier
+        // process. The series above still needed it — bars are re-fed to
+        // every process and held in memory only — and the book must not have
+        // it twice.
+        let already_taken = self.capital.actions_taken.contains(key);
+
+        // Handle cash payments from dividends and mergers before quantity adjustment.
+        // This must happen even when quantity_factor == 1.0, since a cash dividend
+        // has no quantity change but must credit the cash ledger.
+        if !already_taken
+            && !cash_per_share.is_zero()
+            && let Some(lot) = self.capital.positions.get(object)
+        {
+            let cash_amount = cash_per_share.checked_mul(lot.quantity).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the corporate action on {object} pays {cash_per_share} per share \
+                         on a holding of {} and the total is not representable; correct \
+                         the action",
+                    lot.quantity
+                ))
+            })?;
+            self.capital.cash = self.capital.cash.checked_add(cash_amount).ok_or_else(|| {
+                Error::numeric(format!(
+                    "crediting {cash_amount} from a corporate action on {object} to the book \
+                     overflows the cash balance; adjust the dividend record"
+                ))
+            })?;
+        }
+
         if quantity_factor == Decimal::ONE {
             return Ok(());
         }
@@ -10134,11 +10165,7 @@ impl Platform {
                  holding the platform still owns"
             )));
         }
-        // A book the log rebuilt has already taken this action in an earlier
-        // process. The series above still needed it — bars are re-fed to
-        // every process and held in memory only — and the lot must not have
-        // it twice.
-        if self.capital.actions_taken.contains(key) {
+        if already_taken {
             return Ok(());
         }
         // Refused first, then journalled, then applied, in the order every

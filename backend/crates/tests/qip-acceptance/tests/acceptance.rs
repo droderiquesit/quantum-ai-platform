@@ -30,6 +30,7 @@ use qip_financial::universe::Universe;
 use qip_kernel::cycle::Stage;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_market::bar::{Bar, Interval};
+use qip_market::corporate_action::{CorporateAction, CorporateActionKind};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
 use qip_risk::limits::{Limit, LimitKind, LimitSet};
@@ -839,5 +840,92 @@ fn an_internal_cross_reaches_the_centre_rather_than_stopping_at_the_cell() -> Re
     assert_eq!(cross.sold[0].as_str(), "beta");
     assert_eq!(cross.price, dec!("100"));
     assert_eq!(cross.quantity, dec!("40"));
+    Ok(())
+}
+
+#[test]
+fn a_cash_dividend_credits_the_ledger_cash_by_shares_times_dividend_per_share() -> Result<()> {
+    // A cash dividend must credit the cash ledger when applied to a holding.
+    // The platform does not adjust share counts on a dividend, only prices
+    // (to reflect the yield paid out), and the cash is credited directly to
+    // `capital.cash`. The bug being tested: apply_corporate_action returned
+    // early when quantity_factor == 1.0 (which happens for any action that
+    // does not split or merge shares), skipping the cash credit logic and
+    // leaving the dividend unpaid on the book.
+    let mut platform = platform(PlatformConfig::default())?;
+    platform.observe(market_history("ACME", 90, None));
+
+    // Build a position by buying shares.
+    let order = platform.order_from(
+        object("ACME"),
+        Side::Buy,
+        dec!("500"), // 500 shares; fixture has 10% position weight limit
+        dec!("100"), // at 100 each
+        "prop-dividend-test",
+        vec!["hyp-dividend-test".to_string()],
+        start(),
+    );
+    platform.submit_order(order, start())?;
+
+    let fills = platform.orders().fills();
+    assert!(
+        !fills.is_empty(),
+        "premise: the order must fill to test dividend crediting"
+    );
+    let filled_qty = fills.iter().map(|f| f.quantity).sum::<Decimal>();
+    assert!(
+        filled_qty > Decimal::ZERO,
+        "premise: must have some shares for the dividend test, but only got {filled_qty}"
+    );
+
+    // Record initial cash before dividend.
+    let initial_cash = platform.cash();
+
+    // Create and apply a cash dividend of 2.50 per share.
+    let dividend_per_share = dec!("2.50");
+    let action = CorporateAction {
+        object_id: object("ACME"),
+        ex_date: start(),
+        record_date: None,
+        payment_date: None,
+        kind: CorporateActionKind::CashDividend {
+            amount: dividend_per_share,
+        },
+        announced_at: start(),
+    };
+
+    // Feed the dividend as a SensedRecord.
+    let dividend_record = SensedRecord::CorporateAction(Box::new(action.clone()));
+    platform.observe(vec![dividend_record]);
+
+    // Run the SENSE stage to apply the corporate action.
+    let report = platform.run_cycle(start());
+    let sense = report.stage(Stage::Sense).expect("sense stage should run");
+    assert!(
+        sense.produced > 0,
+        "the sense stage must process the corporate action: {}",
+        sense.detail
+    );
+
+    // Assert cash increased by (shares held * dividend per share).
+    let expected_cash_increase = filled_qty.checked_mul(dividend_per_share).ok_or_else(|| {
+        qip_core::error::Error::numeric(
+            "test fixture overflow: qty * dividend per share is not representable".to_string(),
+        )
+    })?;
+    let final_cash = platform.cash();
+    let actual_increase = final_cash.checked_sub(initial_cash).ok_or_else(|| {
+        qip_core::error::Error::numeric(
+            "test assertion failed: final cash is below initial, suggesting underflow".to_string(),
+        )
+    })?;
+
+    assert_eq!(
+        actual_increase, expected_cash_increase,
+        "the dividend of {dividend_per_share} per share on {filled_qty} shares (initial cash: \
+         {initial_cash}, final cash: {final_cash}) must increase cash by {expected_cash_increase} \
+         but it increased by {actual_increase}"
+    );
+
     Ok(())
 }
