@@ -16,6 +16,7 @@ use qip_contracts::governance::Usage;
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, Timestamp};
 use qip_data_finder::coverage::{SourceCoverage, SourceRegion, UpdateFrequency};
+use qip_data_finder::decision::LifecycleStage;
 use qip_data_finder::endpoint::{AccessMechanism, AuthRequirement, SourceEndpoint};
 use qip_data_finder::finder::{DataFinder, FinderConfig};
 use qip_data_finder::lifecycle::LifecycleAction;
@@ -488,26 +489,25 @@ fn a_registered_source_the_probe_cannot_reach_keeps_its_registration() -> Result
 }
 
 #[test]
-fn all_inspection_attributes_are_checked_together_and_refusal_names_the_missing_one() -> Result<()>
+fn a_registered_source_records_a_finding_for_every_inspection_attribute_in_its_trail() -> Result<()>
 {
-    // DATA-016: Verify that the inspection record is complete and every gate's
-    // refusal names the attribute. Seven distinct inspection attributes:
-    // 1. tier (SourceTier::DarkWeb refused without probe)
-    // 2. host rules (denylist refused before probe)
-    // 3. probe evidence (robots.txt, HEAD, payload sampling)
-    // 4. personal data screen (PII refused before score)
-    // 5. manipulation risk (forward-dated records refused before score)
-    // 6. legality (licensing, robots verdict combined)
-    // 7. scores (routing decision based on five dimensions)
-
-    // All three of these candidates would pass all gates on permissive evidence.
-    // We test that each gate's refusal is explicitly named in the decision's
-    // reasoning, forming a complete inspection record.
-
+    // DATA-016's inspection record, on the path a clean source takes. Each
+    // attribute already has a refusal test of its own (personal_data.rs,
+    // legality.rs, the manipulation-risk test above). What none of them
+    // shows is that a source which passes them all carries a finding for
+    // every one in its trail, so that "why was this registered" is answered
+    // attribute by attribute rather than by an absence. Every read is
+    // through `at(stage)` and on a delimited prefix: a substring over the
+    // joined trail matched tier.rs's "Probe it first" for the probe, and
+    // could never match a stage written in CamelCase, because the trail
+    // prints `assess_legality` and `score`.
+    //
+    // This does not test DATA-016's refusal half ("registration is refused,
+    // naming the attribute, when any of the seven is missing"), and its
+    // name does not claim to.
     const GOOD_URL: &str = "https://good.example/data";
     const PLAIN_URL: &str = "http://plain.example/data";
     let mut finder = finder()?;
-
     let mut probe = InMemoryProbe::new()
         .with_robots("good.example", permissive_robots())
         .with_head(GOOD_URL, ok_head())
@@ -515,85 +515,106 @@ fn all_inspection_attributes_are_checked_together_and_refusal_names_the_missing_
         .with_robots("plain.example", permissive_robots())
         .with_head(PLAIN_URL, ok_head())
         .with_sample(PLAIN_URL, payload_at(now()));
+    let decisions = finder.assess(
+        vec![
+            source("good_tls", GOOD_URL, "EU0001", 0)?,
+            source("plain_http", PLAIN_URL, "EU0002", 0)?,
+        ],
+        &mut probe,
+        now(),
+    )?;
 
-    let candidates = vec![
-        source("good_tls", GOOD_URL, "EU0001", 0)?,
-        source("plain_http", PLAIN_URL, "EU0002", 0)?,
-    ];
-
-    let decisions = finder.assess(candidates, &mut probe, now())?;
-
-    // Both should register: one on TLS, one on plaintext (allowed, scored lower).
-    for decision in &decisions {
+    // Premise: both candidates were assessed and both registered. An empty
+    // result would pass every per-decision check below.
+    assert_eq!(
+        decisions.len(),
+        2,
+        "the premise failed: two candidates did not produce two decisions"
+    );
+    for (id, host, manipulation) in [
+        ("good_tls", "good.example", "manipulation risk low"),
+        ("plain_http", "plain.example", "manipulation risk elevated"),
+    ] {
+        let decision = decisions
+            .iter()
+            .find(|decision| decision.source_id() == id)
+            .ok_or_else(|| Error::not_found(format!("no decision for {id}")))?;
         assert!(
             decision.is_registered(),
-            "candidate {} was not registered: {}",
-            decision.source_id(),
+            "the premise failed: {id} was not registered: {}",
             decision.outcome().as_str()
         );
+        let trail = decision.reasoning();
+        let classify = trail.at(LifecycleStage::Classify);
+        let probed = trail.at(LifecycleStage::Probe);
+        let legality = trail.at(LifecycleStage::AssessLegality);
+        let scored = trail.at(LifecycleStage::Score);
 
-        // Verify the reasoning contains evidence of each inspection gate:
-        let reasoning_text = decision
-            .reasoning()
-            .steps()
+        // 1. Tier, settled on the probe's evidence, not the provisional
+        // "not yet classifiable before the probe" that precedes it.
+        assert!(
+            classify.iter().any(|finding| finding.starts_with("tier ")
+                && finding.ends_with(" on the probe's evidence")),
+            "{id} has no tier settled on the probe's evidence: {classify:?}"
+        );
+        // 2. Host rules: the verdict of the finder's own rules, verbatim.
+        let host_verdict = finder.config().host_rules().verdict(host).describe();
+        assert!(
+            legality.contains(&host_verdict.as_str()),
+            "{id} does not record its host verdict {host_verdict:?}: {legality:?}"
+        );
+        // 3. Probe evidence: robots, HEAD and the sample, from the probe stage.
+        assert!(
+            probed
+                .iter()
+                .any(|finding| finding.starts_with("robots.txt served")
+                    && finding.contains("; HEAD 200 in ")),
+            "{id} has no probe-stage record of robots and HEAD: {probed:?}"
+        );
+        // 4. Personal-data screen, the Clear path's own record.
+        assert!(
+            legality
+                .iter()
+                .any(|finding| finding.starts_with("no personal identifier among the ")),
+            "{id} has no personal-data finding: {legality:?}"
+        );
+        // 5. Manipulation risk, at the level its transport earns: TLS reads
+        // low and plaintext elevated, so a constant finding fails one of them.
+        assert!(
+            probed
+                .iter()
+                .any(|finding| finding.starts_with(&format!("{manipulation}:"))),
+            "{id} does not record `{manipulation}`: {probed:?}"
+        );
+        // 6. Legality: the robots verdict for this host and the licensing
+        // verdict, each its own record.
+        assert!(
+            legality.iter().any(|finding| finding
+                .starts_with(&format!("permitted: robots.txt for `{host}` "))),
+            "{id} has no robots verdict for {host}: {legality:?}"
+        );
+        assert!(
+            legality
+                .iter()
+                .any(|finding| finding.starts_with("permitted: licence ")),
+            "{id} has no licensing verdict: {legality:?}"
+        );
+        // 7. Scores: exactly the five, each named.
+        let names: Vec<&str> = scored
             .iter()
-            .map(|step| step.describe())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // Tier must be classified (gate 1).
-        assert!(
-            reasoning_text.contains("tier")
-                && reasoning_text.contains("from the candidate's own description")
-                || reasoning_text.contains("tier")
-                    && reasoning_text.contains("on the probe's evidence"),
-            "tier inspection gate missing from reasoning for {}",
-            decision.source_id()
-        );
-
-        // Host rules must be assessed (gate 2).
-        assert!(
-            reasoning_text.contains("AssessLegality") || reasoning_text.contains("host"),
-            "host rules inspection gate missing from reasoning for {}",
-            decision.source_id()
-        );
-
-        // Probe evidence must be recorded (gate 3).
-        assert!(
-            reasoning_text.contains("Probe")
-                && (reasoning_text.contains("robots") || reasoning_text.contains("HEAD")),
-            "probe inspection gate missing from reasoning for {}",
-            decision.source_id()
-        );
-
-        // Personal data screen must be assessed (gate 4).
-        assert!(
-            reasoning_text.contains("personal identifier")
-                || reasoning_text.contains("no personal"),
-            "personal data screen gate missing from reasoning for {}",
-            decision.source_id()
-        );
-
-        // Manipulation risk must be assessed (gate 5).
-        assert!(
-            reasoning_text.contains("manipulation") || reasoning_text.contains("risk"),
-            "manipulation risk inspection gate missing from reasoning for {}",
-            decision.source_id()
-        );
-
-        // Scores must be computed (gate 7).
-        assert!(
-            reasoning_text.contains("Score")
-                || reasoning_text.contains("reliability")
-                || reasoning_text.contains("freshness"),
-            "score computation gate missing from reasoning for {}",
-            decision.source_id()
+            .filter_map(|finding| finding.split_once(' ').map(|(name, _)| name))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "reliability",
+                "freshness",
+                "uniqueness",
+                "historical_value",
+                "cost_efficiency"
+            ],
+            "{id}'s score stage is not the five named scores: {scored:?}"
         );
     }
-
-    // Mutation check: if any gate were skipped, the decision would still
-    // succeed because all candidates are clean. The fact that we see the
-    // inspection in the reasoning proves it ran.
-
     Ok(())
 }
