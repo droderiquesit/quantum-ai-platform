@@ -628,3 +628,72 @@ fn an_order_the_gateway_withdrew_unreleased_is_refused_under_its_gate_closed_and
     );
     Ok(())
 }
+
+#[test]
+fn a_cycle_leg_cites_the_desk_grant_it_was_charged_to_and_the_chain_reproduces_the_desks_utilisation()
+-> Result<()> {
+    // CAPITAL-006 on the arbitrage path. A cycle leg is admitted against the
+    // desk's envelope and charged to it, and the desk is not a deployed
+    // strategy. The citation was first looked up among the deployed
+    // strategies, so every leg journaled no grant at all, and a deployed
+    // strategy that shared the desk's id would have been cited for capital
+    // it never spent. Nothing but the desk trades here, so a leg citing
+    // anything other than the desk's grant is a leg citing the wrong one.
+    let (mut cell, _metrics) = cell_with(judged_on_one_fill(100)?)?;
+    let mut gateway = ReleasingGateway::taking(&[(NEAR, 1), (FAR, 30)]);
+    let report = cell.work(t(10), &mut gateway)?;
+    assert_eq!(
+        report.orders.len(),
+        2,
+        "the premise failed: the spatial cycle did not go out as two legs: {:?}",
+        report.refusals
+    );
+
+    let desk_grant = signed_envelope(DESK)?.signature().to_string();
+    let cited: BTreeMap<String, Vec<(String, String)>> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::OrderSent {
+                order_id, grants, ..
+            } => Some((order_id.clone(), grants.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cited.len(), 2, "expected one order_sent entry per leg");
+    for leg in &report.orders {
+        let charged = leg.quantity * leg.price;
+        assert!(
+            charged.is_positive(),
+            "the premise failed: leg {} was charged nothing",
+            leg.order_id
+        );
+        assert_eq!(
+            cited.get(&leg.order_id),
+            Some(&vec![(desk_grant.clone(), charged.to_string())]),
+            "leg {} does not cite the desk's grant at what the desk was charged for it",
+            leg.order_id
+        );
+    }
+
+    // The chain alone reproduces what the desk's envelope committed.
+    let replayed: Decimal = cited
+        .values()
+        .flatten()
+        .filter(|(signature, _)| *signature == desk_grant)
+        .map(|(_, committed)| d(committed))
+        .sum();
+    let delta = cell.state_delta(&report, t(10));
+    let desk = delta
+        .utilisation
+        .iter()
+        .find(|used| used.strategy.as_str() == DESK)
+        .expect("the desk reports what its envelope committed");
+    assert_eq!(
+        replayed, desk.utilisation.gross_committed,
+        "replaying the chain does not reproduce what the desk's grant committed"
+    );
+    assert_eq!(desk.utilisation.orders_sent, 2);
+    Ok(())
+}

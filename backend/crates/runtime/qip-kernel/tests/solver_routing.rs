@@ -44,7 +44,9 @@ use qip_financial::object::FinancialObject;
 use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
-use qip_kernel::platform::{CycleJournalEntry, Platform};
+use qip_kernel::platform::{
+    CycleJournalEntry, PORTFOLIO_ALLOCATION_FAMILY, Platform, SolverBenchmarked,
+};
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
 use qip_observability::Telemetry;
@@ -300,6 +302,81 @@ fn a_cycle_that_reaches_no_construction_journals_no_solver_comparison_at_all() -
         second.solver_routing.is_some(),
         "the fed cycle journaled no comparison, so the absence above proves nothing:\n{}",
         fed.summarise()
+    );
+    Ok(())
+}
+
+// --- the benchmark record (QUANT-031) ---------------------------------------
+
+/// Every `optimization.benchmarked` record the platform published, replayed
+/// from the log in the order it was written.
+fn benchmarks(platform: &Platform) -> Result<Vec<SolverBenchmarked>> {
+    use qip_events::{EventFilter, Topic};
+    platform
+        .replay_journal(&EventFilter::new().topic(Topic::SolverBenchmarked))?
+        .iter()
+        .map(|envelope| Ok(envelope.decode::<SolverBenchmarked>()?.body))
+        .collect()
+}
+
+#[test]
+fn a_cycle_that_sizes_a_proposal_publishes_one_benchmark_keyed_by_family_and_size_that_matches_its_journal()
+-> Result<()> {
+    // QUANT-031 asks for quantum-versus-classical results recorded per
+    // workload family and instance size. `Topic::SolverBenchmarked` was
+    // declared with no producer, so no such record ever reached the log; the
+    // first producer swallowed its own write failure, copied the cycle
+    // entry's comparison field by field and carried neither key. This drives
+    // the cycle that sizes a proposal and reads the record back from the log.
+    let mut platform = platform()?;
+
+    // A cycle that solved nothing publishes nothing. A benchmark written on
+    // every cycle would chart a comparison for solves that never ran.
+    let bare = platform.run_cycle(start());
+    assert!(
+        benchmarks(&platform)?.is_empty(),
+        "a cycle that observed nothing published a solver benchmark:\n{}",
+        bare.summarise()
+    );
+
+    // Only AAA is fed, into a universe that also holds BBB: one instrument
+    // can be sized, so a size read from the universe rather than from the
+    // problem the router solved would say two.
+    platform.observe(bars("AAA", 120));
+    let fed = platform.run_cycle(start().saturating_add(Duration::from_days(1)));
+    let entry = entry_for(&platform, 2)?;
+    let comparison = entry.solver_routing.clone().unwrap_or_else(|| {
+        panic!(
+            "the premise failed: the fed cycle sized a proposal and journaled no solver \
+             comparison:\n{}",
+            fed.summarise()
+        )
+    });
+
+    let published = benchmarks(&platform)?;
+    assert_eq!(
+        published.len(),
+        1,
+        "one sized cycle did not publish exactly one benchmark: {published:?}"
+    );
+    let benchmark = &published[0];
+    assert_eq!(
+        benchmark.cycle, entry.cycle,
+        "the benchmark does not join back to the cycle that ran the solvers"
+    );
+    assert_eq!(benchmark.family, PORTFOLIO_ALLOCATION_FAMILY);
+    assert_eq!(
+        benchmark.instance_size, 1,
+        "one instrument was sizeable, so the problem the router solved had one variable"
+    );
+    assert!(
+        benchmark.comparison.classical_objective.is_finite(),
+        "the benchmark carries a classical baseline of {}, which is not a measurement",
+        benchmark.comparison.classical_objective
+    );
+    assert_eq!(
+        benchmark.comparison, comparison,
+        "the benchmark and the cycle entry disagree about one solve"
     );
     Ok(())
 }

@@ -751,3 +751,61 @@ fn the_recording_sleeper_reports_what_a_wall_clock_would_have_spent() {
     assert_eq!(sleeper.recorded().len(), 2);
     assert_eq!(sleeper.total().as_millis(), 35);
 }
+
+#[test]
+fn the_fabric_semantics_traceability_table_is_complete() {
+    // ARCH-056: every reliability feature this crate ships is traced in the
+    // crate-level semantics table. The table listed five properties while
+    // two shipped modules, `breaker` and `spool`, sat outside it. The first
+    // guard written for it named six types and asserted nothing: it never
+    // read the table, so deleting a row, or adding a module with no row,
+    // left it green. This one reads the table.
+    const LIB: &str = include_str!("../src/lib.rs");
+    const RELIABILITY_MODULES: [&str; 6] =
+        ["retry", "queue", "mesh", "deadletter", "breaker", "spool"];
+
+    // The table is the run of `//! | ` lines under its header. The separator
+    // row (`//! |---|`) has no space after the bar and so is not a row.
+    let rows: Vec<Vec<&str>> = LIB
+        .lines()
+        .skip_while(|line| *line != "//! | property | where | what it is, exactly |")
+        .take_while(|line| line.starts_with("//! |"))
+        .filter_map(|line| line.strip_prefix("//! | "))
+        .map(|row| {
+            row.trim_end()
+                .trim_end_matches('|')
+                .split(" | ")
+                .map(str::trim)
+                .collect()
+        })
+        .collect();
+    // Premise: the header was found and the table has rows under it. A
+    // renamed header would otherwise leave nothing to check, and every
+    // assertion below would pass on an empty table.
+    assert!(
+        rows.len() > 1,
+        "the semantics table was not found in lib.rs under its header: {rows:?}"
+    );
+    let body = &rows[1..];
+    for row in body {
+        assert!(
+            row.len() == 3 && row.iter().all(|cell| !cell.is_empty()),
+            "a row does not state a property, where it lives, and what it is: {row:?}"
+        );
+    }
+
+    for module in RELIABILITY_MODULES {
+        assert!(
+            LIB.lines().any(|line| line == format!("pub mod {module};")),
+            "the premise failed: {module} is not a public module of the crate"
+        );
+        // The whole cell, not a substring of the row: `[`queue`]` also
+        // appears in the spool row's description, and a row that merely
+        // mentions a module is not the row that says where it lives.
+        let cited = format!("[`{module}`]");
+        assert!(
+            body.iter().any(|row| row[1] == cited),
+            "no row of the semantics table says {module} is where its property lives: {body:?}"
+        );
+    }
+}
