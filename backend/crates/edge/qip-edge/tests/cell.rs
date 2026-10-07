@@ -519,6 +519,7 @@ fn the_journal_chain_catches_an_edited_decision() -> Result<()> {
             simulated: true,
             release_at: Some(t(2)),
             equalised: true,
+            grant_identifier: None,
         },
         t(2),
     );
@@ -1058,5 +1059,96 @@ fn mutation_borrow_availability_unavailability_is_tracked() -> Result<()> {
         second.quantity().is_some(),
         "available should have a quantity"
     );
+    Ok(())
+}
+
+#[test]
+fn an_order_sent_record_cites_the_grant_identifier() -> Result<()> {
+    // CAPITAL-006: the cell's OrderSent record must cite the grant identifier
+    // (grant signature) that was drawn on to commit the order, so utilisation
+    // can be replayed per grant from the journal alone.
+    use qip_contracts::signal::SignalKind;
+    use qip_edge::cell::{Cell, CellConfig, PricingPolicy};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+    use qip_strategy::catalogue::FeatureCatalogue;
+    use qip_strategy::compile::StrategyCompiler;
+    use qip_strategy::ir::{Expr, Rule, StrategySpec};
+
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+    cell.track(book_with_depth("XLON", "ACME"));
+
+    // Deploy a strategy with an envelope
+    let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+    let spec = StrategySpec::new(
+        StrategyId::new("mean-reversion-1"),
+        object("ACME"),
+        Duration::from_secs(30),
+    )
+    .with_rule(Rule::new(
+        "always",
+        SignalKind::Enter,
+        Expr::Flag(true),
+        Expr::Exact(dec!("10")),
+        Expr::Statistic(0.5),
+        10,
+    ));
+    let compiled = compiler.compile(&spec)?;
+    let grant = VerifiedEnvelope::verify(
+        signed_envelope(CELL, "10000", "1000", KEY)?,
+        KEY,
+        CELL,
+        t(10),
+    )?;
+    cell.deploy_with_pricing(
+        compiled,
+        compiler.into_program(),
+        grant.clone(),
+        PricingPolicy::Marketable,
+    )?;
+
+    // Send an order
+    let mut placer = RecordingPlacer::default();
+    let _ = cell.work(t(50), &mut placer)?;
+
+    // Verify the order was placed
+    assert_eq!(placer.placed.len(), 1, "expected one order to be placed");
+
+    // Check the journal entry for OrderSent
+    let journal_entries: Vec<&Decision> = cell
+        .journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| {
+            if let Decision::OrderSent { .. } = entry.decision {
+                Some(&entry.decision)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    assert_eq!(journal_entries.len(), 1, "expected one OrderSent entry");
+
+    if let Decision::OrderSent {
+        grant_identifier, ..
+    } = journal_entries[0]
+    {
+        assert!(
+            grant_identifier.is_some(),
+            "OrderSent should cite the grant_identifier (CAPITAL-006)"
+        );
+        let grant_sig = grant_identifier.as_ref().unwrap();
+        assert_eq!(
+            grant_sig,
+            grant.signature(),
+            "the grant_identifier should match the envelope signature"
+        );
+    } else {
+        panic!("expected OrderSent variant");
+    }
+
     Ok(())
 }

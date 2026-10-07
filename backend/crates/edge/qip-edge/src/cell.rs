@@ -5103,12 +5103,24 @@ impl Cell {
         // wanted, so a netted order still spends each strategy's own envelope
         // rather than one strategy's. The split sums exactly to the order, so
         // the envelopes together are charged what was actually sent.
+        // Collect the grant identifiers (signatures) from all envelopes involved
+        // in this order so the journal cites which grants were drawn on.
+        let mut grant_sigs = Vec::new();
         for (strategy, share) in net_intent.split_fill(quantity) {
             if let Some(deployed) = self.deployed.get_mut(strategy.as_str()) {
                 deployed.utilisation.gross_committed += share * price;
                 deployed.utilisation.orders_sent += 1;
+                grant_sigs.push(deployed.envelope.signature().to_string());
             }
         }
+        let grant_identifier = if grant_sigs.is_empty() {
+            None
+        } else if grant_sigs.len() == 1 {
+            grant_sigs.into_iter().next()
+        } else {
+            // Multiple envelopes involved (cross-strategy order): join signatures
+            Some(grant_sigs.join("|"))
+        };
         // Beside the envelope charge and for the same reason it is here: the
         // region allocation and the envelopes are two claims about one order,
         // and two claims recorded in different places will disagree.
@@ -5133,6 +5145,7 @@ impl Cell {
                 region_committed,
             },
             schedule.equalised(),
+            grant_identifier,
             now,
         );
         // The venue may have filled some of it on acceptance. Those reports
@@ -5279,7 +5292,13 @@ impl Cell {
     /// order belongs to, journaled beside `release_at` so an operator reading
     /// the chain sees that a leg was held for four milliseconds on purpose
     /// and not that the node was slow.
-    fn record_sent(&mut self, working: Working, equalised: bool, now: Timestamp) {
+    fn record_sent(
+        &mut self,
+        working: Working,
+        equalised: bool,
+        grant_identifier: Option<String>,
+        now: Timestamp,
+    ) {
         let order = &working.order;
         self.journal.record(
             Decision::OrderSent {
@@ -5289,6 +5308,7 @@ impl Cell {
                 simulated: order.simulated,
                 release_at: Some(order.release_at),
                 equalised,
+                grant_identifier,
             },
             now,
         );
@@ -8228,6 +8248,12 @@ impl Cell {
             );
             return Err(error);
         };
+        // Extract the grant identifier from the leg's strategy envelope
+        let grant_identifier = leg_net
+            .contributors
+            .first()
+            .and_then(|contrib| self.deployed.get(contrib.strategy.as_str()))
+            .map(|deployed| deployed.envelope.signature().to_string());
         self.record_sent(
             Working {
                 order: OpenOrder {
@@ -8261,6 +8287,7 @@ impl Cell {
                 region_committed: Decimal::ZERO,
             },
             schedule.equalised(),
+            grant_identifier,
             now,
         );
         if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
