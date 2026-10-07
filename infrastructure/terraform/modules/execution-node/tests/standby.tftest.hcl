@@ -198,11 +198,17 @@ run "standby_has_same_firewall_posture_as_primary" {
     error_message = "Standby deny-all egress rule must match primary: EGRESS at priority 65000"
   }
 
+  # The standby reaches Google APIs, and is reached by IAP, through the
+  # primary's own rules: its template carries every tag those rules target.
+  # It once had copies of them, and a copy is a second rule to be wrong — one
+  # was a second rule opening port 22. Tags are known at plan; the rule ids
+  # are not, which is why this reads tags rather than comparing rules.
   assert {
     condition = alltrue([
-      for rule in google_compute_firewall.standby_google_apis : rule.direction == "EGRESS" && rule.priority == 1000
+      for tag in setunion(google_compute_firewall.google_apis.target_tags, google_compute_firewall.iap_ssh.target_tags) :
+      contains(google_compute_instance_template.standby[0].tags, tag)
     ])
-    error_message = "Standby Google APIs rule must match primary: EGRESS at priority 1000"
+    error_message = "The standby template does not carry the tag the primary's Google APIs and IAP rules target, so the standby either cannot reach Google APIs or needs rules of its own"
   }
 
   assert {
@@ -213,18 +219,13 @@ run "standby_has_same_firewall_posture_as_primary" {
   }
 }
 
-run "standby_node_uses_same_service_account_as_primary" {
-  command = plan
-
-  variables {
-    standby_enabled = true
-  }
-
-  assert {
-    condition     = google_compute_instance_template.standby[0].service_account[0].email == google_compute_instance_template.node.service_account[0].email
-    error_message = "Standby template must use the same service account as primary"
-  }
-}
+# That the standby runs as the primary's service account cannot be asserted
+# here: both templates take the email from `google_service_account.node`,
+# which is unknown until apply, and Terraform refuses a `plan` run whose
+# condition compares two unknowns ("Unknown condition value") rather than
+# passing it vacuously — which also skipped every run after it. It is
+# asserted on the configuration instead, in `qip-acceptance`'s
+# `terraform_plan::both_execution_node_templates_run_as_the_one_node_service_account`.
 
 run "standby_fencing_rules_allow_primary_to_standby_communication" {
   command = plan

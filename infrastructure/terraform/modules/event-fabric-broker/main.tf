@@ -72,6 +72,15 @@ resource "google_compute_instance_template" "event_fabric_broker" {
     on_host_maintenance = "MIGRATE"
   }
 
+  # SEC-070: Fabric compute boots shielded or not at all. The broker is the
+  # sole writer of every partition's batch chain (ADR 0100 §2), so a boot
+  # chain nobody can attest is a chain of custody nobody can attest either.
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
+  }
+
   lifecycle {
     create_before_destroy = true
   }

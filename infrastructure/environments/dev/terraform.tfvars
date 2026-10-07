@@ -498,26 +498,28 @@ console_egress_cidr = "10.0.16.0/26"
 
 # --- The public edge (blueprint §40.5, §40.14) --------------------------------
 #
-# Turned on for dev. `modules/public-edge` declares Cloud Armor,
-# the global HTTPS load balancer and Cloud CDN. The module creates them when
-# `hostnames` is non-empty.
+# Absent, and absent is a decision. `modules/public-edge` declares Cloud
+# Armor, the global HTTPS load balancer and Cloud CDN, and creates them only
+# when `hostnames` is non-empty — so a hostname here is a global address and
+# a forwarding rule on 443, not a note about one.
 #
-# The three decisions required are made here: the desk owns the hostname,
-# the module is configured with the Cloud Run service that will serve behind it,
-# and rate limiting is set. DNS will need to be configured separately (out of band).
-# The module refuses any zone other than `application-identity` at plan
-# time, so trading traffic cannot end up behind the same load balancer by an
-# edit to this file.
+# GCP-053 set the block below live on 2026-10-06, merged without review, with
+# a placeholder hostname nobody owns. It was removed on 2026-10-07: publishing
+# a surface is the owner's decision, and `qip-acceptance`'s
+# `terraform_plan::no_environment_opens_a_public_address` is where that
+# decision is recorded when it is made. The module refuses any zone other
+# than `application-identity` at plan time, so trading traffic cannot end up
+# behind the same load balancer by an edit to this file.
 #
-public_edge = {
-  hostnames = ["console-dev.example.com"]
-  application_backend = {
-    service_name = "qip-dev-api"
-    trust_zone   = "application-identity"
-  }
-  rate_limit_requests_per_minute = 600
-  permitted_regions              = []
-}
+#   public_edge = {
+#     hostnames = ["console.example.com"]
+#     application_backend = {
+#       service_name = "qip-dev-api"
+#       trust_zone   = "application-identity"
+#     }
+#     rate_limit_requests_per_minute = 600
+#     permitted_regions              = []
+#   }
 
 # --- The GitOps control plane's public front door ----------------------------
 #

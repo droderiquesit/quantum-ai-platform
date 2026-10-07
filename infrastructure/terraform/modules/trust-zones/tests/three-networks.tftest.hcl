@@ -225,3 +225,19 @@ run "public_ingress_rules_use_zone_network" {
     error_message = "Public ingress rule should use zone's network (Service for public-edge)"
   }
 }
+
+# The refusing half, which this file did not have. Placement is a lookup by
+# zone name, so a misspelt execution zone would have no network the hot path
+# was meant for. The module refuses a name outside §46.1's thirteen at plan,
+# before any subnet is placed on any of the three networks.
+run "a_misspelt_execution_zone_is_refused_rather_than_placed" {
+  command = plan
+
+  variables {
+    zones = {
+      "executon" = { region = "us-east4", subnet_cidr = "10.90.8.0/24" }
+    }
+  }
+
+  expect_failures = [var.zones]
+}

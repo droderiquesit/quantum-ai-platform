@@ -551,6 +551,11 @@ module "registry" {
   ci_service_account = module.cicd.service_account_email
   project_number     = local.project_number
 
+  # The ring every keyed store's key lives in; the two GENERIC repositories
+  # are encrypted with a key the module creates there (SEC-046).
+  key_ring_id          = module.secrets.key_ring_id
+  kms_protection_level = var.kms_protection_level
+
   # The workloads are listed so a component can read the
   # digest of the image it is running, which is what makes a provenance claim
   # checkable from inside the process. OpenObserve is not: it is a vendored

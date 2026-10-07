@@ -137,3 +137,30 @@ run "retention_classes_integrated" {
     error_message = "Internal data must transition to COLDLINE at 180 days and never delete (TICK-037)"
   }
 }
+
+# The refusing half. Both runs above admit; this one proves the module still
+# refuses something on the configuration they plan. The archive holds the
+# hash-chained event log for seven years, and DATA-067 puts it on replicated
+# storage: `bucket_location` admits only a dual- or multi-region name, and a
+# single region is refused at plan, before any lifecycle rule exists. The
+# variables are the admitting runs' own, with that one value changed.
+run "a_single_region_archive_is_refused_before_any_retention_class_is_planned" {
+  command = plan
+
+  variables {
+    project_id             = "test-project"
+    environment            = "test"
+    region                 = "us-central1"
+    enable_cloud_storage   = true
+    enable_bigquery        = false
+    enable_alloydb         = false
+    enable_memorystore     = false
+    archive_retention_days = 2555
+    key_ring_id            = "/projects/test-project/locations/us-central1/keyRings/test"
+    network_id             = "projects/test-project/global/networks/default"
+    labels                 = {}
+    bucket_location        = "us-central1"
+  }
+
+  expect_failures = [var.bucket_location]
+}

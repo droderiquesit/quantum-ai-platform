@@ -520,3 +520,173 @@ fn no_environment_opens_a_public_address() {
          a default is a public address nobody decided to open"
     );
 }
+
+// --- what a plan run cannot compare: ids unknown until apply -----------------
+//
+// Each test below holds a property a harness once asserted by comparing two
+// resource ids. An id is unknown at plan, and Terraform refuses a `plan` run
+// whose condition is unknown — "Unknown condition value" — rather than
+// passing it; the refused run then skips every run after it in the file, so
+// the property and its neighbours went unchecked together. Two harnesses
+// tried `command = apply` against the mock instead, which this suite refuses.
+// So each property is read off the configuration here, as the Cloud Armor
+// attachment above is, and the harness that lost it names the test that
+// holds it now.
+
+const EXECUTION_NODE: &str = "infrastructure/terraform/modules/execution-node/main.tf";
+const NETWORK: &str = "infrastructure/terraform/modules/network/main.tf";
+const NETWORK_OUTPUTS: &str = "infrastructure/terraform/modules/network/outputs.tf";
+
+/// The top-level block opening with `header`, through its closing brace.
+///
+/// `terraform fmt` puts a top-level block's closing brace in column zero and
+/// every nested one deeper, so the first `\n}` after the header ends it. The
+/// header carries its ` {` so `"node"` cannot find `"node_pool"`.
+fn top_level_block(text: &str, header: &str) -> String {
+    let start = text
+        .find(header)
+        .unwrap_or_else(|| panic!("the configuration read declares no `{header}`"));
+    let rest = &text[start..];
+    let end = rest.find("\n}").map_or(rest.len(), |at| at + 2);
+    rest[..end].to_string()
+}
+
+/// Every right-hand side of `key = …` in `block`, whitespace collapsed so a
+/// `terraform fmt` realignment changes nothing this reads.
+fn assigned(block: &str, key: &str) -> Vec<String> {
+    let prefix = format!("{key} = ");
+    block
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter_map(|line| line.strip_prefix(&prefix).map(str::to_string))
+        .collect()
+}
+
+#[test]
+fn both_execution_node_templates_run_as_the_one_node_service_account() {
+    // Moved from `modules/execution-node/tests/standby.tftest.hcl`, whose run
+    // compared the two templates' `service_account[0].email`. The standby is
+    // promoted to hold the primary's cell, and the capital envelope key and
+    // the venue grant are bound to one account; a standby under another
+    // identity either cannot read them at promotion or is a second identity
+    // holding them. Every template the module declares is held to it, so a
+    // third added by copying would be read too.
+    let module = without_comments(&read(EXECUTION_NODE));
+    assert!(
+        module.contains("resource \"google_service_account\" \"node\" {"),
+        "{EXECUTION_NODE} no longer declares the node's service account"
+    );
+    let names: Vec<String> = module
+        .split("resource \"google_compute_instance_template\" \"")
+        .skip(1)
+        .filter_map(|rest| rest.split_once('"').map(|(name, _)| name.to_string()))
+        .collect();
+    // Premise: both machines that hold the cell were found.
+    assert!(
+        names.iter().any(|n| n == "node") && names.iter().any(|n| n == "standby"),
+        "{EXECUTION_NODE} declares the templates {names:?}; the primary's and the standby's \
+         were both expected, so this check is reading the wrong module"
+    );
+    for name in &names {
+        let template = top_level_block(
+            &module,
+            &format!("resource \"google_compute_instance_template\" \"{name}\" {{"),
+        );
+        let account = template
+            .split("service_account {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .unwrap_or_else(|| {
+                panic!(
+                    "the `{name}` template has no service_account block, so it boots as the \
+                     project's default compute identity"
+                )
+            });
+        assert_eq!(
+            assigned(account, "email"),
+            vec!["google_service_account.node.email".to_string()],
+            "the `{name}` execution-node template does not run as google_service_account.node, \
+             the one identity the cell's envelope key and venue grant are bound to"
+        );
+    }
+}
+
+#[test]
+fn the_console_egress_subnet_and_its_rules_attach_to_the_service_network() {
+    // Moved from `modules/network/tests/three-networks.tftest.hcl` (three
+    // comparisons of a `network` to `vpc["service"].id`) and from
+    // `data-and-engineering-vpcs.tftest.hcl` (an apply run asserting the
+    // subnet is on neither separate VPC). One `network` line naming the
+    // Service network answers both: the console's egress range and the two
+    // rules that confine it are meant to sit where its RunService attaches,
+    // and a rule on another network confines nothing the console sends.
+    let module = without_comments(&read(NETWORK));
+    for (kind, name) in [
+        ("google_compute_subnetwork", "console_egress"),
+        ("google_compute_firewall", "console_egress_deny_egress"),
+        ("google_compute_firewall", "console_egress_google_apis"),
+    ] {
+        let block = top_level_block(&module, &format!("resource \"{kind}\" \"{name}\" {{"));
+        assert_eq!(
+            assigned(&block, "network"),
+            vec!["google_compute_network.vpc[\"service\"].id".to_string()],
+            "{NETWORK}: `{kind}.{name}` is not on the Service network alone"
+        );
+    }
+}
+
+#[test]
+fn each_network_id_output_names_the_network_it_is_called_after() {
+    // Moved from `modules/network/tests/three-networks.tftest.hcl` (four
+    // comparisons of an output to a network's `id`). The root hands these
+    // ids to the trust zones and the execution nodes, so an output naming the
+    // wrong VPC puts the hot path's subnets on the Service network with
+    // nothing failing — a placement error that plans clean.
+    let outputs = without_comments(&read(NETWORK_OUTPUTS));
+    for (output, network) in [
+        ("reflex_network_id", "reflex"),
+        ("fabric_network_id", "fabric"),
+        ("service_network_id", "service"),
+        // The name the root used before there were three networks, kept as
+        // the Service network's.
+        ("network_id", "service"),
+    ] {
+        let block = top_level_block(&outputs, &format!("output \"{output}\" {{"));
+        assert_eq!(
+            assigned(&block, "value"),
+            vec![format!("google_compute_network.vpc[\"{network}\"].id")],
+            "{NETWORK_OUTPUTS}: `{output}` does not name the {network} network's id"
+        );
+    }
+}
+
+#[test]
+fn the_public_edge_https_proxy_presents_the_certificate_map_the_module_creates() {
+    // Moved from `modules/public-edge/tests/public-edge.tftest.hcl`, which
+    // compared the proxy's `certificate_map` to the map's `id` in a
+    // `command = apply` run against the mock. GCP-056: the proxy resolves its
+    // certificate through the module's own Certificate Manager map, and holds
+    // no classic managed certificate beside it. Matched as containing the
+    // map's id rather than equal to it, so the URL form the API takes for
+    // that field is not decided here.
+    let module = without_comments(&read(PUBLIC_EDGE));
+    let proxy = top_level_block(
+        &module,
+        "resource \"google_compute_target_https_proxy\" \"edge\" {",
+    );
+    let maps = assigned(&proxy, "certificate_map");
+    assert_eq!(
+        maps.len(),
+        1,
+        "the edge's HTTPS proxy names {maps:?} as its certificate map; exactly one was expected"
+    );
+    assert!(
+        maps[0].contains("google_certificate_manager_certificate_map.edge[0].id"),
+        "the edge's HTTPS proxy presents `{}`, not the certificate map this module creates",
+        maps[0]
+    );
+    assert!(
+        assigned(&proxy, "ssl_certificates").is_empty(),
+        "the edge's HTTPS proxy still names a classic managed certificate beside its map"
+    );
+}

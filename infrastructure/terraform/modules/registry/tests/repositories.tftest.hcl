@@ -13,6 +13,7 @@
 # project; `command = plan` throughout, so nothing is applied even in the mock.
 
 mock_provider "google" {}
+mock_provider "google-beta" {}
 
 # Every repository and CI binding in `modules/registry` is a single resource
 # with neither `count` nor `for_each`. This harness addressed them as counted
@@ -31,6 +32,7 @@ variables {
   labels                = { "environment" = "dev" }
   ci_service_account    = "ci@project.iam.gserviceaccount.com"
   pull_service_accounts = {}
+  key_ring_id           = "projects/registry-plan-harness/locations/us-east4/keyRings/qip-dev"
 }
 
 run "container_registry_is_configured_with_docker_format_and_immutable_tags" {
@@ -142,4 +144,40 @@ run "all_repositories_inherit_environment_labels" {
     condition     = contains(keys(google_artifact_registry_repository.deployment_bundles.labels), "environment")
     error_message = "deployment bundle registry must inherit environment labels"
   }
+}
+
+# --- the key the GENERIC repositories are encrypted with (SEC-046) ----------
+#
+# Whether each repository names the key is asserted on the configuration, by
+# `qip-acceptance`'s `security_controls` suite: `kms_key_name` is the key's
+# id, unknown until apply, and a plan run comparing it would be refused.
+# What a plan can see is the gate on the ring and where the key lands.
+
+# The admitting half: a ring in the repositories' own region is accepted, and
+# the key is planned in that ring at the root's protection level.
+run "a_ring_in_the_region_is_admitted_and_the_key_is_planned_in_it" {
+  command = plan
+
+  assert {
+    condition     = google_kms_crypto_key.registry.key_ring == var.key_ring_id
+    error_message = "the registry key is not planned in the ring the module was given"
+  }
+
+  assert {
+    condition     = google_kms_crypto_key.registry.version_template[0].protection_level == "SOFTWARE"
+    error_message = "the registry key does not carry the protection level the module was given"
+  }
+}
+
+# The refusing half. Artifact Registry encrypts a repository only with a key
+# in the repository's location and refuses any other at apply; the module
+# refuses it at plan instead.
+run "a_ring_in_another_region_is_refused" {
+  command = plan
+
+  variables {
+    key_ring_id = "projects/registry-plan-harness/locations/us-central1/keyRings/qip-dev"
+  }
+
+  expect_failures = [var.key_ring_id]
 }

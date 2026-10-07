@@ -143,19 +143,24 @@ run "the_data_and_engineering_vpcs_are_separate_from_the_shared_vpc" {
   }
 }
 
-run "neither_separate_vpc_hosts_the_console_egress_subnet" {
-  # apply against the mock provider: network ids are unknown at plan, and the
-  # assertion compares them. The mock creates nothing real.
-  command = apply
+# That neither separate VPC hosts the console egress subnet is not asserted
+# here. It compares network ids, which are unknown until a plan is applied,
+# and this file used to settle that with a `command = apply` run against the
+# mock — which `qip-acceptance`'s `terraform_plan` suite refuses, because
+# every run in this repository's harnesses is a plan. The subnet's one
+# `network` line is asserted on the configuration instead, and naming the
+# Service network excludes both of these:
+# `terraform_plan::the_console_egress_subnet_and_its_rules_attach_to_the_service_network`.
+
+# The refusing half, which this file did not have. The module's only gates
+# are on the console's range, and a value that is not a range is refused at
+# plan rather than placed on any of the networks.
+run "a_console_egress_value_that_is_not_a_range_is_refused" {
+  command = plan
 
   variables {
-    console_egress_cidr = "10.0.16.0/26"
+    console_egress_cidr = "the data vpc"
   }
 
-  assert {
-    condition = alltrue([
-      for subnet in google_compute_subnetwork.console_egress : subnet.network != google_compute_network.data_vpc.id && subnet.network != google_compute_network.engineering_vpc.id
-    ])
-    error_message = "the console egress subnet must attach only to the shared VPC, not the Data or Engineering VPCs"
-  }
+  expect_failures = [var.console_egress_cidr]
 }

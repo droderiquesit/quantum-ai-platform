@@ -104,10 +104,25 @@ run "console_egress_subnet_is_on_service_network" {
     error_message = "Console egress subnet not created"
   }
 
-  assert {
-    condition     = google_compute_subnetwork.console_egress[0].network == google_compute_network.vpc["service"].id
-    error_message = "Console egress subnet is not on the Service network"
+  # Which network the subnet attaches to is not asserted here: its `network`
+  # and the Service network's `id` are both unknown until apply, and
+  # Terraform refuses a `plan` run whose condition compares two unknowns
+  # ("Unknown condition value") — which also skipped every run below it. It
+  # is asserted on the configuration instead, in `qip-acceptance`'s
+  # `terraform_plan::the_console_egress_subnet_and_its_rules_attach_to_the_service_network`.
+}
+
+# The refusing half, which this file did not have: a range below the /26
+# floor direct VPC egress accepts is refused at plan, before any subnet is
+# placed on the Service network.
+run "a_console_egress_range_below_the_floor_is_refused_before_it_reaches_the_service_network" {
+  command = plan
+
+  variables {
+    console_egress_cidr = "10.0.16.0/28"
   }
+
+  expect_failures = [var.console_egress_cidr]
 }
 
 run "private_googleapis_zone_covers_all_three_networks" {
@@ -140,19 +155,13 @@ run "console_egress_rules_are_on_service_network" {
   }
 
   assert {
-    condition     = google_compute_firewall.console_egress_deny_egress[0].network == google_compute_network.vpc["service"].id
-    error_message = "Console egress deny rule is not on the Service network"
-  }
-
-  assert {
     condition     = length(google_compute_firewall.console_egress_google_apis) == 1
     error_message = "Console Google APIs rule not created"
   }
 
-  assert {
-    condition     = google_compute_firewall.console_egress_google_apis[0].network == google_compute_network.vpc["service"].id
-    error_message = "Console Google APIs rule is not on the Service network"
-  }
+  # That both rules sit on the Service network is asserted on the
+  # configuration, for the reason the subnet's attachment is: in
+  # `terraform_plan::the_console_egress_subnet_and_its_rules_attach_to_the_service_network`.
 }
 
 run "backward_compatibility_outputs_point_to_service_network" {
@@ -163,35 +172,13 @@ run "backward_compatibility_outputs_point_to_service_network" {
   }
 
   assert {
-    condition     = output.network_id == google_compute_network.vpc["service"].id
-    error_message = "Backward compatibility network_id output should point to Service network"
-  }
-
-  assert {
     condition     = output.network_name == google_compute_network.vpc["service"].name
     error_message = "Backward compatibility network_name output should point to Service network"
   }
-}
 
-run "new_network_outputs_are_available" {
-  command = plan
-
-  variables {
-    console_egress_cidr = null
-  }
-
-  assert {
-    condition     = output.reflex_network_id == google_compute_network.vpc["reflex"].id
-    error_message = "reflex_network_id output is missing or incorrect"
-  }
-
-  assert {
-    condition     = output.fabric_network_id == google_compute_network.vpc["fabric"].id
-    error_message = "fabric_network_id output is missing or incorrect"
-  }
-
-  assert {
-    condition     = output.service_network_id == google_compute_network.vpc["service"].id
-    error_message = "service_network_id output is missing or incorrect"
-  }
+  # The `network_id` half is a network's `id`, unknown until apply, so it is
+  # asserted on the configuration instead, beside the three per-network ids
+  # this file's `new_network_outputs_are_available` run compared for the same
+  # reason and could not evaluate: in
+  # `terraform_plan::each_network_id_output_names_the_network_it_is_called_after`.
 }

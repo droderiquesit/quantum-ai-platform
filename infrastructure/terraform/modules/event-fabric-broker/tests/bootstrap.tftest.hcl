@@ -93,3 +93,17 @@ run "broker_disabled_when_not_enabled" {
     error_message = "Broker resources should not be created when enabled=false."
   }
 }
+
+# The refusing half, which this file did not have. FABRIC-089's stable
+# internal addresses are what the A record is written from; with none, the
+# SRV record would point clients at a name that resolves to nothing. The
+# module refuses an empty list at plan.
+run "a_broker_with_no_internal_address_is_refused" {
+  command = plan
+
+  variables {
+    broker_internal_addresses = []
+  }
+
+  expect_failures = [var.broker_internal_addresses]
+}

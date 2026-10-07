@@ -18,5 +18,12 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 6.12"
     }
+    # `google_project_service_identity` only, which is beta-only: it forces
+    # Artifact Registry's service agent into existence before the key grant
+    # names it, the race `modules/secrets` records losing twice.
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 6.12"
+    }
   }
 }
