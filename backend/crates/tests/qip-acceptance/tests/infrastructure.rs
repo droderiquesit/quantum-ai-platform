@@ -2245,6 +2245,12 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         ("gitops-control-plane".to_string(), "kcc".to_string()),
         ("gitops-control-plane".to_string(), "argocd".to_string()),
         ("gitops-control-plane".to_string(), "kargo".to_string()),
+        // The control-plane cluster's Autopilot nodes: the kubelet and the
+        // node agents run as it, named by the cluster's
+        // `cluster_autoscaling.auto_provisioning_defaults`, holding log and
+        // metric writes only. Without it the nodes run as the project's
+        // default compute identity. Bound below, not only here.
+        ("gitops-control-plane".to_string(), "nodes".to_string()),
         // The throwaway machine `.github/workflows/image.yml` bakes the
         // execution node's boot image on. It exists for a few minutes per
         // bake and holds one grant — `storage.objectViewer` on the staging
@@ -2312,6 +2318,35 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
          project's default compute identity\". The builder is the machine the \
          boot image is taken from; whatever token it carries is a token an \
          image with a bug in its provisioning script carries too."
+    );
+
+    // `gitops-control-plane.nodes` is held the same way, for the same reason:
+    // what runs as it is one line in the cluster, and with that line gone the
+    // account would still exist, still hold its grants, and still satisfy the
+    // set above while Autopilot ran every node as the default identity.
+    let control_plane = without_comments(&read(CONTROL_PLANE_MODULE));
+    let cluster = terraform_resources(&control_plane, "google_container_cluster")
+        .into_iter()
+        .find(|(name, _)| name == "control_plane")
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| panic!("{CONTROL_PLANE_MODULE} declares no control_plane cluster"));
+    let defaults = cluster
+        .split("auto_provisioning_defaults {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .unwrap_or_else(|| {
+            panic!(
+                "{CONTROL_PLANE_MODULE}'s cluster has no auto_provisioning_defaults block, so \
+                 nothing names the identity its Autopilot nodes run as"
+            )
+        });
+    assert!(
+        defaults
+            .lines()
+            .any(|line| collapsed(line) == "service_account = google_service_account.nodes.email"),
+        "{CONTROL_PLANE_MODULE}'s cluster does not run its nodes as \
+         google_service_account.nodes, so that account is an identity with nothing attached \
+         and the nodes run as the project's default compute identity"
     );
 }
 
@@ -5111,9 +5146,18 @@ fn the_infrastructure_workflow_cannot_touch_production() {
          and the key refuses at plan time (ADR 0093)"
     );
     let text = without_comments(&infra);
+    // A destroy is either the bare verb or, since CICD-067, a saved
+    // `plan -destroy` that the same step then applies, so the plan a reviewer
+    // reads is the one that runs. `cicd_governance` refuses the bare verb with
+    // `-auto-approve`, so counting only that spelling made the two suites
+    // demand opposite things of one workflow. The property held here is
+    // unchanged: every destroy is targeted.
     let destroys: Vec<String> = text
         .lines()
-        .filter(|line| line.contains("terraform -chdir=infrastructure/terraform destroy"))
+        .filter(|line| {
+            line.contains("terraform -chdir=infrastructure/terraform destroy")
+                || line.contains("terraform -chdir=infrastructure/terraform plan -destroy")
+        })
         .map(|line| line.trim().to_string())
         .collect();
     assert!(
@@ -7920,8 +7964,15 @@ fn the_teardown_stops_the_meter_and_touches_nothing_that_scales_to_zero() {
     // so the target is pinned and nothing else is named.
     let infra = read(".github/workflows/infra.yml");
     let down = block_under(&infra, "- name: down");
+    // Since CICD-067 the destroy is a saved plan, applied in the same step.
+    // A `plan -destroy` that is never applied destroys nothing, so both
+    // halves are required, not just the plan.
+    let saved_plan_destroy = down.contains(
+        "terraform -chdir=infrastructure/terraform plan -destroy -input=false -out=tfplan-destroy",
+    ) && down
+        .contains("terraform -chdir=infrastructure/terraform apply -input=false tfplan-destroy");
     assert!(
-        down.contains("terraform -chdir=infrastructure/terraform destroy"),
+        down.contains("terraform -chdir=infrastructure/terraform destroy") || saved_plan_destroy,
         "infra.yml's down no longer destroys anything"
     );
     assert!(
