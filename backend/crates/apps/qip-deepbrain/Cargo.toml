@@ -63,6 +63,17 @@ qip-transport.workspace = true
 # construct it: the fast brain reads none of its variables (ADR 0008) and the
 # API serves what the brains recorded. In-tree; not a third-party dependency.
 qip-reasoning-engine.workspace = true
+# The anomaly-to-gap mapping (EXPAND-025, `signal_mapper.rs`) reads the
+# DISCOVER stage's `Anomaly` and writes the expansion engine's `Observation`,
+# so it needs both crates — and only a composition root off the reflex path
+# may hold the expansion engine (EXPAND-005). It lived in
+# `qip-opportunity-engine` for one merge, which made a Lane 2 service and the
+# kernel above it depend on the curriculum, and through the curriculum on the
+# agent registries: research became a dependency of deciding. This is the
+# Lane 3 root, where the two meet without either depending on the other.
+# Both workspace-internal; not third-party dependencies.
+qip-opportunity-engine.workspace = true
+qip-expansion.workspace = true
 
 [dev-dependencies]
 # The campaign tests decode the closed-manifest record straight off the

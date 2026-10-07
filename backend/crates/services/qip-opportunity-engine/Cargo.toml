@@ -15,7 +15,6 @@ qip-numerics.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
 qip-contracts.workspace = true
-qip-expansion.workspace = true
 
 [lints]
 workspace = true

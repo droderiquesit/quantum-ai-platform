@@ -28,9 +28,6 @@ pub mod cross_region;
 /// The polled region-availability wire: which peers have gone dark (§36.3).
 pub mod dark;
 pub mod event_fabric;
-/// Event venue adapters on the hot path: prediction markets and commerce venues
-/// feed directly into the cell without going through Fabric or regional services.
-pub mod event_venues;
 /// The simulated venue's quote feed, and the one value it may be configured as.
 pub mod feed;
 pub mod gateway;

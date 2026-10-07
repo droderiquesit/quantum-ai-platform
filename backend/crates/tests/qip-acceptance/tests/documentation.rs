@@ -416,9 +416,9 @@ fn the_documented_agent_count_matches_the_roster() {
     );
 
     // Both forms, and both derived from the roster. The documents disagree
-    // about which to use — the README writes "the eighteen-agent investment
-    // organisation" and the architecture document writes "18 governed agents"
-    // — so accepting either is honest. Accepting a *hardcoded* word was not:
+    // about which to use — the README writes "a nineteen-agent roster" and
+    // the architecture document writes "19 governed agents" — so accepting
+    // either is honest. Accepting a *hardcoded* word was not:
     // it made one of the two assertions independent of the number it was
     // checking.
     for document in ["README.md", "docs/architecture/README.md"] {
@@ -464,11 +464,14 @@ fn the_delimited_check_would_reject_a_count_inside_a_longer_number_or_a_dependen
     // check built on it into a permanent failure that somebody eventually
     // deletes. These are the exact forms the two documents use.
     assert!(
-        names_token("the eighteen-agent investment organisation", "eighteen"),
+        names_token(
+            "organisation: a nineteen-agent roster, eighteen",
+            "nineteen"
+        ),
         "the delimited check refuses a count the README actually writes"
     );
     assert!(
-        names_token("18 governed agents with", "18"),
+        names_token("19 governed agents with", "19"),
         "the delimited check refuses a count the architecture document actually writes"
     );
     assert!(
