@@ -27,13 +27,15 @@
 //! `qip-transport` that has to be right". Each is a module here, and each
 //! states what it does *not* do:
 //!
-//! | property | where | what it is, exactly |
-//! |---|---|---|
-//! | retry | [`retry`] | bounded exponential backoff, at most [`RetryPolicy::max_attempts`] sends, jitter drawn from a seeded [`qip_core::Xoshiro256`] and subtracted so the cap is a real cap |
-//! | backpressure | [`queue`] | a bounded outbound queue that **refuses** with [`TransportError::QueueFull`]; it never drops and never grows |
-//! | at-least-once | [`mesh`] | duplicates are possible in both directions and **detectable** by idempotency key; consumers must be idempotent |
-//! | dead letters | [`deadletter`] | an exhausted message is recorded with its frame and its reason, never silently dropped |
-//! | ordering | [`mesh`] | per-publisher FIFO with head-of-line blocking; no global order, no per-key order across publishers |
+//! | property | requirement | where | what it is, exactly |
+//! |---|---|---|---|
+//! | retry | ARCH-056 | [`retry`] | bounded exponential backoff, at most [`RetryPolicy::max_attempts`] sends, jitter drawn from a seeded [`qip_core::Xoshiro256`] and subtracted so the cap is a real cap |
+//! | backpressure | ARCH-056 | [`queue`] | a bounded outbound queue that **refuses** with [`TransportError::QueueFull`]; it never drops and never grows |
+//! | at-least-once | ARCH-056 | [`mesh`] | duplicates are possible in both directions and **detectable** by idempotency key; consumers must be idempotent |
+//! | dead letters | ARCH-056 | [`deadletter`] | an exhausted message is recorded with its frame and its reason, never silently dropped |
+//! | ordering | ARCH-056 | [`mesh`] | per-publisher FIFO with head-of-line blocking; no global order, no per-key order across publishers |
+//! | circuit breaking | ARCH-056 | [`breaker`] | per-peer Closed/Open/HalfOpen state machine, closes after [`BreakerPolicy::failure_threshold`] failures, half-opens after backoff |
+//! | queue overflow | ARCH-056 | [`queue`] via [`spool`] | a bounded spool that records dropped messages rather than losing them silently |
 //!
 //! ## Delivery is at-least-once. It is not exactly-once.
 //!
