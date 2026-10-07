@@ -64,6 +64,7 @@ pub mod node;
 pub mod openobserve;
 pub mod reference;
 pub mod roster;
+pub mod signal_mapper;
 pub mod status;
 pub mod succession;
 pub mod trust;

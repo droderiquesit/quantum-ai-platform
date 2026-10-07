@@ -2,27 +2,44 @@
 //!
 //! Each anomaly detection feeds into a GapTrigger and GapSignal with the
 //! detector's confidence, magnitude and context as severity and economic value.
+//!
+//! # Why this is in the Deep Brain's root and not in the DISCOVER stage
+//!
+//! It arrived in `qip-opportunity-engine`, which put `qip-expansion` — and,
+//! through it, `qip-agents` — under a Lane 2 service and under `qip-kernel`,
+//! which composes that service. That is the failure EXPAND-005 names: the
+//! research curriculum becoming a dependency of the thing that decides, so a
+//! stalled queue can stall a cycle. The expansion engine reads the brains and
+//! nothing the brains do may wait on it, so the only crate that may hold both
+//! the anomaly vocabulary and the gap vocabulary is a composition root off the
+//! reflex path. `qip-acceptance`'s
+//! `nothing_below_a_composition_root_depends_on_the_expansion_engine` and
+//! `lane_placement`'s cognitive-slow-lane test are what refused the first
+//! placement.
+//!
+//! Nothing in this binary calls [`anomaly_to_observation`] yet. Moving it did
+//! not wire it; the caller, when it is written, belongs here beside it.
 
-use crate::detector::Anomaly;
 use qip_core::Decimal;
 use qip_expansion::gap::{GapTrigger, Observation, Wanting};
+use qip_opportunity_engine::detector::{Anomaly, AnomalyKind};
 
 /// Convert an anomaly detection to a gap observation that can be raised.
 pub fn anomaly_to_observation(anomaly: &Anomaly) -> Observation {
     let trigger = match anomaly.kind {
-        crate::detector::AnomalyKind::PriceMove
-        | crate::detector::AnomalyKind::VolatilityShift
-        | crate::detector::AnomalyKind::VolumeSpike
-        | crate::detector::AnomalyKind::StructuralBreak
-        | crate::detector::AnomalyKind::RegimeChange
-        | crate::detector::AnomalyKind::CorrelationBreakdown
-        | crate::detector::AnomalyKind::LiquidityDeterioration
-        | crate::detector::AnomalyKind::FundamentalSurprise
-        | crate::detector::AnomalyKind::MacroSurprise
-        | crate::detector::AnomalyKind::SentimentShift
-        | crate::detector::AnomalyKind::AlternativeDataDivergence
-        | crate::detector::AnomalyKind::UnexplainedMove => GapTrigger::Surprise,
-        crate::detector::AnomalyKind::Catalyst => GapTrigger::Contradiction,
+        AnomalyKind::PriceMove
+        | AnomalyKind::VolatilityShift
+        | AnomalyKind::VolumeSpike
+        | AnomalyKind::StructuralBreak
+        | AnomalyKind::RegimeChange
+        | AnomalyKind::CorrelationBreakdown
+        | AnomalyKind::LiquidityDeterioration
+        | AnomalyKind::FundamentalSurprise
+        | AnomalyKind::MacroSurprise
+        | AnomalyKind::SentimentShift
+        | AnomalyKind::AlternativeDataDivergence
+        | AnomalyKind::UnexplainedMove => GapTrigger::Surprise,
+        AnomalyKind::Catalyst => GapTrigger::Contradiction,
     };
 
     // Severity is the detector's confidence calibrated by the anomaly's importance.
@@ -38,18 +55,15 @@ pub fn anomaly_to_observation(anomaly: &Anomaly) -> Observation {
 
     // What the anomaly indicates is missing or wrong.
     let wanting = match anomaly.kind {
-        crate::detector::AnomalyKind::StructuralBreak
-        | crate::detector::AnomalyKind::RegimeChange => {
+        AnomalyKind::StructuralBreak | AnomalyKind::RegimeChange => {
             vec![Wanting::CausalLink, Wanting::Model]
         }
-        crate::detector::AnomalyKind::FundamentalSurprise
-        | crate::detector::AnomalyKind::MacroSurprise => {
+        AnomalyKind::FundamentalSurprise | AnomalyKind::MacroSurprise => {
             vec![Wanting::Source, Wanting::Type]
         }
-        crate::detector::AnomalyKind::UnexplainedMove => vec![Wanting::CausalLink, Wanting::Source],
-        crate::detector::AnomalyKind::CorrelationBreakdown => vec![Wanting::Model],
-        crate::detector::AnomalyKind::SentimentShift
-        | crate::detector::AnomalyKind::AlternativeDataDivergence => {
+        AnomalyKind::UnexplainedMove => vec![Wanting::CausalLink, Wanting::Source],
+        AnomalyKind::CorrelationBreakdown => vec![Wanting::Model],
+        AnomalyKind::SentimentShift | AnomalyKind::AlternativeDataDivergence => {
             vec![Wanting::Source]
         }
         _ => vec![Wanting::Unknown],
@@ -69,7 +83,6 @@ pub fn anomaly_to_observation(anomaly: &Anomaly) -> Observation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detector::AnomalyKind;
 
     #[test]
     fn anomaly_with_high_confidence_maps_to_high_severity() {
