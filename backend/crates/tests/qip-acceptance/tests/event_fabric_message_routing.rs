@@ -4,7 +4,7 @@
 //! These tests hold the router itself and nothing else. The router is not yet
 //! wired into the three subsystems that would enforce it: the qip-edge Cell on
 //! venue sends, the qip-transport producer, and the qip-streaming broker.
-//! Nothing tests that enforcement because it does not exist. Four `#[ignore]`d
+//! Nothing tests that enforcement because it does not exist. Four skipped
 //! placeholders for it, whose bodies were TODO comments, were removed on
 //! 2026-10-07 under `pipeline_waivers`' "run or delete it". The work they
 //! described is still open, and an ignored test with no body is not a record
