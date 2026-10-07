@@ -3,13 +3,22 @@ use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf()
+    PathBuf::from(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 #[test]
 fn optimizer_tunes_models() {
     let root = repo_root();
-    let optimizer = root.join("crates/services/qip-optimization-engine/src").join("lib.rs");
+    let optimizer = root
+        .join("crates/services/qip-optimization-engine/src")
+        .join("lib.rs");
     if optimizer.exists() {
         assert!(true, "Optimization service exists");
     }
@@ -37,17 +46,24 @@ fn optimizer_respects_constraints() {
 #[test]
 fn optimizer_uses_classical_baseline() {
     let root = repo_root();
-    let platform = root.join("crates/runtime/qip-kernel/src").join("platform.rs");
+    let platform = root
+        .join("crates/runtime/qip-kernel/src")
+        .join("platform.rs");
     if platform.exists() {
         let content = fs::read_to_string(&platform).unwrap_or_default();
-        assert!(content.contains("baseline") || content.len() > 0, "Classical baseline used");
+        assert!(
+            content.contains("baseline") || content.len() > 0,
+            "Classical baseline used"
+        );
     }
 }
 
 #[test]
 fn optimizer_validates_against_live() {
     let root = repo_root();
-    let learning = root.join("crates/services/qip-learning-engine/src").join("lib.rs");
+    let learning = root
+        .join("crates/services/qip-learning-engine/src")
+        .join("lib.rs");
     if learning.exists() {
         assert!(true, "Learning validates optimizer");
     }

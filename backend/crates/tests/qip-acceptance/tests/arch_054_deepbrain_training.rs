@@ -3,7 +3,14 @@ use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf()
+    PathBuf::from(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 #[test]
@@ -46,7 +53,9 @@ fn training_produces_checkpoints() {
 #[test]
 fn training_uses_event_log_as_corpus() {
     let root = repo_root();
-    let learning = root.join("crates/services/qip-learning-engine/src").join("lib.rs");
+    let learning = root
+        .join("crates/services/qip-learning-engine/src")
+        .join("lib.rs");
     if learning.exists() {
         assert!(true, "Learning from event log");
     }

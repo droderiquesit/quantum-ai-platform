@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 use qip_core::testing::approx_eq;
-use qip_core::{Context, Currency, Decimal, ObjectId, Timestamp, dec};
+use qip_core::{Context, Currency, Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_financial::asset_class::{AssetClass, InstrumentType, Sector};
 use qip_financial::constraints::{Jurisdiction, RegulatoryConstraints, TradingRestriction};
 use qip_financial::costs::{LiquidityProfile, TransactionCostModel};
@@ -1016,5 +1016,142 @@ fn a_commodity_future_resolves_to_its_spot_both_ways_and_basis_is_the_price_diff
     assert!(
         universe.underlying_of(&spot_id).is_err(),
         "a spot has no underlying"
+    );
+}
+
+#[test]
+fn a_bond_coupon_schedule_projects_dates_matching_the_maturity_and_frequency() {
+    let (_ctx, now) = ctx();
+    let issue_date = now;
+    let maturity = now.saturating_add(Duration::from_days(365 * 3)); // 3-year bond
+
+    let bond = BondDetails {
+        issuer: "Example Corp".to_string(),
+        coupon_rate: 0.05,
+        coupon_frequency: CouponFrequency::Quarterly,
+        maturity,
+        issue_date,
+        face_value: dec!("1000"),
+        day_count: DayCount::Actual360,
+        seniority: Seniority::SeniorUnsecured,
+        credit_rating: None,
+        yield_to_maturity: 0.05,
+        modified_duration: 2.8,
+        convexity: 0.09,
+        option_adjusted_spread_bps: 50.0,
+        callable: false,
+        puttable: false,
+        inflation_index: None,
+    };
+
+    let coupons = bond.coupon_schedule();
+
+    // Quarterly bond over 3 years = 13 coupons (12 regular + maturity)
+    assert_eq!(
+        coupons.len(),
+        13,
+        "a quarterly bond over 3 years should have 13 coupon dates"
+    );
+
+    // First coupon should be ~3 months (91 days) after issue
+    let first_coupon_expected = issue_date.saturating_add(Duration::from_days(91));
+    assert_eq!(
+        coupons[0], first_coupon_expected,
+        "first coupon should be ~91 days after issue"
+    );
+
+    // Last coupon should be the maturity date
+    assert_eq!(
+        coupons[coupons.len() - 1],
+        maturity,
+        "final coupon date should be the maturity date"
+    );
+
+    // Verify coupons are monotonically increasing
+    for i in 1..coupons.len() {
+        assert!(
+            coupons[i] > coupons[i - 1],
+            "coupon dates must be strictly increasing"
+        );
+    }
+}
+
+#[test]
+fn a_zero_coupon_bond_schedule_contains_only_the_maturity() {
+    let (_ctx, now) = ctx();
+    let issue_date = now;
+    let maturity = now.saturating_add(Duration::from_days(365 * 5)); // 5-year zero-coupon
+
+    let bond = BondDetails {
+        issuer: "Zero Corp".to_string(),
+        coupon_rate: 0.0,
+        coupon_frequency: CouponFrequency::Zero,
+        maturity,
+        issue_date,
+        face_value: dec!("1000"),
+        day_count: DayCount::Actual360,
+        seniority: Seniority::SeniorUnsecured,
+        credit_rating: None,
+        yield_to_maturity: 0.04,
+        modified_duration: 5.0,
+        convexity: 0.25,
+        option_adjusted_spread_bps: 100.0,
+        callable: false,
+        puttable: false,
+        inflation_index: None,
+    };
+
+    let coupons = bond.coupon_schedule();
+
+    assert_eq!(
+        coupons.len(),
+        1,
+        "a zero-coupon bond should have only one coupon date (maturity)"
+    );
+    assert_eq!(
+        coupons[0], maturity,
+        "the only coupon date should be the maturity date"
+    );
+}
+
+#[test]
+fn a_semi_annual_bond_schedule_has_correct_frequency() {
+    let (_ctx, now) = ctx();
+    let issue_date = now;
+    let maturity = now.saturating_add(Duration::from_days(365 * 2)); // 2-year bond
+
+    let bond = BondDetails {
+        issuer: "Semi Corp".to_string(),
+        coupon_rate: 0.04,
+        coupon_frequency: CouponFrequency::SemiAnnual,
+        maturity,
+        issue_date,
+        face_value: dec!("500"),
+        day_count: DayCount::ActualActual,
+        seniority: Seniority::SeniorUnsecured,
+        credit_rating: None,
+        yield_to_maturity: 0.04,
+        modified_duration: 1.9,
+        convexity: 0.04,
+        option_adjusted_spread_bps: 60.0,
+        callable: false,
+        puttable: false,
+        inflation_index: None,
+    };
+
+    let coupons = bond.coupon_schedule();
+
+    // Semi-annual over 2 years = 4 coupons
+    assert_eq!(
+        coupons.len(),
+        4,
+        "a semi-annual bond over 2 years should have 4 coupon dates"
+    );
+
+    // Verify the final coupon is the maturity
+    assert_eq!(
+        coupons[coupons.len() - 1],
+        maturity,
+        "final coupon should be the maturity"
     );
 }
