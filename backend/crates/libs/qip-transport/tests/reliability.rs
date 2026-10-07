@@ -754,27 +754,58 @@ fn the_recording_sleeper_reports_what_a_wall_clock_would_have_spent() {
 
 #[test]
 fn the_fabric_semantics_traceability_table_is_complete() {
-    // ARCH-056 requires that every semantic property of the transport's
-    // reliability guarantees be mapped to a named platform requirement. The
-    // module documentation at the crate root states seven such properties
-    // in a table: retry, backpressure, at-least-once, dead letters, ordering,
-    // circuit breaking, and queue overflow. Each row cites both a requirement
-    // ID (ARCH-056) and a module implementing it. This test enforces that
-    // the cited modules exist as public exports by referencing them. If a
-    // row's module is removed or unexported, this test fails to compile,
-    // preventing the documentation table from becoming a lie.
-    //
-    // The table is in qip-transport/src/lib.rs at lines 30-38, mapping each
-    // property to ARCH-056 and to a module. The modules are:
-    // retry (property: retry), queue (property: backpressure, queue overflow),
-    // mesh (property: at-least-once, ordering), deadletter (property: dead letters),
-    // breaker (property: circuit breaking), spool (property: queue overflow).
+    // ARCH-056: every reliability feature this crate ships is traced in the
+    // crate-level semantics table. The table listed five properties while
+    // two shipped modules, `breaker` and `spool`, sat outside it. The first
+    // guard written for it named six types and asserted nothing: it never
+    // read the table, so deleting a row, or adding a module with no row,
+    // left it green. This one reads the table.
+    const LIB: &str = include_str!("../src/lib.rs");
+    const RELIABILITY_MODULES: [&str; 6] =
+        ["retry", "queue", "mesh", "deadletter", "breaker", "spool"];
 
-    // Type references that compile-fail if modules are missing or unexported.
-    let _ = std::any::type_name::<qip_transport::retry::RetryPolicy>();
-    let _ = std::any::type_name::<qip_transport::queue::OutboundQueue<u32>>();
-    let _ = std::any::type_name::<qip_transport::mesh::MeshMessage>();
-    let _ = std::any::type_name::<qip_transport::deadletter::DeadLetterReason>();
-    let _ = std::any::type_name::<qip_transport::breaker::BreakerPolicy>();
-    let _ = std::any::type_name::<qip_transport::spool::DurableSpool>();
+    // The table is the run of `//! | ` lines under its header. The separator
+    // row (`//! |---|`) has no space after the bar and so is not a row.
+    let rows: Vec<Vec<&str>> = LIB
+        .lines()
+        .skip_while(|line| *line != "//! | property | where | what it is, exactly |")
+        .take_while(|line| line.starts_with("//! |"))
+        .filter_map(|line| line.strip_prefix("//! | "))
+        .map(|row| {
+            row.trim_end()
+                .trim_end_matches('|')
+                .split(" | ")
+                .map(str::trim)
+                .collect()
+        })
+        .collect();
+    // Premise: the header was found and the table has rows under it. A
+    // renamed header would otherwise leave nothing to check, and every
+    // assertion below would pass on an empty table.
+    assert!(
+        rows.len() > 1,
+        "the semantics table was not found in lib.rs under its header: {rows:?}"
+    );
+    let body = &rows[1..];
+    for row in body {
+        assert!(
+            row.len() == 3 && row.iter().all(|cell| !cell.is_empty()),
+            "a row does not state a property, where it lives, and what it is: {row:?}"
+        );
+    }
+
+    for module in RELIABILITY_MODULES {
+        assert!(
+            LIB.lines().any(|line| line == format!("pub mod {module};")),
+            "the premise failed: {module} is not a public module of the crate"
+        );
+        // The whole cell, not a substring of the row: `[`queue`]` also
+        // appears in the spool row's description, and a row that merely
+        // mentions a module is not the row that says where it lives.
+        let cited = format!("[`{module}`]");
+        assert!(
+            body.iter().any(|row| row[1] == cited),
+            "no row of the semantics table says {module} is where its property lives: {body:?}"
+        );
+    }
 }

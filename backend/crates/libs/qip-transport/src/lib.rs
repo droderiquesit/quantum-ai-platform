@@ -25,17 +25,22 @@
 //! ADR 0011 says plainly that "retries, backpressure, at-least-once delivery,
 //! dead-lettering, ordering guarantees — every one of these is now code in
 //! `qip-transport` that has to be right". Each is a module here, and each
-//! states what it does *not* do:
+//! states what it does *not* do. The last two rows are not on ADR 0011's
+//! list and are here because they shipped: [`breaker`] keeps one peer's
+//! outage from spending the thread that serves the others, and [`spool`] is
+//! the durable half that [`MeshPublisher::REQUIREMENTS`] says production must
+//! add. A reliability module with no row is a feature nobody can trace, and
+//! `tests/reliability.rs` reads this table to refuse one.
 //!
-//! | property | requirement | where | what it is, exactly |
-//! |---|---|---|---|
-//! | retry | ARCH-056 | [`retry`] | bounded exponential backoff, at most [`RetryPolicy::max_attempts`] sends, jitter drawn from a seeded [`qip_core::Xoshiro256`] and subtracted so the cap is a real cap |
-//! | backpressure | ARCH-056 | [`queue`] | a bounded outbound queue that **refuses** with [`TransportError::QueueFull`]; it never drops and never grows |
-//! | at-least-once | ARCH-056 | [`mesh`] | duplicates are possible in both directions and **detectable** by idempotency key; consumers must be idempotent |
-//! | dead letters | ARCH-056 | [`deadletter`] | an exhausted message is recorded with its frame and its reason, never silently dropped |
-//! | ordering | ARCH-056 | [`mesh`] | per-publisher FIFO with head-of-line blocking; no global order, no per-key order across publishers |
-//! | circuit breaking | ARCH-056 | [`breaker`] | per-peer Closed/Open/HalfOpen state machine, closes after [`BreakerPolicy::failure_threshold`] failures, half-opens after backoff |
-//! | queue overflow | ARCH-056 | [`queue`] via [`spool`] | a bounded spool that records dropped messages rather than losing them silently |
+//! | property | where | what it is, exactly |
+//! |---|---|---|
+//! | retry | [`retry`] | bounded exponential backoff, at most [`RetryPolicy::max_attempts`] sends, jitter drawn from a seeded [`qip_core::Xoshiro256`] and subtracted so the cap is a real cap |
+//! | backpressure | [`queue`] | a bounded outbound queue that **refuses** with [`TransportError::QueueFull`]; it never drops and never grows |
+//! | at-least-once | [`mesh`] | duplicates are possible in both directions and **detectable** by idempotency key; consumers must be idempotent |
+//! | dead letters | [`deadletter`] | an exhausted message is recorded with its frame and its reason, never silently dropped |
+//! | ordering | [`mesh`] | per-publisher FIFO with head-of-line blocking; no global order, no per-key order across publishers |
+//! | circuit breaking | [`breaker`] | per peer, never global: opens after [`breaker::BreakerPolicy::failure_threshold`] consecutive failures, half-opens after the cooldown, closes after [`breaker::BreakerPolicy::success_threshold`] probe successes; a failed probe reopens with a longer cooldown |
+//! | durability across restart | [`spool`] | a bounded, persistent outbound queue: persist, send, forget, so a crash produces a duplicate rather than a loss; **refuses** at capacity like [`queue`]; one publisher per namespace |
 //!
 //! ## Delivery is at-least-once. It is not exactly-once.
 //!
