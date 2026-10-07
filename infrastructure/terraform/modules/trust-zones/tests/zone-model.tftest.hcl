@@ -30,6 +30,15 @@ variables {
   environment = "dev"
   region      = "us-east4"
   network_id  = "projects/tz-plan-harness/global/networks/harness"
+
+  # GCP-009 split the zones across three VPCs and made each one a required
+  # input (`three-networks.tftest.hcl` proves which zone lands on which).
+  # This harness was written before the split and never supplied them, so
+  # every run here stopped on "No value for required variable" before a
+  # single zone rule was evaluated.
+  reflex_network_id  = "projects/tz-plan-harness/global/networks/reflex"
+  fabric_network_id  = "projects/tz-plan-harness/global/networks/fabric"
+  service_network_id = "projects/tz-plan-harness/global/networks/service"
 }
 
 # --- the zone vocabulary -----------------------------------------------------

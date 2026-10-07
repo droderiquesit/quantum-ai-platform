@@ -931,7 +931,7 @@ resource "google_compute_instance_group_manager" "standby" {
   }
 
   auto_healing_policies {
-    health_check = google_compute_health_check.standby[0].id
+    health_check      = google_compute_health_check.standby[0].id
     initial_delay_sec = 300
   }
 

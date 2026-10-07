@@ -117,8 +117,12 @@ run "private_googleapis_zone_covers_all_three_networks" {
     console_egress_cidr = null
   }
 
+  # Counted through a `for`, not `length()` of the set: each element carries a
+  # network id that is unknown at plan, and `length` of a set holding unknowns
+  # is itself unknown, because two of them might turn out equal. The module
+  # renders one `networks` block per network, and this counts those blocks.
   assert {
-    condition     = length(google_dns_managed_zone.googleapis.private_visibility_config[0].networks) == 3
+    condition     = length([for network in google_dns_managed_zone.googleapis.private_visibility_config[0].networks : network]) == 3
     error_message = "Private Google APIs zone must be visible on all three networks"
   }
 }

@@ -13,11 +13,23 @@ variables {
   environment       = "dev"
   github_repository = "example/example"
 
-  regions            = ["us-east4"]
-  zone_overrides     = {}
-  enable_cloud_storage = false
-  workload_instances = {}
+  regions               = ["us-east4"]
+  zone_overrides        = {}
+  enable_cloud_storage  = false
+  workload_instances    = {}
   additional_kms_admins = []
+
+  # The four zones dev declares, as in paper-boundary.tftest.hcl. The
+  # catalogue refuses a workload whose zone this environment did not declare
+  # (`catalogue_is_placed`, `identities_are_placed`), so without them every
+  # admitting run below stopped on that precondition and proved nothing about
+  # the storage target.
+  trust_zones = {
+    "application-identity" = { region = "us-east4", subnet_cidr = "10.0.32.0/24" }
+    "cognition"            = { region = "us-east4", subnet_cidr = "10.0.33.0/24" }
+    "intelligence"         = { region = "us-east4", subnet_cidr = "10.0.34.0/24" }
+    "management"           = { region = "us-east4", subnet_cidr = "10.0.35.0/24" }
+  }
 }
 
 override_module {

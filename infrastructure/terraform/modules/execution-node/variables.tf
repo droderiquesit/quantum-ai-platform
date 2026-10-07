@@ -802,14 +802,29 @@ variable "standby_zone" {
     in GCP-043.
   EOT
 
-  type = string
+  # Null unless a standby is enabled. It was required with no default, which
+  # made every caller that never enables a standby (the root module among
+  # them) fail `terraform validate` on an input it would never read.
+  type    = string
+  default = null
 
   validation {
-    condition     = startswith(var.standby_zone, "${var.region}-")
+    condition     = !var.standby_enabled || var.standby_zone != null
+    error_message = "standby_zone is required when standby_enabled is true: a standby with no zone has nowhere to run."
+  }
+
+  # `try`, not a conditional, around the function: `qip-acceptance`'s
+  # terraform_plan suite refuses a null-guarded validation that hands the
+  # value whole to an unwrapped function, because the `||` form of that guard
+  # killed `modules/network`'s plan in three environments. `false` on error
+  # keeps the refusal closed.
+  validation {
+    condition     = var.standby_zone == null || try(startswith(var.standby_zone, "${var.region}-"), false)
     error_message = "The standby zone must be in the region: a standby in ${var.region} with a zone elsewhere is a node whose subnet and instance group are in different places."
   }
 
   validation {
+    # No null guard needed: `null != var.zone` is true, and `!=` takes a null.
     condition     = var.standby_zone != var.zone
     error_message = "The standby zone must differ from the primary zone for geographic diversity."
   }
@@ -825,10 +840,17 @@ variable "standby_subnet_cidr" {
     unambiguously.
   EOT
 
-  type = string
+  # Null unless a standby is enabled, for the same reason as standby_zone.
+  type    = string
+  default = null
 
   validation {
-    condition     = can(cidrhost(var.standby_subnet_cidr, 0))
+    condition     = !var.standby_enabled || var.standby_subnet_cidr != null
+    error_message = "standby_subnet_cidr is required when standby_enabled is true: the standby's subnet is created from it."
+  }
+
+  validation {
+    condition     = var.standby_subnet_cidr == null ? true : can(cidrhost(var.standby_subnet_cidr, 0))
     error_message = "The standby subnet CIDR must be a valid CIDR block such as 10.41.1.0/24."
   }
 }

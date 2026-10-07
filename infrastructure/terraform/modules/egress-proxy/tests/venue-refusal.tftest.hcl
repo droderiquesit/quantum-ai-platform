@@ -17,13 +17,15 @@
 mock_provider "google" {}
 mock_provider "google-beta" {}
 
+# The module's own inputs, all six. This block used to pass `network_id`,
+# `subnet_id` and `egress_proxy_port`, which the module does not declare, and
+# omit `labels` and `image_prefix`, which it requires, so no run could start.
 variables {
-  project_id        = "egress-proxy-plan-harness"
-  environment       = "dev"
-  region            = "us-east4"
-  network_id        = "projects/test/global/networks/default"
-  subnet_id         = "projects/test/regions/us-east4/subnetworks/default"
-  egress_proxy_port = 8443
+  project_id   = "egress-proxy-plan-harness"
+  environment  = "dev"
+  region       = "us-east4"
+  labels       = {}
+  image_prefix = "us-east4-docker.pkg.dev/egress-proxy-plan-harness/qip"
 }
 
 # --- venue hosts are refused -----------------------------------------------
@@ -34,11 +36,11 @@ run "the_validation_refuses_allowed_upstreams_containing_venue" {
   variables {
     allowed_upstreams = [
       "storage.googleapis.com",
-      "api.example-venue.com",  # Contains "venue"
+      "api.example-venue.com", # Contains "venue"
     ]
   }
 
-  # The validation block in variables.tf:55-60 should fire
+  # The venue/broker/exchange validation on `allowed_upstreams` should fire.
   expect_failures = [var.allowed_upstreams]
 }
 
@@ -48,7 +50,7 @@ run "the_validation_refuses_allowed_upstreams_containing_broker" {
   variables {
     allowed_upstreams = [
       "storage.googleapis.com",
-      "api.broker-service.com",  # Contains "broker"
+      "api.broker-service.com", # Contains "broker"
     ]
   }
 
@@ -61,7 +63,7 @@ run "the_validation_refuses_allowed_upstreams_containing_exchange" {
   variables {
     allowed_upstreams = [
       "storage.googleapis.com",
-      "api.crypto-exchange.com",  # Contains "exchange"
+      "api.crypto-exchange.com", # Contains "exchange"
     ]
   }
 
@@ -87,8 +89,14 @@ run "the_validation_admits_valid_vendor_hosts" {
     ]
   }
 
+  # This asserted `length(module.proxy.google_compute_firewall_rule) >= 0`:
+  # the module has no `proxy` call and no firewall, and a length is never
+  # negative, so it named nothing and could not fail. What admission means
+  # here is that the plan reached the bootstrap object, whose precondition
+  # holds the allowlist to the hosts the committed bootstrap dials, and
+  # published those hosts.
   assert {
-    condition     = length(module.proxy.google_compute_firewall_rule) >= 0
+    condition     = output.dialled_upstreams == sort(var.allowed_upstreams)
     error_message = "the proxy module did not plan with valid vendor hosts"
   }
 }

@@ -1,10 +1,10 @@
 # FABRIC-087 & FABRIC-089: Broker bootstrap and addressing validation.
 # Tests that brokers have stable internal addresses (no public IP) and SRV records exist.
 
-terraform {
-  required_version = ">= 1.9.8"
-}
-
+# Mocked provider and `command = plan` in every run: no credential, no
+# project, nothing created. The runs used to name no command, and a run
+# that names none is an apply — mocked here, but this repository's harnesses
+# plan, and a harness is not where that line starts to blur.
 mock_provider "google" {}
 
 variables {
@@ -24,10 +24,13 @@ variables {
 }
 
 run "fabric_087_srv_records_created" {
-  # FABRIC-087: Clients bootstrap from Cloud DNS SRV records.
+  command = plan
+
+  # FABRIC-087: Clients bootstrap from Cloud DNS SRV records. Names are fully
+  # qualified, trailing dot included, because Cloud DNS takes nothing else.
   assert {
     condition = try(
-      google_dns_record_set.event_fabric_broker_srv[0].name == "qip-event-fabric-broker.event-fabric.internal",
+      google_dns_record_set.event_fabric_broker_srv[0].name == "qip-event-fabric-broker.event-fabric.internal.",
       false
     )
     error_message = "A record for broker discovery (FABRIC-087) was not created."
@@ -35,15 +38,19 @@ run "fabric_087_srv_records_created" {
 
   assert {
     condition = try(
-      google_dns_record_set.event_fabric_broker_srv_tcp[0].name == "_qip-event-fabric._tcp.event-fabric.internal",
+      google_dns_record_set.event_fabric_broker_srv_tcp[0].name == "_qip-event-fabric._tcp.event-fabric.internal.",
       false
     )
     error_message = "SRV record for broker service discovery (FABRIC-087) was not created."
   }
 
+  # The SRV target is the record's last field, matched as a whole token.
+  # This read `contains(rrdatas[0], …)`: `contains` takes a list, the `try`
+  # turned its refusal of a string into `false`, and the assertion could never
+  # pass whatever the record said.
   assert {
     condition = try(
-      contains(google_dns_record_set.event_fabric_broker_srv_tcp[0].rrdatas[0], "qip-event-fabric-broker.event-fabric.internal"),
+      endswith(google_dns_record_set.event_fabric_broker_srv_tcp[0].rrdatas[0], " qip-event-fabric-broker.event-fabric.internal."),
       false
     )
     error_message = "SRV record does not point to broker DNS name (FABRIC-087)."
@@ -51,6 +58,8 @@ run "fabric_087_srv_records_created" {
 }
 
 run "fabric_089_no_external_ip" {
+  command = plan
+
   # FABRIC-089: Brokers have stable internal addresses and no public endpoint.
   assert {
     condition = try(
@@ -70,6 +79,8 @@ run "fabric_089_no_external_ip" {
 }
 
 run "broker_disabled_when_not_enabled" {
+  command = plan
+
   variables {
     enabled = false
   }

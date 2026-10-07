@@ -150,8 +150,8 @@ run "path_rules_use_source_zone_network_for_egress" {
 
   variables {
     zones = {
-      "execution"       = { region = "us-east4", subnet_cidr = "10.90.8.0/24" }
-      "control-fabric"  = { region = "us-east4", subnet_cidr = "10.90.7.0/24" }
+      "execution"      = { region = "us-east4", subnet_cidr = "10.90.8.0/24" }
+      "control-fabric" = { region = "us-east4", subnet_cidr = "10.90.7.0/24" }
     }
 
     permitted_paths = {
