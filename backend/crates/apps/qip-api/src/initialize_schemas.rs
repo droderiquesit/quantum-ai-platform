@@ -16,6 +16,7 @@ use qip_contracts::policy::{
 };
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Timestamp, dec};
 use qip_events::SchemaRegistry;
 use qip_mesh::spine::{CapitalGrantFrame, HaltFrame, PolicyFrame};
@@ -28,6 +29,7 @@ pub(crate) fn initialize_event_schemas() -> qip_core::error::Result<()> {
     const KEY: &[u8] = b"schema-registration-key";
 
     // Register CapitalGrantFrame: a capital allocation to a cell strategy
+    let lineage = Lineage::root(CorrelationId::from_string("strat-1"), "qip-api");
     let capital_envelope = CapitalEnvelope::new(
         StrategyId::new("strat-1"),
         "cell",
@@ -39,11 +41,12 @@ pub(crate) fn initialize_event_schemas() -> qip_core::error::Result<()> {
         Timestamp::from_secs(1_760_003_600),
         "op@example.com",
         "sig",
+        lineage.clone(),
     )?;
     registry.register(&CapitalGrantFrame(capital_envelope))?;
 
     // Register PolicyFrame: the full policy payload with all slots populated
-    let mut policy_payload = PolicyPayload::unproduced(1, "cell", now);
+    let mut policy_payload = PolicyPayload::unproduced(1, "cell", now, lineage.clone());
     policy_payload.valid_for = qip_core::Duration::from_secs(300);
     policy_payload.halted = false;
 
@@ -104,6 +107,7 @@ pub(crate) fn initialize_event_schemas() -> qip_core::error::Result<()> {
     policy_payload.risk_envelope = Slot::produced(
         RiskEnvelopeSnapshot {
             limits: serde_json::json!({"max_gross": "1000000"}),
+            lineage: lineage.clone(),
         },
         now,
     );

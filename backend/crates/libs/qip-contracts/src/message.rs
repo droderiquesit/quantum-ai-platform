@@ -5,6 +5,7 @@
 //! which is what lets one order book implementation serve every venue class.
 
 use crate::venue::Origin;
+use qip_core::lineage::Lineage;
 use qip_core::{Decimal, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 
@@ -168,6 +169,8 @@ pub struct MarketMessage {
     pub venue_time: Timestamp,
     /// When this cell's hardware saw the packet.
     pub capture_time: Timestamp,
+    /// Lineage tracking: correlation id, causation id, trace id, and producer.
+    pub lineage: Lineage,
 }
 
 impl MarketMessage {
@@ -177,6 +180,7 @@ impl MarketMessage {
         body: MessageBody,
         venue_time: Timestamp,
         capture_time: Timestamp,
+        lineage: Lineage,
     ) -> Self {
         Self {
             object_id,
@@ -184,6 +188,7 @@ impl MarketMessage {
             body,
             venue_time,
             capture_time,
+            lineage,
         }
     }
 

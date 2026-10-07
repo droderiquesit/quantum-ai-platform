@@ -41,6 +41,7 @@ use qip_contracts::regional_episode::{EpisodeKind, RegionalEpisode};
 use qip_contracts::signal::{Signal, SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 // LegGroup imported to make saga coordinators reachable from production cell
 // code. See [`Saga::ArbitrageCycleBreak`] — the cell's cross-leg flows are
@@ -3857,6 +3858,10 @@ impl Cell {
             .map(|state| state.object_id().clone())
             .collect();
         for object_id in objects {
+            let lineage = Lineage::root(
+                CorrelationId::from_string(&reset.origin.stream_key()),
+                "qip-edge",
+            );
             let message = MarketMessage::new(
                 object_id.clone(),
                 reset.origin.clone(),
@@ -3865,6 +3870,7 @@ impl Cell {
                 },
                 reset.venue_time,
                 reset.capture_time,
+                lineage,
             );
             if let Some(state) = self.liquidity.get_mut(venue, &object_id) {
                 state.apply(&message)?;
@@ -3998,6 +4004,7 @@ impl Cell {
         // same edits, or they would describe the handful of increments that
         // happened to arrive since rather than the book.
         let origin = Origin::new(venue.clone(), "snapshot", 0, 0);
+        let lineage = Lineage::root(CorrelationId::from_string(&origin.stream_key()), "qip-edge");
         for body in edits {
             self.features.ingest(&MarketMessage::new(
                 object_id.clone(),
@@ -4005,6 +4012,7 @@ impl Cell {
                 body.clone(),
                 now,
                 now,
+                lineage.clone(),
             ))?;
         }
         let unreliable_from = self

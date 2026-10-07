@@ -211,6 +211,7 @@ impl FailoverReconciler {
                     self.stream
                 ),
                 now,
+                unit.first(),
             ));
             outcome.events.push(FailoverEvent::ResyncRequired {
                 source: source.to_string(),

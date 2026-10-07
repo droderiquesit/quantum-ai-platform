@@ -1687,9 +1687,10 @@ fn a_compiled_strategy_never_exceeds_its_declared_cost_on_adversarial_inputs() {
                     at,
                 );
                 if let Err(e) = tight_runtime.run(&compiled, &vector, at)
-                    && e.to_string().contains("budget") {
-                        budget_violations += 1;
-                    }
+                    && e.to_string().contains("budget")
+                {
+                    budget_violations += 1;
+                }
             }
         }
         // Premise: the tight budget is actually tight; at least one evaluation

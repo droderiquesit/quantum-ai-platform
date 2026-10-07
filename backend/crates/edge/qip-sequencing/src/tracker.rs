@@ -440,6 +440,7 @@ impl SequenceTracker {
                 template.partition,
                 missing_from,
             );
+            let incoming = self.buffer.get(&resume_at).and_then(|msgs| msgs.first());
             batch.released.push(reset_message(
                 origin,
                 format!(
@@ -448,6 +449,7 @@ impl SequenceTracker {
                     reason.as_str()
                 ),
                 now,
+                incoming,
             ));
         }
 

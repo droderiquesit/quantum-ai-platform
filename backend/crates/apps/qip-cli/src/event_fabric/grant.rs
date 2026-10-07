@@ -607,6 +607,7 @@ pub struct SignedControl {
 /// verifies with.
 pub fn sign(fixture: &Fixture, key: &FixtureKey, now: Timestamp) -> Result<SignedControl> {
     let expires_at = now.saturating_add(Duration::from_secs(fixture.valid_for_secs));
+    let lineage = Lineage::root(CorrelationId::from_string(&fixture.strategy), "qip-cli");
     let build = |signature: &str| {
         CapitalEnvelope::new(
             StrategyId::new(&fixture.strategy),
@@ -619,12 +620,14 @@ pub fn sign(fixture: &Fixture, key: &FixtureKey, now: Timestamp) -> Result<Signe
             expires_at,
             FIXTURE_SIGNATORY,
             signature,
+            lineage.clone(),
         )
     };
     let unsigned = build("")?;
     let grant = build(&sign_payload(key.bytes(), &unsigned.signing_payload()))?;
 
-    let mut policy = PolicyPayload::unproduced(fixture.policy_sequence, &fixture.cell, now);
+    let mut policy =
+        PolicyPayload::unproduced(fixture.policy_sequence, &fixture.cell, now, lineage);
     // The payload serves as long as the grant does, so the slice's share is
     // not narrowed to nothing five minutes into a session the grant still
     // funds.

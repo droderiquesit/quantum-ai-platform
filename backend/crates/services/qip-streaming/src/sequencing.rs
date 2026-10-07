@@ -40,6 +40,7 @@ use qip_contracts::time::Watermark;
 use qip_contracts::{MarketMessage, MessageBody};
 use qip_core::Timestamp;
 use qip_core::ids::ObjectKind;
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_sequencing::{ReorderPolicy, SequenceEvent, Sequencer};
 use std::collections::BTreeMap;
 
@@ -216,6 +217,10 @@ impl SequenceCoordinator {
 /// `None` for an envelope whose source does not number its output.
 fn carrier(envelope: &StreamEnvelope) -> Option<MarketMessage> {
     let origin = envelope.subject().origin.clone()?;
+    let lineage = Lineage::root(
+        CorrelationId::from_string(envelope.event_id().as_str()),
+        "qip-streaming",
+    );
     Some(MarketMessage::new(
         // The carrier's identity *is* the envelope's, which is what makes the
         // translation back exact and makes a synthesised reset unmistakable.
@@ -230,5 +235,6 @@ fn carrier(envelope: &StreamEnvelope) -> Option<MarketMessage> {
         },
         envelope.event_timestamp(),
         envelope.ingest_timestamp(),
+        lineage,
     ))
 }

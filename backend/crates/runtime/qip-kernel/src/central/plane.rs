@@ -50,6 +50,7 @@ use qip_contracts::signal::StrategyId;
 use qip_contracts::wire::{CrossRecord, FillRecord};
 use qip_contracts::{CapitalEnvelope, Utilisation};
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Decimal, Duration, Timestamp};
 use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod};
 use qip_lifecycle::horizon::HorizonAssurance;
@@ -1934,7 +1935,11 @@ impl CentralPlane {
         }
 
         let terms = EnvelopeTerms::from_allocation(&allocation, self.config.envelope_validity);
-        let envelope = self.issuer.issue(&terms, approval, now)?;
+        let lineage = Lineage::root(
+            CorrelationId::from_string(strategy.as_str()),
+            "qip-central-plane",
+        );
+        let envelope = self.issuer.issue(&terms, approval, now, lineage)?;
         // Verified immediately rather than trusted: the issuer is the boundary
         // that decides whether a cell may commit capital, and a grant that does
         // not verify here would fail at the cell with nobody watching.

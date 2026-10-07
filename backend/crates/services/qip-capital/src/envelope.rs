@@ -179,6 +179,7 @@ impl EnvelopeIssuer {
         terms: &EnvelopeTerms,
         approval: &Approval,
         now: Timestamp,
+        lineage: qip_core::lineage::Lineage,
     ) -> Result<CapitalEnvelope> {
         if !approval.is_dual() {
             return Err(Error::denied(format!(
@@ -233,6 +234,7 @@ impl EnvelopeIssuer {
             expires_at,
             approval.approver.clone(),
             String::new(),
+            lineage.clone(),
         )?;
         let signature = self.sign(&unsigned.signing_payload());
 
@@ -247,6 +249,7 @@ impl EnvelopeIssuer {
             expires_at,
             approval.approver.clone(),
             signature,
+            lineage,
         )
     }
 

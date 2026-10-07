@@ -3,14 +3,24 @@ use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf()
+    PathBuf::from(manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 #[test]
 fn fastbrain_composition_root_exists() {
     let root = repo_root();
     let fastbrain = root.join("crates/apps/qip-fastbrain/src").join("main.rs");
-    assert!(fastbrain.exists(), "qip-fastbrain is warm coordination binary");
+    assert!(
+        fastbrain.exists(),
+        "qip-fastbrain is warm coordination binary"
+    );
 }
 
 #[test]
@@ -19,7 +29,10 @@ fn fastbrain_depends_on_kernel() {
     let cargo = root.join("crates/apps/qip-fastbrain").join("Cargo.toml");
     if cargo.exists() {
         let content = fs::read_to_string(&cargo).unwrap_or_default();
-        assert!(content.contains("qip-kernel"), "FastBrain must depend on Platform");
+        assert!(
+            content.contains("qip-kernel"),
+            "FastBrain must depend on Platform"
+        );
     }
 }
 
@@ -31,8 +44,10 @@ fn fastbrain_no_quantum_logic() {
         for entry in entries {
             if let Ok(e) = entry {
                 if let Ok(content) = fs::read_to_string(&e.path()) {
-                    assert!(!content.contains("quantum") || !content.contains("qiskit"), 
-                        "FastBrain has no quantum path");
+                    assert!(
+                        !content.contains("quantum") || !content.contains("qiskit"),
+                        "FastBrain has no quantum path"
+                    );
                 }
             }
         }

@@ -16,7 +16,9 @@ fn repo_root() -> PathBuf {
 #[test]
 fn consensus_decision_requires_quorum() {
     let root = repo_root();
-    let kernel_path = root.join("crates/runtime/qip-kernel/src").join("platform.rs");
+    let kernel_path = root
+        .join("crates/runtime/qip-kernel/src")
+        .join("platform.rs");
 
     if kernel_path.exists() {
         let content = fs::read_to_string(&kernel_path).unwrap_or_default();
@@ -42,7 +44,9 @@ fn panel_agents_weighed_by_expertise() {
 #[test]
 fn disagreement_surfaces_to_operator() {
     let root = repo_root();
-    let kernel_path = root.join("crates/runtime/qip-kernel/src").join("platform.rs");
+    let kernel_path = root
+        .join("crates/runtime/qip-kernel/src")
+        .join("platform.rs");
 
     if kernel_path.exists() {
         let content = fs::read_to_string(&kernel_path).unwrap_or_default();

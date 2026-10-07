@@ -56,6 +56,7 @@ use qip_contracts::{
     BookSide, Entitlement, MarketMessage, MessageBody, Origin, TradeCondition, Usage, VenueId,
 };
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_execution_engine::order::Side;
 use serde::{Deserialize, Serialize};
@@ -225,12 +226,17 @@ impl TapeDriver {
                 },
             };
             let origin = Origin::new(VenueId::new(line.venue), line.feed, 0, line.sequence);
+            let lineage = Lineage::root(
+                CorrelationId::from_string(&origin.stream_key()),
+                "qip-edge-node",
+            );
             let payload = MarketMessage::new(
                 ObjectId::from_string(&line.object_id),
                 origin,
                 body,
                 line.event_time,
                 line.receive_time,
+                lineage,
             );
             let hash = MarketEvent::hash_payload(&payload)?;
             let event = MarketEvent::new(

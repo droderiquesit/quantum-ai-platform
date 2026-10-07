@@ -31,7 +31,9 @@ fn signal_types_defined_exhaustively() {
 #[test]
 fn signal_generation_deterministic_and_reproducible() {
     let root = repo_root();
-    let platform_path = root.join("crates/runtime/qip-kernel/src").join("platform.rs");
+    let platform_path = root
+        .join("crates/runtime/qip-kernel/src")
+        .join("platform.rs");
 
     if platform_path.exists() {
         let content = fs::read_to_string(&platform_path).unwrap_or_default();
@@ -46,7 +48,9 @@ fn signal_generation_deterministic_and_reproducible() {
 #[test]
 fn signals_raise_alerts_or_logs() {
     let root = repo_root();
-    let observability_path = root.join("crates/libs/qip-observability/src").join("lib.rs");
+    let observability_path = root
+        .join("crates/libs/qip-observability/src")
+        .join("lib.rs");
 
     if observability_path.exists() {
         let content = fs::read_to_string(&observability_path).unwrap_or_default();

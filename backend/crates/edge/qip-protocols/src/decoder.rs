@@ -21,6 +21,7 @@
 
 use qip_contracts::{MarketMessage, Origin, VenueId};
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Hasher256, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -298,7 +299,11 @@ pub fn build_message(
     capture_time: Timestamp,
 ) -> MarketMessage {
     let id = message_id(&origin, ordinal, venue_time);
-    MarketMessage::new(id, origin, body, venue_time, capture_time)
+    let lineage = Lineage::root(
+        CorrelationId::from_string(&origin.stream_key()),
+        "qip-protocols",
+    );
+    MarketMessage::new(id, origin, body, venue_time, capture_time, lineage)
 }
 
 /// Reject a frame whose declared length is implausible.

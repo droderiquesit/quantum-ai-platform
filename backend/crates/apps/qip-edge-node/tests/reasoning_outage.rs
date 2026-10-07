@@ -25,6 +25,7 @@ use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, Decimal, ManualClock, SystemClock, dec};
 use qip_edge::cell::{CellConfig, PricingPolicy, WorkReport};
@@ -178,6 +179,7 @@ fn answer(mut stream: TcpStream, endpoint: &MeshEndpoint) {
 /// A grant small enough that the strategy runs out of it within the run, so
 /// the passes after the centre stops include refusals as well as orders.
 fn grant() -> Result<VerifiedEnvelope> {
+    let lineage = Lineage::root(CorrelationId::from_string(STRATEGY), "reasoning_outage");
     let build = |signature: &str| {
         CapitalEnvelope::new(
             StrategyId::new(STRATEGY),
@@ -190,6 +192,7 @@ fn grant() -> Result<VerifiedEnvelope> {
             t(3600),
             "alice@example.com",
             signature,
+            lineage.clone(),
         )
     };
     let unsigned = build("unsigned")?;
@@ -198,7 +201,8 @@ fn grant() -> Result<VerifiedEnvelope> {
 }
 
 fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {
-    let mut payload = PolicyPayload::unproduced(1, CELL, t(5));
+    let lineage = Lineage::root(CorrelationId::from_string(STRATEGY), "reasoning_outage");
+    let mut payload = PolicyPayload::unproduced(1, CELL, t(5), lineage);
     payload.capital_grants = Slot::produced(
         GrantManifest {
             live_grants: grants,

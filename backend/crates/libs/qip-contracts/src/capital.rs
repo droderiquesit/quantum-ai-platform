@@ -8,6 +8,7 @@
 use crate::signal::StrategyId;
 use crate::venue::VenueId;
 use qip_core::error::{Error, Result};
+use qip_core::lineage::Lineage;
 use qip_core::{Decimal, Timestamp};
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,7 @@ use serde::{Deserialize, Serialize};
 /// envelope that can be widened in place is not a limit. Widening means asking
 /// the central plane for a new one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapitalEnvelope {
     strategy: StrategyId,
     cell: String,
@@ -34,6 +36,8 @@ pub struct CapitalEnvelope {
     /// Who approved the grant, and the signature over its contents.
     approver: String,
     signature: String,
+    /// Lineage tracking: correlation id, causation id, trace id, and producer.
+    lineage: Lineage,
 }
 
 impl CapitalEnvelope {
@@ -49,6 +53,7 @@ impl CapitalEnvelope {
         expires_at: Timestamp,
         approver: impl Into<String>,
         signature: impl Into<String>,
+        lineage: Lineage,
     ) -> Result<Self> {
         if gross_limit <= Decimal::ZERO {
             return Err(Error::invalid("a capital envelope needs a positive limit"));
@@ -78,6 +83,7 @@ impl CapitalEnvelope {
             expires_at,
             approver,
             signature: signature.into(),
+            lineage,
         })
     }
 
@@ -125,6 +131,10 @@ impl CapitalEnvelope {
     /// signed payload, and widening it means asking for a new grant.
     pub fn venues(&self) -> &[VenueId] {
         &self.venues
+    }
+
+    pub fn lineage(&self) -> &Lineage {
+        &self.lineage
     }
 
     /// The bytes a signature is taken over.

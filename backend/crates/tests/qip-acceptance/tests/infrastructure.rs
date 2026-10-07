@@ -10806,9 +10806,8 @@ fn trust_zones_are_not_one_flat_vpc_gcp_024() {
          this check is reading the wrong module or zones are no longer subnets"
     );
     for (subnet_name, subnet_body) in &zone_subnets {
-        let network_ref = hcl_field(subnet_body, "network").unwrap_or_else(|| {
-            panic!("zone subnet `{subnet_name}` has no `network` field")
-        });
+        let network_ref = hcl_field(subnet_body, "network")
+            .unwrap_or_else(|| panic!("zone subnet `{subnet_name}` has no `network` field"));
         assert!(
             network_ref.starts_with("lookup(local.zone_network,"),
             "zone subnet `{subnet_name}` takes its network from `{network_ref}` \

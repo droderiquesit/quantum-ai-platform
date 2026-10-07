@@ -97,6 +97,7 @@ use qip_contracts::governance::Approval;
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp, dec};
 use qip_edge::cell::{Cell, CellConfig, WorkReport};
 use qip_edge::mesh::{
@@ -980,7 +981,8 @@ impl LiveDemo {
             "a grant for a cell that exists for the length of one command",
         )?
         .countersigned_by("demo.reviewer")?;
-        let envelope = self.issuer.issue(&terms, &approval, now)?;
+        let lineage = Lineage::root(CorrelationId::from_string("demo"), "qip-cli");
+        let envelope = self.issuer.issue(&terms, &approval, now, lineage)?;
         let granted = envelope.gross_limit();
         let grant_expires = envelope.expires_at();
         let dispatch = self.dispatcher.dispatch(envelope, now)?;

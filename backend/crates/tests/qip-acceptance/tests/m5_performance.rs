@@ -22,7 +22,7 @@ use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::rng::{Rng, Xoshiro256};
-use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
+use qip_core::{CorrelationId, Decimal, Duration, Lineage, ObjectId, Timestamp, dec};
 use qip_edge::cell::{Cell, CellConfig, ExecutionReport, Placer, PricingPolicy};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_feature_dag::engine::FeatureEngine;
@@ -88,6 +88,7 @@ fn level_stream(count: usize, seed: u64) -> Vec<MarketMessage> {
                 101 + offset.max(0)
             };
             let at = start().saturating_add(Duration::from_millis(index as i64));
+            let lineage = Lineage::root(CorrelationId::from_string("cor-m5-perf"), "m5-perf");
             MarketMessage::new(
                 obj(SYMBOL),
                 Origin::new(venue(), "feed-perf", 0, index as u64),
@@ -99,6 +100,7 @@ fn level_stream(count: usize, seed: u64) -> Vec<MarketMessage> {
                 },
                 at,
                 at,
+                lineage,
             )
         })
         .collect()
@@ -107,6 +109,7 @@ fn level_stream(count: usize, seed: u64) -> Vec<MarketMessage> {
 /// Build a two-sided orderbook: bid at 99 (500 qty), ask at 101 (400 qty)
 fn build_orderbook() -> Result<VenueState> {
     let mut state = VenueState::aggregated(obj(SYMBOL), venue(), VenueStatus::Open);
+    let lineage = Lineage::root(CorrelationId::from_string("cor-m5-perf"), "m5-perf");
     state.apply(&MarketMessage::new(
         obj(SYMBOL),
         Origin::new(venue(), "feed-perf", 0, 0),
@@ -118,6 +121,7 @@ fn build_orderbook() -> Result<VenueState> {
         },
         start(),
         start(),
+        lineage.clone(),
     ))?;
     state.apply(&MarketMessage::new(
         obj(SYMBOL),
@@ -130,12 +134,14 @@ fn build_orderbook() -> Result<VenueState> {
         },
         start(),
         start(),
+        lineage,
     ))?;
     Ok(state)
 }
 
 /// Sign a capital envelope the way the central allocator would
 fn signed_envelope() -> Result<VerifiedEnvelope> {
+    let lineage = Lineage::root(CorrelationId::from_string("cor-m5-perf"), "m5-perf");
     let build = |sig: &str| {
         CapitalEnvelope::new(
             StrategyId::new(STRATEGY_ID),
@@ -148,6 +154,7 @@ fn signed_envelope() -> Result<VerifiedEnvelope> {
             start().saturating_add(Duration::from_secs(3600)),
             "alice@example.com",
             sig,
+            lineage.clone(),
         )
     };
     let unsigned = build("unsigned")?;

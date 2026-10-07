@@ -65,7 +65,7 @@ use qip_contracts::replay::{
 };
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{Origin, VenueClass, VenueId};
-use qip_core::{Duration, EventId, ObjectId, Timestamp, dec};
+use qip_core::{CorrelationId, Duration, EventId, Lineage, ObjectId, Timestamp, dec};
 use qip_events::event_fabric::bindings::{self, TopicBinding};
 use qip_events::event_fabric::schema_id::{SchemaId, Shape};
 use qip_events::{EventBody, Topic};
@@ -216,6 +216,7 @@ fn gap_sample() -> Gap {
 
 fn market_event_sample() -> MarketEvent {
     let origin = Origin::new(VenueId::new("XNYS"), "itch-a", 0, 1);
+    let lineage = Lineage::root(CorrelationId::from_string("cor-schema-lock"), "schema-lock");
     let payload = MarketMessage::new(
         ObjectId::from_string("obj-ACME"),
         origin,
@@ -230,6 +231,7 @@ fn market_event_sample() -> MarketEvent {
         },
         t(0),
         t(0),
+        lineage,
     );
     let hash = MarketEvent::hash_payload(&payload).expect("the fixture payload hashes");
     MarketEvent::new(
@@ -251,6 +253,7 @@ fn market_event_sample() -> MarketEvent {
 // --- the three P0 control frames ---------------------------------------------
 
 fn capital_grant_frame_sample() -> CapitalGrantFrame {
+    let lineage = Lineage::root(CorrelationId::from_string("cor-schema-lock"), "schema-lock");
     let envelope = CapitalEnvelope::new(
         StrategyId::new("mean-reversion-1"),
         "cell-nynj",
@@ -262,6 +265,7 @@ fn capital_grant_frame_sample() -> CapitalGrantFrame {
         t(3600),
         "alice@example.com",
         "signature-placeholder",
+        lineage,
     )
     .expect("the capital envelope fixture holds together");
     CapitalGrantFrame(envelope)
@@ -272,7 +276,8 @@ fn capital_grant_frame_sample() -> CapitalGrantFrame {
 /// would hide a retype of the slot's payload behind a shape this lock cannot
 /// see. Every collection inside a slot is non-empty for the same reason.
 fn policy_payload_sample() -> PolicyPayload {
-    let mut payload = PolicyPayload::unproduced(9, "cell-nynj", t(0));
+    let lineage = Lineage::root(CorrelationId::from_string("cor-schema-lock"), "schema-lock");
+    let mut payload = PolicyPayload::unproduced(9, "cell-nynj", t(0), lineage);
     payload.valid_for = Duration::from_secs(300);
     payload.halted = false;
     payload.trained_models = Slot::produced(
@@ -339,6 +344,7 @@ fn policy_payload_sample() -> PolicyPayload {
     payload.risk_envelope = Slot::produced(
         RiskEnvelopeSnapshot {
             limits: serde_json::json!({"max_gross": "1000000"}),
+            lineage: lineage.clone(),
         },
         t(0),
     );

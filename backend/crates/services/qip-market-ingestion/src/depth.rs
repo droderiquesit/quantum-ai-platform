@@ -127,6 +127,7 @@ use qip_contracts::{
     BookSide, MarketMessage, MessageBody, Origin, TradeCondition, VenueId, VenueStatus,
 };
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp};
 use qip_events::Topic;
 use qip_financial::quality::LicensingClass;
@@ -1206,7 +1207,18 @@ fn decoded_message(
     capture_time: Timestamp,
 ) -> MarketMessage {
     let object_id = synthetic_id(origin, &format!("depth-{ordinal}"), venue_time);
-    MarketMessage::new(object_id, origin.clone(), body, venue_time, capture_time)
+    let lineage = Lineage::root(
+        CorrelationId::from_string(&origin.stream_key()),
+        "qip-market-ingestion",
+    );
+    MarketMessage::new(
+        object_id,
+        origin.clone(),
+        body,
+        venue_time,
+        capture_time,
+        lineage,
+    )
 }
 
 /// Turn one wire update into the message `qip_orderbook` applies.

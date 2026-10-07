@@ -56,6 +56,7 @@ use crate::signal::StrategyId;
 use crate::venue::VenueClass;
 use qip_core::error::{Error, Result};
 use qip_core::hash::{sha256_hex, to_hex};
+use qip_core::lineage::Lineage;
 use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -549,6 +550,8 @@ pub struct CycleWhitelist {
 #[serde(deny_unknown_fields)]
 pub struct RiskEnvelopeSnapshot {
     pub limits: serde_json::Value,
+    /// Lineage tracking: correlation id, causation id, trace id, and producer.
+    pub lineage: Lineage,
 }
 
 /// Inventory targets and mirror bands per instrument, with reference prices.
@@ -784,12 +787,19 @@ pub struct PolicyPayload {
     pub opportunity_definitions: Slot<OpportunityManifest>,
     /// Hex MAC over [`Self::signing_payload`]. Empty until signed.
     pub signature: String,
+    /// Lineage tracking: correlation id, causation id, trace id, and producer.
+    pub lineage: Lineage,
 }
 
 impl PolicyPayload {
     /// A payload with every slot unproduced — the shape the platform can
     /// honestly ship today, which narrows a cell to its conservative floor.
-    pub fn unproduced(sequence: u64, cell: impl Into<String>, issued_at: Timestamp) -> Self {
+    pub fn unproduced(
+        sequence: u64,
+        cell: impl Into<String>,
+        issued_at: Timestamp,
+        lineage: Lineage,
+    ) -> Self {
         Self {
             sequence,
             cell: cell.into(),
@@ -811,6 +821,7 @@ impl PolicyPayload {
             dispositions: Slot::unproduced(),
             opportunity_definitions: Slot::unproduced(),
             signature: String::new(),
+            lineage,
         }
     }
 

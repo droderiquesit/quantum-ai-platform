@@ -17,6 +17,7 @@ use crate::amm::{FeeBps, PoolCurve, PoolId};
 use crate::units::TokenAmount;
 use qip_contracts::{BookSide, MarketMessage, MessageBody, Origin, TradeCondition, VenueId};
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Decimal, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -451,6 +452,10 @@ impl Block {
                     continue;
                 };
                 let origin = Origin::new(venue.clone(), feed, 0, sequence);
+                let lineage = Lineage::root(
+                    CorrelationId::from_string(&origin.stream_key()),
+                    "qip-chain",
+                );
                 sequence += 1;
                 messages.push(MarketMessage::new(
                     object_id.clone(),
@@ -463,6 +468,7 @@ impl Block {
                     },
                     self.timestamp,
                     captured_at,
+                    lineage,
                 ));
             }
         }

@@ -14,6 +14,7 @@
 //! disjoint: a synthesised reset can never collide with a decoded message.
 
 use qip_contracts::{MarketMessage, MessageBody, Origin};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Hasher256, ObjectId, Timestamp};
 
 const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -50,8 +51,18 @@ pub fn synthetic_id(origin: &Origin, tag: &str, at: Timestamp) -> ObjectId {
 /// not the moment the venue sent anything — because the venue sent nothing. That
 /// is the honest stamping: the fact being reported is "this cell lost data at
 /// this instant", and it became true and known at the same time.
-pub fn reset_message(origin: Origin, reason: impl Into<String>, at: Timestamp) -> MarketMessage {
+pub fn reset_message(
+    origin: Origin,
+    reason: impl Into<String>,
+    at: Timestamp,
+    incoming: Option<&MarketMessage>,
+) -> MarketMessage {
     let object_id = synthetic_id(&origin, "reset", at);
+    let lineage = if let Some(msg) = incoming {
+        msg.lineage.relabel("qip-sequencing")
+    } else {
+        Lineage::root(CorrelationId::from_string("synthetic"), "qip-sequencing")
+    };
     MarketMessage::new(
         object_id,
         origin,
@@ -60,5 +71,6 @@ pub fn reset_message(origin: Origin, reason: impl Into<String>, at: Timestamp) -
         },
         at,
         at,
+        lineage,
     )
 }

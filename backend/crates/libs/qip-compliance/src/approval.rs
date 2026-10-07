@@ -27,6 +27,7 @@ use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::{Decimal, Duration, Timestamp};
 use serde::Serialize;
 
@@ -417,6 +418,10 @@ impl ApprovalChain {
         now: Timestamp,
         signature: String,
     ) -> Result<CapitalEnvelope> {
+        let lineage = Lineage::root(
+            CorrelationId::from_string(request.strategy.as_str()),
+            "qip-compliance",
+        );
         CapitalEnvelope::new(
             request.strategy.clone(),
             request.cell.clone(),
@@ -428,6 +433,7 @@ impl ApprovalChain {
             request.expires_at,
             approval.approver.clone(),
             signature,
+            lineage,
         )
     }
 }

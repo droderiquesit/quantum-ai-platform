@@ -65,6 +65,7 @@ use qip_contracts::policy::{
 };
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::time::{Duration, Timestamp};
 use qip_core::{Clock, hash};
 use qip_events::AnyEvent;
@@ -894,7 +895,8 @@ pub fn pending_policy(
     };
     for cell in cells {
         let sequence = now.as_nanos().max(0) as u64;
-        let mut payload = PolicyPayload::unproduced(sequence, &cell, now);
+        let lineage = Lineage::root(CorrelationId::from_string(cell.as_str()), "qip-api");
+        let mut payload = PolicyPayload::unproduced(sequence, &cell, now, lineage.clone());
         payload.halted = halted;
         match manifests
             .as_ref()
@@ -930,7 +932,13 @@ pub fn pending_policy(
             }
         }
         if let Some(limits) = limits.clone() {
-            payload.risk_envelope = Slot::produced(RiskEnvelopeSnapshot { limits }, now);
+            payload.risk_envelope = Slot::produced(
+                RiskEnvelopeSnapshot {
+                    limits,
+                    lineage: lineage.clone(),
+                },
+                now,
+            );
         }
         match platform.issue_cycle_whitelist(&cell, now) {
             Ok(issue) => {

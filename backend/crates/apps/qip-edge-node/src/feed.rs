@@ -104,6 +104,7 @@ use qip_contracts::venue::{Origin, VenueId, VenueStatus};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
+use qip_core::lineage::{CorrelationId, Lineage};
 use qip_core::time::Timestamp;
 use qip_edge::cell::Cell;
 use qip_edge::settlement::SettlementTerms;
@@ -646,9 +647,14 @@ impl Decoder for DepthDecoder {
             consumed += line.len();
             match parse_line(line.trim_end_matches(['\n', '\r'])) {
                 Ok(level) => {
+                    let origin = Origin::new(self.venue.clone(), FEED_NAME, 0, level.sequence);
+                    let lineage = Lineage::root(
+                        CorrelationId::from_string(&origin.stream_key()),
+                        "qip-edge-node",
+                    );
                     messages.push(MarketMessage::new(
                         level.object_id,
-                        Origin::new(self.venue.clone(), FEED_NAME, 0, level.sequence),
+                        origin,
                         MessageBody::LevelSet {
                             side: level.side,
                             price: level.price,
@@ -659,6 +665,7 @@ impl Decoder for DepthDecoder {
                         // the line states it, and this node's receipt.
                         level.venue_time,
                         captured_at,
+                        lineage,
                     ));
                 }
                 Err(detail) => self.diagnostics.record_skip(SkipRecord {
