@@ -177,6 +177,20 @@ pub enum Decision {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fee: Option<String>,
     },
+    /// A position was hedged by placing an offset order at a venue.
+    ///
+    /// Recorded when the cell executes a hedge operation to mitigate risk
+    /// on an existing position. Like [`Self::OrderSent`], this records a
+    /// request to a venue, and the outcome is tracked separately in a
+    /// `Filled` entry if the hedge venue responds. `quantity` is the hedge
+    /// size and `object` is the instrument being hedged.
+    Hedged {
+        order_id: String,
+        venue: String,
+        object: String,
+        quantity: String,
+        simulated: bool,
+    },
     /// A resting order passed its time to live and the cell withdrew what
     /// remained, `withdrawn` being the venue's own answer to the cancel.
     /// Whatever filled before this is in its own [`Self::Filled`] entries;
@@ -564,6 +578,7 @@ impl Decision {
             Self::EdgePriced { .. } => "edge_priced",
             Self::OrderSent { .. } => "order_sent",
             Self::Filled { .. } => "filled",
+            Self::Hedged { .. } => "hedged",
             Self::OrderExpired { .. } => "order_expired",
             Self::MassCancelled { .. } => "mass_cancelled",
             Self::VenueWithdrawn { .. } => "venue_withdrawn",
