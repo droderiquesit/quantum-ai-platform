@@ -804,6 +804,44 @@ fn the_arbitrage_discount_is_spread_across_the_legs_rather_than_dropped() {
     );
 }
 
+/// `is_synthetic` is the field a paper-boundary check reads to refuse a live
+/// prediction venue, so it is asserted in both directions: a synthetic venue
+/// that stopped saying so would be refused by such a check, and a venue API
+/// adapter that started saying so would be admitted by it.
+///
+/// Moved here from `qip-edge-node`, whose `EventVenue` wrapper read this field
+/// and was removed because the reflex node may not link this Lane 3 crate.
+/// The wrapper went; the property it relied on is this crate's, so its test
+/// stays with it.
+#[test]
+fn the_synthetic_venue_describes_itself_as_synthetic_and_the_venue_api_adapter_does_not() {
+    let synthetic = SyntheticPredictionVenue::new(
+        SyntheticVenueConfig::demo(7).expect("the demo config builds"),
+        now(),
+    )
+    .expect("the synthetic venue builds");
+    assert!(
+        synthetic.descriptor().is_synthetic,
+        "the synthetic venue must describe itself as synthetic"
+    );
+
+    let api = VenueApiAdapter::new(
+        VenueApiConfig::standard(VenueId::new("REAL-VENUE")),
+        true,
+        true,
+    );
+    assert!(
+        api.is_available(),
+        "premise: the adapter is built with both presence flags set, so the \
+         assertion below is about a venue that could be reached"
+    );
+    assert!(
+        !api.descriptor().is_synthetic,
+        "a real venue's adapter must never describe itself as synthetic, even when it is \
+         configured"
+    );
+}
+
 #[test]
 fn the_venue_api_adapter_names_the_endpoints_and_credential_it_is_missing() {
     let mut adapter = VenueApiAdapter::new(
