@@ -21,9 +21,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_acceptance::repository_root;
-use qip_core::error::Result;
 use std::fs;
-use std::path::Path;
 
 // --- WORLD-001 through WORLD-025: state immutability and bitemporality --------
 

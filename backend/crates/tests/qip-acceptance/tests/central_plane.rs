@@ -22,9 +22,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_acceptance::repository_root;
-use qip_core::error::Result;
 use std::fs;
-use std::path::Path;
 
 // --- CENTRAL-001 through CENTRAL-025: cycle stages, ordering, state --------
 

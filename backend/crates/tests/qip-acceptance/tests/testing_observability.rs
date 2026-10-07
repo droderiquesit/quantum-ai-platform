@@ -20,9 +20,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_acceptance::repository_root;
-use qip_core::error::Result;
 use std::fs;
-use std::path::Path;
 
 // --- TEST-001 through TEST-025: test structure, mutation testing --------
 
@@ -222,7 +220,8 @@ fn crate_contract_tests_live_in_tests_directory() {
                     .unwrap_or(false)
             })
             .count();
-        assert!(test_files >= 0, "Tests directory may contain test files");
+        // Note: test_files count is always >= 0, directory structure verified above
+        let _ = test_files; // Verify directory exists, count is non-negative
     }
 }
 

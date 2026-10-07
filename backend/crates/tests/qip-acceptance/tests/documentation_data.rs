@@ -21,9 +21,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_acceptance::repository_root;
-use qip_core::error::Result;
 use std::fs;
-use std::path::Path;
 
 // --- DATA-001 through DATA-025: ADRs, architecture decisions --------
 
@@ -730,10 +728,8 @@ fn release_notes_document_breaking_changes() {
                     .unwrap_or(false)
             })
             .count();
-        assert!(
-            release_files >= 0,
-            "Release notes directory may contain release files"
-        );
+        // Note: release_files count is always >= 0, directory structure verified above
+        let _ = release_files; // Verify directory exists, count is non-negative
     }
 }
 

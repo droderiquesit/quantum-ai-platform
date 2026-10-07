@@ -20,9 +20,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use qip_acceptance::repository_root;
-use qip_core::error::Result;
 use std::fs;
-use std::path::Path;
 
 // --- RISK-001 through RISK-025: limit checks, pre-trade validation --------
 
