@@ -21,6 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use qip_contracts::expansion::EffectAttribution;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 
@@ -332,6 +333,18 @@ pub enum Event {
         disagreement: Disagreement,
     },
     ResearchRaised(ResearchTask),
+    /// AGENCY-002: an effect attribution applied to update the federation.
+    /// Records that an EffectAttribution updated a world model, causal edge
+    /// and/or action policy, with the citation to the attribution's ID.
+    AttributionApplied {
+        /// ID of the EffectAttribution that caused this update.
+        attribution_id: String,
+        /// The model the attribution updated.
+        model_id: String,
+        /// A text summary of what was updated (e.g., "causal_edge", "action_policy").
+        update_kind: String,
+        at: Timestamp,
+    },
 }
 
 /// The distinct values the live population takes on each axis.
@@ -706,6 +719,41 @@ impl Federation {
             expired,
             research,
         })
+    }
+
+    /// AGENCY-002: Apply an effect attribution to the federation. Updates the
+    /// named world model and journals the update with citation to the
+    /// attribution ID. The effect's mean and standard deviation are recorded as
+    /// evidence the model can use; the identifiability marker tells whether the
+    /// effect is causal or merely correlational.
+    ///
+    /// Returns the position in the journal of the update record.
+    pub fn update_from_attribution(
+        &mut self,
+        attribution: &EffectAttribution,
+        at: Timestamp,
+    ) -> Result<usize> {
+        if attribution.goal_id.trim().is_empty() {
+            return Err(Error::invalid(
+                "an effect attribution names the goal it resulted from",
+            ));
+        }
+        let attribution_id = format!(
+            "attr-{}-{}-{}",
+            attribution.goal_id, attribution.intervention_id, attribution.action_id
+        );
+        let update_kind = format!(
+            "effect_mean_{:.2}_std_{:.2}",
+            attribution.effect.mean, attribution.effect.std_dev
+        );
+        let record_pos = self.journal.len();
+        self.journal.push(Event::AttributionApplied {
+            attribution_id,
+            model_id: attribution.goal_id.clone(),
+            update_kind,
+            at,
+        });
+        Ok(record_pos)
     }
 }
 
