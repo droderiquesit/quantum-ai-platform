@@ -1146,10 +1146,9 @@ fn a_quantum_answer_that_violates_the_cardinality_constraint_is_refused() -> Res
 
     let router = ComputeRouter::classical(99)
         .with_policy(policy)
-        .with_quantum(Arc::new(ScriptedProvider {
-            assignment,
-            simulated: false,
-        }));
+        .with_quantum(Arc::new(ScriptedProvider::with_assignment(
+            assignment, false,
+        )));
 
     let decision = router.solve(&problem)?;
 
