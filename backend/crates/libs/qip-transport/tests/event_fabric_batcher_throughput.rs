@@ -291,28 +291,3 @@ fn batching_reduces_per_record_transport_overhead() {
         "the 5 ms linger did not cut every batch at five records"
     );
 }
-
-/// Full throughput report showing P2 market journal batching meets SLA.
-#[test]
-#[ignore]
-fn p2_market_journal_batching_report() {
-    println!("\n=== P2 Market Journal Batching Report ===\n");
-    println!("Requirement: Batched produce reaches P2 target rate (100k records/sec)");
-    println!("Mechanism: Batch accumulation with configurable max_records and max_linger");
-    println!();
-    println!("Configuration:");
-    println!("  Max records per batch: 500 (amortizes transport setup)");
-    println!("  Max linger time: 10ms (bounds latency per record)");
-    println!("  Target rate: {} records/sec", P2_TARGET_RECORDS_PER_SEC);
-    println!();
-    println!("Expected behavior:");
-    println!("  - Without batching: 1 transport write per record");
-    println!("  - With batching: ~1 write per 500 records");
-    println!("  - Overhead reduction: ~99.8%");
-    println!(
-        "  - Throughput: ≥ {} records/sec at p99",
-        P2_TARGET_RECORDS_PER_SEC
-    );
-    println!();
-    println!("Verification: Run the benchmarks to confirm on target hardware");
-}
