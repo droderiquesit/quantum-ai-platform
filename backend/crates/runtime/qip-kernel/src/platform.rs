@@ -2773,51 +2773,50 @@ impl SolverRoutingJournal {
     }
 }
 
-/// A quantum vs classical solver benchmark recorded as a publishable event.
-/// QUANT-031: Records the routing decision with classical baseline, chosen
-/// solver, measured advantage, and quantum availability notes.
+/// The workload family of every benchmark the kernel publishes today:
+/// [`qip_quantum::foundry::FamilyKind::PortfolioAllocation`], the one family
+/// the router in `construct_from` solves. A named constant rather than a
+/// literal at the publish site, so a second family is a second constant
+/// somebody had to name rather than a string that drifted.
+pub const PORTFOLIO_ALLOCATION_FAMILY: &str = "portfolio-allocation";
+
+/// One cycle's quantum-versus-classical comparison in the form QUANT-031
+/// asks for: keyed by workload family and instance size, and published on
+/// `optimization.benchmarked`, so a reader of the log can group every
+/// comparison by the kind and size of problem it was measured on without
+/// decoding every cycle entry to find one.
+///
+/// Not a second account of the comparison. `comparison` is the same
+/// [`SolverRoutingJournal`] value the cycle's [`CycleJournalEntry`] carries,
+/// built once in `construct_from` and cloned into both, so the two records
+/// cannot disagree about what the baseline scored. This record adds only the
+/// keys, and `cycle` joins it back to the entry. The first form copied the
+/// comparison field by field and carried no key: a duplicate of the cycle
+/// entry that could not be grouped the way the requirement asks.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SolverBenchmarkedEvent {
-    /// The solver whose answer was chosen.
-    pub chosen_solver: String,
-    /// Every solver that the router attempted, in order.
-    pub attempted_solvers: Vec<String>,
-    /// The objective value of the chosen answer.
-    pub chosen_objective: f64,
-    /// The classical baseline's objective value (always present).
-    pub classical_objective: f64,
-    /// Improvement of chosen over classical, as a fraction.
-    pub improvement_over_classical: f64,
-    /// The measured quantum advantage, present only when quantum won.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub measured_quantum_advantage: Option<f64>,
-    /// Whether and why a quantum path was attempted.
-    pub quantum_note: String,
+pub struct SolverBenchmarked {
+    /// The cycle whose construction ran the solvers.
+    pub cycle: u64,
+    /// The workload family the problem belongs to.
+    pub family: String,
+    /// The problem's size: how many instruments the router sized weights for.
+    pub instance_size: usize,
+    /// The comparison itself, exactly as the cycle entry carries it.
+    pub comparison: SolverRoutingJournal,
 }
 
-impl EventBody for SolverBenchmarkedEvent {
+impl EventBody for SolverBenchmarked {
     const TOPIC: Topic = Topic::SolverBenchmarked;
     const SCHEMA_VERSION: u32 = 1;
 
-    /// One record per cycle, keyed by cycle correlation (stepping towards
-    /// per-family/size keying as QUANT-031 requirement matures).
+    /// One record per cycle, family and size, in the form
+    /// `HedgeSurveyed` keys on. The log stores the key and refuses nothing on
+    /// it; a writer that may retry asks the log first.
     fn idempotency_key(&self) -> Option<String> {
-        None
-    }
-}
-
-impl SolverBenchmarkedEvent {
-    /// Create a benchmark event from a routing journal.
-    fn from_journal(journal: &SolverRoutingJournal) -> Self {
-        Self {
-            chosen_solver: journal.chosen.clone(),
-            attempted_solvers: journal.ran.clone(),
-            chosen_objective: journal.objective,
-            classical_objective: journal.classical_objective,
-            improvement_over_classical: journal.improvement_over_classical,
-            measured_quantum_advantage: journal.measured_quantum_advantage,
-            quantum_note: journal.quantum_note.clone(),
-        }
+        Some(format!(
+            "solver-benchmark:{}:{}:{}",
+            self.cycle, self.family, self.instance_size
+        ))
     }
 }
 
@@ -12870,15 +12869,27 @@ impl Platform {
         // whether or not the hold did, and a record that vanished on the
         // refusal path would make ADR 0006's control look like it had not run
         // on exactly the cycles an operator most wants to read.
-        let journal = SolverRoutingJournal::of(&outcome.routing);
-        self.cycle_solver_routing = Some(journal.clone());
-
-        // QUANT-031: Publish benchmark event with quantum vs classical results.
-        let benchmark_event = SolverBenchmarkedEvent::from_journal(&journal);
-        let _ = self.journal_record(benchmark_event, "qip-kernel", now);
-        // Event publication failure is not a fatal error for the cycle; the
-        // journal is best-effort for offline analysis and does not constrain
-        // the platform's trading decisions.
+        let comparison = SolverRoutingJournal::of(&outcome.routing);
+        self.cycle_solver_routing = Some(comparison.clone());
+        // QUANT-031's benchmark record, from the same value the cycle entry
+        // carries; `SolverBenchmarked` says why that is one comparison under
+        // two keys and not two accounts of it. A log that will not take it
+        // does not stop the cycle, because the proposal was sized either way.
+        // The failure is surfaced by LEARN rather than swallowed: the log is
+        // the record, and a comparison the cycle entry holds and the
+        // benchmark topic does not is two stories about one solve.
+        let benchmark = SolverBenchmarked {
+            cycle: self.cycle,
+            family: PORTFOLIO_ALLOCATION_FAMILY.to_string(),
+            instance_size: outcome.routing.weights.len(),
+            comparison,
+        };
+        if let Err(error) = self.journal_record(benchmark, "kernel/solver-benchmark", now) {
+            self.capture_problems.push(format!(
+                "the solver benchmark was computed and not journalled: {}",
+                error.message()
+            ));
+        }
 
         // Effective breadth (§19.1), recorded from the same covariance and
         // target weights the proposal was just sized against — see
