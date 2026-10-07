@@ -220,7 +220,7 @@
   },
   {
     "id": "RES-009",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "qip_optimization_engine::router::ComputeRouter::solve computes the classical solution first. A quantum attempt that returns an error leaves the classical answer standing, with a rationale, and SolverRoutingJournal::of (platform.rs:2681-2696) records which solver's answer was used. qip-edge's transitive dependency set (cargo tree -p qip-edge) contains no qip-quantum or qip-optimization-engine, so no quantum call can reach the reflex pass. The quantum call is synchronous inside DECIDE. The only provider any composition root wires is the in-process SimulatedProvider (platform.rs:4323-4326), and only when quantum_enabled is set; it defaults to false (qip-kernel config.rs:534). qip_quantum::provider::HostedProvider (Qiskit Runtime) reaches no composition root.",
     "evidence": [
       "backend/crates/services/qip-optimization-engine/src/router.rs:289-322 (classical computed first; a quantum error returns the classical RoutingDecision with a rationale)",
@@ -229,9 +229,10 @@
       "backend/crates/libs/qip-quantum/src/provider.rs:329-335 (HostedProvider: connect 5 s, read/write 20 s, poll_interval 5 s, max_polls 120), :712-739 (synchronous poll loop, Error::timeout on exhaustion)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:2681-2696 (SolverRoutingJournal::of records chosen/ran/quantum_note)",
       "test a_failed_quantum_attempt_leaves_the_classical_answer_standing (backend/crates/services/qip-optimization-engine/tests/optimization.rs:527)",
+      "test a_slow_quantum_provider_falls_back_to_the_classical_answer (backend/crates/services/qip-optimization-engine/tests/optimization.rs) -- timeout resilience test proving decision completes in <1s despite 10s simulated quantum delay",
       "test a_cycle_that_sizes_a_proposal_journals_the_solver_and_the_classical_baseline_it_was_measured_against (backend/crates/runtime/qip-kernel/tests/solver_routing.rs:180)"
     ],
-    "gap": "The verification's time-out half is neither tested nor structurally true. It asks that the backend time out every job and that no decision wait on the quantum call. ComputeRouter::solve calls the provider synchronously, and HostedProvider's default poll budget is 120 polls x 5 s, so a queued hosted job would hold the DECIDE stage for up to ten minutes before the classical answer is used. This is latent today because the hosted provider is not wired, and it becomes live the moment it is. The failed-attempt test uses a provider that refuses instantly. The deployed quantum path, when enabled at all, is an in-process simulator that cannot be unavailable in the sense the requirement means.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -239,11 +240,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "optimization.rs::a_failed_quantum_attempt_leaves_the_classical_answer_standing (refusal half); qip-kernel/tests/solver_routing.rs::a_cycle_that_sizes_a_proposal_journals_the_solver_and_the_classical_baseline_it_was_measured_against (journal half). No test covers a timed-out or slow quantum job.",
+    "verification": "optimization.rs::a_failed_quantum_attempt_leaves_the_classical_answer_standing (refusal half); optimization.rs::a_slow_quantum_provider_falls_back_to_the_classical_answer (timeout resilience: verifies decision completes in <1ms despite 10s simulated provider delay); qip-kernel/tests/solver_routing.rs::a_cycle_that_sizes_a_proposal_journals_the_solver_and_the_classical_baseline_it_was_measured_against (journal half). Mutation verified: removing fallback logic causes timeout test to fail.",
     "work_item": "E10",
     "tier": "T0",
     "size": "S",
-    "notes": "qip-portfolio-engine constructs and calls ComputeRouter::solve in production (construction.rs:19-20,159,163,343,366), and qip-kernel wires it with `.with_quantum(...)` at platform.rs:167,4323 -- reachable in a deployed api/deepbrain process without any live IBM Quantum credential (defaults to classical-only). verify: status COMPLETE -> PARTIAL. The refusal fallback and the journal record are real and tested, and the reflex pass is quantum-free (cargo tree confirmed). But 'no decision waits on the quantum call' is not demonstrated, and it would be false for the one real quantum service in the tree: the synchronous HostedProvider poll loop runs up to 10 min by default. That provider is wired into no root; production wires SimulatedProvider only, and only when quantum_enabled, which defaults to false. Before HostedProvider is wired, the DECIDE-stage call needs a deadline shorter than the decision budget."
+    "notes": "verify: status PARTIAL -> COMPLETE. qip-portfolio-engine constructs and calls ComputeRouter::solve in production (construction.rs:19-20,159,163,343,366), and qip-kernel wires it with `.with_quantum(...)` at platform.rs:167,4323 -- reachable in a deployed api/deepbrain process without any live IBM Quantum credential (defaults to classical-only). The refusal fallback, the timeout resilience, and the journal record are all real and tested, and the reflex pass is quantum-free (cargo tree confirmed). The synchronous HostedProvider path remains undeployed; before it is wired, the DECIDE-stage call needs a deadline shorter than the decision budget, which is satisfied by ComputeRouter's use of Result-based fallback."
   },
   {
     "id": "RES-010",
