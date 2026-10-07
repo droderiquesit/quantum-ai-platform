@@ -38,6 +38,7 @@
 
 pub mod auth;
 pub mod cells;
+pub mod config_signature;
 pub mod console;
 pub mod fabric;
 pub mod feed;

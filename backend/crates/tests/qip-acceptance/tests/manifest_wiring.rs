@@ -1566,27 +1566,33 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          record that does not exist. It becomes settable the day the workload \
          has a volume, which is the same day QIP_STORAGE_ROOT does.",
     ),
-    // CICD-096's signature. Its key, QIP_CONFIG_SIGNATURE_KEY, is deliberately
-    // not argued here: unset, `verify_config_signature` falls back to a key
-    // written in qip-api's source, so a signature checked under it is one
-    // anybody can forge. That makes the binary less safe the moment a
-    // signature is set, which is not something this register can excuse.
-    // The variable is left failing this test on purpose, until the
-    // verification refuses a missing key and reads it from a file.
+    // CICD-096's signature and its key. Until 2026-10-07 the key was left
+    // failing this test on purpose: unset, the check fell back to a key
+    // written in qip-api's source. It now refuses a signature with no key,
+    // and reads the key through `qip_core::secret`
+    // (`qip_api::config_signature`).
     (
         "qip-api",
         "QIP_CONFIG_SIGNATURE",
         "Unset, `verify_config_signature` returns before it reads anything \
          else. The process starts exactly as it did before CICD-096: the \
          check is not configured, and that is not a weaker posture than any \
-         deployment has had. An operator is also better off unable to set it \
-         today, because any value stops the process. The canonical form it \
-         verifies is built from every QIP_ variable in the environment, this \
-         one included (as `config_signature`), so a valid signature would \
-         have to be an HMAC over itself. A signature taken over the \
-         deployment's own variables fails as soon as it is set beside them. \
-         It becomes a deployment's value once the canonical form excludes \
-         the signature and its key arrives as a file.",
+         deployment has had. Set, it is verified over every QIP_ variable \
+         except itself and its key, and a mismatch stops the process. It \
+         becomes a deployment's value when an operator signs the \
+         deployment's configuration, which nobody has done yet.",
+    ),
+    (
+        "qip-api",
+        "QIP_CONFIG_SIGNATURE_KEY",
+        "Read only when QIP_CONFIG_SIGNATURE is set, so unset beside an unset \
+         signature is the unconfigured check above. Set beside a signature \
+         with no key, `qip_api::config_signature::check` refuses to start. It \
+         does not fall back to a default, so an unset key can never make a \
+         forgeable signature pass. It is read through `qip_core::secret`, so \
+         when a deployment does sign its configuration the key arrives as \
+         QIP_CONFIG_SIGNATURE_KEY_FILE from Secret Manager, never as an \
+         environment value.",
     ),
     (
         "qip-deepbrain",
