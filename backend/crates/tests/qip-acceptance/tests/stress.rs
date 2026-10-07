@@ -81,7 +81,7 @@ use qip_quantum::provider::{HostedConfig, HostedProvider, QuantumProvider};
 use qip_quantum::qaoa::QaoaSettings;
 use qip_reasoning_engine::engine::{ReasoningEngine, SynthesisInput};
 use qip_reasoning_engine::evidence::{Evidence, EvidenceKind, EvidenceSet, Stance};
-use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim};
+use qip_reasoning_engine::hypothesis::{CausalChain, CausalStep, Claim, UncertaintyType};
 use qip_reasoning_engine::redteam::ReviewPolicy;
 use qip_risk::limits::{Limit, LimitKind, LimitSet, RiskState};
 use qip_risk_engine::autonomy::AutonomyController;
@@ -1283,6 +1283,7 @@ fn a_recommendation_its_own_organisation_contradicts_does_not_clear_the_action_b
             .with_diagnosticity(0.6),
         ]),
         prior: 0.25,
+        uncertainty_type: UncertaintyType::Epistemic,
         falsifiers: vec!["the next quarterly report shows flat gross margin".to_string()],
         leading_alternative: "the market has already priced the funding structure".to_string(),
         horizon: Duration::from_days(60),
