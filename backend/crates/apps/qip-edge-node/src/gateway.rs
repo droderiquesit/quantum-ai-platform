@@ -370,7 +370,10 @@ impl SimulatedGateway {
             vec![format!("placed by the edge cell as {order_id}")],
             venue.as_str(),
             at,
-        );
+            "simulated".to_string(),
+            "simulated".to_string(),
+            "simulated".to_string(),
+        )?;
         let fills = self.exchange.submit(&order, at)?;
         let mut reported = Decimal::ZERO;
         for fill in fills {
@@ -1035,7 +1038,10 @@ impl Placer for RestGateway {
             vec![format!("placed by the edge cell as {order_id}")],
             venue.as_str(),
             at,
-        );
+            "simulated".to_string(),
+            "simulated".to_string(),
+            "simulated".to_string(),
+        )?;
 
         // `Broker::submit` mints its own readiness ticket, so this path cannot
         // reach a venue whose session is not ready even if `ensure_ready`

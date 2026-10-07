@@ -521,7 +521,10 @@ impl LegGroup {
     /// leg's, so calling this twice produces the same ids rather than a second
     /// set of orders that would double the reversal into a position opposite
     /// the one being closed.
-    pub fn unwind_orders(&self, now: Timestamp) -> Vec<Order> {
+    ///
+    /// Preserves the original order's version identifiers on the unwind order,
+    /// since the same decision logic and configuration apply.
+    pub fn unwind_orders(&self, now: Timestamp) -> qip_core::error::Result<Vec<Order>> {
         self.legs
             .iter()
             .filter(|leg| leg.filled.is_positive())
@@ -549,6 +552,9 @@ impl LegGroup {
                     leg.order.hypotheses.clone(),
                     leg.order.scope.clone(),
                     now,
+                    leg.order.strategy_version.clone(),
+                    leg.order.policy_version.clone(),
+                    leg.order.config_version.clone(),
                 )
             })
             .collect()
@@ -597,7 +603,7 @@ impl LegGroup {
                 Ok(())
             }
             Verdict::Unwind { reason } => {
-                let wanted = self.unwind_orders(now);
+                let wanted = self.unwind_orders(now)?;
                 if issued.len() != wanted.len() {
                     return Err(Error::denied(format!(
                         "leg group {} has {} filled leg(s) to reverse and {} reversing \
@@ -841,7 +847,11 @@ mod tests {
             vec!["hyp-1".to_string()],
             "platform",
             at(0),
+            "test-strategy".to_string(),
+            "test-policy".to_string(),
+            "test-config".to_string(),
         )
+        .expect("a valid test order")
     }
 
     fn pair_with_bound(max_leg_risk: &str) -> LegGroup {

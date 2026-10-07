@@ -69,7 +69,11 @@ fn order(symbol: &str, side: Side, quantity: &str) -> Order {
         vec!["hyp-1".to_string()],
         "momentum",
         now(),
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
     )
+    .unwrap()
 }
 
 fn manager() -> OrderManager {
@@ -1321,7 +1325,11 @@ fn a_commission_that_cannot_be_computed_is_refused_not_booked_as_zero() -> Resul
         vec!["hyp-1".to_string()],
         "momentum",
         now(),
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )
+    .unwrap();
     let Err(error) = broker.submit(&huge, now()) else {
         panic!("an uncomputable commission produced a fill instead of a refusal");
     };

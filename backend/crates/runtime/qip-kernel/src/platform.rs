@@ -13678,13 +13678,18 @@ impl Platform {
         let mut unsizeable: Vec<String> = Vec::new();
         let mut capped: Vec<String> = Vec::new();
         let proposal = if theses.is_empty() {
-            self.constructor.nothing_to_do(
-                ProposalId::from_string(format!("prop-{}", self.cycle)),
-                Money::new(self.capital.equity(), Currency::USD),
-                now,
-                now,
-                "no thesis cleared the action bar this cycle",
-            )
+            self.constructor
+                .nothing_to_do(
+                    ProposalId::from_string(format!("prop-{}", self.cycle)),
+                    Money::new(self.capital.equity(), Currency::USD),
+                    now,
+                    now,
+                    "no thesis cleared the action bar this cycle",
+                    "production-1.0.0".to_string(),
+                    "production-1.0.0".to_string(),
+                    "production-1.0.0".to_string(),
+                )
+                .expect("nothing_to_do should not fail")
         } else {
             match self.construct_from(&theses, now) {
                 Ok((outcome, left_out, narrowed)) => {
@@ -13699,16 +13704,21 @@ impl Platform {
                 // history next cycle, and the event log keeps the attempt.
                 Err(error) => {
                     refusal = Some(error.message().to_string());
-                    self.constructor.nothing_to_do(
-                        ProposalId::from_string(format!("prop-{}", self.cycle)),
-                        Money::new(self.capital.equity(), Currency::USD),
-                        now,
-                        now,
-                        format!(
-                            "{approved} thesis(es) approved and none sized: {}",
-                            error.message()
-                        ),
-                    )
+                    self.constructor
+                        .nothing_to_do(
+                            ProposalId::from_string(format!("prop-{}", self.cycle)),
+                            Money::new(self.capital.equity(), Currency::USD),
+                            now,
+                            now,
+                            format!(
+                                "{approved} thesis(es) approved and none sized: {}",
+                                error.message()
+                            ),
+                            "production-1.0.0".to_string(),
+                            "production-1.0.0".to_string(),
+                            "production-1.0.0".to_string(),
+                        )
+                        .expect("nothing_to_do should not fail")
                 }
             }
         };
@@ -14230,7 +14240,11 @@ impl Platform {
                     leg.hypotheses.clone(),
                     "platform",
                     now,
-                );
+                    proposal.strategy_version.clone(),
+                    proposal.policy_version.clone(),
+                    proposal.config_version.clone(),
+                )
+                .expect("platform order creation should not fail");
 
                 match self.submit_order(order, now) {
                     Ok(()) => {
@@ -16519,9 +16533,12 @@ impl Platform {
         proposal_id: &str,
         hypotheses: Vec<String>,
         now: Timestamp,
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
     ) -> qip_core::error::Result<Order> {
         self.derivative_gate(object_id.as_str())?;
-        Ok(self.order_from(
+        self.order_from(
             object_id,
             side,
             quantity,
@@ -16529,7 +16546,10 @@ impl Platform {
             proposal_id,
             hypotheses,
             now,
-        ))
+            strategy_version,
+            policy_version,
+            config_version,
+        )
     }
 
     /// Build an order from a proposal leg, for the ACT stage.
@@ -16542,7 +16562,10 @@ impl Platform {
         proposal_id: &str,
         hypotheses: Vec<String>,
         now: Timestamp,
-    ) -> Order {
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
+    ) -> qip_core::error::Result<Order> {
         let order_id = self.orders.next_order_id("ord");
         Order::new(
             order_id,
@@ -16555,6 +16578,9 @@ impl Platform {
             hypotheses,
             "platform",
             now,
+            strategy_version,
+            policy_version,
+            config_version,
         )
     }
 

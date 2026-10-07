@@ -4462,6 +4462,9 @@ impl Cell {
                 signed_size,
                 price,
                 now.saturating_add(DISPOSITION_VALIDITY),
+                "disposition-local".to_string(),
+                "disposition-local".to_string(),
+                "disposition-local".to_string(),
             ) {
                 Ok(intent) => intent,
                 Err(error) => {
@@ -4797,6 +4800,9 @@ impl Cell {
             signed,
             price,
             signal.valid_until,
+            "signal-local".to_string(),
+            "signal-local".to_string(),
+            "signal-local".to_string(),
         )?
         // The revisions travel with the intent because this is the last point
         // that has them: after netting, several strategies' shares share one
@@ -6917,7 +6923,14 @@ impl Cell {
                 assignment,
             });
 
-            let legs = match opportunity.cycle_legs(&strategy, now, now.saturating_add(validity)) {
+            let legs = match opportunity.cycle_legs(
+                &strategy,
+                now,
+                now.saturating_add(validity),
+                "arbitrage-local".to_string(),
+                "arbitrage-local".to_string(),
+                "arbitrage-local".to_string(),
+            ) {
                 Ok(legs) => legs,
                 Err(error) => {
                     self.refuse(report, "arbitrage_legs", error.message(), now);

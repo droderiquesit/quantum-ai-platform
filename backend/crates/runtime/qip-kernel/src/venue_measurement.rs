@@ -456,7 +456,11 @@ mod tests {
                 vec!["hypothesis".to_string()],
                 "scope",
                 now(),
-            );
+                "test-strategy".to_string(),
+                "test-policy".to_string(),
+                "test-config".to_string(),
+            )
+            .expect("a valid test order");
             broker
                 .submit(&order, now())
                 .expect("the frictionless venue never refuses");

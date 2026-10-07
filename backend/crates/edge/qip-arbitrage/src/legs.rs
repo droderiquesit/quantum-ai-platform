@@ -120,6 +120,9 @@ impl Opportunity {
         strategy: &StrategyId,
         opened_at: Timestamp,
         valid_until: Timestamp,
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
     ) -> Result<Vec<CycleLeg>> {
         if valid_until <= opened_at {
             return Err(Error::invalid(format!(
@@ -143,6 +146,9 @@ impl Opportunity {
                     signed_size(step),
                     step.reference_price,
                     valid_until,
+                    strategy_version.clone(),
+                    policy_version.clone(),
+                    config_version.clone(),
                 )
             })
             .collect()

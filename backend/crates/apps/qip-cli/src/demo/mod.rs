@@ -1049,7 +1049,10 @@ impl LiveDemo {
             "prop-demo-live",
             vec![format!("the live demonstration's cycle {cycle}")],
             now,
-        );
+            "test-strategy".to_string(),
+            "test-policy".to_string(),
+            "test-config".to_string(),
+        )?;
         let order_id = order.order_id.as_str().to_string();
         let requested = order.quantity;
         let result = self.orders.submit(

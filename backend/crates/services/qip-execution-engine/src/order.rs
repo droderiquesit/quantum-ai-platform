@@ -215,9 +215,20 @@ pub struct Order {
     pub fills: Vec<Fill>,
     /// Every state it has been in, for reconstruction.
     pub transitions: Vec<(Timestamp, String)>,
+    /// Version identifier of the strategy that produced this order.
+    /// Must be non-empty to fully attribute the decision.
+    pub strategy_version: String,
+    /// Version identifier of the policy framework applied.
+    /// Must be non-empty to fully attribute the decision.
+    pub policy_version: String,
+    /// Version identifier of the configuration used.
+    /// Must be non-empty to fully attribute the decision.
+    pub config_version: String,
 }
 
 impl Order {
+    /// Build an order, refusing empty version identifiers that cannot be
+    /// explained or replayed.
     pub fn new(
         order_id: OrderId,
         object_id: ObjectId,
@@ -229,8 +240,30 @@ impl Order {
         hypotheses: Vec<String>,
         scope: impl Into<String>,
         created_at: Timestamp,
-    ) -> Self {
-        Self {
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
+    ) -> qip_core::error::Result<Self> {
+        if strategy_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "an order must name the strategy version that produced it, so the decision \
+                 can be replayed completely; an empty strategy_version makes the order \
+                 unattributable after the strategy is retrained",
+            ));
+        }
+        if policy_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "an order must name the policy version applied, so the decision can be \
+                 replayed completely; an empty policy_version makes the order unattributable",
+            ));
+        }
+        if config_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "an order must name the config version used, so the decision can be \
+                 replayed completely; an empty config_version makes the order unattributable",
+            ));
+        }
+        Ok(Self {
             order_id,
             object_id,
             side,
@@ -244,7 +277,10 @@ impl Order {
             arrival_price,
             fills: Vec::new(),
             transitions: vec![(created_at, "created".to_string())],
-        }
+            strategy_version,
+            policy_version,
+            config_version,
+        })
     }
 
     pub fn filled_quantity(&self) -> Decimal {

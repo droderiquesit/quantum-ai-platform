@@ -247,7 +247,11 @@ mod tests {
             vec!["hyp-1".to_string()],
             "momentum",
             Timestamp::from_secs(60),
+            "test-strategy".to_string(),
+            "test-policy".to_string(),
+            "test-config".to_string(),
         )
+        .expect("a valid test order")
     }
 
     /// Lot 1, tick 0.01, minimum quantity 5, minimum notional 100.

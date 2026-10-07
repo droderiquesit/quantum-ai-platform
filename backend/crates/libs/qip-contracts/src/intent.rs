@@ -158,14 +158,28 @@ pub struct Intent {
     /// cannot fire.
     pub inputs: Vec<(String, u64)>,
     pub valid_until: Timestamp,
+    /// Version identifier of the strategy that produced this intent.
+    /// Must be non-empty to fully attribute the decision.
+    pub strategy_version: String,
+    /// Version identifier of the policy framework applied.
+    /// Must be non-empty to fully attribute the decision.
+    pub policy_version: String,
+    /// Version identifier of the configuration used.
+    /// Must be non-empty to fully attribute the decision.
+    pub config_version: String,
 }
 
 impl Intent {
-    /// Build a **directional** intent, refusing a size of zero.
+    /// Build a **directional** intent, refusing a size of zero and missing
+    /// version identifiers.
     ///
     /// Always [`NettingPolicy::Nettable`]. A cycle leg is not built here; it
     /// is built by [`CycleLeg::new`], which is the only constructor that
     /// yields a no-net intent.
+    ///
+    /// Refuses empty strategy_version, policy_version or config_version,
+    /// because an intent that cannot name what produced it cannot be fully
+    /// attributed or replayed.
     pub fn new(
         strategy: StrategyId,
         object_id: ObjectId,
@@ -173,12 +187,34 @@ impl Intent {
         signed_size: Decimal,
         reference_price: Decimal,
         valid_until: Timestamp,
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
     ) -> qip_core::error::Result<Self> {
         if signed_size.is_zero() {
             return Err(qip_core::error::Error::invalid(
                 "an intent of zero size trades nothing and would contribute nothing to a net; \
                  refuse it here rather than carry an empty contributor into a vector that must \
                  sum to the net",
+            ));
+        }
+        if strategy_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "an intent must name the strategy version that produced it, so the decision \
+                 can be replayed completely; an empty strategy_version makes the intent \
+                 unattributable after the strategy is retrained",
+            ));
+        }
+        if policy_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "an intent must name the policy version applied, so the decision can be \
+                 replayed completely; an empty policy_version makes the intent unattributable",
+            ));
+        }
+        if config_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "an intent must name the config version used, so the decision can be \
+                 replayed completely; an empty config_version makes the intent unattributable",
             ));
         }
         Ok(Self {
@@ -191,6 +227,9 @@ impl Intent {
             netting: NettingPolicy::Nettable,
             inputs: Vec::new(),
             valid_until,
+            strategy_version,
+            policy_version,
+            config_version,
         })
     }
 
@@ -258,6 +297,7 @@ impl Intent {
 /// let mut leg = CycleLeg::new(
 ///     "cycle-7", StrategyId::new("arb"), ObjectId::from_string("ACME"),
 ///     VenueId::new("XLON"), dec!("50"), dec!("100"), Timestamp::from_secs(1),
+///     "strategy-v1".to_string(), "policy-v1".to_string(), "config-v1".to_string(),
 /// ).unwrap();
 /// let intent: &mut Intent = &mut leg.intent;
 /// intent.netting = NettingPolicy::Nettable;
@@ -274,6 +314,7 @@ impl Intent {
 /// let mut intent = Intent::new(
 ///     StrategyId::new("arb"), ObjectId::from_string("ACME"), VenueId::new("XLON"),
 ///     dec!("50"), dec!("100"), Timestamp::from_secs(1),
+///     "strategy-v1".to_string(), "policy-v1".to_string(), "config-v1".to_string(),
 /// ).unwrap();
 /// intent.netting = NettingPolicy::NoNet { cycle_id: "cycle-7".to_string() };
 /// ```
@@ -287,12 +328,15 @@ pub struct CycleLeg {
 }
 
 impl CycleLeg {
-    /// Build a leg of the named cycle, refusing an unnamed cycle and a size of
-    /// zero.
+    /// Build a leg of the named cycle, refusing an unnamed cycle, a size of
+    /// zero, and missing version identifiers.
     ///
     /// The cycle id is refused when empty because it is what [`net`] isolates
     /// on and what the journal identifies the atomic set by; a leg of the
     /// cycle called `""` is a leg of nothing anyone can find afterwards.
+    ///
+    /// Also refuses empty strategy_version, policy_version or config_version
+    /// for the same reasons Intent::new does.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         cycle_id: impl Into<String>,
@@ -302,6 +346,9 @@ impl CycleLeg {
         signed_size: Decimal,
         reference_price: Decimal,
         valid_until: Timestamp,
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
     ) -> qip_core::error::Result<Self> {
         let cycle_id = cycle_id.into();
         if cycle_id.trim().is_empty() {
@@ -318,6 +365,9 @@ impl CycleLeg {
             signed_size,
             reference_price,
             valid_until,
+            strategy_version,
+            policy_version,
+            config_version,
         )?;
         intent.netting = NettingPolicy::NoNet { cycle_id };
         Ok(Self { intent })

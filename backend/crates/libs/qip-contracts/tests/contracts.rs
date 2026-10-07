@@ -2831,3 +2831,122 @@ fn a_disposition_is_on_the_wire_and_under_the_signature_once_there_is_one() -> R
     );
     Ok(())
 }
+
+#[test]
+fn an_intent_with_empty_strategy_version_is_refused() {
+    use qip_contracts::intent::Intent;
+    use qip_contracts::signal::StrategyId;
+    use qip_contracts::venue::VenueId;
+    use qip_core::{ObjectId, Timestamp, dec};
+
+    let result = Intent::new(
+        StrategyId::new("test"),
+        ObjectId::from_string("ACME"),
+        VenueId::new("NYSE"),
+        dec!("100"),
+        dec!("50"),
+        Timestamp::from_secs(1000),
+        "".to_string(),
+        "policy-v1".to_string(),
+        "config-v1".to_string(),
+    );
+
+    assert!(
+        result.is_err(),
+        "an intent must refuse an empty strategy_version"
+    );
+    let error = result.unwrap_err().to_string();
+    assert!(
+        error.contains("strategy version"),
+        "the error message must name the refusal reason: {error}"
+    );
+}
+
+#[test]
+fn an_intent_with_empty_policy_version_is_refused() {
+    use qip_contracts::intent::Intent;
+    use qip_contracts::signal::StrategyId;
+    use qip_contracts::venue::VenueId;
+    use qip_core::{ObjectId, Timestamp, dec};
+
+    let result = Intent::new(
+        StrategyId::new("test"),
+        ObjectId::from_string("ACME"),
+        VenueId::new("NYSE"),
+        dec!("100"),
+        dec!("50"),
+        Timestamp::from_secs(1000),
+        "strategy-v1".to_string(),
+        "".to_string(),
+        "config-v1".to_string(),
+    );
+
+    assert!(
+        result.is_err(),
+        "an intent must refuse an empty policy_version"
+    );
+    let error = result.unwrap_err().to_string();
+    assert!(
+        error.contains("policy version"),
+        "the error message must name the refusal reason: {error}"
+    );
+}
+
+#[test]
+fn an_intent_with_empty_config_version_is_refused() {
+    use qip_contracts::intent::Intent;
+    use qip_contracts::signal::StrategyId;
+    use qip_contracts::venue::VenueId;
+    use qip_core::{ObjectId, Timestamp, dec};
+
+    let result = Intent::new(
+        StrategyId::new("test"),
+        ObjectId::from_string("ACME"),
+        VenueId::new("NYSE"),
+        dec!("100"),
+        dec!("50"),
+        Timestamp::from_secs(1000),
+        "strategy-v1".to_string(),
+        "policy-v1".to_string(),
+        "".to_string(),
+    );
+
+    assert!(
+        result.is_err(),
+        "an intent must refuse an empty config_version"
+    );
+    let error = result.unwrap_err().to_string();
+    assert!(
+        error.contains("config version"),
+        "the error message must name the refusal reason: {error}"
+    );
+}
+
+#[test]
+fn an_intent_with_all_version_identifiers_builds() {
+    use qip_contracts::intent::Intent;
+    use qip_contracts::signal::StrategyId;
+    use qip_contracts::venue::VenueId;
+    use qip_core::{ObjectId, Timestamp, dec};
+
+    let result = Intent::new(
+        StrategyId::new("test"),
+        ObjectId::from_string("ACME"),
+        VenueId::new("NYSE"),
+        dec!("100"),
+        dec!("50"),
+        Timestamp::from_secs(1000),
+        "strategy-v1.2.3".to_string(),
+        "policy-v2.1.0".to_string(),
+        "config-v1.0.0".to_string(),
+    );
+
+    assert!(
+        result.is_ok(),
+        "an intent with all version identifiers must build"
+    );
+    let intent = result.unwrap();
+    assert_eq!(intent.strategy_version, "strategy-v1.2.3");
+    assert_eq!(intent.policy_version, "policy-v2.1.0");
+    assert_eq!(intent.config_version, "config-v1.0.0");
+}

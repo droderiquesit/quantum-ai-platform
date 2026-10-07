@@ -150,10 +150,20 @@ pub struct Proposal {
     pub compromises: Vec<String>,
     /// Checks that have passed, by control name.
     pub checks_passed: Vec<String>,
+    /// Version identifier of the strategy that produced this proposal.
+    /// Must be non-empty to fully attribute the decision.
+    pub strategy_version: String,
+    /// Version identifier of the policy framework applied.
+    /// Must be non-empty to fully attribute the decision.
+    pub policy_version: String,
+    /// Version identifier of the configuration used.
+    /// Must be non-empty to fully attribute the decision.
+    pub config_version: String,
 }
 
 impl Proposal {
-    /// A proposal in the only state one can start in.
+    /// A proposal in the only state one can start in, refusing empty version
+    /// identifiers that cannot be explained or replayed.
     ///
     /// Exposure, turnover, cost and compromises are set through
     /// [`Self::with_targets`] and [`Self::with_compromises`] after
@@ -167,8 +177,30 @@ impl Proposal {
         equity: Money,
         legs: Vec<ProposalLeg>,
         rationale: impl Into<String>,
-    ) -> Self {
-        Self {
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
+    ) -> qip_core::error::Result<Self> {
+        if strategy_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "a proposal must name the strategy version that produced it, so the decision \
+                 can be replayed completely; an empty strategy_version makes the proposal \
+                 unattributable after the strategy is retrained",
+            ));
+        }
+        if policy_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "a proposal must name the policy version applied, so the decision can be \
+                 replayed completely; an empty policy_version makes the proposal unattributable",
+            ));
+        }
+        if config_version.is_empty() {
+            return Err(qip_core::error::Error::invalid(
+                "a proposal must name the config version used, so the decision can be \
+                 replayed completely; an empty config_version makes the proposal unattributable",
+            ));
+        }
+        Ok(Self {
             proposal_id,
             created_at,
             as_of,
@@ -182,7 +214,10 @@ impl Proposal {
             rationale: rationale.into(),
             compromises: Vec::new(),
             checks_passed: Vec::new(),
-        }
+            strategy_version,
+            policy_version,
+            config_version,
+        })
     }
 
     /// The exposure the proposal would produce and what it costs to get there.

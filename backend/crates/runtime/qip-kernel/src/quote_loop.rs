@@ -776,7 +776,11 @@ mod tests {
             vec!["hyp-quote-loop".to_string()],
             "platform",
             start(),
-        );
+            "test-strategy".to_string(),
+            "test-policy".to_string(),
+            "test-config".to_string(),
+        )
+        .expect("a valid test order");
         platform
             .submit_order(order, start())
             .expect("a paper order clears the controls");
@@ -832,7 +836,11 @@ mod tests {
             vec!["hyp-quote-loop".to_string()],
             "platform",
             start(),
-        );
+            "test-strategy".to_string(),
+            "test-policy".to_string(),
+            "test-config".to_string(),
+        )
+        .expect("a valid test order");
         platform
             .submit_order(order, start())
             .expect("a paper limit order clears the controls");

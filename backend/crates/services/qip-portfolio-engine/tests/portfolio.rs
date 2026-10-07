@@ -651,7 +651,10 @@ fn nothing_to_do_is_a_normal_state_rather_than_an_error() -> Result<()> {
         now(),
         now(),
         "no thesis cleared the action bar this cycle",
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )?;
     assert!(proposal.is_empty());
     assert!(proposal.validate().is_ok());
     assert!(approx_eq(proposal.turnover, 0.0, 1e-12));

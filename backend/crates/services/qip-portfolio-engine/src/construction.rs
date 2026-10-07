@@ -510,7 +510,10 @@ impl PortfolioConstructor {
                 routing.chosen.as_str(),
                 routing.rationale
             ),
-        )
+            "production-1.0.0".to_string(),
+            "production-1.0.0".to_string(),
+            "production-1.0.0".to_string(),
+        )?
         .with_targets(
             target_gross,
             target_net,
@@ -534,8 +537,21 @@ impl PortfolioConstructor {
         as_of: Timestamp,
         now: Timestamp,
         reason: impl Into<String>,
-    ) -> Proposal {
-        Proposal::draft(proposal_id, now, as_of, equity, Vec::new(), reason)
+        strategy_version: String,
+        policy_version: String,
+        config_version: String,
+    ) -> Result<Proposal> {
+        Proposal::draft(
+            proposal_id,
+            now,
+            as_of,
+            equity,
+            Vec::new(),
+            reason,
+            strategy_version,
+            policy_version,
+            config_version,
+        )
     }
 }
 
