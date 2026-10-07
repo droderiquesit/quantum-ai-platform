@@ -196,13 +196,13 @@
   {
     "id": "ARCH-056",
     "status": "PARTIAL",
-    "current": "qip-transport (backend/crates/libs/qip-transport, ADR 0011's in-tree substitute for a broker-based Fabric) documents and implements exactly five semantics and no more, each stated with what it deliberately does not do: bounded retry (retry.rs), refusing backpressure (queue.rs), at-least-once + idempotency-key dedup (mesh.rs), dead-lettering (deadletter.rs), per-publisher FIFO ordering (mesh.rs). Each has fault tests.",
+    "current": "qip-transport (backend/crates/libs/qip-transport, ADR 0011's in-tree substitute for a broker-based Fabric) documents and implements seven semantics in its crate-level table, each stated with what it deliberately does not do: bounded retry (retry.rs), refusing backpressure (queue.rs), at-least-once + idempotency-key dedup (mesh.rs), dead-lettering (deadletter.rs), per-publisher FIFO ordering (mesh.rs), per-peer circuit breaking (breaker.rs) and durability across restart (spool.rs). Each has fault tests.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/lib.rs:1-28 (the five-property table, module doc)",
+      "backend/crates/libs/qip-transport/src/lib.rs, the crate doc's semantics table (seven rows; breaker and spool added 2026-10-07), held by tests/reliability.rs reading the table through include_str! and asserting a row per module",
       "grep -c '#[test]' backend/crates/libs/qip-transport/tests/*.rs -> spool.rs:13 mesh.rs:13 http_client.rs:32 breaker.rs:11 reliability.rs:18 (re-counted 2026-09-25, 87 total)",
       "infrastructure/terraform/catalogue.tf:32-37 (QIP_MESH_CELLS unset: qip-api builds no mesh in any deployment)"
     ],
-    "gap": "This is qip-transport, a point-to-point client/mesh, not a broker-based Fabric with topics/partitions per v2.1 Phase 2; no table maps each semantic to a named platform-requirement ID -- the crate doc argues scoping in prose against ADR 0011's quote, and two shipped modules (breaker.rs, spool.rs) sit outside its five-row table. The mesh these semantics serve runs in no deployed process: catalogue.tf:32-37 leaves QIP_MESH_CELLS unset on qip-api (a Cloud Run service exposes one port) and qip-edge-node is not deployed (execution_nodes = {}).",
+    "gap": "This is qip-transport, a point-to-point client/mesh, not a broker-based Fabric with topics/partitions per v2.1 Phase 2; no table maps each semantic to a named platform-requirement ID -- the crate doc argues scoping in prose against ADR 0011's quote. The mesh these semantics serve runs in no deployed process: catalogue.tf:32-37 leaves QIP_MESH_CELLS unset on qip-api (a Cloud Run service exposes one port) and qip-edge-node is not deployed (execution_nodes = {}).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -216,7 +216,7 @@
     "work_item": "E03-fabric-semantics-traceability",
     "tier": "T2",
     "size": "M",
-    "notes": "The requirement's own note treats qip-transport as 'the Fabric, built on what the workspace permits' -- the minimalism principle is substantially met in permitted form; only the requirement-to-test traceability table is unbuilt and does not itself need a new dependency. verify: deployable true -> false. The transport semantics run only inside the mesh, which catalogue.tf leaves unconfigured on qip-api and which qip-edge-node (undeployed) would otherwise carry; breaker/spool noted as untraced features. Test counts re-verified."
+    "notes": "The requirement's own note treats qip-transport as 'the Fabric, built on what the workspace permits' -- the minimalism principle is substantially met in permitted form; only the requirement-to-test traceability table is unbuilt and does not itself need a new dependency. verify: deployable true -> false. The transport semantics run only inside the mesh, which catalogue.tf leaves unconfigured on qip-api and which qip-edge-node (undeployed) would otherwise carry; breaker/spool noted as untraced features. Test counts re-verified. | 2026-10-07: breaker and spool now have rows in the table (merge of work/L011-ARCH-056 with fixes); the remaining gap is the requirement-ID mapping and the undeployed mesh, so status stays PARTIAL."
   },
   {
     "id": "ARCH-057",
