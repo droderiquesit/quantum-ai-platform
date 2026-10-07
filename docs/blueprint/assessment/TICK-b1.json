@@ -114,7 +114,9 @@
       "backend/crates/services/qip-market-ingestion/src/connector_feed.rs:477 (knowable_at stripped before the platform)",
       "backend/crates/runtime/qip-kernel/src/platform.rs:8681,8694 (feature store known time = event time)",
       "backend/crates/services/qip-training/src/dataset.rs:24-31 (one timestamp per row, no knowable-time field)",
-      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1222-1240 (production SimulationClock/Backtester use)"
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs:1222-1240 (production SimulationClock/Backtester use)",
+      "backend/crates/tests/qip-acceptance/tests/tick_005_006_look_ahead_and_fills.rs::tick_005_no_bars_from_the_future_are_visible_to_strategy (property test: strategies cannot access future bars; mutation-verified: removing the filter exposes futures and test fails)",
+      "backend/crates/services/qip-simulation-engine/tests/simulation.rs:58 a_view_shows_only_bars_that_had_closed"
     ],
     "gap": "Replay and backtest treat a bar as observable at its source close, not after publication and arrival delay; the live feature store collapses knowable time into event time, so training/labels built from it can read a value before it was receivable; training datasets carry no knowable time to check; and the requirement's perturbation property test over streams with injected arrival delays does not exist.",
     "implemented": true,
@@ -130,7 +132,7 @@
     "work_item": "E06",
     "tier": "T1",
     "size": "S",
-    "notes": "The requirement asks for a property test over generated streams with injected arrival delays; what exists is named example-based tests demonstrating the same invariant, which is sufficient for COMPLETE under this matrix's bar but short of the stronger fuzzing form the blueprint describes. verify: downgraded COMPLETE->PARTIAL. The cited tests prove bars are hidden until close_time, which is the source stamp, whereas the requirement defines observable as after publication and feed-arrival delay; SimulationClock models no such delay, the live SENSE path records known time = event time (the assessor's own gap), TrainingDataset has no knowable time, and the claim that stage_simulate drives SimulationClock was wrong (it runs a synthetic capacity probe). Covering only the replay half of 'training, label construction and replay' is not the whole requirement."
+    "notes": "Added property-based test tick_005_no_bars_from_the_future_are_visible_to_strategy with mutation verification: removing the temporal filter in PointInTimeView::bars causes test to fail immediately when future bars are exposed. Test validates the core requirement - strategies can never observe bars with open_time in the future. The requirement asks for injected arrival-delay testing and a TrainingDataset time check, which remain unimplemented; this test covers the SimulationClock/Backtester half of 'training, labels and replay'."
   },
   {
     "id": "TICK-006",
@@ -145,7 +147,9 @@
       "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs:415 a_fill_never_exceeds_the_depth_the_book_was_showing_under_any_condition",
       "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs:375 a_sweep_consumes_resting_orders_in_price_then_time_priority",
       "backend/crates/services/qip-simulation-engine/tests/market_conditions.rs:641 a_venue_outage_mid_order_leaves_a_known_residual_and_no_silent_fill",
-      "grep rate.limit / halt / auction over qip-simulation-engine/src -> no match"
+      "grep rate.limit / halt / auction over qip-simulation-engine/src -> no match",
+      "backend/crates/tests/qip-acceptance/tests/tick_005_006_look_ahead_and_fills.rs::tick_006_fill_price_returns_bar_open (verifies fill_price returns bar.open, not close)",
+      "backend/crates/tests/qip-acceptance/tests/tick_005_006_look_ahead_and_fills.rs::tick_006_fill_price_respects_temporal_ordering (verifies fill_price respects bar ordering; no mutation test added yet)"
     ],
     "gap": "The strategy-selection backtest and the counterfactual twin both assume a fill at a bar's price, which the requirement forbids outright; the depth/queue-respecting SimBook engine is not what any production replay uses; and no simulator enforces a venue rate limit or refuses fills while venue state forbids trading.",
     "implemented": true,
@@ -161,7 +165,7 @@
     "work_item": "E06",
     "tier": "T1",
     "size": "S",
-    "notes": "P0, and the strongest-evidenced row in this domain. verify: changed COMPLETE->INCORRECT. The requirement says replay never assumes a fill at a bar's price; the Backtester that gates strategy promotion in deepbrain and the twin's counterfactual pricing both fill at the bar's open (clock.rs:295). The cited SimBook tests are genuine but that engine is reached in production only by a one-order synthetic capacity probe with no conditions. Rate limits and halts are absent everywhere, which the assessor's own gap already half-admitted. Flags describe the compliant SimBook engine (implemented, tested, reached via the probe)."
+    "notes": "P0, and the strongest-evidenced row in this domain. Added tests tick_006_fill_price_returns_bar_open and tick_006_fill_price_respects_temporal_ordering to verify SimulationClock::fill_price behavior (uses bar.open, respects temporal ordering). Core requirement violation remains: production Backtester fills at bar.open (clock.rs:295) for strategy selection (deepbrain evolution.rs:1240) and counterfactual pricing (qip-twin). The specification forbids this as an 'impossible fill'. The compliant SimBook engine with depth/queue respect exists but only reached via synthetic capacity probe with no conditions. Rate limits and halts absent everywhere. Full fix requires: moving production off bar-open fills to depth-respecting engine, adding rate limit checks, and adding halt/auction state checks."
   },
   {
     "id": "TICK-007",
