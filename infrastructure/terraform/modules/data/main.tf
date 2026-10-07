@@ -119,7 +119,7 @@ resource "google_storage_bucket" "archive" {
 
   project  = var.project_id
   name     = "${local.prefix}-event-archive"
-  location = var.region
+  location = var.bucket_location
   labels   = var.labels
 
   # Uniform access, always. Per-object ACLs are how a bucket ends up with one
@@ -221,7 +221,7 @@ resource "google_storage_bucket" "artifacts" {
 
   project  = var.project_id
   name     = "${local.prefix}-model-artifacts"
-  location = var.region
+  location = var.bucket_location
   labels   = var.labels
 
   uniform_bucket_level_access = true
