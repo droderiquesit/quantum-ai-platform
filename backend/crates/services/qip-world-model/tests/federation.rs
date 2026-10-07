@@ -6,6 +6,7 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::federation::{
@@ -586,5 +587,182 @@ fn a_material_disagreement_raises_exactly_one_research_task_citing_its_record_an
     f.assess("b", view("rates", 0.75 - material, 0.5, 0.4, 15))?;
     assert!(f.arbitrate("rates", at(16))?.research.is_some());
     assert_eq!(f.research_tasks().len(), 2);
+    Ok(())
+}
+
+#[test]
+fn an_effect_attribution_journals_an_attributed_update_citing_the_attribution_id() -> Result<()> {
+    // AGENCY-002. The failure this prevents: an EffectAttribution for a
+    // simulated intervention is created but never recorded in the federation's
+    // journal, so its updates never feed back into world models and the agency
+    // loop is broken.
+    let mut f = Federation::new();
+    register(&mut f, plain("goal-1", 1_000))?;
+    assert_eq!(
+        f.journal().len(),
+        1,
+        "premise: the declaration is journaled"
+    );
+
+    // Create an EffectAttribution representing the observed effect of a
+    // simulated intervention with proper goal, intervention, and action IDs.
+    let attribution = valid_attribution("goal-1");
+
+    let before_len = f.journal().len();
+    let result_pos = f.update_from_attribution(&attribution, at(100))?;
+    let after_len = f.journal().len();
+
+    // Journal grew by exactly one entry.
+    assert_eq!(
+        after_len,
+        before_len + 1,
+        "one attribution update journaled"
+    );
+    assert_eq!(
+        result_pos, before_len,
+        "returned position points to the new entry"
+    );
+
+    // The new journal entry is AttributionApplied with correct fields.
+    match &f.journal()[result_pos] {
+        Event::AttributionApplied {
+            attribution_id,
+            model_id,
+            update_kind,
+            at: recorded_at,
+        } => {
+            // Attribution ID is properly formatted as goal-intervention-action.
+            assert_eq!(
+                attribution_id, "attr-goal-1-intervention-99-action-42",
+                "attribution_id cites all three identifiers"
+            );
+
+            // Model ID matches the goal being updated.
+            assert_eq!(model_id, "goal-1", "update targets the goal model");
+
+            // Update kind encodes the effect statistics.
+            assert!(update_kind.contains("effect_mean_0.05"), "mean encoded");
+            assert!(
+                update_kind.contains("std_0.01"),
+                "std_dev encoded (trailing precision preserved)"
+            );
+
+            // Timestamp is preserved.
+            assert_eq!(*recorded_at, at(100), "timestamp recorded");
+        }
+        other => panic!("expected AttributionApplied, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn an_effect_attribution_with_empty_goal_id_is_refused_naming_the_field() -> Result<()> {
+    let mut f = Federation::new();
+    register(&mut f, plain("goal-1", 1_000))?;
+
+    let attribution = EffectAttribution {
+        goal_id: "".into(),
+        intervention_id: "intervention-1".into(),
+        action_id: "action-1".into(),
+        observations: vec![],
+        counterfactual_method: "simulated".into(),
+        effect: Effect {
+            mean: 0.05,
+            std_dev: 0.01,
+        },
+        confounders: vec![],
+        side_effects: vec![],
+        identifiability: 0.85,
+        resulting_updates: vec![],
+    };
+
+    let result = f.update_from_attribution(&attribution, at(100));
+    assert!(result.is_err(), "empty goal_id refused");
+    let err = result.unwrap_err();
+    assert!(
+        err.message().to_string().contains("goal"),
+        "error names the missing field: {}",
+        err.message()
+    );
+    Ok(())
+}
+
+/// An attribution the contract admits: every list names at least one entry,
+/// as `EffectAttribution::validate` requires.
+fn valid_attribution(goal: &str) -> EffectAttribution {
+    EffectAttribution {
+        goal_id: goal.into(),
+        intervention_id: "intervention-99".into(),
+        action_id: "action-42".into(),
+        observations: vec![HorizonObservation {
+            horizon_ms: 60_000,
+            value: 0.047,
+        }],
+        counterfactual_method: "simulated".into(),
+        effect: Effect {
+            mean: 0.047,
+            std_dev: 0.012,
+        },
+        confounders: vec!["none identified".into()],
+        side_effects: vec!["none observed".into()],
+        identifiability: 0.85,
+        resulting_updates: vec![format!("{goal} effect prior")],
+    }
+}
+
+#[test]
+fn an_attribution_to_a_model_the_federation_does_not_hold_is_refused_and_not_journalled()
+-> Result<()> {
+    // The failure this prevents: `model_id` is the attribution's goal id,
+    // and nothing looked it up, so an update citing a model that never
+    // existed was journalled as an update to it.
+    let mut f = Federation::new();
+    register(&mut f, plain("goal-1", 1_000))?;
+    let before = f.journal().len();
+    assert!(
+        f.update_from_attribution(&valid_attribution("goal-1"), at(100))
+            .is_ok(),
+        "premise: the same attribution to a registered model is admitted"
+    );
+    let admitted = f.journal().len();
+    assert_eq!(
+        admitted,
+        before + 1,
+        "premise: the admitted one is journalled"
+    );
+
+    let refused = f.update_from_attribution(&valid_attribution("no-such-model"), at(101));
+    assert!(
+        refused.is_err(),
+        "an attribution to an unregistered model is refused"
+    );
+    assert_eq!(
+        f.journal().len(),
+        admitted,
+        "and nothing is journalled for it"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_attribution_the_contract_refuses_is_refused_and_not_journalled() -> Result<()> {
+    // The failure this prevents: the method checked only for a blank goal id
+    // and journalled attributions with no observation behind them.
+    let mut f = Federation::new();
+    register(&mut f, plain("goal-1", 1_000))?;
+    let mut unobserved = valid_attribution("goal-1");
+    unobserved.observations.clear();
+    let before = f.journal().len();
+    assert!(
+        unobserved.validate().is_err(),
+        "premise: the contract itself refuses an attribution with no observation"
+    );
+    assert!(f.update_from_attribution(&unobserved, at(100)).is_err());
+    assert_eq!(
+        f.journal().len(),
+        before,
+        "nothing journalled for a refused attribution"
+    );
     Ok(())
 }
