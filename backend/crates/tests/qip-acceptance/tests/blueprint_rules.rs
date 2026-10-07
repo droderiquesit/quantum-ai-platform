@@ -127,9 +127,16 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 17] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 18] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
+    // Tests the guard above, the hook the harness runs before every Bash
+    // call. The hook is Python and so is its existing regression suite,
+    // `test_hooks.py`, so the test is written in the language of the code it
+    // loads. It is on no workflow path, and CI does not run it: the `hooks`
+    // job runs `test_hooks.py` alone, and that file never loads this one. It
+    // is exercised only when somebody runs it by hand.
+    ".claude/hooks/test_guard_dangerous_command.py",
     ".claude/hooks/test_hooks.py",
     "scripts/audit-dead-code.py",
     "scripts/audit-register.py",
