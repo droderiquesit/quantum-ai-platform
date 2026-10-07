@@ -519,7 +519,7 @@ fn the_journal_chain_catches_an_edited_decision() -> Result<()> {
             simulated: true,
             release_at: Some(t(2)),
             equalised: true,
-            grant_identifier: None,
+            grants: Vec::new(),
         },
         t(2),
     );
@@ -1062,11 +1062,50 @@ fn mutation_borrow_availability_unavailability_is_tracked() -> Result<()> {
     Ok(())
 }
 
+/// The `grants` of every `order_sent` entry the cell's journal holds, in the
+/// order they were sealed. The chain is the only input: a replay that read
+/// the cell's own utilisation would be checking the cell against itself.
+fn sent_grants(cell: &qip_edge::cell::Cell) -> Vec<Vec<(String, String)>> {
+    cell.journal()
+        .entries()
+        .iter()
+        .filter_map(|entry| match &entry.decision {
+            Decision::OrderSent { grants, .. } => Some(grants.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A grant to `strategy` under this file's key, with bounds no order in the
+/// grant-citation tests approaches, so their subject is the record and not
+/// admission.
+fn grant_for(strategy: &str) -> Result<VerifiedEnvelope> {
+    let build = |signature: &str| {
+        CapitalEnvelope::new(
+            StrategyId::new(strategy),
+            CELL,
+            dec!("1000000"),
+            dec!("100000"),
+            dec!("50000"),
+            vec![VenueId::new("XLON")],
+            t(0),
+            t(3600),
+            "alice@example.com",
+            signature,
+        )
+    };
+    let unsigned = build("unsigned")?;
+    let signature = sign_payload(KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(build(&signature)?, KEY, CELL, t(10))
+}
+
 #[test]
-fn an_order_sent_record_cites_the_grant_identifier() -> Result<()> {
-    // CAPITAL-006: the cell's OrderSent record must cite the grant identifier
-    // (grant signature) that was drawn on to commit the order, so utilisation
-    // can be replayed per grant from the journal alone.
+fn an_order_sent_record_cites_the_grant_it_drew_on_at_what_that_grant_was_charged() -> Result<()> {
+    // CAPITAL-006. The commitment record carried an order id, a venue and a
+    // quantity and no grant, so the chain could say an order went out and
+    // not whose capital it spent. The entry now names the grant and the
+    // notional charged to it, and that figure is the one the envelope's own
+    // utilisation moved by.
     use qip_contracts::signal::SignalKind;
     use qip_edge::cell::{Cell, CellConfig, PricingPolicy};
     use qip_feature_dag::engine::FeatureEngine;
@@ -1080,7 +1119,8 @@ fn an_order_sent_record_cites_the_grant_identifier() -> Result<()> {
     let mut cell = Cell::new(config, engine)?;
     cell.track(book_with_depth("XLON", "ACME"));
 
-    // Deploy a strategy with an envelope
+    // Five at the 101 ask is about 505 against a 1000 order limit: well
+    // inside it, so the order goes and the subject is how it is recorded.
     let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
     let spec = StrategySpec::new(
         StrategyId::new("mean-reversion-1"),
@@ -1091,7 +1131,7 @@ fn an_order_sent_record_cites_the_grant_identifier() -> Result<()> {
         "always",
         SignalKind::Enter,
         Expr::Flag(true),
-        Expr::Exact(dec!("10")),
+        Expr::Exact(dec!("5")),
         Expr::Statistic(0.5),
         10,
     ));
@@ -1109,46 +1149,147 @@ fn an_order_sent_record_cites_the_grant_identifier() -> Result<()> {
         PricingPolicy::Marketable,
     )?;
 
-    // Send an order
     let mut placer = RecordingPlacer::default();
-    let _ = cell.work(t(50), &mut placer)?;
+    let report = cell.work(t(50), &mut placer)?;
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the premise failed: no order went out: {:?}",
+        report.refusals
+    );
+    let order = &report.orders[0];
+    let charged = order.quantity * order.price;
+    assert!(
+        charged.is_positive(),
+        "the premise failed: the order was charged nothing"
+    );
 
-    // Verify the order was placed
-    assert_eq!(placer.placed.len(), 1, "expected one order to be placed");
-
-    // Check the journal entry for OrderSent
-    let journal_entries: Vec<&Decision> = cell
-        .journal()
-        .entries()
+    let cited = sent_grants(&cell);
+    assert_eq!(cited.len(), 1, "expected one order_sent entry: {cited:?}");
+    assert_eq!(
+        cited[0],
+        vec![(grant.signature().to_string(), charged.to_string())],
+        "the entry does not name the grant the order drew on at what that grant was charged"
+    );
+    let delta = cell.state_delta(&report, t(50));
+    let held = delta
+        .utilisation
         .iter()
-        .filter_map(|entry| {
-            if let Decision::OrderSent { .. } = entry.decision {
-                Some(&entry.decision)
-            } else {
-                None
-            }
-        })
-        .collect();
+        .find(|used| used.strategy.as_str() == "mean-reversion-1")
+        .expect("the deployed strategy reports its utilisation");
+    assert_eq!(
+        held.utilisation.gross_committed, charged,
+        "the journaled charge is not what the envelope was charged"
+    );
+    Ok(())
+}
 
-    assert_eq!(journal_entries.len(), 1, "expected one OrderSent entry");
+#[test]
+fn a_netted_order_cites_every_grant_it_drew_on_and_the_chain_alone_reproduces_each_grants_utilisation()
+-> Result<()> {
+    // CAPITAL-006's own verification, stated as a test: replay a cell's
+    // journal and reproduce each grant's utilisation. Two strategies buying
+    // one instrument are one order charged to two envelopes pro rata. The
+    // first form of this record joined both signatures into one string,
+    // which named the grants and not what either was charged, so no replay
+    // could recover either envelope's commitment from the chain.
+    use qip_contracts::signal::SignalKind;
+    use qip_edge::cell::{Cell, CellConfig, PricingPolicy};
+    use qip_feature_dag::engine::FeatureEngine;
+    use qip_feature_dag::state::MarketState;
+    use qip_strategy::catalogue::FeatureCatalogue;
+    use qip_strategy::compile::StrategyCompiler;
+    use qip_strategy::ir::{Expr, Rule, StrategySpec};
+    use std::collections::BTreeMap;
 
-    if let Decision::OrderSent {
-        grant_identifier, ..
-    } = journal_entries[0]
-    {
-        assert!(
-            grant_identifier.is_some(),
-            "OrderSent should cite the grant_identifier (CAPITAL-006)"
-        );
-        let grant_sig = grant_identifier.as_ref().unwrap();
-        assert_eq!(
-            grant_sig,
-            grant.signature(),
-            "the grant_identifier should match the envelope signature"
-        );
-    } else {
-        panic!("expected OrderSent variant");
+    let config = CellConfig::new(CELL, "europe-west2").with_venue(VenueId::new("XLON"));
+    let engine = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let mut cell = Cell::new(config, engine)?;
+    cell.track(book_with_depth("XLON", "ACME"));
+
+    let mut signatures = BTreeMap::new();
+    for (id, size) in [("alpha", dec!("2")), ("beta", dec!("1"))] {
+        let mut compiler = StrategyCompiler::new(FeatureCatalogue::new());
+        let spec = StrategySpec::new(StrategyId::new(id), object("ACME"), Duration::from_secs(30))
+            .with_rule(Rule::new(
+                "always",
+                SignalKind::Enter,
+                Expr::Flag(true),
+                Expr::Exact(size),
+                Expr::Statistic(0.5),
+                10,
+            ));
+        let compiled = compiler.compile(&spec)?;
+        let grant = grant_for(id)?;
+        signatures.insert(id, grant.signature().to_string());
+        cell.deploy_with_pricing(
+            compiled,
+            compiler.into_program(),
+            grant,
+            PricingPolicy::Marketable,
+        )?;
     }
+    assert_eq!(
+        signatures
+            .values()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2,
+        "the premise failed: the two grants are not distinguishable by signature"
+    );
 
+    let mut placer = RecordingPlacer::default();
+    let report = cell.work(t(50), &mut placer)?;
+    assert_eq!(
+        report.orders.len(),
+        1,
+        "the premise failed: the two strategies did not go out as one order: {:?}",
+        report.refusals
+    );
+    assert_eq!(
+        report.orders[0].contributors.len(),
+        2,
+        "the premise failed: the order does not carry both strategies"
+    );
+
+    // The replay: the chain alone, summed per signature.
+    let mut replayed: BTreeMap<String, (Decimal, u64)> = BTreeMap::new();
+    for grants in sent_grants(&cell) {
+        for (signature, committed) in grants {
+            let committed = Decimal::parse(&committed).expect("a journaled charge is a decimal");
+            let entry = replayed.entry(signature).or_insert((Decimal::ZERO, 0));
+            entry.0 += committed;
+            entry.1 += 1;
+        }
+    }
+    assert_eq!(
+        replayed.len(),
+        2,
+        "the chain does not name both grants the order drew on: {replayed:?}"
+    );
+    let delta = cell.state_delta(&report, t(50));
+    for (id, signature) in &signatures {
+        let held = delta
+            .utilisation
+            .iter()
+            .find(|used| used.strategy.as_str() == *id)
+            .expect("each deployed strategy reports its utilisation");
+        assert!(
+            held.utilisation.gross_committed.is_positive(),
+            "the premise failed: {id}'s grant was charged nothing"
+        );
+        let (committed, orders) = replayed
+            .get(signature)
+            .copied()
+            .unwrap_or((Decimal::ZERO, 0));
+        assert_eq!(
+            committed, held.utilisation.gross_committed,
+            "replaying the chain does not reproduce what {id}'s grant committed"
+        );
+        assert_eq!(
+            orders, held.utilisation.orders_sent,
+            "replaying the chain does not reproduce how many orders {id}'s grant sent"
+        );
+    }
     Ok(())
 }

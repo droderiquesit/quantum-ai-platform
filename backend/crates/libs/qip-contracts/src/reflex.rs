@@ -127,10 +127,24 @@ pub enum Decision {
     /// `release_at` as "released at the entry's own instant, unequalised",
     /// which is what such an order was, and never as zero.
     ///
-    /// `grant_identifier` (CAPITAL-006) is the signature of the CapitalEnvelope
-    /// that was drawn on to commit this order. Absent on entries sealed before
-    /// the field existed; its presence lets a reader replay utilisation per
-    /// grant from the journal alone.
+    /// `grants` (CAPITAL-006) is the capital this order drew, one
+    /// `(signature, committed)` pair per grant it was charged to: the
+    /// signature the centre's grant manifest names the grant by, and the
+    /// gross notional the cell added to that grant's utilisation for this
+    /// order, a `Decimal` rendered to text. A netted order carries one pair
+    /// per contributing strategy's grant; a cycle leg carries the arbitrage
+    /// desk's, because that is the envelope it was admitted against. The
+    /// charge is recorded rather than a quantity share because this entry
+    /// names no price, and a share could not be turned back into what the
+    /// grant was charged: summing `committed` and counting entries per
+    /// signature is what each grant was charged and how many orders it sent,
+    /// from the chain alone. One limit: a renewal carries a strategy's
+    /// utilisation across to the new grant (`Cell::renew_capital`), and
+    /// [`Self::CapitalRenewed`] names neither signature, so a replay cannot
+    /// yet join a renewed grant to its predecessor. One string of joined
+    /// signatures was the first form, and it said which grants and not how
+    /// much of each. Empty, and so absent for the reason above, on entries
+    /// sealed before the field existed.
     OrderSent {
         order_id: String,
         venue: String,
@@ -140,8 +154,8 @@ pub enum Decision {
         release_at: Option<Timestamp>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         equalised: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        grant_identifier: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        grants: Vec<(String, String)>,
     },
     /// The venue reported part or all of an order traded, and the cell
     /// booked it.
