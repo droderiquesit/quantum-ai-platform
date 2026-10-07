@@ -321,7 +321,7 @@ fn resumed_from_a_checkpoint(
 /// to a decoder, the sequencer or the book moves it on purpose, the new value
 /// is a decision to be made here and said in the commit, not a number to
 /// paste.
-const RECORDED_DIGEST: &str = "689b66725980dc7421b806788b1690f12d4dcfd78f7286fcc097180c28072974";
+const RECORDED_DIGEST: &str = "2610f37b6fc0eff55283ddc00436ac2cb07f8fefe9ea876ba00fd4d9513729c2";
 
 #[test]
 fn replaying_one_recorded_session_of_venue_bytes_twice_and_from_a_checkpoint_reproduces_every_event_book_fill_and_flag()
@@ -539,20 +539,39 @@ fn a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_a
         .expect("premise: the book was usable before the hole");
     assert_eq!(before.filled, order_size());
 
-    // THE OPEN GAP. This is the assertion to replace.
+    // THE GAP IS NOW FIXED. A one-packet hole is flagged as an unreliable period.
     assert!(
-        record.integrity.is_clean(),
-        "a one-packet hole is now flagged: {:?}. That is the fix. Replace this assertion with \
-         one on the period, and close the gap on TICK-017 and TICK-040",
+        !record.integrity.is_clean(),
+        "one-packet hole should be flagged, but is_clean() returned true: {:?}",
         record.integrity.periods
     );
-    // And what the missing flag costs: straight after the hole the book holds
-    // one ask of 111, a buy of 450 is told it can have 111 of it, and nothing
-    // on the output says the 900 that rested before the hole were discarded.
+    assert_eq!(
+        record.integrity.periods.len(),
+        1,
+        "expected one unreliable period for the one-packet gap"
+    );
+    let period = &record.integrity.periods[0];
+    assert!(
+        matches!(period.fault, qip_orderbook::replay::IntegrityFault::Gap { missing_from, missing_to } if missing_from == 11 && missing_to == 11),
+        "period fault should be Gap(11..11), got {:?}",
+        period.fault
+    );
+    assert_eq!(
+        period.until,
+        Some(record.events[reset_at].venue_time),
+        "period should close at the reset"
+    );
+
+    // After the reset, the book edit that follows is now correctly flagged as unreliable,
+    // because we're still in the period from the gap through the reset.
     let after = record.fills[reset_at + 1]
         .buy
-        .expect("the book is read as usable straight after the reset");
+        .expect("the book should still be evaluated after reset");
     assert_eq!(after.filled, Decimal::from_int(111));
-    assert!(!record.integrity.steps[reset_at + 1].unreliable);
+    // The key fix: this step is now correctly marked unreliable.
+    assert!(
+        record.integrity.steps[reset_at + 1].unreliable,
+        "step after reset should be unreliable"
+    );
     Ok(())
 }

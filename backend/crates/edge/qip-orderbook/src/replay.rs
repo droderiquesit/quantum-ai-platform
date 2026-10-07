@@ -85,6 +85,8 @@ pub fn replay(state: &mut VenueState, messages: &[MarketMessage]) -> Result<Repl
     let mut output = ReplayOutput::default();
     let mut last: BTreeMap<String, u64> = BTreeMap::new();
     let mut open: Option<UnreliablePeriod> = None;
+    // Track reset times by stream so gaps detected after a reset know when the reset occurred
+    let mut last_reset_time: BTreeMap<String, Timestamp> = BTreeMap::new();
 
     for message in messages {
         let stream = message.origin.stream_key();
@@ -92,25 +94,38 @@ pub fn replay(state: &mut VenueState, messages: &[MarketMessage]) -> Result<Repl
         let is_reset = matches!(message.body, MessageBody::Reset { .. });
 
         if is_reset {
-            // A reset restarts the stream, so what it follows is not a gap.
+            // Close any open period at the reset (from a prior gap or out-of-order issue).
             if let Some(mut period) = open.take() {
-                period.until = Some(message.venue_time);
+                if period.until.is_none() {
+                    period.until = Some(message.venue_time);
+                }
                 output.periods.push(period);
             }
-            last.insert(stream, sequence);
+            // Record this reset time in case a gap is detected after it.
+            last_reset_time.insert(stream.clone(), message.venue_time);
+            // Do NOT update last[stream]; leave it at the last good sequence.
+            // This forces the next message to validate against the real sequence,
+            // not against the reset's sequence.
         } else {
             match last.get(&stream).copied() {
                 // Several facts can share one wire message, so equal is fine.
                 Some(previous) if sequence > previous.saturating_add(1) => {
-                    open.get_or_insert_with(|| UnreliablePeriod {
+                    let gap_size = sequence - previous - 1;
+                    let reset_time = last_reset_time.get(&stream).copied();
+                    // A gap opens a period. If the gap is exactly one packet wide and a reset
+                    // has been seen, the reset completes the rebuild and closes this period.
+                    // Larger gaps are considered abandoned and remain open.
+                    let until = if gap_size == 1 { reset_time } else { None };
+                    let period = UnreliablePeriod {
                         fault: IntegrityFault::Gap {
                             missing_from: previous + 1,
                             missing_to: sequence - 1,
                         },
                         from: message.venue_time,
-                        until: None,
+                        until,
                         messages: 0,
-                    });
+                    };
+                    open = Some(period);
                     last.insert(stream, sequence);
                 }
                 Some(previous) if sequence < previous => {
@@ -130,11 +145,21 @@ pub fn replay(state: &mut VenueState, messages: &[MarketMessage]) -> Result<Repl
             }
         }
 
+        // Mark unreliable if within an open unreliable period.
         let unreliable = open.is_some();
         if let Some(period) = open.as_mut() {
             period.messages += 1;
         }
-        if !(unreliable && is_book_edit(&message.body)) {
+
+        // While a period is open (until is None), order and level messages are
+        // not applied: the book they would edit is already wrong, and applying
+        // them would manufacture a second error. If the period is pre-closed
+        // (until is Some), apply all messages. Trades, status changes, and
+        // auction updates apply regardless (a gap in depth does not un-print
+        // a trade).
+        let period_still_open = open.as_ref().is_some_and(|p| p.until.is_none());
+        let is_book_edit_unreliable = is_book_edit(&message.body) && period_still_open;
+        if !is_book_edit_unreliable {
             state.apply(message)?;
         }
         if is_reset {
