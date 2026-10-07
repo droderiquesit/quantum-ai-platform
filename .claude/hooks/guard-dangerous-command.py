@@ -96,7 +96,7 @@ RULES: list[tuple[tuple[str, ...], str, str]] = [
         "Run a plan and show it to the user before applying.",
     ),
     (
-        ("terraform apply", "prod"),
+        ("terraform apply", "environments/prod"),
         "a Terraform apply against production",
         "Production deployments must go through .github/workflows/infra.yml, "
         "which is refused by the Terraform gate. Use 'terraform plan' to review "

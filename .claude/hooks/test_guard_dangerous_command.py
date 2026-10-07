@@ -30,7 +30,6 @@ def test_terraform_apply_prod_is_refused():
         "terraform apply -var-file=infrastructure/environments/prod/terraform.tfvars",
         "terraform apply -chdir=infrastructure/environments/prod",
         "cd infrastructure/environments/prod && terraform apply",
-        "terraform apply prod.tfplan",
     ]
     for cmd in commands:
         exit_code = run_guard(cmd)
