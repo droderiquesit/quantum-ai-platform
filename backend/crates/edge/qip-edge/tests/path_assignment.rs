@@ -28,10 +28,11 @@ use qip_arbitrage::{
     SizePolicy, VenueFacts,
 };
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
 use qip_contracts::signal::StrategyId;
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
@@ -138,7 +139,15 @@ fn one_venue_graph() -> Result<ArbitrageGraph> {
         venue(),
         VenueFacts::new(VenueClass::CryptoExchange, VenueStatus::Open),
     );
-    let node = |name: &str| Node::new(object(name), venue());
+    let node = |name: &str| {
+        Node::new(
+            object(name),
+            venue(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        )
+    };
     let fee = d("0.0004");
     graph.add_trade(
         node("USDT"),
@@ -194,8 +203,20 @@ fn two_venue_graph() -> Result<ArbitrageGraph> {
         );
     }
     graph.add_trade(
-        Node::new(object("USDT"), venue()),
-        Node::new(object("BTC"), venue()),
+        Node::new(
+            object("USDT"),
+            venue(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("BTC"),
+            venue(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("BTCUSDT"),
@@ -212,8 +233,20 @@ fn two_venue_graph() -> Result<ArbitrageGraph> {
         TRANSFER_OBSERVATIONS,
     )?;
     graph.add_trade(
-        Node::new(object("BTC"), venue_two()),
-        Node::new(object("USDT"), venue_two()),
+        Node::new(
+            object("BTC"),
+            venue_two(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("USDT"),
+            venue_two(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         Decimal::ZERO,
         object("BTCUSDT"),
@@ -253,8 +286,20 @@ fn ring(edges: usize) -> Result<(ArbitrageGraph, Vec<VenueState>)> {
         };
         books.push(book(&market, (bid, "1000000"), (ask, "1000000"))?);
         graph.add_trade(
-            Node::new(object(&format!("O{hop}")), venue()),
-            Node::new(object(&format!("O{}", (hop + 1) % edges)), venue()),
+            Node::new(
+                object(&format!("O{hop}")),
+                venue(),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
+            Node::new(
+                object(&format!("O{}", (hop + 1) % edges)),
+                venue(),
+                Representation::Spot,
+                SettlementStage::T0,
+                Region::Global,
+            ),
             Decimal::ONE,
             Decimal::ZERO,
             object(&market),

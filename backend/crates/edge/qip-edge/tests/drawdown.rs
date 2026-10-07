@@ -30,10 +30,11 @@ use qip_arbitrage::{
     SizePolicy, VenueFacts,
 };
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, Duration, ObjectId, Timestamp};
 use qip_edge::arbitrage::ArbitrageDesk;
@@ -942,7 +943,13 @@ fn a_fill_the_cell_cannot_price_stops_its_owners_next_commitment_until_a_fresh_g
 // --- the arbitrage desk -----------------------------------------------------
 
 fn desk_node(name: &str) -> Node {
-    Node::new(ObjectId::from_string(name), venue())
+    Node::new(
+        ObjectId::from_string(name),
+        venue(),
+        Representation::Spot,
+        SettlementStage::T0,
+        Region::Global,
+    )
 }
 
 /// One conversion, quoted at a placeholder the desk re-quotes from the books

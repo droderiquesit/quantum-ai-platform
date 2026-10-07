@@ -23,10 +23,11 @@ use qip_arbitrage::{
     SizePolicy, VenueFacts,
 };
 use qip_contracts::capital::CapitalEnvelope;
+use qip_contracts::intent::{Representation, SettlementStage};
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::policy::{BeliefPriors, CausalDigest, EpisodicDigest, PolicyPayload, Slot};
 use qip_contracts::signal::StrategyId;
-use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
+use qip_contracts::venue::{Origin, Region, VenueClass, VenueId, VenueStatus};
 use qip_core::error::Result;
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
 use qip_edge::arbitrage::ArbitrageDesk;
@@ -133,8 +134,20 @@ fn graph() -> Result<ArbitrageGraph> {
     }
     let fee = d("0.0004");
     graph.add_trade(
-        Node::new(object("USDT"), near()),
-        Node::new(object("ETH"), near()),
+        Node::new(
+            object("USDT"),
+            near(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("ETH"),
+            near(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         fee,
         object(MARKET),
@@ -151,8 +164,20 @@ fn graph() -> Result<ArbitrageGraph> {
         TRANSFER_OBSERVATIONS,
     )?;
     graph.add_trade(
-        Node::new(object("ETH"), far()),
-        Node::new(object("USDT"), far()),
+        Node::new(
+            object("ETH"),
+            far(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("USDT"),
+            far(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         fee,
         object(MARKET),

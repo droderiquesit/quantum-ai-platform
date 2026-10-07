@@ -133,8 +133,20 @@ fn graph() -> Result<ArbitrageGraph> {
     }
     let fee = d("0.0004");
     graph.add_trade(
-        Node::new(object("USDT"), near()),
-        Node::new(object("ETH"), near()),
+        Node::new(
+            object("USDT"),
+            near(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("ETH"),
+            near(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         fee,
         object(MARKET),
@@ -151,8 +163,20 @@ fn graph() -> Result<ArbitrageGraph> {
         TRANSFER_OBSERVATIONS,
     )?;
     graph.add_trade(
-        Node::new(object("ETH"), far()),
-        Node::new(object("USDT"), far()),
+        Node::new(
+            object("ETH"),
+            far(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
+        Node::new(
+            object("USDT"),
+            far(),
+            Representation::Spot,
+            SettlementStage::T0,
+            Region::Global,
+        ),
         Decimal::ONE,
         fee,
         object(MARKET),
