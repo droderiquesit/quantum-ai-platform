@@ -225,8 +225,10 @@ impl InTreeProvider {
 
     /// Pack a fitted teacher, computing the digest once from the payload
     /// this function serialised. `serve` recomputes it over the same
-    /// canonical form, so the two can only agree or refuse.
-    pub fn pack(teacher: &TrainedTeacher) -> Result<ModelArtifact> {
+    /// canonical form, so the two can only agree or refuse. Entitlements
+    /// must be non-empty (TICK-004); they name which licensed data trained
+    /// this artifact and where it may run/be used.
+    pub fn pack(teacher: &TrainedTeacher, entitlements: Vec<String>) -> Result<ModelArtifact> {
         let payload = TeacherPayload {
             arity: teacher.arity(),
             form: teacher.form().clone(),
@@ -239,16 +241,18 @@ impl InTreeProvider {
                 teacher.reference()
             ))
         })?;
-        Ok(ModelArtifact::new(teacher.reference(), format, value))
+        ModelArtifact::new(teacher.reference(), format, value, entitlements)
     }
 
     /// Pack a distillate under the card reference it is registered as. A
     /// `DistilledModel` carries a name and no version, so the reference is
     /// the caller's: it is whatever `ModelCard::reference()` says for the
-    /// card that owns this model.
+    /// card that owns this model. Entitlements must be non-empty (TICK-004);
+    /// they name which licensed data trained this artifact.
     pub fn pack_distilled(
         reference: impl Into<String>,
         model: &DistilledModel,
+        entitlements: Vec<String>,
     ) -> Result<ModelArtifact> {
         let reference = reference.into();
         let value = serde_json::to_value(model).map_err(|error| {
@@ -257,11 +261,7 @@ impl InTreeProvider {
                 model.name()
             ))
         })?;
-        Ok(ModelArtifact::new(
-            reference,
-            distilled_format(model),
-            value,
-        ))
+        ModelArtifact::new(reference, distilled_format(model), value, entitlements)
     }
 
     fn form_mismatch(artifact: &ModelArtifact, carried: ModelFormat) -> Error {

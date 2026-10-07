@@ -81,12 +81,19 @@ const PROBES: [[f64; 2]; 5] = [
     [0.95, 0.95],
 ];
 
+/// Dummy entitlements for testing. In production, these come from the
+/// data sources that trained a model (TICK-004); tests use a synthetic
+/// entitlement to satisfy the non-empty requirement.
+fn test_entitlements() -> Vec<String> {
+    vec!["test".to_string()]
+}
+
 // --- the four forms round-trip and score identically --------------------------
 
 #[test]
 fn a_linear_teacher_served_from_its_artifact_scores_exactly_what_it_predicts() -> Result<()> {
     let teacher = linear_teacher()?;
-    let artifact = InTreeProvider::pack(&teacher)?;
+    let artifact = InTreeProvider::pack(&teacher, test_entitlements())?;
     assert_eq!(artifact.format, ModelFormat::TeacherLinear);
     assert_eq!(artifact.reference, "regime@v7");
     let served = InTreeProvider.serve(&artifact)?;
@@ -109,7 +116,7 @@ fn a_linear_teacher_served_from_its_artifact_scores_exactly_what_it_predicts() -
 #[test]
 fn a_boosted_teacher_served_from_its_artifact_scores_exactly_what_it_predicts() -> Result<()> {
     let teacher = boosted_teacher()?;
-    let artifact = InTreeProvider::pack(&teacher)?;
+    let artifact = InTreeProvider::pack(&teacher, test_entitlements())?;
     assert_eq!(artifact.format, ModelFormat::TeacherBoostedStumps);
     let served = InTreeProvider.serve(&artifact)?;
     // The declared arity is the teacher's, which for an ensemble may exceed
@@ -134,7 +141,8 @@ fn a_boosted_teacher_served_from_its_artifact_scores_exactly_what_it_predicts() 
 fn a_linear_student_served_from_its_artifact_scores_exactly_what_it_evaluates() -> Result<()> {
     let model = student(StudentForm::Linear { ridge: 1e-3 })?;
     assert!(matches!(model.form(), ModelForm::Linear { .. }));
-    let artifact = InTreeProvider::pack_distilled("regime-student@v7", &model)?;
+    let artifact =
+        InTreeProvider::pack_distilled("regime-student@v7", &model, test_entitlements())?;
     assert_eq!(artifact.format, ModelFormat::DistilledLinear);
     let served = InTreeProvider.serve(&artifact)?;
     assert_eq!(served.arity(), model.arity());
@@ -156,7 +164,8 @@ fn a_linear_student_served_from_its_artifact_scores_exactly_what_it_evaluates() 
 fn a_tree_student_served_from_its_artifact_scores_exactly_what_it_evaluates() -> Result<()> {
     let model = student(StudentForm::shallow_tree())?;
     assert!(matches!(model.form(), ModelForm::Tree { .. }));
-    let artifact = InTreeProvider::pack_distilled("regime-student@v7", &model)?;
+    let artifact =
+        InTreeProvider::pack_distilled("regime-student@v7", &model, test_entitlements())?;
     assert_eq!(artifact.format, ModelFormat::DistilledTree);
     let served = InTreeProvider.serve(&artifact)?;
     assert_eq!(served.arity(), model.arity());
@@ -179,15 +188,23 @@ fn a_tree_student_served_from_its_artifact_scores_exactly_what_it_evaluates() ->
 #[test]
 fn a_served_model_refuses_the_wrong_number_of_inputs_naming_both_counts() -> Result<()> {
     let served: Vec<Box<dyn ServedModel>> = vec![
-        InTreeProvider.serve(&InTreeProvider::pack(&linear_teacher()?)?)?,
-        InTreeProvider.serve(&InTreeProvider::pack(&boosted_teacher()?)?)?,
+        InTreeProvider.serve(&InTreeProvider::pack(
+            &linear_teacher()?,
+            test_entitlements(),
+        )?)?,
+        InTreeProvider.serve(&InTreeProvider::pack(
+            &boosted_teacher()?,
+            test_entitlements(),
+        )?)?,
         InTreeProvider.serve(&InTreeProvider::pack_distilled(
             "s@1",
             &student(StudentForm::Linear { ridge: 1e-3 })?,
+            test_entitlements(),
         )?)?,
         InTreeProvider.serve(&InTreeProvider::pack_distilled(
             "s@1",
             &student(StudentForm::shallow_tree())?,
+            test_entitlements(),
         )?)?,
     ];
     for model in &served {
@@ -214,15 +231,23 @@ fn a_served_model_refuses_the_wrong_number_of_inputs_naming_both_counts() -> Res
 #[test]
 fn a_served_model_refuses_a_non_finite_input_rather_than_scoring_it() -> Result<()> {
     let served: Vec<Box<dyn ServedModel>> = vec![
-        InTreeProvider.serve(&InTreeProvider::pack(&linear_teacher()?)?)?,
-        InTreeProvider.serve(&InTreeProvider::pack(&boosted_teacher()?)?)?,
+        InTreeProvider.serve(&InTreeProvider::pack(
+            &linear_teacher()?,
+            test_entitlements(),
+        )?)?,
+        InTreeProvider.serve(&InTreeProvider::pack(
+            &boosted_teacher()?,
+            test_entitlements(),
+        )?)?,
         InTreeProvider.serve(&InTreeProvider::pack_distilled(
             "s@1",
             &student(StudentForm::Linear { ridge: 1e-3 })?,
+            test_entitlements(),
         )?)?,
         InTreeProvider.serve(&InTreeProvider::pack_distilled(
             "s@1",
             &student(StudentForm::shallow_tree())?,
+            test_entitlements(),
         )?)?,
     ];
     for model in &served {
@@ -249,7 +274,7 @@ fn a_served_model_refuses_a_non_finite_input_rather_than_scoring_it() -> Result<
 #[test]
 fn an_artifact_of_an_unknown_format_is_refused_at_deserialisation_with_the_fixed_sentence()
 -> Result<()> {
-    let genuine = InTreeProvider::pack(&linear_teacher()?)?;
+    let genuine = InTreeProvider::pack(&linear_teacher()?, test_entitlements())?;
     let json = serde_json::to_string(&genuine)?;
     assert!(
         json.contains(r#""format":"teacher_linear""#),
@@ -283,7 +308,7 @@ fn an_artifact_of_an_unknown_format_is_refused_at_deserialisation_with_the_fixed
 
 #[test]
 fn an_artifact_whose_digest_is_not_its_payloads_is_refused_naming_both_digests() -> Result<()> {
-    let genuine = InTreeProvider::pack(&boosted_teacher()?)?;
+    let genuine = InTreeProvider::pack(&boosted_teacher()?, test_entitlements())?;
     assert!(InTreeProvider.serve(&genuine).is_ok(), "the premise failed");
 
     // The payload was swapped after the digest was taken: nudge a stump.
@@ -316,7 +341,12 @@ fn a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score() ->
             {"branch": {"input": 0, "threshold": 0.0, "below": 0, "at_or_above": 0}}
         ]}}
     });
-    let artifact = ModelArtifact::new("loop@1", ModelFormat::DistilledTree, looping);
+    let artifact = ModelArtifact::new(
+        "loop@1",
+        ModelFormat::DistilledTree,
+        looping,
+        test_entitlements(),
+    )?;
     let error = InTreeProvider
         .serve(&artifact)
         .expect_err("a backwards tree was served");
@@ -328,7 +358,12 @@ fn a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score() ->
 
     // An empty coefficient vector, likewise.
     let empty = serde_json::json!({"name": "empty", "form": {"linear": {"intercept": 0.0, "coefficients": []}}});
-    let artifact = ModelArtifact::new("empty@1", ModelFormat::DistilledLinear, empty);
+    let artifact = ModelArtifact::new(
+        "empty@1",
+        ModelFormat::DistilledLinear,
+        empty,
+        test_entitlements(),
+    )?;
     assert!(
         InTreeProvider.serve(&artifact).is_err(),
         "an empty model was served"
@@ -353,7 +388,8 @@ fn a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score() ->
         "wide@1",
         ModelFormat::TeacherBoostedStumps,
         serde_json::to_value(&payload)?,
-    );
+        test_entitlements(),
+    )?;
     let error = InTreeProvider
         .serve(&artifact)
         .expect_err("a stump reading past the arity was served");
@@ -378,7 +414,7 @@ fn a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score() ->
             TreeNode::Leaf { value: 1.0 },
         ],
     )?;
-    let artifact = InTreeProvider::pack_distilled("sound@1", &sound)?;
+    let artifact = InTreeProvider::pack_distilled("sound@1", &sound, test_entitlements())?;
     // The leaf is exactly `1.0`, so the comparison is of bits, not of a
     // tolerance.
     assert_eq!(
@@ -390,13 +426,14 @@ fn a_payload_the_forms_constructor_refuses_is_refused_at_serve_not_at_score() ->
 
 #[test]
 fn an_artifact_declaring_one_format_and_carrying_another_is_refused() -> Result<()> {
-    let linear = InTreeProvider::pack(&linear_teacher()?)?;
+    let linear = InTreeProvider::pack(&linear_teacher()?, test_entitlements())?;
     assert!(InTreeProvider.serve(&linear).is_ok(), "the premise failed");
     let mislabelled = ModelArtifact::new(
         linear.reference.clone(),
         ModelFormat::TeacherBoostedStumps,
         linear.payload.clone(),
-    );
+        test_entitlements(),
+    )?;
     let error = InTreeProvider
         .serve(&mislabelled)
         .expect_err("a linear payload served as an ensemble");
@@ -408,15 +445,29 @@ fn an_artifact_declaring_one_format_and_carrying_another_is_refused() -> Result<
         error.message()
     );
 
-    let tree = InTreeProvider::pack_distilled("s@1", &student(StudentForm::shallow_tree())?)?;
-    let mislabelled = ModelArtifact::new("s@1", ModelFormat::DistilledLinear, tree.payload.clone());
+    let tree = InTreeProvider::pack_distilled(
+        "s@1",
+        &student(StudentForm::shallow_tree())?,
+        test_entitlements(),
+    )?;
+    let mislabelled = ModelArtifact::new(
+        "s@1",
+        ModelFormat::DistilledLinear,
+        tree.payload.clone(),
+        test_entitlements(),
+    )?;
     assert!(
         InTreeProvider.serve(&mislabelled).is_err(),
         "a tree payload served as a linear model"
     );
     // A teacher payload under a distilled format is refused as a payload the
     // distilled form cannot read, not scored as something else.
-    let crossed = ModelArtifact::new("s@1", ModelFormat::DistilledLinear, linear.payload.clone());
+    let crossed = ModelArtifact::new(
+        "s@1",
+        ModelFormat::DistilledLinear,
+        linear.payload.clone(),
+        test_entitlements(),
+    )?;
     assert!(InTreeProvider.serve(&crossed).is_err());
     Ok(())
 }
@@ -426,10 +477,18 @@ fn an_artifact_declaring_one_format_and_carrying_another_is_refused() -> Result<
 #[test]
 fn a_packed_artifacts_digest_is_a_recomputation_over_its_own_payload() -> Result<()> {
     for artifact in [
-        InTreeProvider::pack(&linear_teacher()?)?,
-        InTreeProvider::pack(&boosted_teacher()?)?,
-        InTreeProvider::pack_distilled("s@1", &student(StudentForm::Linear { ridge: 1e-3 })?)?,
-        InTreeProvider::pack_distilled("s@1", &student(StudentForm::shallow_tree())?)?,
+        InTreeProvider::pack(&linear_teacher()?, test_entitlements())?,
+        InTreeProvider::pack(&boosted_teacher()?, test_entitlements())?,
+        InTreeProvider::pack_distilled(
+            "s@1",
+            &student(StudentForm::Linear { ridge: 1e-3 })?,
+            test_entitlements(),
+        )?,
+        InTreeProvider::pack_distilled(
+            "s@1",
+            &student(StudentForm::shallow_tree())?,
+            test_entitlements(),
+        )?,
     ] {
         assert_eq!(
             artifact.digest,
@@ -445,8 +504,8 @@ fn a_packed_artifacts_digest_is_a_recomputation_over_its_own_payload() -> Result
     }
     // And two different models do not share one — or the assertions above
     // would hold of a constant.
-    let one = InTreeProvider::pack(&linear_teacher()?)?;
-    let two = InTreeProvider::pack(&boosted_teacher()?)?;
+    let one = InTreeProvider::pack(&linear_teacher()?, test_entitlements())?;
+    let two = InTreeProvider::pack(&boosted_teacher()?, test_entitlements())?;
     assert_ne!(one.digest, two.digest);
     Ok(())
 }

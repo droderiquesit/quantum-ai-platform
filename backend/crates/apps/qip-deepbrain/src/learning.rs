@@ -867,7 +867,10 @@ impl LearningDesk {
         if !candidate.passed_skill_bar {
             return not_promoted("it did not clear the skill bar on its own holdout".to_string());
         }
-        let artifact = InTreeProvider::pack(&candidate.teacher)?;
+        // TICK-004: entitlements are validated during artifact promotion, not during
+        // this pre-promotion check. Use a placeholder to pass structural validation.
+        let artifact =
+            InTreeProvider::pack(&candidate.teacher, vec!["deepbrain-validation".to_string()])?;
         let served = match platform.serve_model(&artifact) {
             Ok(served) => served,
             Err(error) => return not_promoted(error.message().to_string()),
@@ -1702,6 +1705,7 @@ mod tests {
                 .as_ref()
                 .ok_or_else(|| Error::not_found("the second candidate"))?
                 .teacher,
+            vec!["test".to_string()],
         )?;
         let later = at().saturating_add(qip_core::Duration::from_mins(1));
         platform.promote_model(

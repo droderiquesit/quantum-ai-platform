@@ -799,7 +799,9 @@ fn artifact_for(card: &ModelCard, intercept: f64) -> ModelArtifact {
         card.reference(),
         ModelFormat::DistilledLinear,
         json!({"name": card.name, "form": {"linear": {"intercept": intercept, "coefficients": [0.5, -0.25]}}}),
+        vec!["test".to_string()],
     )
+    .expect("artifact construction failed")
 }
 
 #[test]

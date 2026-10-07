@@ -85,7 +85,7 @@ mod tests {
             ModelFamily::Linear { ridge: 1e-6 },
         );
         let teacher = LocalTrainer::new().fit(&spec, &data, now)?;
-        let artifact = InTreeProvider::pack(&teacher)?;
+        let artifact = InTreeProvider::pack(&teacher, vec!["test".to_string()])?;
         let mut card = ModelCard::new(
             ModelId::from_string(artifact.reference.clone()),
             "artifact-test",

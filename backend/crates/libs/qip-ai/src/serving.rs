@@ -63,7 +63,8 @@ impl ModelFormat {
 }
 
 /// A model as it is stored, published and shipped: the card it belongs to,
-/// its format, its serialised form, and the digest of that form.
+/// its format, its serialised form, the digest of that form, and the
+/// entitlements that trained it (TICK-004).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelArtifact {
@@ -77,24 +78,37 @@ pub struct ModelArtifact {
     /// digest, not a signature: it proves the bytes are the bytes, and says
     /// nothing about who produced them (ADR 0043).
     pub digest: String,
+    /// Licensing entitlements that trained this artifact (TICK-004). Each
+    /// element represents a data source's entitlement class. Must be
+    /// non-empty; refusal to seal without entitlements is structural.
+    pub entitlements: Vec<String>,
 }
 
 impl ModelArtifact {
     /// Build an artifact, computing the digest once from the payload it
     /// carries. Providers construct through this so that the digest and the
-    /// payload can never be assembled separately and disagree.
+    /// payload can never be assembled separately and disagree. Entitlements
+    /// must be non-empty; an artifact trained on no data source is refused
+    /// at construction (TICK-004).
     pub fn new(
         reference: impl Into<String>,
         format: ModelFormat,
         payload: serde_json::Value,
-    ) -> Self {
+        entitlements: Vec<String>,
+    ) -> Result<Self> {
+        if entitlements.is_empty() {
+            return Err(Error::invalid(
+                "model artifact must record at least one entitlement",
+            ));
+        }
         let digest = digest_of(&payload);
-        Self {
+        Ok(Self {
             reference: reference.into(),
             format,
             payload,
             digest,
-        }
+            entitlements,
+        })
     }
 
     /// Refuse an artifact whose digest is not the digest of its payload,
@@ -310,7 +324,9 @@ mod tests {
             "regime@3",
             ModelFormat::DistilledLinear,
             serde_json::json!({"b": 1.0, "a": [2.0, 3.0]}),
+            vec!["test".to_string()],
         )
+        .expect("artifact construction failed")
     }
 
     #[test]
@@ -348,7 +364,7 @@ mod tests {
 
     #[test]
     fn an_artifact_naming_a_format_outside_the_enum_is_refused_at_the_wire() {
-        let json = r#"{"reference":"regime@3","format":"onnx","payload":{},"digest":"x"}"#;
+        let json = r#"{"reference":"regime@3","format":"onnx","payload":{},"digest":"x","entitlements":["test"]}"#;
         let error = ModelArtifact::from_json(json).expect_err("an unknown format parsed");
         let message = error.message();
         assert!(
