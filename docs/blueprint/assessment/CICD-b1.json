@@ -175,7 +175,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4724 (production_is_never_deployed_automatically)",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4340 (the_infrastructure_workflow_cannot_touch_production)",
       ".claude/hooks/guard-dangerous-command.py:1-181",
-      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)",
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-10-07)",
       ".github/workflows/deploy.yml:18-20 (expects a `prod` GitHub environment with required reviewers; none exists)"
     ],
     "gap": "No game-day test gives an agent a malicious instruction and confirms it cannot merge, promote or deploy around the gates (G §25's acceptance criterion for this row). The merge boundary is now verified absent rather than unknown: main has no branch protection and no ruleset, so any identity with push access - including an agent session running under the owner's credentials - can push to main without review or a green ci run. deploy.yml still refuses to build unless ci succeeded for the commit, so the deploy boundary holds; but the `prod` GitHub environment with required reviewers that deploy.yml's header relies on does not exist (only `dev`, with no protection rules). chief-orchestrator's tool grant includes unrestricted Bash, and .claude/settings.json only ask-lists git push.",
@@ -185,15 +185,15 @@
     "deployable": true,
     "e2e": false,
     "depends_on": [
-      "CICD-011",
+      "CICD-045",
       "CICD-021"
     ],
-    "blocked_by": "",
+    "blocked_by": "external:github-settings",
     "verification": "No existing test; would need an acceptance/game-day test simulating an agent identity attempting to bypass ci.yml/deploy.yml's gate jobs and asserting refusal, plus confirmation of GitHub branch-protection rules on main.",
     "work_item": "E01",
     "tier": "T2",
     "size": "M",
-    "notes": "The pipeline itself is real and gates every artifact that does reach deploy.yml; the unverified part is whether anything besides convention stops an agent session from merging directly. verify: gap rewritten with evidence read this session via gh api (the previous text said branch protection was unreadable). Evidence line for the gate job corrected from :41-58 (the `on:` block) to :91-262. Status PARTIAL and flags kept."
+    "notes": "The pipeline itself is real and gates every artifact that does reach deploy.yml; the unverified part is whether anything besides convention stops an agent session from merging directly. verify: gap rewritten with evidence read this session via gh api (the previous text said branch protection was unreadable). Evidence timestamp updated to 2026-10-07. Added blocked_by: external:github-settings and updated depends_on from CICD-011 to CICD-045 since branch protection is the prerequisite. Status PARTIAL and flags kept."
   },
   {
     "id": "CICD-008",
@@ -276,23 +276,23 @@
     "evidence": [
       ".claude/agents/chief-orchestrator.md:4 (tools line, includes Bash)",
       ".claude/settings.json (permissions.ask — git push, gcloud, kubectl, terraform apply are ask-listed, not denied)",
-      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)"
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-10-07)"
     ],
-    "gap": "'No merge right on any protected branch, no write access to the environment repository, no deploy API permission' is not implemented at any identity or tooling layer found; the only control is an interactive approval prompt, which a human operator (not the platform) can grant. At the repository layer there is no merge right to withhold: main is unprotected and has no ruleset, so any identity that can push can put a change on main.",
+    "gap": "'No merge right on any protected branch, no write access to the environment repository, no deploy API permission' is not implemented at any identity or tooling layer found; the only control is an interactive approval prompt, which a human operator (not the platform) can grant. At the repository layer there is no merge right to withhold: main is unprotected and has no ruleset, so any identity that can push can put a change on main. This is an external GitHub repository setting, not configurable from Terraform or code.",
     "implemented": false,
     "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [
-      "CICD-007"
+      "CICD-045"
     ],
-    "blocked_by": "",
-    "verification": "No test exists; would need to show the orchestrator's own identity (whichever GitHub/GCP account it might act as) holding no merge or deploy permission at the platform/IAM layer.",
+    "blocked_by": "external:github-settings",
+    "verification": "No test exists; would need to show the orchestrator's own identity (whichever GitHub/GCP account it might act as) holding no merge or deploy permission at the platform/IAM layer. Blocked on CICD-045 (branch protection rules), which require GitHub organization admin access to configure.",
     "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status MISSING confirmed and strengthened - branch protection and rulesets read via gh api this session are absent."
+    "notes": "verify: status MISSING confirmed and strengthened - branch protection and rulesets read via gh api 2026-10-07 are absent. Added blocked_by: external:github-settings and updated depends_on to CICD-045 since branch protection is the prerequisite."
   },
   {
     "id": "CICD-012",
@@ -375,7 +375,7 @@
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:3974 (the_pipeline_fails_on_warnings)",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:4193 (nothing_deploys_that_has_not_passed_the_test_suite)",
       ".github/workflows/deploy.yml:91-262 (gate job)",
-      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)"
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-10-07)"
     ],
     "gap": "Merge half still open: main has no branch protection or ruleset, a repository setting outside any committed file (external action, not doable from this tree). The waiver half is guarded: no workflow may carry continue-on-error, no backend test may be marked ignored, and a gate that is dropped, moved to another job or commented out is now caught structurally rather than by a substring search - pipeline_scripts.rs pins nine gates as whole step lines of the jobs that own them.",
     "implemented": true,
@@ -384,14 +384,15 @@
     "deployable": true,
     "e2e": false,
     "depends_on": [
-      "CICD-014"
+      "CICD-014",
+      "CICD-045"
     ],
-    "blocked_by": "",
-    "verification": "cargo test -p qip-acceptance --test pipeline_waivers (no_workflow_marks_a_step_as_allowed_to_fail, no_test_in_the_backend_is_ignored; mutation-verified); cargo test -p qip-acceptance --test pipeline_scripts every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention (mutation-verified: with `- run: cargo audit --deny warnings` commented out, the_pipeline_gates_on_everything_it_claims_to still passed and this test failed naming security-audit); merge half needs required status checks on main",
+    "blocked_by": "external:github-settings",
+    "verification": "cargo test -p qip-acceptance --test pipeline_waivers (no_workflow_marks_a_step_as_allowed_to_fail, no_test_in_the_backend_is_ignored; mutation-verified); cargo test -p qip-acceptance --test pipeline_scripts every_gate_the_pipeline_claims_is_a_step_of_its_own_job_and_not_a_mention (mutation-verified: with `- run: cargo audit --deny warnings` commented out, the_pipeline_gates_on_everything_it_claims_to still passed and this test failed naming security-audit); merge half blocked on CICD-045 (branch protection)",
     "work_item": "E01",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: NEEDS-VALIDATION -> PARTIAL. NEEDS-VALIDATION presumed the behaviour was implemented and only untested; gh api shows main unprotected with no ruleset, so the merge half is not implemented at all. Only the deploy half holds, statically tested by nothing_deploys_that_has_not_passed_the_test_suite."
+    "notes": "verify: NEEDS-VALIDATION -> PARTIAL. NEEDS-VALIDATION presumed the behaviour was implemented and only untested; gh api shows main unprotected with no ruleset, so the merge half is not implemented at all. Only the deploy half holds, statically tested by nothing_deploys_that_has_not_passed_the_test_suite. Timestamp updated to 2026-10-07, added blocked_by: external:github-settings, and updated depends_on to include CICD-045."
   },
   {
     "id": "CICD-016",
@@ -495,7 +496,7 @@
     "current": ".claude/agents/code-reviewer.md: 'Independently review a diff for correctness, clarity and house standards. Must not review code it wrote.' tools: Read, Grep, Glob, Bash (no Write/Edit).",
     "evidence": [
       ".claude/agents/code-reviewer.md:1-8",
-      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-09-25)"
+      "gh api repos/droderiquesit/quantum-ai-platform/branches/main/protection -> HTTP 404 'Branch not protected'; .../rulesets -> []; .../rules/branches/main -> []; .../environments -> only 'dev', protection_rules [] (read 2026-10-07)"
     ],
     "gap": "No CI gate or test requires a reviewer risk summary to exist before merge, or blocks merge until a requested change is addressed — invocation is at the orchestrator's discretion, not structurally required. The blocking half cannot hold at the repository layer either: main has no branch protection or ruleset, so no requested-changes review can block a merge.",
     "implemented": true,
@@ -504,14 +505,15 @@
     "deployable": false,
     "e2e": false,
     "depends_on": [
-      "CICD-021"
+      "CICD-021",
+      "CICD-045"
     ],
-    "blocked_by": "",
-    "verification": "No existing test.",
+    "blocked_by": "external:github-settings",
+    "verification": "No existing test. Requires branch protection rules to enforce review-before-merge (CICD-045).",
     "work_item": "E00",
     "tier": "T1",
     "size": "S",
-    "notes": "verify: status PARTIAL kept; gap extended with the branch-protection evidence read via gh api."
+    "notes": "verify: status PARTIAL kept; gap extended with the branch-protection evidence read via gh api 2026-10-07. Added blocked_by: external:github-settings and updated depends_on to include CICD-045."
   },
   {
     "id": "CICD-021",
