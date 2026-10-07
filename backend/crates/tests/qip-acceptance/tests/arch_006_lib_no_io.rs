@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -111,16 +105,14 @@ fn lib_crates_export_public_types() {
 fn walkdir_simple(path: &PathBuf) -> Vec<String> {
     let mut result = Vec::new();
     if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries {
-            if let Ok(e) = entry {
-                let p = e.path();
-                if p.is_file() {
-                    if let Some(ps) = p.to_str() {
-                        result.push(ps.to_string());
-                    }
-                } else if p.is_dir() {
-                    result.extend(walkdir_simple(&p));
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_file() {
+                if let Some(ps) = p.to_str() {
+                    result.push(ps.to_string());
                 }
+            } else if p.is_dir() {
+                result.extend(walkdir_simple(&p));
             }
         }
     }

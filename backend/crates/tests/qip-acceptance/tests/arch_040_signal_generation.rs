@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -22,7 +16,7 @@ fn signal_types_defined_exhaustively() {
         let content = fs::read_to_string(&events_path).unwrap_or_default();
 
         assert!(
-            content.contains("Signal") || content.contains("signal") || content.len() > 0,
+            content.contains("Signal") || content.contains("signal") || !content.is_empty(),
             "Events must define signal types"
         );
     }
@@ -39,7 +33,7 @@ fn signal_generation_deterministic_and_reproducible() {
         let content = fs::read_to_string(&platform_path).unwrap_or_default();
 
         assert!(
-            content.contains("signal") || content.contains("Signal") || content.len() > 0,
+            content.contains("signal") || content.contains("Signal") || !content.is_empty(),
             "Platform must generate signals deterministically"
         );
     }
@@ -56,7 +50,7 @@ fn signals_raise_alerts_or_logs() {
         let content = fs::read_to_string(&observability_path).unwrap_or_default();
 
         assert!(
-            content.contains("signal") || content.contains("Signal") || content.len() > 0,
+            content.contains("signal") || content.contains("Signal") || !content.is_empty(),
             "Signals must integrate with observability"
         );
     }
@@ -71,7 +65,7 @@ fn signals_recorded_in_event_log() {
         let content = fs::read_to_string(&events_path).unwrap_or_default();
 
         assert!(
-            content.contains("Signal") || content.len() > 0,
+            content.contains("Signal") || !content.is_empty(),
             "Events must record signal generation for audit"
         );
     }

@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -20,7 +14,7 @@ fn arbitrage_policy_library_exists() {
 
     if policy_path.exists() {
         let content = fs::read_to_string(&policy_path).unwrap_or_default();
-        assert!(content.len() > 0, "Policy contracts exist");
+        assert!(!content.is_empty(), "Policy contracts exist");
     }
 }
 
@@ -33,7 +27,7 @@ fn policy_defines_strategy_slots() {
         let content = fs::read_to_string(&contracts_path).unwrap_or_default();
 
         assert!(
-            content.contains("policy") || content.contains("Policy") || content.len() > 0,
+            content.contains("policy") || content.contains("Policy") || !content.is_empty(),
             "Contracts must define policy with 12 slots"
         );
     }
@@ -48,7 +42,7 @@ fn policy_distributed_via_mesh_not_rpc() {
         let content = fs::read_to_string(&mesh_path).unwrap_or_default();
 
         assert!(
-            content.contains("Downlink") || content.contains("downlink") || content.len() > 0,
+            content.contains("Downlink") || content.contains("downlink") || !content.is_empty(),
             "Policy must arrive via PolicyDownlink mesh message"
         );
     }
@@ -61,13 +55,11 @@ fn policy_slots_are_venue_assignments() {
 
     if let Ok(entries) = fs::read_dir(&policy_src) {
         for entry in entries {
-            if let Ok(e) = entry {
-                if let Ok(content) = fs::read_to_string(&e.path()) {
-                    if content.contains("slot") || content.contains("Slot") {
-                        assert!(true, "Policy slots defined");
-                        return;
-                    }
-                }
+            if let Ok(e) = entry
+                && let Ok(content) = fs::read_to_string(e.path())
+                && (content.contains("slot") || content.contains("Slot"))
+            {
+                return;
             }
         }
         assert!(policy_src.exists(), "Policy structure exists");

@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -30,7 +24,7 @@ fn compliance_checks_license_posture() {
         let content = fs::read_to_string(&compliance_path).unwrap_or_default();
 
         assert!(
-            content.contains("license") || content.contains("License") || content.len() > 0,
+            content.contains("license") || content.contains("License") || !content.is_empty(),
             "Compliance must verify data source licensing"
         );
     }
@@ -47,7 +41,7 @@ fn compliance_refuses_unlicensed_sources() {
         let content = fs::read_to_string(&finder_path).unwrap_or_default();
 
         assert!(
-            content.contains("Result") || content.contains("Error") || content.len() > 0,
+            content.contains("Result") || content.contains("Error") || !content.is_empty(),
             "Data finder must refuse sources with bad licensing"
         );
     }
@@ -64,7 +58,7 @@ fn compliance_evaluated_before_use() {
         let content = fs::read_to_string(&ingestion_path).unwrap_or_default();
 
         assert!(
-            content.contains("license") || content.len() > 0,
+            content.contains("license") || !content.is_empty(),
             "Ingestion must check compliance before consuming data"
         );
     }

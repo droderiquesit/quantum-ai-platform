@@ -160,6 +160,7 @@ fn fabric_045_p0_critical_control_topics_rf3_quorum_persistent_wal_long_retentio
     // persistent write-ahead log, and must be retained long-term with every sealed segment
     // archived to Cloud Storage.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct P0TopicPolicy {
         class: String,
@@ -196,6 +197,7 @@ fn fabric_045_p0_critical_control_topics_rf3_quorum_persistent_wal_long_retentio
     assert_eq!(p0_policy.zones.len(), 3);
 
     // No acknowledged write without quorum persistence
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct WriteRequest {
         event_id: u64,
@@ -221,6 +223,7 @@ fn fabric_046_p1_financial_outcomes_topics_rf3_quorum_idempotent_ids_long_hot_re
     // (deterministic) event IDs, keep long hot retention and archive every sealed segment
     // immutably.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct P1TopicPolicy {
         class: String,
@@ -260,6 +263,7 @@ fn fabric_047_p2_market_journal_topics_rf3_regional_quorum_batch_producers_tiere
     // high-throughput replicated segments, keep hours to days of hot retention set by
     // instrument tier, and archive sealed segments to Cloud Storage.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct P2TopicPolicy {
         class: String,
@@ -307,6 +311,7 @@ fn fabric_048_p4_telemetry_topics_best_effort_or_rf2_sampled_or_dropped_oldest_f
     // may be acknowledged best-effort or on RF2, and under pressure must be sampled or
     // drop their oldest records first, with every drop counted.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct P4TopicPolicy {
         class: String,
@@ -420,6 +425,7 @@ fn fabric_050_critical_control_and_outcome_records_are_never_silently_dropped() 
     assert!(matches!(result_p1, PublishResult::Acknowledged));
 
     // Already acknowledged records are never discarded under pressure
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct AcknowledgedRecord {
         event_id: u64,

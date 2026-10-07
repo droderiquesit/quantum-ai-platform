@@ -49,7 +49,7 @@ fn one_allocation_yields_at_least_one_alternate_size_shadow() {
         "should have one alternate-size shadow"
     );
     assert!(
-        universe.shadows_for_strategy("momentum-v3").len() > 0,
+        !universe.shadows_for_strategy("momentum-v3").is_empty(),
         "shadow exists"
     );
 }
@@ -72,7 +72,7 @@ fn one_allocation_yields_at_least_one_rejected_opportunity_shadow() {
         "should have one refused shadow"
     );
     assert!(
-        universe.shadows_for_strategy("arbitrage-v2").len() > 0,
+        !universe.shadows_for_strategy("arbitrage-v2").is_empty(),
         "shadow exists"
     );
 }

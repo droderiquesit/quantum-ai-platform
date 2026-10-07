@@ -1189,8 +1189,8 @@ fn the_agents_endpoint_lists_the_whole_organisation() -> Result<()> {
     assert!(body.contains("risk-control"), "{body}");
     assert_eq!(
         body.matches("\"id\":").count(),
-        18,
-        "all eighteen agents are listed"
+        19,
+        "all nineteen agents are listed"
     );
     Ok(())
 }

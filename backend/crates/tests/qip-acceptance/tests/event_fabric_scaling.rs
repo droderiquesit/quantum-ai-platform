@@ -46,6 +46,7 @@ fn fabric_066_reflex_cells_emit_orders_through_fabric_topics() {
     // (Extending core operational semantics)
     // Reflex Cells emit order placement events and decisions through fabric topics.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct ReflexCellEventFlow {
         cell_id: String,
@@ -69,6 +70,7 @@ fn fabric_081_p0_control_payload_signing_and_verification() {
     // FABRIC-081: P0 control payloads must be signed by authorized producer and verified
     // before consumption; no control decision is applied without verifying the signature.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct SignedControlPayload {
         producer_id: String,
@@ -210,6 +212,7 @@ fn fabric_084_production_regions_start_with_five_broker_vms_across_three_zones()
     // FABRIC-084: Each production region must initially run five C4D/C4-class broker VMs
     // spread across three zones.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct BrokerDeployment {
         region: String,
@@ -244,6 +247,7 @@ fn fabric_086_journal_durability_from_replication_never_from_one_device() {
     // FABRIC-086: No durability guarantee may depend on a single local device: a record
     // counts as durable only when replicated as its class requires.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct ReplicationRequirement {
         class: String,
@@ -279,6 +283,7 @@ fn fabric_087_clients_bootstrap_from_cloud_dns_srv_records() {
     // FABRIC-087: Fabric clients must find bootstrap broker endpoints through Cloud DNS SRV
     // records, optionally backed by Service Directory.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct ClientBootstrap {
         srv_name: String,
@@ -308,6 +313,7 @@ fn fabric_088_clients_take_live_broker_partition_map_from_fabric_metadata() {
     // FABRIC-088: After bootstrap, clients must obtain the live broker/partition map from
     // fabric metadata, and must send each partition's records to that partition's current leader.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct PartitionMap {
         partition_id: u32,
@@ -315,6 +321,7 @@ fn fabric_088_clients_take_live_broker_partition_map_from_fabric_metadata() {
         followers: Vec<u32>,
     }
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct ClientMetadata {
         maps: Vec<PartitionMap>,
@@ -349,6 +356,7 @@ fn fabric_089_brokers_have_stable_internal_addresses_no_public_endpoint() {
     // FABRIC-089: Every broker must have a stable internal address and no public endpoint
     // or external IP.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct BrokerNetwork {
         broker_id: u32,
@@ -417,6 +425,7 @@ fn fabric_093_brokers_upgraded_one_at_time_drain_verify_replace_rejoin_advance()
         Advanced,
     }
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct BrokerUpgradeState {
         broker_id: u32,
@@ -459,6 +468,7 @@ fn fabric_094_upgrade_never_takes_enough_replicas_down_to_lose_quorum() {
     // FABRIC-094: No upgrade or maintenance action may take down, at the same time, enough
     // replicas of any partition or of the metadata quorum to lose quorum.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct QuorumProtection {
         total_replicas: usize,
@@ -511,6 +521,7 @@ fn fabric_097_each_sink_failure_and_backpressure_isolated_from_others() {
     // FABRIC-097: Each sink (Spanner, Bigtable, BigQuery, GCS) must have its own consumer,
     // backpressure and failure isolation.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct SinkConfiguration {
         sink_name: String,
@@ -584,6 +595,7 @@ fn fabric_101_fabric_keeps_capacity_headroom_for_zone_loss_and_maintenance() {
     // FABRIC-101: Fabric capacity must keep enough headroom to absorb the loss of one zone
     // and a broker under maintenance at peak load.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct CapacityHeadroom {
         total_brokers: usize,

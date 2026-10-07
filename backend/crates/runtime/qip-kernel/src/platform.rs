@@ -10188,32 +10188,31 @@ impl Platform {
         // Cash dividend: credit the dividend amount to cash.
         if let qip_market::corporate_action::CorporateActionKind::CashDividend { amount } =
             &action.kind
+            && let Some(lot) = self.capital.positions.get(object)
         {
-            if let Some(lot) = self.capital.positions.get(object) {
-                let dividend_total = lot.quantity.checked_mul(*amount).ok_or_else(|| {
-                    Error::numeric(format!(
-                        "the dividend of {amount} per share on {object} with quantity {} overflows; \
+            let dividend_total = lot.quantity.checked_mul(*amount).ok_or_else(|| {
+                Error::numeric(format!(
+                    "the dividend of {amount} per share on {object} with quantity {} overflows; \
                          correct the action or the holding",
-                        lot.quantity
-                    ))
-                })?;
-                self.capital.cash = self.capital.cash.checked_add(dividend_total).ok_or_else(|| {
+                    lot.quantity
+                ))
+            })?;
+            self.capital.cash = self.capital.cash.checked_add(dividend_total).ok_or_else(|| {
                     Error::numeric(format!(
                         "adding {dividend_total} to cash overflows; the platform's equity is too large"
                     ))
                 })?;
-                self.capital.actions_taken.insert(key.to_string());
-                self.journal_record(
-                    LotAdjusted {
-                        action: key.to_string(),
-                        object_id: object.to_string(),
-                        quantity_factor: Decimal::ONE,
-                    },
-                    BOOK_ORIGIN,
-                    now,
-                )?;
-                return Ok(());
-            }
+            self.capital.actions_taken.insert(key.to_string());
+            self.journal_record(
+                LotAdjusted {
+                    action: key.to_string(),
+                    object_id: object.to_string(),
+                    quantity_factor: Decimal::ONE,
+                },
+                BOOK_ORIGIN,
+                now,
+            )?;
+            return Ok(());
         }
 
         let quantity_factor = action.quantity_adjustment_factor();

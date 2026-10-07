@@ -9,6 +9,7 @@ fn fabric_051_telemetry_and_ambient_signals_shed_before_control_or_outcomes_star
     // low-value ambient signals must be sampled or shed before any P0 control or P1
     // outcome traffic is delayed or starved.
 
+    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
     enum SheddingPriority {
         P4Telemetry = 0,
@@ -84,6 +85,7 @@ fn fabric_052_cross_region_mirror_traffic_stays_on_private_networking() {
     // networking, with the mirror prefixes explicitly exported through the latency NCC hub
     // and no other cross-region route.
 
+    #[allow(dead_code)] // fixture variants name the whole set; the test constructs a subset
     #[derive(Debug, Clone, PartialEq)]
     enum NetworkRouting {
         GooglePrivate,
@@ -92,6 +94,7 @@ fn fabric_052_cross_region_mirror_traffic_stays_on_private_networking() {
     }
 
     // Mirror endpoints configuration
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct MirrorEndpoint {
         region: String,
@@ -128,6 +131,7 @@ fn fabric_052_cross_region_mirror_traffic_stays_on_private_networking() {
     }
 
     // No public IPs on mirror endpoints
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct EndpointNetwork {
         region: String,
@@ -162,6 +166,7 @@ fn fabric_053_fabric_carries_package_announcements_never_the_packages() {
     // on the fabric.
 
     // Package topic schema: bounded fields only
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct PackageAnnouncement {
         package_id: String,
@@ -191,6 +196,7 @@ fn fabric_053_fabric_carries_package_announcements_never_the_packages() {
     assert!(announcement.size_bytes() < 1000);
 
     // Activation requires fetching from artifact storage
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     struct PackageActivation {
         announcement: PackageAnnouncement,
         artifact_storage_url: String,
@@ -220,6 +226,7 @@ fn fabric_054_when_fabric_unavailable_node_runs_on_last_valid_package_within_bou
     // defines before the journal is exhausted and no later than the package's TTL or the
     // point its risk policy requires.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct CachedControlPackage {
         version: u32,
@@ -281,6 +288,7 @@ fn fabric_055_broker_loss_moves_leadership_to_insync_follower_producers_consumer
     // from metadata and retry by producer epoch, consumers must resume from their committed
     // offsets, and Reflex execution must not wait for the failover.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug, Clone)]
     struct PartitionReplica {
         broker_id: u32,
@@ -346,6 +354,7 @@ fn fabric_055_broker_loss_moves_leadership_to_insync_follower_producers_consumer
     assert_eq!(producer.epoch, 2);
 
     // Consumer recovery from committed offset
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct ConsumerState {
         committed_offset: u64,
@@ -367,6 +376,7 @@ fn fabric_056_loss_of_quorum_stops_writes_but_preserves_reads_and_local_journal(
     // (Extending operational failure scenarios)
     // When quorum is lost, writes halt but reads and local journaling continue.
 
+    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
     #[derive(Debug)]
     struct BrokerQuorumState {
         replicas_up: usize,

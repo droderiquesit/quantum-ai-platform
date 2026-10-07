@@ -530,7 +530,6 @@ mod tests {
     use qip_financial::quality::DataQuality;
     use qip_financial::universe::Universe;
     use qip_kernel::config::PlatformConfig;
-    use qip_market_ingestion::adapter::SensedRecord;
     use qip_market_ingestion::connectors::{CoinbaseTickerConnector, FrankfurterRatesConnector};
     use qip_observability::Telemetry;
     use qip_observability::metrics::{labels, names};

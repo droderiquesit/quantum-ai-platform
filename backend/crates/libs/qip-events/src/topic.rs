@@ -791,14 +791,19 @@ impl Topic {
             // P0Control: policy and control announcements
             Self::PolicyDistributed => Some(QosClass::P0Control),
 
-            // P1Outcomes: order fills, settlement, never dropped
+            // P1Outcomes: order fills, settlement, never dropped. A declared
+            // gap is here too: `event_fabric::bindings::EVENT_FABRIC_GAP`
+            // writes it on P1, and its retention is irreplaceable because only
+            // the producer that declared it knows where it fell. Classing it
+            // P2 here made two declarations of its class disagree.
             Self::OrderFilled
             | Self::SettlementRecorded
             | Self::ReflexOutcomeRecorded
-            | Self::ReflexChainSpan => Some(QosClass::P1Outcomes),
+            | Self::ReflexChainSpan
+            | Self::EventFabricGap => Some(QosClass::P1Outcomes),
 
             // P2MarketJournal: reflex journal entries, throttled
-            Self::ReflexJournalRecorded | Self::MarketEventApplied | Self::EventFabricGap => {
+            Self::ReflexJournalRecorded | Self::MarketEventApplied => {
                 Some(QosClass::P2MarketJournal)
             }
 

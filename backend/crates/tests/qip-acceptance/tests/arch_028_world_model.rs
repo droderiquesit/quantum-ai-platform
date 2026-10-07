@@ -1,29 +1,15 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
 fn world_model_library_exists() {
-    let root = repo_root();
-    let world_model_path = root.join("crates/libs/qip-world-model/src").join("lib.rs");
-
-    if world_model_path.exists() {
-        assert!(true, "qip-world-model found");
-    } else {
-        // Placeholder allows test to pass during blueprint construction
-        assert!(true, "world model will exist when implementation completes");
-    }
+    // Placeholder: this test asserts nothing and cannot fail.
 }
 
 #[test]
@@ -35,7 +21,7 @@ fn world_model_represents_market_state() {
         let content = fs::read_to_string(&world_model_path).unwrap_or_default();
 
         assert!(
-            content.contains("world") || content.contains("World") || content.len() > 0,
+            content.contains("world") || content.contains("World") || !content.is_empty(),
             "World model must represent market state"
         );
     }

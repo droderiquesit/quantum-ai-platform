@@ -622,10 +622,15 @@ fn the_shipped_slos_cover_the_critical_paths() {
                 slo.name
             );
         }
+        // A target is a fraction. 1.0 is admitted: `Slo::evaluate` defines a
+        // zero error budget (any failure consumes all of it), and OBS-031's
+        // stale-book and dropped-message objectives are zero-tolerance by
+        // declaration, pinned at 1.0 by `qip-acceptance`'s `slo.rs`.
         assert!(
-            (0.0..1.0).contains(&slo.target) || slo.target < 1.0,
-            "{} target",
-            slo.name
+            (0.0..=1.0).contains(&slo.target),
+            "{} target {} is not a fraction",
+            slo.name,
+            slo.target
         );
     }
 }

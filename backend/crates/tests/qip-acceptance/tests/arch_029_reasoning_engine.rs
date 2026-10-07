@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -37,7 +31,7 @@ fn reasoning_produces_decisions() {
         let content = fs::read_to_string(&reasoning_path).unwrap_or_default();
 
         assert!(
-            content.contains("Decision") || content.contains("decision") || content.len() > 0,
+            content.contains("Decision") || content.contains("decision") || !content.is_empty(),
             "Reasoning engine must produce decision objects"
         );
     }
@@ -54,7 +48,7 @@ fn reasoning_no_model_call_in_deterministic_path() {
         let content = fs::read_to_string(&platform_path).unwrap_or_default();
 
         assert!(
-            content.contains("Determinism") || content.len() > 0,
+            content.contains("Determinism") || !content.is_empty(),
             "Pre-trade checks must be structurally gated"
         );
     }

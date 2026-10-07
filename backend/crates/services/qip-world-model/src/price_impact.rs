@@ -93,10 +93,7 @@ impl ImpactState {
 
     /// Record an impact observation
     pub fn absorb(&mut self, observation: ImpactObservation) {
-        let venue_history = self
-            .history
-            .entry(observation.venue.clone())
-            .or_insert_with(Vec::new);
+        let venue_history = self.history.entry(observation.venue.clone()).or_default();
         venue_history.push(observation.clone());
         if venue_history.len() > IMPACT_HISTORY_LIMIT {
             venue_history.remove(0);

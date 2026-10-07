@@ -23,10 +23,6 @@ fn attested_digest_passes_validation() {
         _kustomization_content.contains("sha256:"),
         "Valid digest should be present"
     );
-    assert!(
-        _kustomization_content.len() > 0,
-        "Kustomization content should not be empty"
-    );
 }
 
 #[test]

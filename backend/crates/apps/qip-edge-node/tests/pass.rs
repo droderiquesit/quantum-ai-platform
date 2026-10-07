@@ -3462,7 +3462,7 @@ fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
         "the scan is not reading the serve loop"
     );
     assert!(
-        main.contains("PassMeter::new(Arc::clone(metrics), REQUEST_TIMEOUT)?"),
+        main.contains("PassMeter::new(Arc::clone(context.metrics), REQUEST_TIMEOUT)?"),
         "the meter is no longer built on the scraped registry and the request allowance"
     );
     assert!(

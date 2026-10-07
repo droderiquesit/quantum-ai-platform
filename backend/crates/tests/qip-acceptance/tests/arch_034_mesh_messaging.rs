@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -22,7 +16,7 @@ fn mesh_defines_downlink_messages() {
         let content = fs::read_to_string(&mesh_path).unwrap_or_default();
 
         assert!(
-            content.contains("Downlink") || content.len() > 0,
+            content.contains("Downlink") || !content.is_empty(),
             "Mesh must define downlink message types"
         );
     }
@@ -37,7 +31,7 @@ fn policy_downlink_delivers_arbitrage_policy() {
         let content = fs::read_to_string(&mesh_path).unwrap_or_default();
 
         assert!(
-            content.contains("PolicyDownlink") || content.contains("Policy") || content.len() > 0,
+            content.contains("PolicyDownlink") || content.contains("Policy") || !content.is_empty(),
             "Mesh must include PolicyDownlink for strategy distribution"
         );
     }
@@ -52,7 +46,9 @@ fn capital_downlink_delivers_capital_envelope() {
         let content = fs::read_to_string(&mesh_path).unwrap_or_default();
 
         assert!(
-            content.contains("CapitalDownlink") || content.contains("Capital") || content.len() > 0,
+            content.contains("CapitalDownlink")
+                || content.contains("Capital")
+                || !content.is_empty(),
             "Mesh must include CapitalDownlink for limit distribution"
         );
     }
@@ -67,7 +63,7 @@ fn mesh_messages_are_idempotent_envelopes() {
         let content = fs::read_to_string(&mesh_path).unwrap_or_default();
 
         assert!(
-            content.contains("Envelope") || content.contains("envelope") || content.len() > 0,
+            content.contains("Envelope") || content.contains("envelope") || !content.is_empty(),
             "Mesh messages must be idempotent envelopes"
         );
     }

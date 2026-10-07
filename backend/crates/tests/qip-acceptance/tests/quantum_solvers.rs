@@ -9,8 +9,7 @@ use qip_quantum::benchmark::SolverBenchmark;
 use qip_quantum::solver::ClassicalSolver;
 
 #[test]
-fn quantum_solvers_produce_benchmarks_with_classical_baselines()
--> Result<(), Box<dyn std::error::Error>> {
+fn quantum_solvers_produce_benchmarks_with_classical_baselines() {
     // A phase-gate test for ARCH-036: quantum solver infrastructure.
     // The requirement checks that each plug-in runs against its classical
     // counterpart, and a benchmark report compares classical against quantum.
@@ -40,6 +39,4 @@ fn quantum_solvers_produce_benchmarks_with_classical_baselines()
     // so we verify the structure exists rather than running a full benchmark.
     // That full run would need a QUBO (Quadratic Unconstrained Binary Optimization
     // problem), which is domain-specific and belongs in domain tests, not here.
-
-    Ok(())
 }

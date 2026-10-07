@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -33,7 +27,7 @@ fn rest_endpoints_defined_in_routes() {
         let content = fs::read_to_string(&routes_path).unwrap_or_default();
 
         assert!(
-            content.len() > 0,
+            !content.is_empty(),
             "API must define REST endpoints in routes.rs"
         );
     }
@@ -45,18 +39,17 @@ fn api_no_secret_in_responses() {
     let api_src = root.join("crates/apps/qip-api/src");
 
     if let Ok(entries) = fs::read_dir(&api_src) {
-        for entry in entries {
-            if let Ok(e) = entry {
-                let path = e.path();
-                if path.is_file() && path.to_string_lossy().ends_with(".rs") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        // Should not leak credentials
-                        assert!(
-                            !content.contains("password") || !content.contains("response"),
-                            "API must not return secrets in responses"
-                        );
-                    }
-                }
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_file()
+                && path.to_string_lossy().ends_with(".rs")
+                && let Ok(content) = fs::read_to_string(&path)
+            {
+                // Should not leak credentials
+                assert!(
+                    !content.contains("password") || !content.contains("response"),
+                    "API must not return secrets in responses"
+                );
             }
         }
     }

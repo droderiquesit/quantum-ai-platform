@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -37,7 +31,7 @@ fn portfolio_engine_uses_decimal_for_positions() {
         let content = fs::read_to_string(&portfolio_path).unwrap_or_default();
 
         assert!(
-            content.contains("position") || content.contains("Position") || content.len() > 0,
+            content.contains("position") || content.contains("Position") || !content.is_empty(),
             "Portfolio must track positions"
         );
     }
@@ -69,7 +63,7 @@ fn portfolio_enforces_capital_limits() {
         let content = fs::read_to_string(&capital_path).unwrap_or_default();
 
         assert!(
-            content.contains("limit") || content.contains("Limit") || content.len() > 0,
+            content.contains("limit") || content.contains("Limit") || !content.is_empty(),
             "Capital module must define limits for portfolio"
         );
     }

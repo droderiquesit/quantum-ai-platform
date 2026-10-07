@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -27,7 +21,7 @@ fn edge_node_configurable_venue_feed() {
     if main_rs.exists() {
         let content = fs::read_to_string(&main_rs).unwrap_or_default();
         assert!(
-            content.contains("venue") || content.contains("feed") || content.len() > 0,
+            content.contains("venue") || content.contains("feed") || !content.is_empty(),
             "Edge node venue-feed configurable"
         );
     }
@@ -40,7 +34,7 @@ fn edge_node_regional_isolation() {
     if cell_path.exists() {
         let content = fs::read_to_string(&cell_path).unwrap_or_default();
         assert!(
-            content.contains("region") || content.len() > 0,
+            content.contains("region") || !content.is_empty(),
             "Cell region-aware"
         );
     }
@@ -53,7 +47,7 @@ fn edge_node_journaling_enabled() {
     if main_rs.exists() {
         let content = fs::read_to_string(&main_rs).unwrap_or_default();
         assert!(
-            content.contains("journal") || content.len() > 0,
+            content.contains("journal") || !content.is_empty(),
             "Edge journaling enabled"
         );
     }

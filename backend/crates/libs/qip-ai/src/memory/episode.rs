@@ -554,13 +554,13 @@ impl Episode {
                 self.episode_id
             )));
         }
-        if let Some(model_version) = &self.model_version {
-            if model_version.is_empty() {
-                return Err(Error::invalid(format!(
-                    "episode {} has an empty model_version",
-                    self.episode_id
-                )));
-            }
+        if let Some(model_version) = &self.model_version
+            && model_version.is_empty()
+        {
+            return Err(Error::invalid(format!(
+                "episode {} has an empty model_version",
+                self.episode_id
+            )));
         }
         if self.model_derived && self.model_version.is_none() {
             return Err(Error::invalid(format!(
@@ -813,13 +813,13 @@ impl FailureMemory {
                 self.failure_id
             )));
         }
-        if let Some(model_version) = &self.model_version {
-            if model_version.is_empty() {
-                return Err(Error::invalid(format!(
-                    "failure {} has an empty model_version",
-                    self.failure_id
-                )));
-            }
+        if let Some(model_version) = &self.model_version
+            && model_version.is_empty()
+        {
+            return Err(Error::invalid(format!(
+                "failure {} has an empty model_version",
+                self.failure_id
+            )));
         }
         if self.model_derived && self.model_version.is_none() {
             return Err(Error::invalid(format!(
@@ -893,13 +893,13 @@ impl MarketMemory {
                 self.at.to_rfc3339()
             )));
         }
-        if let Some(model_version) = &self.model_version {
-            if model_version.is_empty() {
-                return Err(Error::invalid(format!(
-                    "reaction {} has an empty model_version",
-                    self.reaction_id
-                )));
-            }
+        if let Some(model_version) = &self.model_version
+            && model_version.is_empty()
+        {
+            return Err(Error::invalid(format!(
+                "reaction {} has an empty model_version",
+                self.reaction_id
+            )));
         }
         if self.model_derived && self.model_version.is_none() {
             return Err(Error::invalid(format!(

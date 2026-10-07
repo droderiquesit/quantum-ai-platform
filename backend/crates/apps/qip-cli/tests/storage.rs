@@ -45,9 +45,11 @@ fn the_command_line_refuses_to_keep_the_event_log_archive_in_the_memorystore_cac
     // The refusal that names the reason, not the one a missing Redis
     // address would produce a line later — that one says what to configure
     // to make the cache work, which is the opposite of what an operator
-    // should be told.
+    // should be told. Since DATA-045 the configuration itself
+    // (`StorageSettings::from_values`) refuses the target before
+    // `require_authoritative` is reached, so this is that refusal's wording.
     assert!(
-        errors.contains("a cache whose instance has persistence disabled"),
+        errors.contains("memorystore, a non-persistent in-memory cache"),
         "the refusal does not say why: {errors}"
     );
 }

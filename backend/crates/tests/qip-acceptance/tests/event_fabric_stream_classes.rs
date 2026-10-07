@@ -29,6 +29,7 @@ enum OverloadPolicy {
     DropNewest,
 }
 
+#[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
 #[derive(Debug, Clone)]
 struct StreamPolicy {
     class: QosClass,

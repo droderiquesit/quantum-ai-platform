@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+/// The backend Cargo workspace (`<repository>/backend`), which every path in
+/// this file is relative to — not the repository root itself.
 fn repo_root() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    qip_acceptance::repository_root().join("backend")
 }
 
 #[test]
@@ -19,9 +13,7 @@ fn simulator_replays_events() {
     let simulator = root
         .join("crates/services/qip-simulation-engine/src")
         .join("lib.rs");
-    if simulator.exists() {
-        assert!(true, "Simulation service exists");
-    }
+    assert!(simulator.exists(), "Simulation service exists");
 }
 
 #[test]
@@ -31,7 +23,7 @@ fn simulator_deterministic() {
     if events.exists() {
         let content = fs::read_to_string(&events).unwrap_or_default();
         assert!(
-            content.contains("Envelope") || content.len() > 0,
+            content.contains("Envelope") || !content.is_empty(),
             "Events deterministic"
         );
     }
@@ -39,20 +31,10 @@ fn simulator_deterministic() {
 
 #[test]
 fn simulator_produces_counterfactuals() {
-    let root = repo_root();
-    let twin = root.join("crates/libs/qip-twin/src").join("lib.rs");
-    if twin.exists() {
-        assert!(true, "Twin produces counterfactuals");
-    }
+    // Placeholder: this test asserts nothing and cannot fail.
 }
 
 #[test]
 fn simulator_validates_decisions() {
-    let root = repo_root();
-    let learning = root
-        .join("crates/services/qip-learning-engine/src")
-        .join("lib.rs");
-    if learning.exists() {
-        assert!(true, "Learning validates against simulation");
-    }
+    // Placeholder: this test asserts nothing and cannot fail.
 }
