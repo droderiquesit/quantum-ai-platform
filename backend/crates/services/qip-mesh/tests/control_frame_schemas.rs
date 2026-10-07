@@ -1,13 +1,24 @@
-/// Event schema initialization at startup.
-///
-/// Registers the three P0 control frame types (CapitalGrantFrame, PolicyFrame,
-/// HaltFrame) with the SchemaRegistry. These are the only core event types that
-/// implement EventBody and can be registered directly. The six reflex types
-/// (PassMarker, JournalEntry, MarketEvent, ChainSpan, Gap, OutcomeRecord) are
-/// bound through event_fabric::bindings instead and do not need registration here.
-///
-/// Registration happens at startup before any events flow, so type mismatches
-/// are caught early and fail the process rather than propagating into the system.
+//! The three P0 control frames register in one schema registry without
+//! colliding.
+//!
+//! This check ran inside `qip-api`'s start-up until 2026-10-07. To do it, the
+//! deployed API process built a `CapitalEnvelope` and signed a policy payload
+//! and a halt under a key it chose itself (`b"schema-registration-key"`), and
+//! then discarded the registry. That broke `api_boundary`'s two rules: the
+//! application layer constructs no envelope and signs nothing but the centre's
+//! policy and halt. The check depends on nothing at run time, because the
+//! frames' topics and shapes are fixed at compile time. Run here, CI catches
+//! the same mistakes, and no deployed binary holds a signing key it invented.
+//!
+//! The failure it prevents: two control frames claiming one topic, or a frame
+//! whose serialised shape changes under an unchanged SCHEMA_VERSION. Either
+//! one is refused by `SchemaRegistry::admit`.
+// The workspace denies `panic_in_result_fn` for production code, where an
+// assertion that aborts a `Result`-returning function is a bug. In a test the
+// assertion is the deliverable.
+#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
+
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::policy::{
     AdversaryProfiles, BeliefPriors, CausalDigest, CycleWhitelist, Dispositions, EpisodicDigest,
@@ -17,15 +28,18 @@ use qip_contracts::policy::{
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::{Timestamp, dec};
-use qip_events::SchemaRegistry;
+use qip_events::{EventBody, SchemaRegistry};
 use qip_mesh::spine::{CapitalGrantFrame, HaltFrame, PolicyFrame};
 use std::collections::BTreeMap;
 
-pub(crate) fn initialize_event_schemas() -> qip_core::error::Result<()> {
+#[test]
+fn the_three_p0_control_frames_each_register_under_their_own_topic() -> qip_core::error::Result<()>
+{
     let mut registry = SchemaRegistry::new();
 
+    // A test fixture key. It signs nothing that leaves this test.
     let now = Timestamp::from_secs(1_760_000_000);
-    const KEY: &[u8] = b"schema-registration-key";
+    const KEY: &[u8] = b"schema-registration-test-fixture";
 
     // Register CapitalGrantFrame: a capital allocation to a cell strategy
     let capital_envelope = CapitalEnvelope::new(
@@ -150,5 +164,28 @@ pub(crate) fn initialize_event_schemas() -> qip_core::error::Result<()> {
     let halt_cmd = HaltCommand::new("cell", now, "sample halt").signed(KEY)?;
     registry.register(&HaltFrame(halt_cmd))?;
 
+    // Premise: each registration was admitted, so the registry holds one
+    // descriptor per frame. A collision would have returned Err above.
+    assert_eq!(
+        registry.len(),
+        3,
+        "expected exactly the three P0 control frames"
+    );
+    for (topic, type_name) in [
+        (
+            CapitalGrantFrame::TOPIC,
+            std::any::type_name::<CapitalGrantFrame>(),
+        ),
+        (PolicyFrame::TOPIC, std::any::type_name::<PolicyFrame>()),
+        (HaltFrame::TOPIC, std::any::type_name::<HaltFrame>()),
+    ] {
+        let descriptor = registry
+            .get(topic)
+            .unwrap_or_else(|| panic!("{topic} has no registered schema"));
+        assert_eq!(
+            descriptor.type_name, type_name,
+            "{topic} is claimed by the wrong frame"
+        );
+    }
     Ok(())
 }
