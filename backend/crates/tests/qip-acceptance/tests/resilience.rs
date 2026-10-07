@@ -468,15 +468,20 @@ fn a_halt_and_a_recovery_mid_run_leave_the_platform_consistent() -> Result<()> {
                 AutonomyLevel::Observation,
                 "a halted platform reported an acting autonomy level"
             );
-            let order = platform.order_from(
-                object(&names[0]),
-                Side::Buy,
-                dec!("100"),
-                dec!("100"),
-                "chaos",
-                vec!["hyp-chaos".to_string()],
-                now,
-            );
+            let order = platform
+                .order_from(
+                    object(&names[0]),
+                    Side::Buy,
+                    dec!("100"),
+                    dec!("100"),
+                    "chaos",
+                    vec!["hyp-chaos".to_string()],
+                    now,
+                    "test-strategy",
+                    "test-policy",
+                    "test-config",
+                )
+                .expect("order construction in test");
             assert!(
                 platform.submit_order(order, now).is_err(),
                 "an order was accepted while halted"

@@ -1464,7 +1464,10 @@ fn the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one() 
         "prop-e2e-live",
         vec![opportunity.opportunity_id.as_str().to_string()],
         at(Duration::from_secs(120)),
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )?;
     let order_id = order.order_id.clone();
     let mut manager = OrderManager::new(PreTradeChecker::new(risk_limits()));
     let result = manager.submit(

@@ -215,7 +215,10 @@ fn an_order_travels_the_control_path_and_produces_an_exact_attribution() -> Resu
         "prop-acceptance",
         vec!["hyp-acceptance".to_string()],
         start(),
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )?;
     platform.submit_order(order, start())?;
 
     let fills = platform.orders().fills();
@@ -254,7 +257,10 @@ fn a_fill_is_attributed_to_the_hypothesis_the_order_was_released_for() -> Result
         "prop-attribution",
         vec!["hyp-carried-through".to_string()],
         start(),
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )?;
     // The premise, in two parts: the order really does name a hypothesis, and
     // it really does fill. Without both, the assertion below would pass on a
     // platform that attributed nothing because there was nothing to attribute.
@@ -368,7 +374,10 @@ fn a_halt_stops_the_assembled_platform_at_every_entry_point() -> Result<()> {
         "prop-1",
         vec!["hyp-1".to_string()],
         start(),
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )?;
     assert!(platform.submit_order(order, start()).is_err());
 
     // A cycle still runs, and reports the halt.
@@ -596,7 +605,11 @@ fn a_proposal_cannot_reach_execution_without_both_controls() -> Result<()> {
             hypotheses: vec!["hyp-acceptance".to_string()],
         }],
         "expresses one approved thesis",
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
     )
+    .expect("proposal in acceptance test")
     .with_targets(0.01, 0.01, 0.01, 0.2);
     let _ = PortfolioId::from_string("pf-acceptance");
 

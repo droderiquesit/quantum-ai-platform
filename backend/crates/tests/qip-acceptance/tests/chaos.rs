@@ -557,7 +557,11 @@ impl Run {
             vec!["hyp-chaos".to_string()],
             scope.clone(),
             self.now,
-        );
+            "test-strategy",
+            "test-policy",
+            "test-config",
+        )
+        .expect("order construction in chaos test");
         let outcome = self.platform.submit_order(order, self.now);
 
         if halted {

@@ -593,11 +593,14 @@ fn a_region_that_goes_completely_offline_is_halted_by_scope_and_the_others_keep_
             vec!["hyp-stress".to_string()],
             scope,
             start(),
+            "test-strategy".to_string(),
+            "test-policy".to_string(),
+            "test-config".to_string(),
         )
     };
 
     let dark = orders.submit(
-        order_in("region:europe-west2", "ord-dark"),
+        order_in("region:europe-west2", "ord-dark")?,
         &mut broker,
         &autonomy,
         &risk_state,
@@ -640,7 +643,7 @@ fn a_region_that_goes_completely_offline_is_halted_by_scope_and_the_others_keep_
     );
     assert!(autonomy.may_execute("region:us-east1"));
     let live = orders.submit(
-        order_in("region:us-east1", "ord-live"),
+        order_in("region:us-east1", "ord-live")?,
         &mut broker,
         &autonomy,
         &risk_state,
@@ -1159,7 +1162,10 @@ fn cash_below_its_buffer_refuses_the_order_instead_of_borrowing_silently() -> Re
             vec!["hyp-stress".to_string()],
             "stress",
             start(),
-        ),
+            "test-strategy".to_string(),
+            "test-policy".to_string(),
+            "test-config".to_string(),
+        )?,
         &mut broker,
         &AutonomyController::new(),
         &state,

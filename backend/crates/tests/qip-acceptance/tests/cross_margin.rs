@@ -100,7 +100,10 @@ fn traded() -> Result<(Platform, VenueId)> {
         "prop-cross-margin",
         vec!["hyp-cross-margin".to_string()],
         start(),
-    );
+        "test-strategy",
+        "test-policy",
+        "test-config",
+    )?;
     platform.submit_order(order, start())?;
 
     let fills = platform.orders().fills();

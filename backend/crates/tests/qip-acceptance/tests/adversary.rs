@@ -158,7 +158,10 @@ fn fill_one(platform: &mut Platform, proposal: &str, at: Timestamp) -> Result<()
         proposal,
         vec![format!("hyp-{proposal}")],
         at,
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )?;
     platform.submit_order(order, at)?;
     assert!(
         platform.orders().fills().len() > fills_before,

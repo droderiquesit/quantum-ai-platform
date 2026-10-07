@@ -984,7 +984,10 @@ fn the_platform_walks_from_a_discovered_source_to_a_learned_lesson() -> Result<(
         "prop-e2e-central",
         vec!["hyp-e2e-central".to_string()],
         t(60),
-    );
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
+    )?;
     platform.submit_order(central_order, t(60))?;
 
     // The outcome chain recorded what happened, and it verifies. A refusal is

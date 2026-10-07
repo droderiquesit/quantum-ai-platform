@@ -629,7 +629,11 @@ fn measured_order(label: &str, order_type: OrderType) -> Order {
         vec!["hypothesis-under-test".to_string()],
         "scope-under-test",
         start(),
+        "test-strategy".to_string(),
+        "test-policy".to_string(),
+        "test-config".to_string(),
     )
+    .expect("test order creation should not fail")
 }
 
 #[test]

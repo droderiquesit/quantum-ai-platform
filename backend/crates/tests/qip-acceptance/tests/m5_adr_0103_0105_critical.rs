@@ -507,11 +507,11 @@ fn the_ledger_and_its_chain_tails_remain_in_sync_after_every_crash() -> Result<(
     // This simulates writing balances without partition tails
 
     // Before crash: write consistent state
-    store.put("balance:trading", "5000".as_bytes())?;
-    store.put("balance:venue", "0".as_bytes())?;
+    store.put("balance:trading", serde_json::json!("5000"))?;
+    store.put("balance:venue", serde_json::json!("0"))?;
     store.put(
         &format!("partition_tail:{}", PARTITION_KEY),
-        "tail-hash-100".as_bytes(),
+        serde_json::json!("tail-hash-100"),
     )?;
 
     // Simulate crash: process dies
@@ -529,12 +529,12 @@ fn the_ledger_and_its_chain_tails_remain_in_sync_after_every_crash() -> Result<(
 
     // Verify the values match expectations
     assert_eq!(
-        String::from_utf8(balance_trading.unwrap()).unwrap(),
+        balance_trading.unwrap().as_str().unwrap_or(""),
         "5000",
         "balance was corrupted by crash"
     );
     assert_eq!(
-        String::from_utf8(partition_tail.unwrap()).unwrap(),
+        partition_tail.unwrap().as_str().unwrap_or(""),
         "tail-hash-100",
         "partition tail was lost by crash"
     );
