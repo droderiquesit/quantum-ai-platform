@@ -19,6 +19,7 @@ qip-ai.workspace = true
 qip-events.workspace = true
 qip-financial.workspace = true
 qip-market.workspace = true
+qip-prediction.workspace = true
 qip-risk.workspace = true
 qip-investment-agents.workspace = true
 qip-reasoning-engine.workspace = true
