@@ -51,6 +51,91 @@ pub struct EvaluationRecord {
     pub passed: bool,
 }
 
+/// One of four required model acceptance validations (MODEL-033).
+///
+/// A model must pass all four types before staging. Each represents a distinct
+/// validation perspective: out-of-time, cross-regime, adversarial stress, and
+/// paper-trading simulation robustness.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum AcceptanceKind {
+    /// Out-of-time validation via purged k-fold and deflated Sharpe.
+    OutOfTime,
+    /// Cross-regime scoring showing consistent performance across regimes.
+    CrossRegime,
+    /// Adversarial/scenario stress testing (portfolio-level resilience).
+    AdversarialStress,
+    /// Paper-trading simulation demonstrating robustness to real conditions.
+    PaperTrading,
+}
+
+impl std::fmt::Display for AcceptanceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                AcceptanceKind::OutOfTime => "out-of-time",
+                AcceptanceKind::CrossRegime => "cross-regime",
+                AcceptanceKind::AdversarialStress => "adversarial-stress",
+                AcceptanceKind::PaperTrading => "paper-trading",
+            }
+        )
+    }
+}
+
+/// Unified acceptance record requiring all four validation types (MODEL-033).
+///
+/// Ties out-of-time, cross-regime, adversarial and paper-trading-simulation
+/// results together. A model missing any one of the four kinds is refused
+/// staging and promotion.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModelAcceptanceRecord {
+    pub recorded_at: Timestamp,
+    /// Which of the four acceptance kinds passed. A model with fewer than four
+    /// distinct kinds is refused staging until the missing kinds have evidence.
+    pub passed_kinds: BTreeMap<AcceptanceKind, bool>,
+}
+
+impl ModelAcceptanceRecord {
+    /// Build an acceptance record with all four kinds set to passed or failed.
+    pub fn new(
+        recorded_at: Timestamp,
+        out_of_time: bool,
+        cross_regime: bool,
+        adversarial_stress: bool,
+        paper_trading: bool,
+    ) -> Self {
+        let passed_kinds = BTreeMap::from([
+            (AcceptanceKind::OutOfTime, out_of_time),
+            (AcceptanceKind::CrossRegime, cross_regime),
+            (AcceptanceKind::AdversarialStress, adversarial_stress),
+            (AcceptanceKind::PaperTrading, paper_trading),
+        ]);
+        Self {
+            recorded_at,
+            passed_kinds,
+        }
+    }
+
+    /// Whether all four acceptance kinds have evidence and all passed.
+    pub fn fully_accepted(&self) -> bool {
+        self.passed_kinds.len() == 4 && self.passed_kinds.values().all(|&passed| passed)
+    }
+
+    /// Missing acceptance kinds, if any.
+    pub fn missing_kinds(&self) -> Vec<AcceptanceKind> {
+        vec![
+            AcceptanceKind::OutOfTime,
+            AcceptanceKind::CrossRegime,
+            AcceptanceKind::AdversarialStress,
+            AcceptanceKind::PaperTrading,
+        ]
+        .into_iter()
+        .filter(|kind| !self.passed_kinds.contains_key(kind))
+        .collect()
+    }
+}
+
 /// The one alias this registry assigns: the version of a model name that may
 /// inform a decision. It follows [`ModelStage::Production`] rather than being
 /// a second pointer beside it, so the alias and the stage cannot disagree.
@@ -142,6 +227,10 @@ pub struct ModelCard {
     /// [`ModelRegistry::record_alias_move`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alias_moves: Vec<AliasMove>,
+    /// Unified acceptance record requiring all four validation types (MODEL-033).
+    /// `None` before acceptance is recorded; a model without this is refused staging.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance: Option<ModelAcceptanceRecord>,
 }
 
 /// A declared ceiling on what a model may consume. A ceiling set at
@@ -202,6 +291,7 @@ impl ModelCard {
             resource_budget: None,
             rollback_parent: None,
             alias_moves: Vec::new(),
+            acceptance: None,
         }
     }
 
@@ -473,6 +563,40 @@ impl ModelRegistry {
                 "{reference} cannot be promoted without a passing evaluation"
             )));
         }
+        if let Some(acceptance) = &card.acceptance {
+            if !acceptance.fully_accepted() {
+                let missing = acceptance
+                    .missing_kinds()
+                    .iter()
+                    .map(|k| k.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::denied(format!(
+                    "{reference} cannot be promoted without all four acceptance kinds; missing: {missing}"
+                )));
+            }
+            if !acceptance.passed_kinds.values().all(|&passed| passed) {
+                let failed = acceptance
+                    .passed_kinds
+                    .iter()
+                    .filter_map(|(kind, &passed)| {
+                        if !passed {
+                            Some(kind.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(Error::denied(format!(
+                    "{reference} cannot be promoted with failed acceptance kinds: {failed}"
+                )));
+            }
+        } else {
+            return Err(Error::denied(format!(
+                "{reference} cannot be promoted without a model acceptance record (MODEL-033)"
+            )));
+        }
         card.stage = ModelStage::Production;
         card.deployed_at = Some(at);
         Ok(())
@@ -725,6 +849,22 @@ impl ModelRegistry {
             .get_mut(reference)
             .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
         card.evaluations.push(record);
+        Ok(())
+    }
+
+    /// Record unified model acceptance (MODEL-033).
+    ///
+    /// Ties out-of-time, cross-regime, adversarial and paper-trading validation
+    /// results together. A model must have all four kinds passed before staging.
+    pub fn record_acceptance(
+        &mut self,
+        reference: &str,
+        record: ModelAcceptanceRecord,
+    ) -> Result<()> {
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        card.acceptance = Some(record);
         Ok(())
     }
 

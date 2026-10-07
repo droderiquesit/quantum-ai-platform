@@ -10,7 +10,7 @@ use qip_ai::language::{
     Completion, DeterministicModel, FallbackChain, FieldSpec, LanguageModel, ModelRequest,
     NumericGuard, OutputSchema, RemoteModel, RemoteModelConfig,
 };
-use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage};
+use qip_ai::registry::{AcceptanceKind, EvaluationRecord, ModelCard, ModelRegistry, ModelStage};
 use qip_ai::retrieval::{Document, SearchIndex, SearchWeights};
 use qip_core::testing::approx_eq;
 use qip_core::{Duration, ModelId, Timestamp};
@@ -516,6 +516,12 @@ fn evaluated_card(at: Timestamp, passed: bool) -> ModelCard {
         metrics: BTreeMap::from([("accuracy".to_string(), 0.82)]),
         passed,
     });
+    // Add a default acceptance record with all four kinds passed (MODEL-033).
+    if passed {
+        card.acceptance = Some(qip_ai::registry::ModelAcceptanceRecord::new(
+            at, true, true, true, true,
+        ));
+    }
     card
 }
 
@@ -930,12 +936,13 @@ fn a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference
 use qip_ai::registry::ResourceBudget;
 
 fn successor_card(version: &str) -> ModelCard {
+    let now_ts = now();
     let mut card = ModelCard::new(
         ModelId::from_string(format!("MDL-{version}")),
         "regime-classifier",
         version,
         "quant-research",
-        now(),
+        now_ts,
     )
     .with_features(vec![
         "realised_volatility".into(),
@@ -948,7 +955,7 @@ fn successor_card(version: &str) -> ModelCard {
         max_memory_bytes: 65_536,
     });
     card.evaluations.push(EvaluationRecord {
-        evaluated_at: now(),
+        evaluated_at: now_ts,
         dataset: "held-out-2025".into(),
         metrics: BTreeMap::from([
             ("accuracy".to_string(), 0.9),
@@ -956,6 +963,10 @@ fn successor_card(version: &str) -> ModelCard {
         ]),
         passed: true,
     });
+    // Add a default acceptance record with all four kinds passed (MODEL-033).
+    card.acceptance = Some(qip_ai::registry::ModelAcceptanceRecord::new(
+        now_ts, true, true, true, true,
+    ));
     card
 }
 
@@ -1157,4 +1168,67 @@ fn an_alias_move_names_its_mover_and_its_evidence_and_a_card_keeps_only_the_newe
         format!("flap {}", ALIAS_MOVES_RETAINED),
         "the oldest retained move is not the one the bound implies"
     );
+}
+
+#[test]
+fn promotion_requires_acceptance_from_all_four_validation_kinds() {
+    let mut registry = ModelRegistry::new();
+    let now_ts = now();
+    let reference = "regime-classifier@2.1.0";
+
+    // Create and evaluate a model, but without acceptance (remove it after evaluating).
+    let mut card = evaluated_card(now_ts, true);
+    card.acceptance = None; // Remove the auto-added acceptance for this test
+    registry.register(card);
+
+    // Attempt promotion without any acceptance record: should fail.
+    let no_acceptance = registry.promote(reference, now_ts).unwrap_err();
+    assert!(
+        no_acceptance.message().contains("acceptance record"),
+        "promotion without acceptance should fail: {}",
+        no_acceptance
+    );
+
+    // Test missing OutOfTime kind: only Cross, Adversarial, and PaperTrading.
+    let mut partial = BTreeMap::new();
+    partial.insert(AcceptanceKind::CrossRegime, true);
+    partial.insert(AcceptanceKind::AdversarialStress, true);
+    partial.insert(AcceptanceKind::PaperTrading, true);
+    let record = qip_ai::registry::ModelAcceptanceRecord {
+        recorded_at: now_ts,
+        passed_kinds: partial,
+    };
+    registry.record_acceptance(reference, record).unwrap();
+
+    let missing = registry.promote(reference, now_ts).unwrap_err();
+    assert!(
+        missing.message().contains("out-of-time") && missing.message().contains("missing"),
+        "missing OutOfTime should refuse promotion: {}",
+        missing
+    );
+
+    // Test with all four kinds present but CrossRegime failed.
+    // When all 4 kinds are present but some failed, fully_accepted() returns false,
+    // so the error mentions missing kinds (which is empty in this case).
+    let full = qip_ai::registry::ModelAcceptanceRecord::new(now_ts, true, false, true, true);
+    registry.record_acceptance(reference, full).unwrap();
+
+    let failed = registry.promote(reference, now_ts).unwrap_err();
+    assert!(
+        failed
+            .message()
+            .contains("without all four acceptance kinds"),
+        "all present but one failed should still refuse promotion: {}",
+        failed
+    );
+
+    // Record all four kinds as passed: promotion should succeed.
+    let all_passed = qip_ai::registry::ModelAcceptanceRecord::new(now_ts, true, true, true, true);
+    registry.record_acceptance(reference, all_passed).unwrap();
+
+    registry.promote(reference, now_ts).unwrap();
+
+    // Verify the model is now in Production stage.
+    let card = registry.get(reference).unwrap();
+    assert_eq!(card.stage, ModelStage::Production);
 }
