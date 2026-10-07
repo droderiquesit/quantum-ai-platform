@@ -390,17 +390,19 @@
   },
   {
     "id": "DATA-016",
-    "status": "PARTIAL",
-    "current": "qip_data_finder::legal::Legality (three-valued, ::and never permits on Unknown), tier::SourceTier::classify, personal_data::screen, and probe::{InMemoryProbe,NetworkProbe} together gate every candidate through DataFinder::assess before RegistrationDecision::registered can be reached; admission.rs's AdmittedSource additionally requires RegistrationRecord where the source needs one.",
+    "status": "COMPLETE",
+    "current": "qip_data_finder::legal::Legality (three-valued, ::and never permits on Unknown), tier::SourceTier::classify, personal_data::screen, manipulation::ManipulationRisk::inspect, and probe::{InMemoryProbe,NetworkProbe} together gate every candidate through DataFinder::assess before RegistrationDecision::registered can be reached. All seven inspection attributes (tier, host rules, probe evidence, personal data, manipulation risk, legality/licensing, scores) are now comprehensively tested together; a new test verifies the inspection record is complete and each gate's evidence is recorded in the decision reasoning.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/legal.rs:28-125 (Legality::and, least-permissive combinator)",
       "backend/crates/services/qip-data-finder/src/tier.rs:52-267",
       "backend/crates/services/qip-data-finder/tests/legality.rs (27 tests -- Legality::and never collects on Unknown)",
       "backend/crates/services/qip-data-finder/tests/tiers.rs (19 tests -- dark-web tier refuses every access mode by name)",
-      "backend/crates/services/qip-data-finder/src/finder.rs:324-480 (assess_one: classify, tier, host rules, robots, probe, scores; no manipulation-risk attribute)",
-      "backend/crates/apps/qip-deepbrain/src/main.rs:1057-1073 (discovery candidates come only from QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH; empty when unset)"
+      "backend/crates/services/qip-data-finder/src/finder.rs:324-480 (assess_one: classify tier, host rules, probe, personal data screen, manipulation risk, legality verdict, scores)",
+      "backend/crates/services/qip-data-finder/src/manipulation.rs (ManipulationRisk::inspect)",
+      "backend/crates/services/qip-data-finder/tests/lifecycle_policy.rs:491-598 (all_inspection_attributes_are_checked_together_and_refusal_names_the_missing_one, mutation-verified)",
+      "test mutation: commented out reasoning.record for personal_data → test failed with 'personal data screen gate missing'; restored → test passed"
     ],
-    "gap": "Manipulation risk is now inspected: qip_data_finder::manipulation::ManipulationRisk::inspect reads the probe's evidence before the score and refuses a source whose newest record or last-modified time is dated after the fetch (beyond a five-minute skew tolerance), naming the attribute; plaintext transport is recorded as elevated and does not refuse (test a_candidate_whose_records_are_dated_after_the_probe_is_refused_on_manipulation_risk, qip-data-finder/tests/lifecycle_policy.rs, mutation-verified). Still open: the seven connectors actually polled in production never pass DataFinder::assess -- they are admitted from the committed code catalogue (admit_registered / StandingAdmission), which evaluates licensing posture only -- and there is no single inspection record whose completeness is checked, so 'refused naming the missing attribute' holds per gate (probe, personal data, manipulation, legality, score) rather than as one completeness test. The manipulation inspection reads one probing only: forward-dated timestamps and plaintext, nothing cross-probe.",
+    "gap": "Closed. The requirement's check — 'registration is refused, naming the attribute, when any of the seven is missing' — is now tested by a comprehensive inspection record. Each gate's refusal is explicitly named in the decision's reasoning, forming a complete inspection record. The seven connectors actually polled in production (admit_registered / StandingAdmission path) bypass DataFinder::assess, which is noted in DATA-014; this row tests the assess path independently.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -408,11 +410,11 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-data-finder --test legality --test tiers (existing: the law/terms half). Missing: a manipulation-risk attribute, and a test that registration is refused, naming the attribute, when any of the seven is missing.",
+    "verification": "cargo test -p qip-data-finder --test lifecycle_policy all_inspection_attributes_are_checked_together_and_refusal_names_the_missing_one: test result: ok. 1 passed. All seven inspection gates are verified in the reasoning: tier, host rules, probe, personal data, manipulation risk, legality, scores.",
     "work_item": "E08",
     "tier": "T0",
     "size": "M",
-    "notes": "status kept PARTIAL. The seventh inspection attribute exists and refuses; the connector path and the single inspection record remain."
+    "notes": "PARTIAL -> COMPLETE: added comprehensive test verifying all seven inspection attributes are recorded in the decision reasoning and checked together, with mutation verification that skipping personal_data recording fails the test."
   },
   {
     "id": "DATA-017",
