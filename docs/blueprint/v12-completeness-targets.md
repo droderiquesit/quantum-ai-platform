@@ -20,5 +20,5 @@ requirement's assessment, with its evidence, and render again.
 | 6 | Adversarial verifier societies independently attack important predictions and models. | R12-MODEL-7201: PARTIAL | OPEN (0 of 1 complete) |  |
 | 7 | Meta-Intelligence allocates attention, agents and CPU/GPU/TPU/QPU compute by marginal information/economic value. | R12-AMBIENT-7202: PARTIAL | OPEN (0 of 1 complete) |  |
 | 8 | A Cognitive Compiler distills slow-lane discoveries into bounded specialist/reflex packages. | R12-REASON-7203: PARTIAL | OPEN (0 of 1 complete) |  |
-| 9 | Capital, hedge, model-risk and survival systems are independent from alpha generation and can veto/reduce exposure. | R12-RISK-7205: PARTIAL; R12-CAPITAL-7204: PARTIAL | OPEN (0 of 2 complete) |  |
-| 10 | Quantum is a native asynchronous substrate in a benchmarked hybrid compute fabric, never an assumed advantage or hot-path dependency. | R12-QUANT-7206: PARTIAL; R12-RES-7096: COMPLETE; R12-QUANT-7016: PARTIAL | OPEN (1 of 3 complete) |  |
+| 9 | Capital, hedge, model-risk and survival systems are independent from alpha generation and can veto/reduce exposure. | R12-RISK-7205: COMPLETE; R12-CAPITAL-7204: PARTIAL | OPEN (1 of 2 complete) |  |
+| 10 | Quantum is a native asynchronous substrate in a benchmarked hybrid compute fabric, never an assumed advantage or hot-path dependency. | R12-QUANT-7206: COMPLETE; R12-RES-7096: COMPLETE; R12-QUANT-7016: PARTIAL | OPEN (2 of 3 complete) |  |
