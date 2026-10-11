@@ -134,3 +134,130 @@ fn a_malformed_misspelt_or_empty_plan_is_a_configuration_error() -> Result<()> {
     }
     Ok(())
 }
+
+/// The object whose observed price marks the created market, so the market
+/// survives its economic review and only the legal check can withdraw it.
+const MARK: &str = "OBJ00000000000000000MARK";
+
+fn plan_without(revoked: Option<(&str, &str)>) -> String {
+    let mut permissions = Vec::new();
+    for action in ["create", "list", "seed"] {
+        for authority in ["venue", "product", "jurisdiction"] {
+            if revoked == Some((authority, action)) {
+                continue;
+            }
+            permissions.push(format!(
+                r#"{{"authority": "{authority}", "action": "{action}", "venue": "simulated-venue", "product": "obj-CREATED", "jurisdiction": "GB", "reference": "{authority} approval"}}"#
+            ));
+        }
+    }
+    format!(
+        r#"{{
+  "market_factory": {{
+    "permissions": [{}],
+    "markets": [
+      {{"venue": "simulated-venue", "product": "obj-CREATED", "jurisdiction": "GB",
+       "reference_price": "100", "half_spread": "0.5", "level_step": "0.25",
+       "level_size": "10", "levels": 3, "tolerance": "0.05", "inventory": "30",
+       "mark_source": "{MARK}"}}
+    ]
+  }}
+}}"#,
+        permissions.join(",")
+    )
+}
+
+fn mark(platform: &mut Platform, at: Timestamp) {
+    use qip_core::{Decimal, ObjectId};
+    use qip_financial::quality::DataQuality;
+    use qip_market::bar::{Bar, Interval};
+    use qip_market_ingestion::adapter::SensedRecord;
+    let bar = Bar {
+        object_id: ObjectId::from_string(MARK),
+        venue: "XNYS".to_string(),
+        interval: Interval::Day,
+        open_time: at.saturating_sub(qip_core::Duration::from_days(1)),
+        open: Decimal::from_f64(100.0).unwrap(),
+        high: Decimal::from_f64(100.2).unwrap(),
+        low: Decimal::from_f64(99.8).unwrap(),
+        close: Decimal::from_f64(100.0).unwrap(),
+        volume: Decimal::from_f64(1_000_000.0).unwrap(),
+        trade_count: 5_000,
+        vwap: Decimal::from_f64(100.0),
+        quality: DataQuality::default(),
+    };
+    platform.observe(vec![SensedRecord::Bar(Box::new(bar))]);
+}
+
+fn stage(platform: &Platform) -> Option<&'static str> {
+    platform
+        .market_factory()
+        .and_then(|stage| stage.factory().market("obj-CREATED"))
+        .map(|market| market.stage.as_str())
+}
+
+/// R12-EXEC-5081 from the binary's path: an operator deletes the legal
+/// opinion a created market's seeding rests on from the plan file the node
+/// was started with, and the next cycle the run loop drives withdraws the
+/// market. Before this, permissions were fixed at install and no binary
+/// could revoke one, so the monitor's legal check could not fire.
+///
+/// Calls what `node::run_with` calls — `PermissionWatch::refresh` then
+/// `node::step` — with the watch built by `from_lookup`, as `main` builds it.
+///
+/// Mutations: (1) make `refresh` return `Ok(None)` without applying — the
+/// market stays seeded after the revocation; (2) make `revoke_all` skip
+/// `revoke_market_permissions` — the unreadable-plan half stays seeded.
+#[test]
+fn a_permission_revoked_in_the_plan_file_withdraws_the_created_market_at_the_next_cycle()
+-> Result<()> {
+    use qip_deepbrain::breadth::PermissionWatch;
+    use qip_deepbrain::node::step;
+    let interval = qip_core::Duration::from_secs(300);
+
+    for unreadable in [false, true] {
+        let path = plan_file(&format!("revocable-{unreadable}"), &plan_without(None))?;
+        let set = lookup(BTreeMap::from([(PLAN_VARIABLE.to_string(), path.clone())]));
+        let mut platform = platform()?;
+        install(&mut platform, &set, start())?.expect("a plan was set");
+        let mut watch = PermissionWatch::from_lookup(&set).expect("a plan is named");
+
+        mark(&mut platform, start());
+        assert_eq!(watch.refresh(&mut platform)?, Some(9));
+        let _ = step(&mut platform, start(), interval);
+        assert_eq!(
+            stage(&platform),
+            Some("seeded"),
+            "premise: a marked, fully permitted market survives its review"
+        );
+        assert_eq!(
+            watch.refresh(&mut platform)?,
+            None,
+            "premise: an unchanged register is not re-applied"
+        );
+
+        let later = start().saturating_add(qip_core::Duration::from_hours(1));
+        if unreadable {
+            std::fs::write(&path, "{ not json").unwrap();
+            let refused = watch
+                .refresh(&mut platform)
+                .expect_err("an unreadable register was accepted");
+            assert!(
+                refused.message().contains("revoked"),
+                "{}",
+                refused.message()
+            );
+        } else {
+            std::fs::write(&path, plan_without(Some(("jurisdiction", "seed")))).unwrap();
+            assert_eq!(watch.refresh(&mut platform)?, Some(8));
+        }
+        mark(&mut platform, later);
+        let _ = step(&mut platform, later, interval);
+        assert_eq!(
+            stage(&platform),
+            Some("withdrawn"),
+            "unreadable={unreadable}: a market kept trading on a lapsed permission"
+        );
+    }
+    Ok(())
+}

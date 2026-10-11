@@ -318,6 +318,10 @@ fn run() -> Result<()> {
     // sources must start at tape time or their first reading would lie in a
     // future the tape never reaches.
     let breadth_at = platform.context().now();
+    // Re-read each cycle, so revoking a market permission in the plan file
+    // reaches the factory's validity monitor (R12-EXEC-5081).
+    let mut permission_watch =
+        qip_deepbrain::breadth::PermissionWatch::from_lookup(&|name| std::env::var(name).ok());
     let breadth = qip_deepbrain::breadth::install(
         &mut platform,
         &|name| std::env::var(name).ok(),
@@ -791,6 +795,7 @@ fn run() -> Result<()> {
             research: Some(&mut research),
             operations: Some(&mut operations),
             tick: Some(&mut tick_desk),
+            permissions: permission_watch.as_mut(),
         },
         |outcome| {
             println!();
