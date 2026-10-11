@@ -46,6 +46,15 @@ pub struct BookObservation {
     /// When this state became knowable to the platform.
     pub at: Timestamp,
     pub venue: String,
+    /// The venue's own sequence number for the message that left the book in
+    /// this state (R12-TICK-1049). Carried to the example so a training row
+    /// can be traced to the message it was read at, and a replay compared
+    /// against it.
+    pub sequence: u64,
+    /// The entitlement the message was obtained under (R12-TICK-1051). A
+    /// row with no entitlement is a row nobody can say the platform may use,
+    /// so [`build_examples`] refuses one rather than labelling it.
+    pub entitlement: String,
     pub instrument: String,
     pub best_bid: f64,
     pub best_ask: f64,
@@ -117,7 +126,12 @@ impl LabelPlan {
 /// One labelled decision instant.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MicroExample {
+    /// Venue identity (R12-TICK-1050), sequence (1049) and entitlement
+    /// (1051) of the observation the example was drawn at: the lineage
+    /// without which a row cannot be replayed, licensed or trusted.
     pub venue: String,
+    pub sequence: u64,
+    pub entitlement: String,
     pub instrument: String,
     pub at: Timestamp,
     pub horizon: Duration,
@@ -164,6 +178,16 @@ pub fn build_examples(
     plan: &LabelPlan,
 ) -> Result<LabelledSet> {
     plan.validate()?;
+    if let Some(blank) = observations
+        .iter()
+        .find(|o| o.entitlement.trim().is_empty() || o.venue.trim().is_empty())
+    {
+        return Err(Error::invalid(format!(
+            "an observation of {} at {} carries no venue or no entitlement; a training row \
+             without that lineage cannot be licensed or replayed, so name both upstream",
+            blank.instrument, blank.at
+        )));
+    }
     let mut by_instrument: BTreeMap<&str, Vec<&BookObservation>> = BTreeMap::new();
     for observation in observations {
         by_instrument
@@ -254,6 +278,8 @@ pub fn build_examples(
                 let vol = trailing_vol_bps(&window);
                 out.examples.push(MicroExample {
                     venue: observation.venue.clone(),
+                    sequence: observation.sequence,
+                    entitlement: observation.entitlement.clone(),
                     instrument: instrument.to_string(),
                     at,
                     horizon: *horizon,

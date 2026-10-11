@@ -1706,6 +1706,14 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-edge-node",
+        "QIP_POLICY_ROLLBACK_PATH",
+        "R12-REFLEX-8071's rollback wire: an operator's request to return the cell to its \
+         resident previous policy. Unset is the restrictive default — no rollback control, the \
+         cell moves only on a payload the centre ships — and no node is declared to mount the \
+         file on; enabling it is a deployment decision, not a default",
+    ),
+    (
+        "qip-edge-node",
         "QIP_GATEWAY_SEED",
         A_SEED_IS_DERIVED_NOT_DEPLOYED,
     ),

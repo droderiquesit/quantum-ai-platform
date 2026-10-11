@@ -58,8 +58,9 @@ use qip_storage::lake::Lake;
 use qip_storage::lake_codec::{CompressionReport, SegmentCodec, measure_partitions};
 use qip_storage::lake_history::{HistoryQuery, MARKET_PREFIX};
 use qip_training::microstructure::{
-    BenchmarkReport, BookObservation, FillModel, LabelPlan, TradeObservation, VolatilityModel,
-    benchmark_fill_model, build_examples, split_in_time, train_fill_model, train_volatility_model,
+    BenchmarkReport, BookObservation, FillModel, LabelPlan, MicroExample, TradeObservation,
+    VolatilityModel, benchmark_fill_model, build_examples, split_in_time, train_fill_model,
+    train_volatility_model,
 };
 use qip_twin::futures::{FutureTree, ObservedMoves, TreeConfig, TwinState, WorldDriver};
 use qip_world_model::graph::KnowledgeGraph;
@@ -259,6 +260,14 @@ pub struct TickRound {
     pub entitlements_read: BTreeSet<String>,
     pub replay: Option<ReplayRun>,
     pub examples: usize,
+    /// The labelled rows themselves, each carrying the venue, venue sequence
+    /// and entitlement of the message it was drawn at (R12-TICK-1049–1051),
+    /// so whoever takes the round can audit what a model was trained on.
+    pub labelled: Vec<MicroExample>,
+    /// Ticks excluded because they were stamped knowable before the venue
+    /// says they happened (R12-TICK-1053): one of the two clocks is wrong,
+    /// and ordering on either reads the other's future.
+    pub contaminated: usize,
     pub refused_unreliable: usize,
     pub refused_uncovered: usize,
     pub fill_model: Option<FillModel>,
@@ -440,15 +449,29 @@ impl TickDesk {
         round.entitlements_read = history.entitlements_read.clone();
         // A tick stamped knowable after `now` is in the lake and not in the
         // desk's present; reading it would be reading the future.
-        let ticks: Vec<ReplayTick> = history
-            .ticks
-            .into_iter()
-            .filter(|t| t.knowable_at <= now)
-            .map(|t| ReplayTick {
-                message: t.message,
-                knowable_at: t.knowable_at,
-            })
-            .collect();
+        //
+        // A tick received before the venue says it happened is timestamp
+        // contamination (R12-TICK-1053): it is excluded and counted rather
+        // than replayed on whichever clock happens to be read.
+        //
+        // The entitlement each tick was obtained under is kept beside it by
+        // its origin, so every training row can name it (R12-TICK-1051).
+        let mut ticks: Vec<ReplayTick> = Vec::new();
+        let mut lineage: BTreeMap<(String, String, u32, u64), String> = BTreeMap::new();
+        for tick in history.ticks {
+            if tick.knowable_at > now {
+                continue;
+            }
+            if tick.knowable_at < tick.event_time {
+                round.contaminated += 1;
+                continue;
+            }
+            lineage.insert(origin_key(&tick.message), tick.entitlement);
+            ticks.push(ReplayTick {
+                message: tick.message,
+                knowable_at: tick.knowable_at,
+            });
+        }
         round.ticks = ticks.len();
 
         // --- replay, and the observations every later step reads ----------
@@ -482,6 +505,13 @@ impl TickDesk {
             let observation = BookObservation {
                 at: tick.knowable_at,
                 venue: venue.clone(),
+                sequence: tick.message.origin.sequence,
+                // Blank only if the tick was never in the lineage map, which
+                // `build_examples` refuses rather than labels.
+                entitlement: lineage
+                    .get(&origin_key(&tick.message))
+                    .cloned()
+                    .unwrap_or_default(),
                 instrument: instrument.clone(),
                 best_bid: bid.price.to_f64(),
                 best_ask: ask.price.to_f64(),
@@ -531,6 +561,7 @@ impl TickDesk {
                 .training_refused
                 .push(format!("volatility: {}", error.message())),
         }
+        round.labelled = labelled.examples;
 
         // --- the model card and its entitlements ------------------------------
         let mut permitted: Option<BTreeSet<String>> = None;
@@ -694,6 +725,18 @@ impl TickDesk {
         }
         Ok(round)
     }
+}
+
+/// A message's place in its venue's stream: venue, feed, partition and the
+/// venue's own sequence, which together name one message.
+fn origin_key(message: &qip_contracts::message::MarketMessage) -> (String, String, u32, u64) {
+    let origin = &message.origin;
+    (
+        origin.venue.as_str().to_string(),
+        origin.feed.clone(),
+        origin.partition,
+        origin.sequence,
+    )
 }
 
 /// The last mid the tree's twin state saw for `instrument`.
