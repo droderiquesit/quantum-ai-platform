@@ -42,9 +42,20 @@
 
 use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
+use rustls::RootCertStore;
 use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+// The session types a caller drives on a socket it owns, re-exported so
+// that caller takes them from here rather than naming `rustls` itself. The
+// peer link (ADR 0116) drives these connections on its own wire thread; with
+// its own `rustls` line it was a second manifest pinning the same version,
+// features and provider, and `cargo deny`'s workspace-duplicate check failed
+// on exactly that: two pins of one crate that nothing forced to agree. One
+// pin here means a version bump of the TLS stack is one edit, and the link
+// cannot drift to a provider or a protocol version this module refuses.
+pub use rustls::pki_types::ServerName;
+pub use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

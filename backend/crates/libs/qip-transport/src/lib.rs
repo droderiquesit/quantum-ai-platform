@@ -130,6 +130,16 @@ pub mod spool;
 pub mod tls;
 pub mod trust;
 
+/// The one cryptography library (ADR 0110), re-exported so a crate that
+/// builds on [`tls`] reaches this crate's pin of it instead of writing its
+/// own. The peer link's mTLS suite mints its throwaway certificates with
+/// `ring` through the same `tests/support/certs.rs` this crate's suites use;
+/// with its own `ring` line it was a second manifest pinning one crate, which
+/// `cargo deny`'s workspace-duplicate check refuses, and two pins agree only
+/// until one of them is edited. Not a second implementation and not a wider
+/// surface: it is the same crate, at the same version, under one manifest.
+pub use ring;
+
 pub use deadletter::{DeadLetter, DeadLetterReason, DeadLetterSink, MemoryDeadLetters};
 pub use error::TransportError;
 pub use http::{

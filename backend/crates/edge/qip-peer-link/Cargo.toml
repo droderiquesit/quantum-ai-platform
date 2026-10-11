@@ -22,14 +22,15 @@ qip-peer.workspace = true
 qip-transport.workspace = true
 # The session types the wire drives on its own sockets (ADR 0116, "What
 # would make this wrong": rustls confined to this crate, replacing only the
-# stream type). The version, features and provider `qip-transport` pins, so
-# the lockfile gains nothing: TLS 1.2 off, `ring` the one provider.
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
-
-[dev-dependencies]
-# The mTLS test mints throwaway certificates in memory with `ring`, exactly
-# as `qip-transport`'s own mTLS suite does, so no key material is committed.
-ring = { version = "=0.17.14", default-features = false }
+# stream type) come re-exported from `qip_transport::tls`, not from a second
+# `rustls` line here. A second pin of the same crate is what `cargo deny`'s
+# `[bans.workspace-dependencies] duplicates = "deny"` refuses, and rightly:
+# two manifests naming one version and provider agree only until one of them
+# is edited. Through `qip-transport` the link cannot drift from the TLS 1.3,
+# `ring`-provider build that crate pins. The mTLS test mints throwaway
+# certificates with `ring` through `qip-transport`'s shared
+# `tests/support/certs.rs`, which reaches it as `qip_transport::ring` for the
+# same reason, so no `ring` line sits here either.
 
 [lints]
 workspace = true

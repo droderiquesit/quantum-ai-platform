@@ -817,8 +817,6 @@ dependencies = [
  "qip-core",
  "qip-peer",
  "qip-transport",
- "ring",
- "rustls",
 ]
 
 [[package]]

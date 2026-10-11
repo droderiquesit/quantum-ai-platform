@@ -47,9 +47,10 @@
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock, Timestamp};
 use qip_peer::{ExecutableEdge, MAX_EDGE_PEERS, PeerEndpoint, PeerLimits, Refusal};
-use qip_transport::tls::{LinkSecurity, PeerNames};
-use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
+use qip_transport::tls::{
+    ClientConfig, ClientConnection, LinkSecurity, PeerNames, ServerConfig, ServerConnection,
+    ServerName,
+};
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
