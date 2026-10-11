@@ -202,6 +202,9 @@ module "services" {
   enable_security_command_center = var.enable_security_command_center
   enable_gitops                  = var.gitops_enabled
 
+  # build-pool.tf. Off everywhere until the owner turns the pool on.
+  enable_cloud_build_private_pool = var.cloud_build_private_pool_enabled
+
   # False. Disabling an API on destroy does not revoke access, it deletes the
   # resources under it — including ones this configuration never created. See
   # the variable.
@@ -651,8 +654,12 @@ module "ai" {
 # an entry in a variable rather than a directory, and the plan that carries
 # it is the evidence ADR 0020's step 3 asks for.
 module "execution_node" {
+  # Declared is not provisioned: `execution_nodes_enabled` (its own file)
+  # is false everywhere, so a node committed to a tfvars creates nothing
+  # until the owner flips it, and its validations refuse the flip while the
+  # node's image or allocation is still null.
   source   = "./modules/execution-node"
-  for_each = var.execution_nodes
+  for_each = var.execution_nodes_enabled ? var.execution_nodes : {}
 
   # Nothing here can be created before its API is on. See module "services".
   depends_on = [module.services]

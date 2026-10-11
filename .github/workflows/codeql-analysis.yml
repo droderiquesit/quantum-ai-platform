@@ -11,6 +11,8 @@
 # Now `ci.yml` calls this file as its `sast` job (`workflow_call` below), so
 # `ci` cannot succeed unless CodeQL does, and `deploy.yml`'s gate also
 # checks the `sast` jobs of the ci run it is about to trust, by name. The
+# Since R2.8 a CodeQL *finding* fails the job too, not only a failed
+# analysis: see the last step. The
 # push and pull_request triggers are gone because ci runs it on both; a
 # second, independent run would be a second result nobody gates on. The
 # daily schedule stays, for advisories published against code that has
@@ -59,7 +61,30 @@ jobs:
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
 
+      # The SARIF is written to a directory as well as uploaded, so the next
+      # step can read what the analysis found rather than only whether it
+      # ran.
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
         with:
           category: "/language:${{ matrix.language }}"
+          output: sarif-results
+
+      # **A finding blocks; finishing does not pass** (R12 CICD-9105). The
+      # analyze step uploads its alerts and succeeds whatever they are, so
+      # until this step a `sast` job's success meant only that CodeQL ran —
+      # and `deploy.yml`'s gate, which refuses a ci run whose `sast / …` jobs
+      # did not all succeed, was reading a result that could not fail on a
+      # finding. This fails the job on any alert whose rule carries a
+      # security-severity at or above the threshold committed in
+      # `scripts/sast-policy.json` (7.0, CodeQL's "high" band — the same band
+      # the Trivy gates stop on), and on an analysis that wrote no SARIF.
+      # The threshold has no input and no override here: lowering it is an
+      # edit to that file, reviewed like any other. `deploy.yml` needs no
+      # change to honour it — it already reads these jobs by name.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: refuse a finding at or above the committed severity
+        run: node scripts/sast-gate.mjs --policy scripts/sast-policy.json sarif-results

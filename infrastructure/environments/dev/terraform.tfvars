@@ -9,7 +9,11 @@
 # stale reason in place would tell the next reader the node is unauthorised
 # when what it actually is, is unbuildable.
 #
-# What blocks it is named beside the commented entry below: no boot image
+# Since 2026-10-11 (W4.3) the node is *declared* below and not provisioned:
+# `execution_nodes_enabled = false` keeps `module.execution_node` empty, and
+# the root refuses to plan the flag true while either missing value is null.
+#
+# What blocks it is named beside the entry below: no boot image
 # exists yet, and nobody has chosen the node's capital allocation. The first
 # of those changed shape rather than going away. `.github/workflows/image.yml`
 # and `infrastructure/images/execution-node/` are now the bake — built from
@@ -22,8 +26,8 @@
 # only then dispatch `image.yml`. A bake dispatched first refuses, naming this
 # file. The allocation is not like that at all: it is a number a person
 # chooses and no workflow may pick, and ADR 0045 proposes one without setting
-# it. So `execution_nodes = {}` stays — a working configuration, not an
-# incomplete one. `docs/operations/deploying-an-edge-cell.md` carries the whole
+# it. So the flag stays false — a working configuration, not an incomplete
+# one. `docs/operations/deploying-an-edge-cell.md` carries the whole
 # sequence, both values included, under "The exact sequence".
 
 # The project this environment lives in. An identifier, not a secret: it
@@ -145,12 +149,16 @@ public_ingress  = {}
 gitops_enabled                = true
 gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 
-# --- The one node ADR 0035 authorises, and the two values it still lacks -----
+# --- The one node ADR 0035 authorises, declared and not provisioned ----------
 #
 # ADR 0035 decides: one execution node, `us-east4`, shadow mode, `dev`. Every
-# field below is determined and reviewable; the two written as `<...>` are the
-# ones nobody in this repository can honestly supply, and they are why the map
-# below this comment is still empty rather than why the decision is open.
+# field below is determined and reviewable. Two are `null`, because they are
+# the ones nobody in this repository can honestly supply — and they are why
+# `execution_nodes_enabled` below is false rather than why the decision is
+# open. Declared is not provisioned: with the flag false `main.tf` hands the
+# node module an empty map, so this entry plans nothing, and the root refuses
+# to plan the flag true while either value is still null
+# (`terraform/tests/execution-node-enable.tftest.hcl` proves both halves).
 #
 #   * `newyork-1` is the ladder's third block (environments/README.md) and
 #     `modules/connectivity/NOT-ORDERED.md` records it as the `us-east4` cell:
@@ -179,59 +187,64 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     through private Google access and the central plane over the VPC, and a
 #     NAT would give it an IP-layer route to the internet that nothing asked
 #     for.
-#   * `boot_image` has no value anyone can write **yet**. There is now a bake
-#     — `.github/workflows/image.yml`, with `infrastructure/images/
-#     execution-node/` — which turns the container image `deploy.yml` attested,
+#   * `boot_image = null`: no value anyone can write **yet**. The bake —
+#     `.github/workflows/image.yml`, with `infrastructure/images/
+#     execution-node/` — turns the container image `deploy.yml` attested,
 #     the vendored Envoy and a pinned Ops Agent into a Compute Engine image
 #     meeting the startup script's checks (isolcpus, huge pages, no swap, no
 #     container runtime, /usr/local/bin/{qip-edge-node,envoy,qip-fetch-secret},
 #     the Ops Agent). It has never been dispatched, so there is no self-link.
-#     The image is built for one machine shape — the isolated-core range is in
-#     its kernel command line — so the image named here and `machine_type`
-#     above have to be the same shape or the node boots and declines to trade.
-#     Writing a plausible self-link here would still produce a plan that reads
-#     as ready and an apply that fails after the subnet, the identity and four
-#     IAM bindings exist.
-#   * `region_allocation` is the ceiling on the capital this cell may hold in
-#     reservation. It has no default anywhere on purpose: a default is a number
-#     nobody chose, and this is the one number in a cell's envelope a reviewer
-#     has to have read. An agent picking it would be exactly that failure.
-#     A number is now *proposed* — ADR 0045, `"1000000"`, one tenth of
+#     The path it will be is fixed by the bake:
+#     `projects/algorik-platform-dev/global/images/qip-execution-node-c3-highcpu-8-<commit12>-r<run>`,
+#     printed by the run as `self_link`. The image is built for one machine
+#     shape — the isolated-core range is in its kernel command line — and the
+#     root's validation on `execution_nodes` refuses an image whose name
+#     carries another shape than `machine_type` above.
+#   * `region_allocation = null` is the ceiling on the capital this cell may
+#     hold in reservation. It has no default anywhere on purpose: a default is
+#     a number nobody chose, and this is the one number in a cell's envelope a
+#     reviewer has to have read. An agent picking it would be exactly that
+#     failure. A number is *proposed* — ADR 0045, `"1000000"`, one tenth of
 #     `PlatformConfig::initial_equity`, with its derivation, the alternatives
 #     it rejects and the concentration failure it is the last defence against.
-#     Proposed is not chosen: that record says so in its own first paragraph
-#     and states that this map stays `{}` until somebody edits this file in a
-#     reviewed diff. Reading the ADR is the act; writing the number here is a
-#     second one, and it is a person's.
-#
-# execution_nodes = {
-#   "newyork-1" = {
-#     region       = "us-east4"
-#     zone         = "us-east4-a"
-#     subnet_cidr  = "10.67.0.0/20"
-#     machine_type = "c3-highcpu-8"
-#     boot_image   = "projects/algorik-platform-dev/global/images/<the baked image>"
-#     venues = {
-#       "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
-#     }
-#     create_egress_nat = false
-#     region_allocation = "<the ceiling a person chose>"
-#     default_pricing    = ""
-#     strategy_plan_path = ""
-#     # §31.1. Empty is every venue in the node's own region, which is the only
-#     # state any node has run in. A path here declares which venues are abroad
-#     # and the band this region mirrors each instrument under; it cannot widen
-#     # what the node trades, and the binary refuses at start-up a declaration
-#     # naming a venue outside `venues` above.
-#     cross_region_mirror_path = ""
-#   }
-# }
+#     Proposed is not chosen. Reading the ADR is the act; writing the number
+#     here is a second one, and it is a person's.
 #
 # Shadow mode is not here and must not be added: `main.tf` passes
 # `shadow_mode = true` as a literal, so no tfvars value can let a node out of
 # it, and `an_execution_node_may_reach_its_venues_and_the_central_plane_and_
 # nothing_else` in the acceptance suite refuses the change.
-execution_nodes = {}
+execution_nodes = {
+  "newyork-1" = {
+    region       = "us-east4"
+    zone         = "us-east4-a"
+    subnet_cidr  = "10.67.0.0/20"
+    machine_type = "c3-highcpu-8"
+    boot_image   = null
+    venues = {
+      "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
+    }
+    create_egress_nat  = false
+    region_allocation  = null
+    default_pricing    = ""
+    strategy_plan_path = ""
+    # §31.1. Empty is every venue in the node's own region, which is the only
+    # state any node has run in. A path here declares which venues are abroad
+    # and the band this region mirrors each instrument under; it cannot widen
+    # what the node trades, and the binary refuses at start-up a declaration
+    # naming a venue outside `venues` above.
+    cross_region_mirror_path = ""
+  }
+}
+
+# The owner's switch, and nobody else's. Flipping it is three acts in order:
+# write the baked image's self-link into `boot_image` above, write the
+# allocation a person chose into `region_allocation`, then set this true in
+# the same reviewed diff and read the plan `infra.yml`'s `plan` action prints
+# before anybody dispatches `up`. The plan refuses the flip with either
+# value null, naming the one that is missing.
+execution_nodes_enabled = false
+
 
 # --- Where the node's boot image is baked ------------------------------------
 #
@@ -253,6 +266,19 @@ execution_nodes = {}
 # `region_allocation` — is a number a person chooses and nothing may default.
 #
 # image_bake_subnet_cidr = "10.0.37.0/28"
+
+# --- Where the platform's images are built (R12 CICD-9097) --------------------
+#
+# False: `deploy.yml` builds on the GitHub runner, as it always has. True
+# makes `module.build_pool` create a Cloud Build private pool peered into the
+# Engineering VPC, an identity that may write the build registry and nothing
+# else, and a staging bucket — and `deploy.yml`, which reads *this line* from
+# this file (never a repository variable), then submits every build and its
+# reproducibility rebuild to the pool instead. The owner flips it, reads the
+# plan, applies, and only then does the next deploy run build in the pool;
+# a deploy run before the apply would submit to a pool that does not exist
+# and stop, naming it. Dev only: it is the one environment that builds.
+cloud_build_private_pool_enabled = false
 
 # --- Partner interconnects for connectivity (GCP-031) --------------------------
 #

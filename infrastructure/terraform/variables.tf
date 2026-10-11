@@ -300,7 +300,12 @@ variable "execution_nodes" {
     zone         = string
     subnet_cidr  = string
     machine_type = string
-    boot_image   = string
+    # Optional so that an entry can be committed before its image exists
+    # (W4.3): null is "not baked yet", and `execution_nodes_enabled` refuses
+    # to plan a node while it is null. When set it must name an image
+    # `.github/workflows/image.yml` baked for this entry's own
+    # `machine_type` — see the validation below.
+    boot_image = optional(string)
     venues = map(object({
       cidr = string
       port = number
@@ -310,8 +315,10 @@ variable "execution_nodes" {
     # decimal string. Required per entry and never defaulted: `qip-edge-node`
     # refuses to start without QIP_REGION_ALLOCATION, and a value that
     # appeared from nowhere would be the one number in a cell's envelope no
-    # reviewer had read.
-    region_allocation = string
+    # reviewer had read. Optional only in the type: null is "nobody has
+    # chosen it yet", and `execution_nodes_enabled` refuses to plan a node
+    # while it is null. It is never defaulted to a number.
+    region_allocation = optional(string)
     # How the node prices the intents of every strategy it deploys, and where
     # it reads the compiled plan from. Empty is "deploy nothing", which is
     # what the node does with them unset; they are written into `node.env`
@@ -333,6 +340,26 @@ variable "execution_nodes" {
   validation {
     condition     = length(distinct([for node in values(var.execution_nodes) : node.subnet_cidr])) == length(var.execution_nodes)
     error_message = "Two execution nodes share a subnet range. Overlapping ranges route to whichever subnet was created first."
+  }
+
+  # The image is baked for one machine shape: `image.yml` writes the
+  # isolated-core range for `machine_type` into the kernel command line and
+  # names the image `qip-execution-node-<machine_type>-<commit12>-r<run>`. A
+  # node booting an image baked for another shape boots, finds `isolcpus`
+  # disagreeing with its own core count, and declines to trade — after the
+  # subnet, the identity and four IAM bindings already exist. This moves that
+  # refusal to plan time. It also refuses any image the bake did not name,
+  # because nothing else in this repository produces an image carrying the
+  # binary the startup script checks for.
+  validation {
+    condition = alltrue([
+      for node in values(var.execution_nodes) :
+      node.boot_image == null ? true : can(regex(
+        "^(https://www\\.googleapis\\.com/compute/v1/)?projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/global/images/qip-execution-node-${node.machine_type}-[0-9a-f]{12}-r[0-9]+$",
+        node.boot_image
+      ))
+    ])
+    error_message = "An execution node's boot_image must be an image .github/workflows/image.yml baked for that node's own machine_type: projects/<project>/global/images/qip-execution-node-<machine_type>-<commit12>-r<run>. An image baked for another shape carries another isolated-core range, and the node declines to trade on it."
   }
 }
 

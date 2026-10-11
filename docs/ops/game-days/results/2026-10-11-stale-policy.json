@@ -1,0 +1,67 @@
+{
+  "schema": "qip.game-day.result/v1",
+  "scenario": "stale-policy",
+  "drill": "G3 §25 stale policy, the local half: the control wire the cell polls (the halt flag's directory) vanishes as a lost mount would, so its reading can no longer be trusted; the cell treats stale as engaged and halts rather than trading on its last good reading (§46.2), and runs again once the wire reads. The fabric-published policy's staleness needs a policy publisher, which no local binary is; that half is not drilled here.",
+  "run_at": "2026-10-11T08:50:20.350Z",
+  "commit": "b6ee74ad",
+  "environment": "local",
+  "binaries": {
+    "qip-edge-node": "6439c1584ca06a051b5a4497c7d6229754d637d269ddd5676bf36bd443db3881"
+  },
+  "objectives": {
+    "rto_ms": 10000,
+    "rpo_records": null
+  },
+  "measurements": {
+    "detected_ms": 847,
+    "outage_ms": 5845,
+    "rto_ms": 845,
+    "rpo_records": null
+  },
+  "checks": [
+    {
+      "phase": "steady",
+      "name": "every process became ready",
+      "passed": true,
+      "detail": "296 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "the cell is running passes",
+      "passed": true,
+      "detail": "held after 14 ms"
+    },
+    {
+      "phase": "steady",
+      "name": "the polled wire reads as not halted",
+      "passed": true,
+      "detail": "held after 5 ms"
+    },
+    {
+      "phase": "fault",
+      "name": "the cell halts on the unreadable wire",
+      "passed": true,
+      "detail": "847 ms"
+    },
+    {
+      "phase": "during",
+      "name": "the cell stays halted while the wire is unreadable",
+      "passed": true,
+      "detail": "held for 5000 ms"
+    },
+    {
+      "phase": "recovery",
+      "name": "every process ready again",
+      "passed": true,
+      "detail": "845 ms after the recovery action"
+    },
+    {
+      "phase": "recovery",
+      "name": "the cell runs again once the wire reads",
+      "passed": true,
+      "detail": "held"
+    }
+  ],
+  "verdict": "met",
+  "notes": []
+}
