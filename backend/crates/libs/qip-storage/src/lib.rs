@@ -48,7 +48,10 @@
 //! (gRPC and protobuf, a session-and-transaction data plane, and the
 //! PostgreSQL wire protocol respectively), and
 //! [`StorageTarget::required_configuration`] says which and how large rather
-//! than "needs credentials". Every unbuildable target returns a
+//! than "needs credentials". Spanner is the one partial exception: the
+//! ledger's own table is reached over Spanner's REST surface by
+//! [`gcp::spanner`] (ADR 0113), and the provider still refuses it as a
+//! general store. Every unbuildable target returns a
 //! [`qip_core::Error::Unavailable`] naming exactly what is missing, so a
 //! misconfigured deployment fails loudly at start-up rather than silently
 //! writing nowhere. See `docs/operations/external-dependencies.md`.

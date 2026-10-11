@@ -296,6 +296,7 @@ impl Journal {
 
 fn ledger_config(dir: &std::path::Path, fabric: &Fabric) -> LedgerConfig {
     let variables: BTreeMap<String, String> = [
+        (qip_ledgerd::config::ENVIRONMENT, "workstation".to_string()),
         (qip_ledgerd::config::DATA_DIR, dir.display().to_string()),
         (qip_ledgerd::config::LISTEN, "127.0.0.1:0".to_string()),
         (qip_ledgerd::config::CONSUMER_GROUP, GROUP.to_string()),

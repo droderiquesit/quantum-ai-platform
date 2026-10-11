@@ -16,7 +16,13 @@
 //!    whatever the last process committed — and a probe file is written,
 //!    fsynced, read back and removed in its directory. A ledger whose
 //!    directory had gone read-only would otherwise report healthy and then
-//!    fail every apply, retrying for ever with nothing booked.
+//!    fail every apply, retrying for ever with nothing booked. On Spanner
+//!    (ADR 0113, every deployment) the process first claims the writer row
+//!    that fences out any earlier ledger process, then commits a probe row
+//!    in its own transaction and reads it back; a database it cannot reach
+//!    stops the start, and nothing falls back to a disk. Either way, the
+//!    store refuses to open if its balances are not the fold of its own
+//!    history ([`store::LedgerStore::verify_history`]).
 //! 3. **The read API's port is bound.**
 //! 4. **One worker per partition starts consuming**, resuming where the
 //!    store — not the broker — says ([`consumer`]).
@@ -36,9 +42,11 @@
 //! `qip_ledger_live_fill_refused_total`, and nothing in this crate can book
 //! one.
 
+pub mod backend;
 pub mod config;
 pub mod consumer;
 pub mod read_api;
+pub mod spanner;
 pub mod store;
 pub mod telemetry;
 
@@ -54,12 +62,15 @@ use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration};
 use qip_observability::metrics::Metrics;
 use qip_storage::EngineConfig;
+use qip_storage::GcpAccess;
+use qip_storage::gcp::spanner::{SpannerConfig, SpannerKv};
 use qip_transport::retry::Sleeper;
 use qip_transport::server::{Server, ServerLimits};
 
-use crate::config::LedgerConfig;
+use crate::config::{LedgerConfig, LedgerStorage};
 use crate::consumer::{Connect, PartitionWorker, Statuses, WorkerConfig};
 use crate::read_api::{ReadApi, Readiness};
+use crate::spanner::SpannerBackend;
 use crate::store::LedgerStore;
 use crate::telemetry::LedgerTelemetry;
 
@@ -173,20 +184,63 @@ pub fn start(
     sleeper: Arc<dyn Sleeper>,
     connect: Connect,
 ) -> Result<Running> {
-    std::fs::create_dir_all(&config.archive_path).map_err(|e| {
-        Error::io(format!(
-            "the ledger directory {} cannot be created: {e}",
-            config.archive_path.display()
-        ))
-    })?;
+    start_with_access(config, clock, sleeper, connect, GcpAccess::unconfigured())
+}
+
+/// Open the store `config` selects, proven writable. A Spanner store that
+/// `access` cannot reach refuses here, and nothing falls back to a disk
+/// (ADR 0113 §1).
+fn open_store(
+    config: &LedgerConfig,
+    clock: &Arc<dyn Clock>,
+    access: GcpAccess,
+    telemetry: LedgerTelemetry,
+) -> Result<LedgerStore> {
+    match &config.storage {
+        LedgerStorage::Local { archive_path } => {
+            std::fs::create_dir_all(archive_path).map_err(|e| {
+                Error::io(format!(
+                    "the ledger directory {} cannot be created: {e}",
+                    archive_path.display()
+                ))
+            })?;
+            let store =
+                LedgerStore::open(archive_path, EngineConfig::new(clock.clone()), telemetry)?;
+            prove_storage_writable(archive_path)?;
+            Ok(store)
+        }
+        LedgerStorage::Spanner { database, table } => {
+            let kv =
+                SpannerKv::new(SpannerConfig::new(database.clone(), access).with_table(table)?)?;
+            // Unique per process start: the fence names the newest writer,
+            // and a restarted process must displace its own predecessor.
+            let writer = format!(
+                "qip-ledgerd-{}-{}",
+                std::process::id(),
+                clock.now().as_nanos()
+            );
+            let store = LedgerStore::with_backend(
+                Box::new(SpannerBackend::claim(kv, &writer)?),
+                telemetry,
+            )?;
+            store.prove_writable(&writer)?;
+            Ok(store)
+        }
+    }
+}
+
+/// [`start`], with the Google access a Spanner store is reached through.
+/// `main` resolves it from the environment; a local store ignores it.
+pub fn start_with_access(
+    config: &LedgerConfig,
+    clock: Arc<dyn Clock>,
+    sleeper: Arc<dyn Sleeper>,
+    connect: Connect,
+    access: GcpAccess,
+) -> Result<Running> {
     let metrics = Arc::new(Metrics::new("qip-ledgerd"));
     let telemetry = LedgerTelemetry::new(metrics.clone());
-    let store = Arc::new(LedgerStore::open(
-        &config.archive_path,
-        EngineConfig::new(clock.clone()),
-        telemetry.clone(),
-    )?);
-    prove_storage_writable(&config.archive_path)?;
+    let store = Arc::new(open_store(config, &clock, access, telemetry.clone())?);
     let readiness = Arc::new(Readiness::default());
     readiness.storage_proven();
 

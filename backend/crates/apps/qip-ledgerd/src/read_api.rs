@@ -17,11 +17,16 @@
 //! - `/api/v1/ledger/postings?account=…&from=…&to=…` — the account's
 //!   postings whose delivery offset is in `[from, to)`.
 //! - `/api/v1/ledger/parked` — every parked cell and why.
+//! - `/api/v1/ledger/tax-lots` — every tax lot opened, with its remaining
+//!   quantity and basis (folded from postings) and its acquisition time.
+//! - `/api/v1/ledger/trial-balance` — the sum of every balance per unit;
+//!   zero in every unit, or the ledger has a defect to name.
 //!
 //! The account is a query parameter, not a path segment, because a trading
 //! account is written `trading:cell/strategy` and a `/` in a path segment is
 //! a second segment.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -158,6 +163,7 @@ impl ReadApi {
         let body = serde_json::json!({
             "service": "qip-ledgerd",
             "status": if ready { "ready" } else { "not_ready" },
+            "store": self.store.backend_kind(),
             "storage_proven": self.readiness.storage_proven.load(Ordering::SeqCst),
             "serving": self.readiness.serving.load(Ordering::SeqCst),
             "parked_cells": parked.as_ref().ok(),
@@ -199,6 +205,19 @@ impl ReadApi {
                 let parked = self.store.parked()?;
                 Ok(Response::json(200, serde_json::to_string(&parked)?))
             }
+            "/api/v1/ledger/tax-lots" => {
+                let lots = self.store.tax_lots()?;
+                Ok(Response::json(200, serde_json::to_string(&lots)?))
+            }
+            "/api/v1/ledger/trial-balance" => {
+                let totals: BTreeMap<String, String> = self
+                    .store
+                    .trial_balance()?
+                    .into_iter()
+                    .map(|(unit, total)| (unit, total.to_string()))
+                    .collect();
+                Ok(Response::json(200, serde_json::to_string(&totals)?))
+            }
             other => Err(Error::not_found(format!(
                 "no ledger route at {other}; see /health and /api/v1/ledger/*"
             ))),
@@ -219,33 +238,12 @@ impl Handler for ReadApi {
     }
 }
 
-/// Parse an account string into an Account enum.
+/// Parse an account string into an Account enum: the contract's own
+/// parser, the exact inverse of how an account renders, for every subledger.
+/// This used to be a hand parser that knew three of the four kinds and
+/// accepted `venue:` with an empty name.
 fn parse_account(account_str: &str) -> Result<Account> {
-    if let Some(rest) = account_str.strip_prefix("trading:") {
-        let trading_parts: Vec<&str> = rest.split('/').collect();
-        if trading_parts.len() == 2 && trading_parts.iter().all(|p| !p.is_empty()) {
-            Ok(Account::Trading {
-                cell: trading_parts[0].to_string(),
-                strategy: trading_parts[1].to_string(),
-            })
-        } else {
-            Err(Error::invalid(
-                "a trading account is trading:<cell>/<strategy>",
-            ))
-        }
-    } else if let Some(rest) = account_str.strip_prefix("venue:") {
-        Ok(Account::Venue {
-            venue: rest.to_string(),
-        })
-    } else if let Some(rest) = account_str.strip_prefix("fees:") {
-        Ok(Account::Fees {
-            venue: rest.to_string(),
-        })
-    } else {
-        Err(Error::invalid(
-            "account must start with trading:, venue:, or fees:",
-        ))
-    }
+    account_str.parse::<Account>()
 }
 
 #[cfg(test)]
