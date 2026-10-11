@@ -303,3 +303,156 @@ fn the_terraform_plan_declares_lifecycle_rules_for_all_derived_data_stores() {
         );
     }
 }
+
+/// Every Cloud Storage bucket this repository declares, and the class of
+/// data it is for. A bucket missing from this table fails
+/// [`no_bucket_or_dataset_lands_external_world_content`] until somebody
+/// states what it holds — which is the review R12-DATA-8012 asks for, made a
+/// step nobody can skip by adding a resource.
+const BUCKET_CLASSES: [(&str, &str); 10] = [
+    (
+        "training",
+        "model training staging: derived features and weights",
+    ),
+    (
+        "staging",
+        "build pool staging: build inputs this repository produced",
+    ),
+    (
+        "bootstrap",
+        "egress proxy bootstrap: committed Envoy configuration",
+    ),
+    (
+        "archive",
+        "event-fabric archive: tick and internal history (Tier T)",
+    ),
+    (
+        "artifacts",
+        "model artifacts: weights this platform trained",
+    ),
+    (
+        "payload",
+        "image-bake payload: binaries this repository built",
+    ),
+    ("collector_config", "metrics collector configuration"),
+    ("config_files", "workload configuration files"),
+    ("static_shell", "the public edge's static shell"),
+    ("evidence", "internal evidence, retention-locked"),
+];
+
+/// Tokens that, in a bucket's or dataset's Terraform label or name, would
+/// mean a store for content fetched from the outside world. Matched as whole
+/// `-`/`_`-delimited tokens, so `rawhide` or `drawing` do not trip it and
+/// `raw-world` does.
+const EXTERNAL_CONTENT_TOKENS: [&str; 7] = [
+    "landing", "raw", "crawl", "crawler", "scrape", "scout", "corpus",
+];
+
+/// `(resource type, label, name expression)` of every storage resource in
+/// `hcl`, comments removed.
+fn storage_resources(hcl: &str) -> Vec<(String, String, String)> {
+    let mut found = Vec::new();
+    let lines: Vec<&str> = hcl.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let line = collapsed(line);
+        let Some(rest) = line.strip_prefix("resource \"") else {
+            continue;
+        };
+        let mut parts = rest.split('"');
+        let kind = parts.next().unwrap_or_default().to_string();
+        if kind != "google_storage_bucket" && kind != "google_bigquery_dataset" {
+            continue;
+        }
+        let label = parts.nth(1).unwrap_or_default().to_string();
+        let name = lines
+            .iter()
+            .skip(index + 1)
+            .take_while(|line| !line.starts_with('}'))
+            .map(|line| collapsed(line))
+            .find_map(|line| {
+                line.strip_prefix("name =")
+                    .or_else(|| line.strip_prefix("dataset_id ="))
+                    .map(|value| value.trim().to_string())
+            })
+            .unwrap_or_default();
+        found.push((kind, label, name));
+    }
+    found
+}
+
+/// The violations in `resources`: an external-content token in a label or
+/// name, or a bucket nobody classified.
+fn landing_violations(resources: &[(String, String, String)]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (kind, label, name) in resources {
+        let tokens: Vec<String> = format!("{label} {name}")
+            .to_ascii_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|token| !token.is_empty())
+            .map(str::to_string)
+            .collect();
+        if let Some(token) = EXTERNAL_CONTENT_TOKENS
+            .iter()
+            .find(|token| tokens.iter().any(|t| t == *token))
+        {
+            violations.push(format!(
+                "{kind}.{label} ({name}) names `{token}`: external-world content is streamed \
+                 through memory and never landed (R12-DATA-8012, R12-DATA-8121)"
+            ));
+        }
+        if kind == "google_storage_bucket"
+            && !BUCKET_CLASSES.iter().any(|(known, _)| known == label)
+        {
+            violations.push(format!(
+                "{kind}.{label} ({name}) is not in BUCKET_CLASSES; state what it holds before \
+                 it exists"
+            ));
+        }
+    }
+    violations
+}
+
+/// R12-DATA-8012 and R12-DATA-8121. Scout and connector workers stream source
+/// bytes through memory (the HTTP client reads a response into a buffer and
+/// the connector runtime digests and drops it), and there is no landing
+/// bucket and no general-purpose raw-world lake. Both held only because
+/// nobody had declared one; this makes declaring one a test failure. The
+/// first half proves the checker refuses the shapes it exists to refuse —
+/// without it, a checker that matched nothing would pass forever over a
+/// tree that happened to be clean.
+#[test]
+fn no_bucket_or_dataset_lands_external_world_content() {
+    // The checker refuses what it exists to refuse, and admits a plain one.
+    let refused = landing_violations(&storage_resources(
+        "resource \"google_storage_bucket\" \"landing\" {\n  name = \"${local.prefix}-raw-world\"\n}\n\
+         resource \"google_bigquery_dataset\" \"corpus\" {\n  dataset_id = \"web_corpus\"\n}\n",
+    ));
+    assert_eq!(refused.len(), 3, "{refused:#?}");
+    assert!(refused[0].contains("`landing`"), "{refused:#?}");
+    assert!(refused[1].contains("not in BUCKET_CLASSES"), "{refused:#?}");
+    assert!(refused[2].contains("`corpus`"), "{refused:#?}");
+    assert!(
+        landing_violations(&storage_resources(
+            "resource \"google_storage_bucket\" \"evidence\" {\n  name = \"qip-drawing-evidence\"\n}\n"
+        ))
+        .is_empty(),
+        "a classified bucket whose name merely contains `raw` inside a word was refused"
+    );
+
+    // The tree.
+    let mut resources = Vec::new();
+    for path in files_with_extension("infrastructure/terraform", "tf") {
+        let text = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+        resources.extend(storage_resources(&text));
+    }
+    let buckets = resources
+        .iter()
+        .filter(|(kind, ..)| kind == "google_storage_bucket")
+        .count();
+    assert!(
+        buckets >= BUCKET_CLASSES.len() && resources.len() > buckets,
+        "premise: the walk found the declared buckets and the research dataset; found {resources:#?}"
+    );
+    let violations = landing_violations(&resources);
+    assert!(violations.is_empty(), "{violations:#?}");
+}

@@ -162,6 +162,13 @@ const DEFAULT_DEPTH: usize = 10;
 const CLIENT_OWNED_HEADERS: [&str; 4] =
     ["host", "content-length", "connection", "transfer-encoding"];
 
+/// The most instruments one depth feed may hold. Each pass refreshes every
+/// book with its own request and keeps every book resident, so the count
+/// bounds both a pass's duration and the feed's working set; a list beyond
+/// it is refused at construction rather than discovered as a pass that never
+/// finishes.
+pub const MAX_INSTRUMENTS: usize = 1_024;
+
 /// One instrument whose book this adapter maintains.
 ///
 /// The mapping is configuration for the reason [`crate::rest::RestInstrument`]
@@ -460,6 +467,14 @@ impl DepthFeedAdapter {
     ///
     /// Fails only on configuration that is present and wrong.
     pub fn new(config: DepthFeedConfig, instruments: Vec<DepthInstrument>) -> Result<Self> {
+        if instruments.len() > MAX_INSTRUMENTS {
+            return Err(Error::invalid(format!(
+                "{} instruments configured and one depth feed holds at most {MAX_INSTRUMENTS}: \
+                 every pass refreshes every book over its own request, so a list that long is a \
+                 configuration that never finishes a pass; split it across feeds",
+                instruments.len()
+            )));
+        }
         if config.name.trim().is_empty() {
             return Err(Error::invalid(
                 "a depth feed needs a name: it is recorded as the provenance source of every \
@@ -711,7 +726,9 @@ impl DepthFeedAdapter {
             return Err(self.unavailable());
         }
 
-        let mut dated = Vec::with_capacity(self.books.len());
+        // Grown per published book rather than reserved from the book count;
+        // the count is bounded by `MAX_INSTRUMENTS` at construction.
+        let mut dated = Vec::new();
         for symbol in self.symbols() {
             if let Some(record) = self.refresh(&symbol, until)? {
                 dated.push(record);

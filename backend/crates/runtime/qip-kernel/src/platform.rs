@@ -5980,6 +5980,24 @@ impl Platform {
             ingestion.halted.is_none(),
             reported_at,
         );
+        // Order/fill integrity, one observation per report that carried a
+        // fill the settlement could grade: settled, or found to have no sent
+        // order behind it. A report with no fills is evidence of nothing
+        // about fills and takes no observation, so a quiet cell cannot read
+        // as an intact one.
+        let unsent_fills = ingestion
+            .settlement
+            .breaks
+            .iter()
+            .filter(|found| found.origin == crate::central::BreakOrigin::UnsentFill)
+            .count();
+        if ingestion.settlement.fills_settled + unsent_fills > 0 {
+            self.objectives.observe(
+                crate::blueprint_objectives::ORDER_FILL_INTEGRITY,
+                unsent_fills == 0,
+                reported_at,
+            );
+        }
         if let Some(ratio) = netting {
             // The objective's floor is read off the objective rather than
             // written here, so §49.1's 1.5 has exactly one home. An objective
@@ -8795,6 +8813,16 @@ impl Platform {
         now: Timestamp,
     ) -> crate::blueprint_objectives::ObjectiveReview {
         crate::blueprint_objectives::assess(&self.objectives, now)
+    }
+
+    /// The operational objectives outside §49.1 this process feeds and
+    /// evaluates — order/fill integrity today. See
+    /// [`crate::blueprint_objectives::assess_operational`].
+    pub fn operational_objectives(
+        &self,
+        now: Timestamp,
+    ) -> crate::blueprint_objectives::ObjectiveReview {
+        crate::blueprint_objectives::assess_operational(&self.objectives, now)
     }
 
     /// Feed one point of a series the platform records about itself to the

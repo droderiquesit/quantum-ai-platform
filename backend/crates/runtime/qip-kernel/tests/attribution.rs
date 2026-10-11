@@ -749,3 +749,88 @@ fn the_outcome_backlog_rises_while_an_order_is_unfilled_and_returns_to_zero_when
     assert_eq!(backlog(&platform), Some(0.0), "a booked fill clears it");
     Ok(())
 }
+
+#[test]
+fn a_fill_with_no_sent_order_misses_the_order_fill_integrity_objective() -> Result<()> {
+    // Order/fill integrity was a break counter and a halt, never an
+    // objective anything evaluated: a desk asking "how often did a fill
+    // arrive that we never sent?" had a count and no target to read it
+    // against. Premise first: nothing ingested, so the objective is quiet —
+    // not met.
+    use qip_kernel::blueprint_objectives::{ORDER_FILL_INTEGRITY, ObjectiveStanding};
+    let mut platform = platform()?;
+    assert!(
+        matches!(
+            platform
+                .operational_objectives(start())
+                .standing(ORDER_FILL_INTEGRITY),
+            Some(ObjectiveStanding::Quiet(_))
+        ),
+        "premise: an objective nothing fed is quiet, never met"
+    );
+
+    // A report with no fill is evidence of nothing about fills.
+    platform.ingest_cell_report(CellReport::new(CELL, start()), start())?;
+    assert!(matches!(
+        platform
+            .operational_objectives(start())
+            .standing(ORDER_FILL_INTEGRITY),
+        Some(ObjectiveStanding::Quiet(_))
+    ));
+
+    // A fill on an order the centre saw sent meets it.
+    let sent = order(
+        "ord-ok",
+        BookSide::Ask,
+        dec!("10"),
+        dec!("100"),
+        vec![contributor("alpha", dec!("10"))],
+    );
+    let filled = fill(
+        "ord-ok",
+        BookSide::Ask,
+        dec!("10"),
+        dec!("100"),
+        &[("alpha", dec!("10"))],
+    );
+    let ingestion = platform.ingest_cell_report(
+        CellReport::new(CELL, start())
+            .with_orders(vec![sent])
+            .with_fills(vec![filled]),
+        start(),
+    )?;
+    assert_eq!(ingestion.settlement.fills_settled, 1, "premise: it settled");
+    assert!(
+        matches!(
+            platform
+                .operational_objectives(start())
+                .standing(ORDER_FILL_INTEGRITY),
+            Some(ObjectiveStanding::Met(_))
+        ),
+        "a clean fill is evidence the objective held"
+    );
+
+    // A fill on an order nobody sent misses it, on the second observation.
+    let ghost = fill(
+        "ord-ghost",
+        BookSide::Ask,
+        dec!("10"),
+        dec!("100"),
+        &[("alpha", dec!("10"))],
+    );
+    platform.ingest_cell_report(
+        CellReport::new("cell-other", start()).with_fills(vec![ghost]),
+        start(),
+    )?;
+    let review = platform.operational_objectives(start());
+    let Some(ObjectiveStanding::Missed(status)) = review.standing(ORDER_FILL_INTEGRITY) else {
+        panic!(
+            "a fill with no sent order must miss order/fill integrity, not {:?}",
+            review.standing(ORDER_FILL_INTEGRITY)
+        );
+    };
+    assert_eq!(status.observations, 2, "the empty report was not counted");
+    assert!((status.achieved - 0.5).abs() < 1e-9, "one of two intact");
+    assert!((status.slo.target - 1.0).abs() < 1e-12);
+    Ok(())
+}

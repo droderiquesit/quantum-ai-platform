@@ -624,6 +624,45 @@ fn run() -> Result<()> {
     let tick_lake =
         qip_deepbrain::connectors::TickLakeSettings::from_lookup(&|name| std::env::var(name).ok())
             .map_err(configuration)?;
+    // How often each arm re-fetches the extents the ledger holds from it
+    // (R12-DATA-1037); 0 when unset, and a value that is not a cycle count
+    // stops the process before an arm opens.
+    let refetch_every = qip_deepbrain::connectors::refetch_every(&|name| std::env::var(name).ok())
+        .map_err(configuration)?;
+    evolution = evolution.with_refetch(refetch_every);
+    // How often each connector is scored on incremental information gain
+    // and realised contribution against the own stream (R12-DATA-2022,
+    // 2025, 1105); 0 when unset attaches no desk.
+    let source_alpha_every =
+        qip_deepbrain::source_alpha::source_alpha_every(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
+    evolution = evolution.with_source_alpha(source_alpha_every);
+    println!(
+        "  source alpha:     {}",
+        if source_alpha_every == 0 {
+            format!(
+                "disabled ({}=0 or unset)",
+                qip_deepbrain::source_alpha::SOURCE_ALPHA_EVERY_VARIABLE
+            )
+        } else {
+            format!("every {source_alpha_every} cycle(s), each connector against the own stream")
+        }
+    );
+    println!(
+        "  re-fetch:         {}",
+        if refetch_every == 0 {
+            format!(
+                "disabled ({}=0 or unset)",
+                qip_deepbrain::connectors::REFETCH_EVERY_VARIABLE
+            )
+        } else {
+            format!(
+                "every {refetch_every} cycle(s), up to {} extent(s) per connector, through the \
+                 connector's own transport",
+                qip_deepbrain::connectors::REFETCH_BUDGET
+            )
+        }
+    );
     // Whether each arm keeps the knowledge packs its polls derive
     // (R12-DATA-1041); off unless the operator says `store`, and anything
     // else stops the process before an arm opens.
@@ -949,6 +988,27 @@ fn run() -> Result<()> {
             }
             for failure in &outcome.side_failures {
                 println!("  not run: {failure}");
+            }
+            if let Some(round) = &outcome.source_alpha {
+                println!("  {}", round.describe());
+            }
+            if let Some(findings) = &outcome.refetch {
+                let unretrievable = findings
+                    .iter()
+                    .filter(|finding| {
+                        finding.check
+                            == Some(qip_data_finder::reference::RevisionCheck::Unretrievable)
+                    })
+                    .count();
+                let revised = findings
+                    .iter()
+                    .filter(|finding| finding.check.as_ref().is_some_and(|c| c.is_revised()))
+                    .count();
+                println!(
+                    "  re-fetch: {} extent(s) asked again, {revised} revised, {unretrievable} \
+                     no longer served",
+                    findings.len()
+                );
             }
             if let Some(assessment) = &outcome.discovery {
                 println!(

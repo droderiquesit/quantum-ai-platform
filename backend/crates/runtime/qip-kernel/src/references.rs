@@ -612,6 +612,28 @@ impl Platform {
         &self.references
     }
 
+    /// Mark `reference`'s extent as no longer re-fetchable, because a
+    /// re-fetch through the source's own manifest found it withdrawn, denied
+    /// or persistently unanswered (R12-DATA-1037). Refused by the ledger for
+    /// an extent it holds no reference to and for an empty reason. The marker
+    /// is the ledger's, in memory like the rest of its re-fetch state: a
+    /// restart re-derives it on the next pass rather than trusting a stale
+    /// one.
+    pub fn mark_unretrievable(
+        &mut self,
+        reference: &DataReference,
+        reason: &str,
+        at: Timestamp,
+    ) -> Result<()> {
+        self.references.mark_unretrievable(
+            reference.source_id(),
+            reference.locator(),
+            reference.range(),
+            reason,
+            at,
+        )
+    }
+
     /// Whether an extent from `source_id` naming `symbol` and overlapping
     /// `period` has been revised since this platform used it — the flag a
     /// research run reads before training on the pair.

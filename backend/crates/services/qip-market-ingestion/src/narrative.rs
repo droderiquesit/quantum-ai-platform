@@ -128,6 +128,12 @@ use crate::adapter::{
 };
 
 /// Default endpoint path, overridden per vendor.
+/// The most a configured `max_records` may be — ten times the default cap of 5,000 records. The cap bounds the
+/// memory one vendor response may expand into; a cap set past any response a
+/// vendor sends would read as that bound while bounding nothing, so a larger
+/// one is refused at construction rather than honoured.
+pub const MAX_RECORDS_CEILING: usize = 50_000;
+
 const DEFAULT_PATH: &str = "/v1/narrative";
 /// Default header the credential travels in. Never a query parameter, for the
 /// reason [`crate::rest`] gives: a URL reaches every access log on the path.
@@ -394,6 +400,14 @@ impl NarrativeAdapter {
             return Err(Error::invalid(
                 "max_records is zero, which would refuse every response the vendor sends",
             ));
+        }
+        if config.max_records > MAX_RECORDS_CEILING {
+            return Err(Error::invalid(format!(
+                "max_records is {}, above the ceiling of {MAX_RECORDS_CEILING}: the cap is what \
+                 bounds the memory one response may expand into, and a cap nobody could reach \
+                 bounds nothing",
+                config.max_records
+            )));
         }
         if config.max_document_bytes == 0 {
             return Err(Error::invalid(
@@ -1114,7 +1128,11 @@ impl DataAdapter for NarrativeAdapter {
 
     fn poll(&mut self, until: Timestamp) -> Result<Vec<SensedRecord>> {
         let dated = self.fetch_dated(until)?;
-        let mut records = Vec::with_capacity(dated.len());
+        // Grown as records are admitted rather than reserved from the
+        // vendor's count: `fetch_dated` already refused a response beyond
+        // `max_records`, and a reservation sized by the response is the
+        // allocation that cap exists to bound.
+        let mut records = Vec::new();
         for (record, knowable) in dated {
             if knowable > until {
                 self.stats.withheld += 1;

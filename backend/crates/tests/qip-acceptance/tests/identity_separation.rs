@@ -410,7 +410,7 @@ fn no_development_or_agent_identity_holds_a_grant_on_any_secret() {
     // what that bundle verifies. So its absence is the property now, and the
     // node's only secret grant is the venue credential. This listed
     // `capital_envelope_key` as a grant that must exist until 2026-10-11.
-    let node_secret_grants: Vec<_> = secret_grants
+    let node_secret_grants: Vec<_> = manager_grants
         .iter()
         .filter(|(file, _, _, _)| file.ends_with("modules/execution-node/main.tf"))
         .map(|(_, _, name, _)| name.as_str())

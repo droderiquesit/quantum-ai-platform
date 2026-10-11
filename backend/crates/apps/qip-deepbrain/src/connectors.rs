@@ -51,6 +51,8 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_data_finder::admission::{AdmittedSource, CatalogueEntry, StandingAdmission};
+use qip_data_finder::reference::{DataReference, RevisionCheck, SourceOrigin};
+use qip_data_finder::refetch::{ReFetchDriver, ReFetchFinding, TransportRefetcher};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
 use qip_kernel::evidence_intake::EvidenceIntake;
@@ -196,6 +198,29 @@ pub struct PackStoreStats {
     pub last_failure: Option<String>,
 }
 
+/// The variable naming how often, in research cycles, each connector arm
+/// asks its source for the extents the platform referenced from it again
+/// (R12-DATA-1037). Unset or `0` disables the pass.
+pub const REFETCH_EVERY_VARIABLE: &str = "QIP_DEEPBRAIN_REFETCH_EVERY";
+
+/// Extents one arm re-fetches per pass, so a pass is a bounded cost against
+/// the vendor's quota rather than a re-download of the whole ledger.
+pub const REFETCH_BUDGET: usize = 16;
+
+/// The re-fetch cadence in cycles; `0` when unset. Refuses anything that is
+/// not a cycle count.
+pub fn refetch_every(lookup: &dyn Fn(&str) -> Option<String>) -> Result<u64> {
+    match lookup(REFETCH_EVERY_VARIABLE) {
+        None => Ok(0),
+        Some(raw) => raw.trim().parse().map_err(|_| {
+            Error::invalid(format!(
+                "{REFETCH_EVERY_VARIABLE} is {raw:?}, not a cycle count; 0 disables the re-fetch \
+                 pass"
+            ))
+        }),
+    }
+}
+
 /// The footprint of a pack worth keeping: measured, and smaller than the
 /// body it was derived from.
 fn keepable(footprint: Option<(u64, u64)>) -> Option<(u64, u64)> {
@@ -217,6 +242,8 @@ pub struct ConnectorArm {
     /// store for them (R12-DATA-1041).
     pack_store: Option<Arc<dyn BlobStore>>,
     pack_stats: PackStoreStats,
+    /// What re-fetching this source's extents has found, across passes.
+    refetch: ReFetchDriver,
 }
 
 impl ConnectorArm {
@@ -262,6 +289,7 @@ impl ConnectorArm {
                 last_evidence: EvidenceIntake::default(),
                 pack_store: None,
                 pack_stats: PackStoreStats::default(),
+                refetch: ReFetchDriver::new(),
             }),
             Err(error) => Err(error.and_release(feed.shutdown(at))),
         }
@@ -332,6 +360,7 @@ impl ConnectorArm {
             last_evidence: EvidenceIntake::default(),
             pack_store: None,
             pack_stats: PackStoreStats::default(),
+            refetch: ReFetchDriver::new(),
         })
     }
 
@@ -470,6 +499,64 @@ impl ConnectorArm {
         self.last_evidence = platform.absorb_evidence(self.feed.drain_evidence(), until);
         self.persist_packs();
         Ok(records)
+    }
+
+    /// Ask the source again, through this arm's own transport, for up to
+    /// `budget` of the extents the platform's ledger holds from it, and mark
+    /// on the ledger every one the source no longer serves (R12-DATA-1037).
+    ///
+    /// The licence is asked first, as a poll asks it: a source this platform
+    /// may no longer read is not contacted to verify what it once served, and
+    /// the refusal withdraws it and is returned. Revised and unchanged
+    /// extents are reported, not acted on — a revision found here is a
+    /// finding about history, and the next poll's reference is what records
+    /// it on the log.
+    pub fn refetch(
+        &mut self,
+        platform: &mut Platform,
+        budget: usize,
+        at: Timestamp,
+    ) -> Result<Vec<ReFetchFinding>> {
+        if let Err(refusal) = self
+            .admission
+            .check(at)
+            .and_then(|decision| AdmittedSource::from_decision(&decision, self.feed.manifest()))
+        {
+            platform.withdraw_source(self.admitted.source_id());
+            return Err(refusal);
+        }
+        let held: Vec<DataReference> = platform
+            .reference_ledger()
+            .references()
+            .filter(|reference| {
+                reference.source_id() == self.admitted.source_id()
+                    && matches!(
+                        reference.origin(),
+                        SourceOrigin::Discovered | SourceOrigin::CatalogueAdmitted
+                    )
+            })
+            .cloned()
+            .collect();
+        let findings = {
+            let mut fetcher = TransportRefetcher::new(self.feed.transport_mut());
+            self.refetch.run(&held, &mut fetcher, budget, at)?
+        };
+        // One finding per reference, in order: the driver skips only the
+        // origins filtered out above, so the two line up.
+        for (finding, reference) in findings.iter().zip(&held) {
+            if finding.check == Some(RevisionCheck::Unretrievable) {
+                platform.mark_unretrievable(
+                    reference,
+                    &format!(
+                        "a re-fetch through the manifest's locator found the extent withdrawn, \
+                         denied or unanswered ({} consecutive failure(s))",
+                        finding.consecutive_failures
+                    ),
+                    at,
+                )?;
+            }
+        }
+        Ok(findings)
     }
 
     /// Release what `open` acquired, at an instant the caller owns, after

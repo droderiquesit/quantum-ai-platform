@@ -21,6 +21,7 @@ pub mod ids;
 pub mod kv;
 pub mod lineage;
 pub mod money;
+pub mod paths;
 pub mod rng;
 pub mod secret;
 pub mod testing;

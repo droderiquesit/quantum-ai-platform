@@ -94,13 +94,6 @@
     "rust/cleartext-logging backend/crates/tests/qip-acceptance/tests/infrastructure.rs": 8,
     "rust/cleartext-logging backend/crates/tests/qip-acceptance/tests/manifest_wiring.rs": 1,
     "rust/cleartext-logging backend/crates/tests/qip-acceptance/tests/order_route_risk_gate.rs": 3,
-    "rust/cleartext-logging backend/crates/tests/qip-acceptance/tests/resilience.rs": 1,
-    "rust/hard-coded-cryptographic-value backend/crates/services/qip-chain/tests/pools.rs": 9,
-    "rust/path-injection backend/crates/edge/qip-edge/src/journal.rs": 1,
-    "rust/path-injection backend/crates/libs/qip-storage/src/segment/file.rs": 2,
-    "rust/uncontrolled-allocation-size backend/crates/edge/qip-edge/src/cell.rs": 1,
-    "rust/uncontrolled-allocation-size backend/crates/services/qip-market-ingestion/src/alternative.rs": 1,
-    "rust/uncontrolled-allocation-size backend/crates/services/qip-market-ingestion/src/depth.rs": 1,
-    "rust/uncontrolled-allocation-size backend/crates/services/qip-market-ingestion/src/narrative.rs": 1
+    "rust/cleartext-logging backend/crates/tests/qip-acceptance/tests/resilience.rs": 1
   }
 }

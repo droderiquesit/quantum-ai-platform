@@ -360,3 +360,70 @@ fn reflex_component_slos_are_declared_with_correct_targets() {
         }
     }
 }
+
+/// Code lines of a Rust source, with `//` prose dropped, so a recording site
+/// named in a comment is not mistaken for one that runs.
+fn code_of(relative: &str) -> String {
+    qip_acceptance::read(relative)
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn fabric_backlog_and_ledger_reconciliation_are_product_objectives_backed_by_recorded_series() {
+    // OBS-9157: both were infrastructure metrics only — an archive-lag gauge
+    // and a break counter — with no target anything could be measured
+    // against. Each objective must be declared with its target, and the
+    // series behind it must have a production recording site; a declared
+    // objective over a series nothing writes is a target that can never be
+    // missed.
+    let shipped = default_slos();
+    let fabric = shipped
+        .iter()
+        .find(|s| s.name == "fabric-archive-backlog")
+        .unwrap_or_else(|| panic!("the Fabric backlog must be a declared objective"));
+    assert_eq!(fabric.service, "fabric");
+    assert!((fabric.target - 0.99).abs() < 1e-12, "{}", fabric.target);
+    assert_eq!(
+        fabric.backlog_ceiling,
+        Some(2.0),
+        "the ceiling must be a number on the objective, not a word in its description"
+    );
+    assert!(
+        code_of("backend/crates/apps/qip-fabricd/src/archiver.rs")
+            .contains("telemetry.archive_lag(unarchived)"),
+        "nothing in qip-fabricd's archiver records the archive backlog the objective reads"
+    );
+
+    let ledger = named(&blueprint_slos(), "reconciliation-breaks-zero-unexplained").clone();
+    assert!((ledger.target - 1.0).abs() < 1e-12);
+    assert!(
+        code_of("backend/crates/runtime/qip-kernel/src/platform.rs")
+            .contains("crate::blueprint_objectives::RECONCILIATION_BREAKS_ZERO,"),
+        "nothing in the kernel feeds the reconciliation objective"
+    );
+}
+
+#[test]
+fn order_fill_integrity_is_a_declared_objective_the_kernel_feeds() {
+    // OBS-7125: fills on orders nobody sent were a halt and a counter, never
+    // an objective. It is declared with a zero-tolerance target and fed where
+    // a cell's report is settled.
+    let shipped = default_slos();
+    let integrity = shipped
+        .iter()
+        .find(|s| s.name == "order-fill-integrity")
+        .unwrap_or_else(|| panic!("order/fill integrity must be a declared objective"));
+    assert!(
+        (integrity.target - 1.0).abs() < 1e-12,
+        "{}",
+        integrity.target
+    );
+    assert!(
+        code_of("backend/crates/runtime/qip-kernel/src/platform.rs")
+            .contains("crate::blueprint_objectives::ORDER_FILL_INTEGRITY,"),
+        "nothing in the kernel feeds the order/fill integrity objective"
+    );
+}

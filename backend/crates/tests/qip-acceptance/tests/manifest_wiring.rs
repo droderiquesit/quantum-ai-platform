@@ -1857,6 +1857,16 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_AMBIENT_JOURNAL",
+        "Unset, the ambient journal is as durable as the platform's own \
+         event log: beside it when that log is a file, in memory when it \
+         is. A deployment that set it would only move the file; a blank \
+         value or a journal whose chain does not verify stops the process \
+         (`qip-deepbrain/src/ambient_journal.rs`), so no value set here \
+         can make the mesh's attention unrecorded.",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_RESEARCH_JURISDICTION",
         "Unset, research is filed under the same one jurisdiction the \
          discovery desk's eligible set defaults to. Admission checks it \
@@ -1912,6 +1922,33 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          nobody has read the shipped connectors' terms for retention yet; \
          a default here would be rights nobody evaluated. No deployment \
          polls a connector from this binary today in any case.",
+    ),
+    // R12-DATA-1041, 1037, 2022/2025/1105 and 2016: four switches over the
+    // connector arms and the discovery desk, each off when unset.
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_KNOWLEDGE_PACKS",
+        THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_REFETCH_EVERY",
+        THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY",
+        THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH",
+        "Unset, a discovery target generates no query and the pass reports \
+         it unprofiled. A profile only directs a pass over a candidate \
+         catalogue, and no environment mounts one \
+         (`QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH` is null everywhere); a \
+         profile file mounted first would be an operator's statement about \
+         entities nothing will look for. Malformed, it stops the process.",
     ),
     // Round 2's tick learning desk (R12-TICK; `qip-deepbrain/src/tick_desk.rs`).
     (
@@ -2043,6 +2080,13 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
 ];
 
 /// Round 2's tick learning desk, all nine of its variables.
+const THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON: &str = "Unset, the desk is \
+    off: no knowledge pack is kept, no referenced extent is re-fetched, no \
+    source is scored. Each acts only on the deep brain's catalogued connector \
+    arms, and no deployment polls a connector from this binary today, so a \
+    value set here would select a desk with nothing to read. A value that is \
+    not `store`/`off` or a cycle count stops the process.";
+
 const THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED: &str = "`QIP_DEEPBRAIN_TICK_EVERY` \
      unset or 0 leaves the desk off, and every other variable of the desk is \
      read only once it is on. Turning it on requires \
@@ -3171,7 +3215,7 @@ fn every_metric_an_alert_policy_queries_is_one_the_platform_emits() {
 /// flat, and nobody chose it — so it is worth waking someone for, and a
 /// policy deleted as "it only fires when things are working" is the deletion
 /// this list exists to make somebody argue for.
-const SERIES_THAT_MUST_PAGE: [(&str, &str); 9] = [
+const SERIES_THAT_MUST_PAGE: [(&str, &str); 11] = [
     (
         "qip_kill_switch_tripped",
         "the platform has halted and no order will be sent until an operator clears it",
@@ -3209,6 +3253,16 @@ const SERIES_THAT_MUST_PAGE: [(&str, &str); 9] = [
         "qip_proposals_unsigned_total",
         "ACT signed nothing off, and the label says which control withheld; on liquidity-read it \
          means the book could not be priced and the desk is flat without having chosen to be",
+    ),
+    (
+        "qip_central_outcome_backlog_orders",
+        "outcomes reported sent have not reached the ledger; a backlog that never drains is fills \
+         nobody booked (RES-9173)",
+    ),
+    (
+        "qip_belief_brier_score",
+        "calibration is a production objective, and stated confidence worse than a coin flip is \
+         sizing on noise (OBS-3118)",
     ),
 ];
 

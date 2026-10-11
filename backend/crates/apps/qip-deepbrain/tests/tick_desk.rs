@@ -49,6 +49,18 @@ fn d(v: f64) -> Decimal {
 
 /// One tick in the edge node's lake line shape.
 fn line(sequence: u64, ms: i64, body: MessageBody, dataset: &str) -> Result<String> {
+    stamped_line(sequence, ms, 3, body, dataset)
+}
+
+/// One tick received `received_after_ms` after the venue stamped it — a
+/// negative value is a tick the platform says it knew before it happened.
+fn stamped_line(
+    sequence: u64,
+    ms: i64,
+    received_after_ms: i64,
+    body: MessageBody,
+    dataset: &str,
+) -> Result<String> {
     let message = MarketMessage::new(
         ObjectId::from_string("obj-ACME"),
         Origin::new(VenueId::new("XLON"), "itch-a", 0, sequence),
@@ -60,8 +72,8 @@ fn line(sequence: u64, ms: i64, body: MessageBody, dataset: &str) -> Result<Stri
     let event = MarketEvent::new(
         message,
         at(ms),
-        at(ms + 3),
-        at(ms + 3),
+        at(ms + received_after_ms),
+        at(ms + received_after_ms),
         Duration::ZERO,
         hash,
         Licence::Granted {
@@ -72,7 +84,7 @@ fn line(sequence: u64, ms: i64, body: MessageBody, dataset: &str) -> Result<Stri
     )?;
     Ok(qip_core::canonical::canonical_json(&serde_json::json!({
         "exchange_time_ns": at(ms).as_nanos(),
-        "capture_time_ns": at(ms + 3).as_nanos(),
+        "capture_time_ns": at(ms + received_after_ms).as_nanos(),
         "feed": "itch-a",
         "partition": 0,
         "sequence": sequence,
@@ -412,5 +424,121 @@ fn the_run_loop_runs_the_tick_desk_on_its_cadence() -> Result<()> {
         vec![(1, ticks), (1, ticks)],
         "a round on each of the two cycles"
     );
+    Ok(())
+}
+
+/// R12-TICK-1049, 1050, 1051: every training row the desk builds from
+/// replayed history carries the venue, the venue's own sequence and the
+/// entitlement of the message it was drawn at.
+///
+/// Mutation: set `sequence: 0` or `entitlement: String::new()` where
+/// `build_examples` builds a `MicroExample`, or `venue` to the instrument —
+/// the row no longer names its message, and the matching assertion fails.
+#[test]
+fn every_training_row_carries_its_venue_sequence_and_entitlement() -> Result<()> {
+    let lake = Arc::new(MemoryBlobStore::new());
+    let ticks = seal_session(&lake, "vendor-depth")?;
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert_eq!(round.ticks, ticks, "premise: the history was read");
+    assert!(
+        round.labelled.len() > 100,
+        "premise: rows were labelled: {}",
+        round.labelled.len()
+    );
+    assert_eq!(round.labelled.len(), round.examples);
+    // `seal_session` stamps sequence 2i+1 (a quote) at i seconds and 2i+2
+    // (a print) half a second later, each received 3 ms after; so a row's
+    // sequence fixes the instant it must have been drawn at.
+    let drawn_at = |sequence: u64| {
+        let i = (sequence - 1) / 2;
+        at(i as i64 * 1_000 + ((sequence - 1) % 2) as i64 * 500 + 3)
+    };
+    assert!(
+        round.labelled.iter().all(|r| r.sequence > 0),
+        "a row names no sequence"
+    );
+    if let Some(row) = round.labelled.iter().find(|r| drawn_at(r.sequence) != r.at) {
+        panic!(
+            "a row at {} names sequence {}, which was knowable at {}",
+            row.at,
+            row.sequence,
+            drawn_at(row.sequence)
+        );
+    }
+    let sequences: BTreeSet<u64> = round.labelled.iter().map(|r| r.sequence).collect();
+    assert!(
+        sequences.len() > 50,
+        "rows share sequences: {} distinct over {} rows",
+        sequences.len(),
+        round.labelled.len()
+    );
+    assert!(round.labelled.iter().all(|r| r.venue == "XLON"));
+    assert!(
+        round
+            .labelled
+            .iter()
+            .all(|r| r.entitlement == "vendor-depth"),
+        "a row does not name the entitlement it was obtained under"
+    );
+    Ok(())
+}
+
+/// R12-TICK-1053: a tick stamped knowable before the venue says it happened
+/// is excluded from replay and training and counted, never read on either
+/// clock.
+///
+/// Mutation: drop the `knowable_at < event_time` exclusion in
+/// `TickDesk::round` and the contaminated tick is replayed.
+#[test]
+fn a_tick_received_before_it_happened_is_excluded_from_replay_and_counted() -> Result<()> {
+    let lake = Arc::new(MemoryBlobStore::new());
+    let clean = seal_session(&lake, "vendor-depth")?;
+    // A print the platform claims to have received two seconds before the
+    // venue stamped it.
+    let contaminated = stamped_line(
+        10_000,
+        200_000,
+        -2_000,
+        MessageBody::Trade {
+            price: d(100.0),
+            quantity: d(1.0),
+            condition: TradeCondition::Regular,
+            aggressor: None,
+        },
+        "vendor-depth",
+    )?;
+    let partition = Partition::new(
+        RecordClass::Market,
+        "XLON",
+        "2026-10-11",
+        "obj-ACME",
+        Entitlement {
+            id: "vendor-depth".into(),
+            raw_retention_permitted: false,
+        },
+    )?;
+    let mut body = contaminated.into_bytes();
+    body.push(b'\n');
+    Lake::new(lake.as_ref()).write_segment(
+        &partition,
+        "edge-1-o00000000000000000002",
+        body,
+        None,
+    )?;
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert_eq!(round.segments, 2, "premise: both segments were pinned");
+    assert_eq!(round.unparsed, 0, "premise: the contaminated tick parsed");
+    assert_eq!(round.contaminated, 1);
+    assert_eq!(round.ticks, clean, "the contaminated tick was replayed");
     Ok(())
 }

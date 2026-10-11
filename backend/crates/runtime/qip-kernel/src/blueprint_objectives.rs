@@ -48,7 +48,7 @@ use qip_core::decimal::Decimal;
 use qip_core::time::{Duration, Timestamp};
 use qip_mesh::delta::DeltaOrder;
 use qip_observability::slo::{
-    BLUEPRINT_SLOS_NEEDING_A_DEPLOYMENT, Slo, SloStatus, SloWindow, blueprint_slos,
+    BLUEPRINT_SLOS_NEEDING_A_DEPLOYMENT, Slo, SloStatus, SloWindow, blueprint_slos, default_slos,
 };
 use std::collections::{BTreeMap, VecDeque};
 
@@ -65,6 +65,21 @@ pub const NETTING_RATIO: &str = "netting-ratio";
 
 /// Every objective this process feeds, in the order it reports them.
 pub const FED_OBJECTIVES: &[&str] = &[RECONCILIATION_BREAKS_ZERO, NETTING_RATIO];
+
+/// The order/fill integrity objective, declared in
+/// [`qip_observability::slo::default_slos`] rather than in §49.1.
+///
+/// Fed per cell report that carried a fill: good when every fill traced to an
+/// order the centre saw sent, bad when the settlement found a
+/// [`crate::central::BreakOrigin::UnsentFill`]. Kept apart from
+/// [`FED_OBJECTIVES`] so §49.1's fifteen stay exactly the blueprint's fifteen;
+/// it is evaluated by [`assess_operational`] and folded into the same LEARN
+/// record, because an integrity objective that nothing evaluates is a
+/// counter wearing a target.
+pub const ORDER_FILL_INTEGRITY: &str = "order-fill-integrity";
+
+/// Objectives outside §49.1 that this process feeds and evaluates.
+pub const FED_OPERATIONAL_OBJECTIVES: &[&str] = &[ORDER_FILL_INTEGRITY];
 
 /// Observations retained per objective.
 ///
@@ -305,6 +320,35 @@ pub fn assess(ledger: &ObjectiveLedger, now: Timestamp) -> ObjectiveReview {
     ObjectiveReview { standings }
 }
 
+/// Evaluate the operational objectives this process feeds — those in
+/// [`FED_OPERATIONAL_OBJECTIVES`], read from `default_slos` so each target has
+/// one home.
+pub fn assess_operational(ledger: &ObjectiveLedger, now: Timestamp) -> ObjectiveReview {
+    let standings = default_slos()
+        .into_iter()
+        .filter(|slo| FED_OPERATIONAL_OBJECTIVES.contains(&slo.name.as_str()))
+        .map(|slo| {
+            let standing = stand_fed(ledger, &slo, now);
+            (slo.name, standing)
+        })
+        .collect();
+    ObjectiveReview { standings }
+}
+
+fn stand_fed(ledger: &ObjectiveLedger, slo: &Slo, now: Timestamp) -> ObjectiveStanding {
+    let (good, total) = ledger.counts(&slo.name, slo.window, now);
+    let status = slo.evaluate(good, total);
+    if status.is_observed() {
+        if status.is_met {
+            ObjectiveStanding::Met(status)
+        } else {
+            ObjectiveStanding::Missed(status)
+        }
+    } else {
+        ObjectiveStanding::Quiet(status)
+    }
+}
+
 fn stand(ledger: &ObjectiveLedger, slo: &Slo, now: Timestamp) -> ObjectiveStanding {
     // Whether an objective is *fed by this process* is a property of the
     // code, not of whether anything has happened yet. Deciding it from the
@@ -314,20 +358,10 @@ fn stand(ledger: &ObjectiveLedger, slo: &Slo, now: Timestamp) -> ObjectiveStandi
     // confusion in miniature as the one this module exists to stop: an
     // absence of observations is not an absence of a measurement path.
     if FED_OBJECTIVES.contains(&slo.name.as_str()) {
-        let (good, total) = ledger.counts(&slo.name, slo.window, now);
-        let status = slo.evaluate(good, total);
-        // `SloStatus::is_observed` and not `is_met`. `evaluate(0, 0)` reports
-        // met, on purpose, and a caller that read that as an achievement is
-        // the whole reason this module was written.
-        return if status.is_observed() {
-            if status.is_met {
-                ObjectiveStanding::Met(status)
-            } else {
-                ObjectiveStanding::Missed(status)
-            }
-        } else {
-            ObjectiveStanding::Quiet(status)
-        };
+        // `SloStatus::is_observed` and not `is_met`, inside `stand_fed`.
+        // `evaluate(0, 0)` reports met, on purpose, and a caller that read
+        // that as an achievement is the whole reason this module was written.
+        return stand_fed(ledger, slo, now);
     }
     match unmeasured(&slo.name) {
         Some((reason, detail)) => ObjectiveStanding::Unobserved(reason, detail),
@@ -447,6 +481,32 @@ pub fn fold(outcome: StageOutcome, ledger: &ObjectiveLedger, now: Timestamp) -> 
     };
     for problem in problems {
         outcome = outcome.with_problem(problem);
+    }
+    // The operational objectives, on the same record and under the same bar:
+    // a page-worthy miss is a problem, and the counts are always reported.
+    let operational = assess_operational(ledger, now);
+    outcome = StageOutcome {
+        detail: format!(
+            "{}; operational: {} of {} objective(s) met, {} missed, {} unobserved",
+            outcome.detail,
+            operational.met(),
+            operational.standings.len(),
+            operational.missed(),
+            operational.unobserved(),
+        ),
+        ..outcome
+    };
+    for (name, standing) in &operational.standings {
+        if let ObjectiveStanding::Missed(status) = standing
+            && status.is_page_worthy()
+        {
+            outcome = outcome.with_problem(format!(
+                "operational objective `{name}` was missed: {:.4} achieved against a target of \
+                 {:.4} over {} observation(s); a fill with no order behind it is a position \
+                 nobody authorised",
+                status.achieved, status.slo.target, status.observations
+            ));
+        }
     }
     // One refusal per plane whose budget is spent, so the LEARN record says
     // which promotion is blocked, on every cycle it stays blocked.

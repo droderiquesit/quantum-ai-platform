@@ -7320,9 +7320,10 @@ impl Cell {
             );
         }
 
-        // Bounded by the cap, and by what the scan found if that is fewer.
-        let mut cycles: Vec<AdmittedCycle> =
-            Vec::with_capacity(cap.min(scanned.opportunities.len()));
+        // Grown as cycles are admitted, never past `cap`, which
+        // `ArbitrageDesk::new` bounds by `MAX_CYCLES_PER_PASS`; nothing is
+        // reserved from the scan's count.
+        let mut cycles: Vec<AdmittedCycle> = Vec::new();
         // Notional admitted against the desk's envelope so far this pass, so
         // the second cycle is judged against what the first will spend.
         let mut pending = Decimal::ZERO;

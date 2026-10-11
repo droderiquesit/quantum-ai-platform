@@ -364,3 +364,71 @@ fn every_gke_cluster_enables_workload_identity_and_runs_its_nodes_as_a_narrow_id
          through Workload Identity only: {keys:?}"
     );
 }
+
+// --- R12-SEC-9135 -------------------------------------------------------------
+
+#[test]
+fn every_service_that_changes_what_runs_records_its_data_writes_in_every_environment() {
+    // Admin activity — a deploy, a cluster or instance change — is logged by
+    // Google whatever is configured. DATA_WRITE is not, and it is what makes
+    // a change an agent made through Cloud Run, the control plane's
+    // Kubernetes API or a Compute Engine machine attributable below that.
+    // Ported from recover/l016-cicd-037, whose `ADMIN_WRITE` entries were a
+    // log type Google refuses; this also refuses that type anywhere, and a
+    // service configured twice, which the API resolves by letting one
+    // config silently replace the other.
+    let configs = resources("google_project_iam_audit_config");
+    let runtime = configs
+        .iter()
+        .find(|(file, name, _)| {
+            file == "infrastructure/terraform/audit-logs.tf" && name == "runtime_changes"
+        })
+        .unwrap_or_else(|| panic!("the root declares no runtime_changes audit config"));
+    let body = compact(&runtime.2);
+    for service in [
+        "\"run.googleapis.com\"",
+        "\"container.googleapis.com\"",
+        "\"compute.googleapis.com\"",
+    ] {
+        assert!(
+            body.contains(service),
+            "{service} is not in the runtime audit config; a change made through it is \
+             recorded only as admin activity"
+        );
+    }
+    assert!(
+        body.contains("audit_log_config{log_type=\"DATA_WRITE\"}"),
+        "the runtime audit config does not enable DATA_WRITE"
+    );
+    assert!(
+        !body.contains("count=") && body.contains("for_each=toset([\"run.googleapis.com\""),
+        "the runtime audit config is switched by a variable; visibility is not optional per \
+         environment: {body}"
+    );
+
+    let mut services: Vec<String> = Vec::new();
+    for (file, name, body) in &configs {
+        let code = compact(body);
+        assert!(
+            !code.contains("\"ADMIN_WRITE\""),
+            "{file}: {name} names log type ADMIN_WRITE, which Google refuses at apply; admin \
+             activity is always logged"
+        );
+        for service in code
+            .split('"')
+            .filter(|piece| piece.ends_with(".googleapis.com"))
+        {
+            assert!(
+                !services.iter().any(|seen| seen == service),
+                "{file}: {name} configures {service} a second time; one config would replace \
+                 the other"
+            );
+            services.push(service.to_string());
+        }
+    }
+    assert!(
+        services.len() >= 5,
+        "premise: the secrets module's and the root's audit configs were not both read \
+         ({services:?})"
+    );
+}
