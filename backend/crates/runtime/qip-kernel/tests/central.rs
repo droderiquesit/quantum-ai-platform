@@ -7187,3 +7187,83 @@ fn the_learn_stage_measures_family_structure_on_a_corpus_granted_through_the_ope
     );
     Ok(())
 }
+/// Issue `id`'s grant through the platform's two-signature intent and return
+/// the envelope's gross limit and the issued record.
+fn issue_through_the_platform(
+    platform: &mut Platform,
+    id: &StrategyId,
+) -> Result<(Decimal, qip_kernel::CapitalGrantEntry)> {
+    let first_at = start();
+    let second_at = start().saturating_add(Duration::from_mins(2));
+    platform.issue_capital(
+        id,
+        &operator("alice.chen", first_at),
+        first_at,
+        "the pilot gate passed and the allocator sized it inside the budget",
+        first_at,
+    )?;
+    let entry = platform.issue_capital(
+        id,
+        &operator("bram.oduya", second_at),
+        second_at,
+        "reviewed the allocation and the pilot evidence independently",
+        second_at,
+    )?;
+    let envelope = platform
+        .central()
+        .envelope(CELL, id)
+        .ok_or_else(|| qip_core::Error::not_found("the envelope the pair issued"))?;
+    Ok((envelope.gross_limit(), entry))
+}
+
+/// R12-RISK-4111 and 4114 through the platform: the confidence governor
+/// narrows the next capital grant a cell is signed, not only the desk's
+/// construction budget, and the issued record names the measurement that did
+/// it. Driven through the same `ConfidenceSignals` LEARN and the feature
+/// statistics write. Mutations that make it fail: call `issue` instead of
+/// `issue_narrowed` in `Platform::issue_capital` (the grants stay equal);
+/// drop the calibration block or the OOD loop in
+/// `ConfidenceSignals::decide_for_grant` (the factor is wrong).
+#[test]
+fn decayed_calibration_and_a_distribution_shift_narrow_the_next_capital_grant() -> Result<()> {
+    use qip_cost_router::context::MarketRegime;
+    use qip_kernel::confidence::{CALIBRATION_FLOOR, OOD_FLOOR};
+    let id = strategy();
+
+    let mut calm = platform_at_pilot(&id)?;
+    let (full, calm_entry) = issue_through_the_platform(&mut calm, &id)?;
+    assert_eq!(calm_entry.outcome, "issued");
+    assert!(
+        calm_entry.detail.is_none(),
+        "premise: an unmeasured platform signs the whole allocation: {calm_entry:?}"
+    );
+
+    let mut decayed = platform_at_pilot(&id)?;
+    decayed
+        .confidence_signals_mut()
+        .observe_calibration(0.45, 60, [MarketRegime::Trending]);
+    let (narrowed, entry) = issue_through_the_platform(&mut decayed, &id)?;
+    assert_eq!(narrowed, full * CALIBRATION_FLOOR);
+    let detail = entry.detail.unwrap_or_default();
+    assert!(detail.contains("calibration"), "{detail}");
+
+    let mut shifted = platform_at_pilot(&id)?;
+    shifted.confidence_signals_mut().observe_distribution(
+        &qip_kernel::feature_statistics::FeatureStatisticsReview {
+            instruments: Vec::new(),
+            unmeasured: Vec::new(),
+            shifted: Vec::new(),
+            quantised: vec!["obj-ANY".to_string()],
+            bytes: 0,
+            cycle: 1,
+            at: start(),
+        },
+    );
+    let (shrunk, _) = issue_through_the_platform(&mut shifted, &id)?;
+    assert_eq!(shrunk, full * OOD_FLOOR);
+    assert!(
+        shrunk < full && narrowed < full,
+        "a contraction widened a grant"
+    );
+    Ok(())
+}

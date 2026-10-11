@@ -242,6 +242,12 @@ fn run() -> Result<()> {
         language_model.chain.clone(),
         Box::new(qip_training::serve::InTreeProvider),
     )?;
+
+    // The survival policy, before anything is served (R12-CAPITAL-4089): the
+    // hedge capacity and emergency reserve every construction withholds, and
+    // the survival ceiling the Risk Gate reads re-derived under them at once.
+    let survival_banner = apply_survival_policy(&mut platform)?;
+    println!("  survival:         {survival_banner}");
     // Where a promoted model's artifact goes (ADR 0083 §5): the registry is
     // a library and performs no I/O, `Platform::promote_model` hands back
     // the digest-named bytes, and this root writes them under its own
@@ -1209,6 +1215,42 @@ fn banner(
     }
 }
 
+/// Apply the survival policy this process withholds under (R12-CAPITAL-4089)
+/// and return the banner line.
+///
+/// Until this existed no composition root called
+/// `Platform::set_survival_policy`, so every binary ran the kernel's library
+/// default and the hedge tier of the survival waterfall withheld nothing in
+/// any process that ever ran. Unset is the shipped figure, never zero; a
+/// value that is not UTF-8, not a fraction, or below the shipped floor stops
+/// the process with the variable named — see
+/// `qip_kernel::survival::SurvivalPolicy::from_settings`.
+fn apply_survival_policy(platform: &mut Platform) -> Result<String> {
+    let policy = survival_policy_from(&|name| std::env::var(name))?;
+    platform.set_survival_policy(policy);
+    Ok(policy.describe())
+}
+
+/// The reading half of [`apply_survival_policy`], over any lookup, so the
+/// refusals are testable without touching the process environment.
+fn survival_policy_from(
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<qip_kernel::survival::SurvivalPolicy> {
+    let read = |name: &str| -> Result<Option<String>> {
+        match lookup(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(Error::invalid(format!(
+                "configuration: {name} is not valid UTF-8; set a decimal fraction or unset it \
+                 for the shipped figure — an unreadable reserve is not a reserve of zero"
+            ))),
+        }
+    };
+    let hedge = read(qip_kernel::survival::HEDGE_CAPACITY_VARIABLE)?;
+    let emergency = read(qip_kernel::survival::EMERGENCY_RESERVE_VARIABLE)?;
+    qip_kernel::survival::SurvivalPolicy::from_settings(hedge.as_deref(), emergency.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     //! `load_central_horizons` is the parser and the file read; this proves
@@ -1546,5 +1588,76 @@ mod tests {
             "the refusal does not say what kind of document was expected: {}",
             error.message()
         );
+    }
+
+    /// R12-CAPITAL-4089 at the composition root: an unset survival
+    /// configuration runs the shipped reserves, not the library's zero; a
+    /// figure below the shipped floor, or one that is not readable, stops the
+    /// process; a raised one is admitted; and the policy the root reads is the
+    /// one the platform it assembles withholds under.
+    ///
+    /// Mutations that make it fail: return `SurvivalPolicy::default()` for an
+    /// unset variable in `survival_policy_from` (first assertion); map the
+    /// `NotUnicode` arm to `Ok(None)` (the unreadable assertion); delete the
+    /// `set_survival_policy` call's body in the kernel (the last assertion).
+    #[test]
+    fn an_unset_survival_configuration_withholds_the_shipped_reserves_and_a_lowered_one_stops_the_process()
+     {
+        use qip_kernel::survival::{HEDGE_CAPACITY_VARIABLE, SurvivalPolicy};
+        let only_hedge = |value: &'static str| {
+            move |name: &str| {
+                if name == HEDGE_CAPACITY_VARIABLE {
+                    Ok(value.to_string())
+                } else {
+                    Err(std::env::VarError::NotPresent)
+                }
+            }
+        };
+        let unset = super::survival_policy_from(&|_| Err(std::env::VarError::NotPresent))
+            .expect("an unset configuration is the shipped policy");
+        assert_eq!(unset, SurvivalPolicy::shipped());
+        assert!(
+            unset.hedge_capacity_fraction().is_positive(),
+            "premise: the shipped policy withholds hedge capacity"
+        );
+        assert!(
+            super::survival_policy_from(&only_hedge("0")).is_err(),
+            "a hedge capacity below the shipped floor was admitted"
+        );
+        assert!(
+            super::survival_policy_from(&only_hedge("five percent")).is_err(),
+            "a hedge capacity that is not a number was admitted"
+        );
+        assert!(
+            super::survival_policy_from(&|_| Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from("x")
+            )))
+            .is_err(),
+            "an unreadable survival variable was read as unset"
+        );
+        let raised = super::survival_policy_from(&only_hedge("0.2"))
+            .expect("raising a reserve is always admitted");
+        assert!(raised.hedge_capacity_fraction() > unset.hedge_capacity_fraction());
+
+        let config = qip_kernel::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(
+            qip_core::Timestamp::from_secs(1_760_000_000),
+            config.seed,
+        );
+        let mut platform = qip_kernel::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .expect("a platform assembles");
+        assert_eq!(
+            platform.survival_policy(),
+            &SurvivalPolicy::default(),
+            "premise: before the root applies it, the library default withholds nothing"
+        );
+        platform.set_survival_policy(unset);
+        assert_eq!(platform.survival_policy(), &unset);
     }
 }

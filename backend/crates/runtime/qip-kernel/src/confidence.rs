@@ -386,6 +386,103 @@ impl ConfidenceSignals {
             contractions,
         })
     }
+
+    /// The contraction the next capital grant to a cell takes.
+    ///
+    /// Until this existed the four triggers narrowed the desk's construction
+    /// budget and nothing else: a platform whose calibration had collapsed
+    /// still signed every cell the full allocation, so the capital that
+    /// trades without asking the centre — the half ADR 0008 lets decide alone
+    /// — was the half §14.2's governor never reached (R12-RISK-4111, 4112,
+    /// 4114, 4115).
+    ///
+    /// A grant is not sized on one thesis, so each trigger is read at its
+    /// platform-wide worst:
+    ///
+    /// * **calibration** — the current Brier score, as [`Self::decide`] reads it;
+    /// * **out-of-distribution** — the worst score over *every* instrument now
+    ///   held, because a cell may trade any of them under the grant;
+    /// * **disagreement** and **regime mismatch** — the weakest contraction of
+    ///   each the last construction took (`last`), which is the platform's most
+    ///   recent measured view of how split its panel was and how far from home
+    ///   its regimes were. Calibration and OOD in `last` are ignored, because
+    ///   they are re-read here from the current measurement rather than from a
+    ///   cycle ago.
+    ///
+    /// The product is in `(0, 1]` for the reason every schedule is, and is
+    /// checked anyway. No measurement is not a contraction: a platform that
+    /// has resolved nothing, sized nothing and seen no shift signs at one.
+    pub fn decide_for_grant(
+        &self,
+        last: Option<&ConfidenceDecision>,
+    ) -> Result<ConfidenceDecision> {
+        let mut contractions = Vec::new();
+        if let Some((brier, evaluated)) = self.calibration {
+            let multiplier = calibration_multiplier(brier)?;
+            if multiplier < Decimal::ONE {
+                contractions.push(Contraction {
+                    trigger: Trigger::Calibration,
+                    subject: None,
+                    multiplier,
+                    reason: format!(
+                        "calibration has decayed to a Brier score of {brier:.3} over {evaluated} \
+                         resolved claim(s); the grant is narrowed to {multiplier}"
+                    ),
+                });
+            }
+        }
+        let mut worst_ood: Option<Contraction> = None;
+        for (object, score) in &self.ood {
+            let multiplier = ood_multiplier(*score)?;
+            if multiplier < Decimal::ONE
+                && worst_ood
+                    .as_ref()
+                    .is_none_or(|held| multiplier < held.multiplier)
+            {
+                worst_ood = Some(Contraction {
+                    trigger: Trigger::OutOfDistribution,
+                    subject: Some(object.clone()),
+                    multiplier,
+                    reason: format!(
+                        "{object}'s recent returns sit {score:.2}x past the shift its own \
+                         estimators' error explains; the grant is narrowed to {multiplier}"
+                    ),
+                });
+            }
+        }
+        contractions.extend(worst_ood);
+        if let Some(last) = last {
+            for trigger in [Trigger::Disagreement, Trigger::RegimeMismatch] {
+                let weakest = last
+                    .contractions
+                    .iter()
+                    .filter(|contraction| contraction.trigger == trigger)
+                    .min_by(|a, b| a.multiplier.cmp(&b.multiplier));
+                if let Some(contraction) = weakest {
+                    contractions.push(contraction.clone());
+                }
+            }
+        }
+
+        let mut multiplier = Decimal::ONE;
+        for contraction in &contractions {
+            multiplier = multiplier
+                .checked_mul(contraction.multiplier)
+                .ok_or_else(|| {
+                    Error::numeric("compounding the grant contractions overflows".to_string())
+                })?;
+        }
+        if multiplier > Decimal::ONE || !multiplier.is_positive() {
+            return Err(Error::invalid(format!(
+                "the confidence governor would narrow a grant by {multiplier}, outside (0, 1]; \
+                 a governor that could widen a grant is not a governor"
+            )));
+        }
+        Ok(ConfidenceDecision {
+            multiplier,
+            contractions,
+        })
+    }
 }
 
 /// The `horizon` label on the per-horizon calibration series (R12-OBS-3118,
@@ -617,5 +714,79 @@ mod tests {
         assert!(ood_multiplier(-1.0).is_err());
         assert!(ood_multiplier(f64::NAN).is_err());
         assert_eq!(ood_multiplier(f64::INFINITY).unwrap(), OOD_FLOOR);
+    }
+
+    fn quantised(object: &str) -> crate::feature_statistics::FeatureStatisticsReview {
+        crate::feature_statistics::FeatureStatisticsReview {
+            instruments: Vec::new(),
+            unmeasured: Vec::new(),
+            shifted: Vec::new(),
+            quantised: vec![object.to_string()],
+            bytes: 0,
+            cycle: 1,
+            at: qip_core::Timestamp::from_secs(1_760_000_000),
+        }
+    }
+
+    /// R12-RISK-4111/4114: calibration and distribution shift narrow the
+    /// next grant from the current measurement, platform-wide — an OOD
+    /// instrument the grant's cell may trade narrows it even though no thesis
+    /// names it. Mutation: skip the OOD loop in `decide_for_grant` and the
+    /// second assertion fails; skip the calibration block and the first does.
+    #[test]
+    fn calibration_and_distribution_shift_narrow_a_grant_platform_wide() {
+        let mut signals = ConfidenceSignals::default();
+        assert_eq!(
+            signals.decide_for_grant(None).unwrap().multiplier,
+            Decimal::ONE,
+            "premise: an unmeasured platform signs at one"
+        );
+        signals.observe_calibration(0.45, 60, [MarketRegime::Trending]);
+        assert_eq!(
+            signals.decide_for_grant(None).unwrap().multiplier,
+            CALIBRATION_FLOOR
+        );
+        signals.observe_distribution(&quantised("obj-ZZZ"));
+        let both = signals.decide_for_grant(None).unwrap();
+        assert_eq!(both.multiplier, CALIBRATION_FLOOR * OOD_FLOOR);
+        let triggers: BTreeSet<Trigger> = both.contractions.iter().map(|c| c.trigger).collect();
+        assert_eq!(
+            triggers,
+            BTreeSet::from([Trigger::Calibration, Trigger::OutOfDistribution])
+        );
+    }
+
+    /// R12-RISK-4112/4115: disagreement and regime mismatch narrow the grant
+    /// through the last construction's own contractions, and the last
+    /// construction's calibration is not counted a second time. Mutation:
+    /// iterate every trigger of `last` instead of the two and calibration is
+    /// compounded twice.
+    #[test]
+    fn disagreement_and_regime_mismatch_from_the_last_construction_narrow_a_grant() {
+        let mut signals = ConfidenceSignals::default();
+        signals.observe_calibration(0.45, 60, [MarketRegime::Trending]);
+        signals.observe_dissent("h1", 2, 3);
+        let last = signals
+            .decide(&[thesis("h1", "obj-AAA", MarketRegime::Crisis)])
+            .unwrap();
+        let carried: BTreeSet<Trigger> = last.contractions.iter().map(|c| c.trigger).collect();
+        assert!(
+            carried.contains(&Trigger::Disagreement) && carried.contains(&Trigger::RegimeMismatch),
+            "premise: the construction was contracted by both: {carried:?}"
+        );
+        let grant = signals.decide_for_grant(Some(&last)).unwrap();
+        assert_eq!(
+            grant.multiplier,
+            CALIBRATION_FLOOR * DISAGREEMENT_FLOOR * REGIME_MISMATCH
+        );
+        assert_eq!(
+            grant
+                .contractions
+                .iter()
+                .filter(|c| c.trigger == Trigger::Calibration)
+                .count(),
+            1
+        );
+        assert!(grant.multiplier <= Decimal::ONE && grant.multiplier.is_positive());
     }
 }

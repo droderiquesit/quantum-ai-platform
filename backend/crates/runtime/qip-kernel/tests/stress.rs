@@ -421,6 +421,7 @@ fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
         obligations: Decimal::ZERO,
         deployable: dec!("10000000"),
         gross: dec!("8000000"),
+        ..LedgerFigures::default()
     };
     let views = [ThesisView {
         hypothesis_id: "hyp-stress".to_string(),
