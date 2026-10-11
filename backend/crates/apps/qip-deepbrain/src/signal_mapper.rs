@@ -17,8 +17,11 @@
 //! `lane_placement`'s cognitive-slow-lane test are what refused the first
 //! placement.
 //!
-//! Nothing in this binary calls [`anomaly_to_observation`] yet. Moving it did
-//! not wire it; the caller, when it is written, belongs here beside it.
+//! Called by [`crate::research::ResearchLoop::sweep`] on every anomaly the
+//! deep brain's own detector sweep finds over the platform's price history.
+//! An observation naming two lacks is split there, one per lack, which is
+//! what `gap::classify` asks for when it refuses mixed evidence; one naming
+//! [`Wanting::Unknown`] is counted unclassified rather than given a class.
 
 use qip_core::Decimal;
 use qip_expansion::gap::{GapTrigger, Observation, Wanting};

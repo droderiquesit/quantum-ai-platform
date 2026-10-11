@@ -1600,17 +1600,42 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
         "Unset, the discovery desk's eligible set is its one-jurisdiction \
          default. A set value replaces that default, and a value that parses \
          to nothing is refused at start-up rather than read as everywhere, so \
-         leaving it unset never admits more than setting it would. More to \
-         the point, nothing in this binary reads the set. \
-         `DiscoveryDesk::eligible_jurisdictions` is reached only from \
-         `EvolutionEngine::discovery_desk`, which nothing calls, and \
-         `ResearchQueue::admit`, the consumer EXPAND-060 names, is \
-         constructed by no composition root. A deployment that set the \
-         variable would configure a value no code path consults: a dial \
-         wired to nothing, which reads as a jurisdiction policy and is not \
-         one. It becomes the deployment's decision the day admit is reached \
-         from this root, and the value set then is a desk's jurisdiction \
-         decision, not a default.",
+         leaving it unset never admits more than setting it would. Since \
+         2026-10-11 the set is consulted: the run loop hands it to the \
+         research loop (`qip_deepbrain::research`), whose desk refuses at \
+         `ResearchQueue::admit` any research filed under a jurisdiction \
+         outside it. Unset, that is the default's one jurisdiction, which is \
+         also the research loop's default jurisdiction, so an unset pair \
+         admits research and never admits more than a set pair would. \
+         Setting it is a desk's jurisdiction decision a deployment has not \
+         made.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_EVERY",
+        "Unset, the research loop sweeps every cycle. It reads `&Platform` \
+         and never `&mut`, so it cannot place, size or cancel anything, and \
+         its outputs are advisory records; a deployment that set it would \
+         choose only how often the curriculum is refreshed. Zero disables \
+         it, which is a decision for an operator shedding load, not a \
+         default.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_JURISDICTION",
+        "Unset, research is filed under the same one jurisdiction the \
+         discovery desk's eligible set defaults to. Admission checks it \
+         against that set and refuses rather than assumes, so no value set \
+         here can admit research the eligible set does not allow.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_COMPUTE",
+        "Unset, a sweep may start ten compute units of research. The units \
+         are the desk's declared cost model, not money and not a cloud \
+         quota: a started item is a record that it may run, and nothing in \
+         this binary spends against it yet. A value is refused if it is not \
+         a non-negative number.",
     ),
 ];
 

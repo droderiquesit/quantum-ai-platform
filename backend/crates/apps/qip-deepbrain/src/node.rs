@@ -121,6 +121,16 @@ pub struct StepOutcome {
     /// pass answer different questions and a cycle line that merged them
     /// would not say which one ran.
     pub discovery: Option<qip_kernel::SourceAssessment>,
+    /// What the research loop's sweep did, on the cycles where one ran
+    /// (`research.rs`). A fourth cadence beside the three above.
+    pub research: Option<crate::research::ResearchRound>,
+    /// What the operations loop observed of this iteration (`operations.rs`).
+    pub operations: Option<crate::operations::OperationsRound>,
+    /// A research sweep or operations pass that failed. Reported on the cycle
+    /// line rather than stopping the node: both loops are advisory, and a
+    /// node that stopped researching because a detector refused a reading
+    /// would stop deciding for a reason that has nothing to do with deciding.
+    pub side_failures: Vec<String>,
     /// Measured on a monotonic clock, so a wall-clock adjustment mid-cycle
     /// cannot invent or erase an overrun.
     pub elapsed: Duration,
@@ -166,6 +176,9 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         evolution: None,
         learning: None,
         discovery: None,
+        research: None,
+        operations: None,
+        side_failures: Vec::new(),
     }
 }
 
@@ -275,6 +288,17 @@ pub fn should_stop(
 ///
 /// The stop flag is read between cycles and again inside [`wait`], so a quiesce
 /// takes effect within one cycle plus a poll interval and never mid-cycle.
+/// The loops run in the gap after each cycle beside evolution: research and
+/// operations. Both optional, so a test that drives the cycle alone passes
+/// [`Loops::default`] and gets the node it always had.
+#[derive(Debug, Default)]
+pub struct Loops<'a> {
+    pub research: Option<&'a mut crate::research::ResearchLoop>,
+    pub operations: Option<&'a mut crate::operations::Operations>,
+}
+
+/// [`run_with`] and no research or operations loop.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     platform: &mut Platform,
     archive: &ChainArchive,
@@ -283,7 +307,35 @@ pub fn run(
     stop: &Arc<AtomicBool>,
     clock: &Arc<dyn qip_core::Clock>,
     restored_through: u64,
+    evolution: Option<&mut crate::evolution::EvolutionEngine>,
+    on_cycle: impl FnMut(&StepOutcome),
+) -> Result<RunSummary> {
+    run_with(
+        platform,
+        archive,
+        config,
+        status,
+        stop,
+        clock,
+        restored_through,
+        evolution,
+        Loops::default(),
+        on_cycle,
+    )
+}
+
+/// The run loop, with the research and operations loops attached.
+#[allow(clippy::too_many_arguments)]
+pub fn run_with(
+    platform: &mut Platform,
+    archive: &ChainArchive,
+    config: &DeepBrainConfig,
+    status: &Arc<Mutex<NodeStatus>>,
+    stop: &Arc<AtomicBool>,
+    clock: &Arc<dyn qip_core::Clock>,
+    restored_through: u64,
     mut evolution: Option<&mut crate::evolution::EvolutionEngine>,
+    mut loops: Loops<'_>,
     mut on_cycle: impl FnMut(&StepOutcome),
 ) -> Result<RunSummary> {
     let started = clock.now();
@@ -321,6 +373,11 @@ pub fn run(
             _ => clock.now(),
         };
         set_status(status, |status| status.cycle_started(now));
+        // The operations loop's series is the whole iteration — the cycle and
+        // everything run in the gap after it — because the remediation it can
+        // apply sheds gap work, and a shift the cycle alone caused would be
+        // one shedding could not touch.
+        let iteration_began = std::time::Instant::now();
 
         // Sense before thinking: the engine's adapter feeds the platform the
         // records this cycle will reason over, and tees bars for the search.
@@ -367,6 +424,59 @@ pub fn run(
             // either would make "no candidates are configured" and "the
             // search happened not to run" read alike.
             outcome.discovery = engine.maybe_discover(platform, cycles, now)?;
+        }
+        // Research after discovery, so a source catalogued this cycle is
+        // licensed for this sweep's admissions. The bounds are the discovery
+        // desk's; with no desk there are no licensed sources and no eligible
+        // jurisdiction, so every admission is refused by name — fail closed
+        // rather than research under a jurisdiction nobody stated.
+        let shed = loops
+            .operations
+            .as_deref()
+            .is_some_and(|ops| ops.is_disabled("research"));
+        if let Some(research) = loops.research.as_deref_mut()
+            && !shed
+        {
+            let (licensed, eligible) = evolution
+                .as_deref()
+                .and_then(|engine| engine.discovery_desk())
+                .map(|desk| {
+                    (
+                        desk.licensed_sources().clone(),
+                        desk.eligible_jurisdictions().clone(),
+                    )
+                })
+                .unwrap_or_default();
+            match research.maybe_sweep(platform, cycles, now, &licensed, &eligible) {
+                Ok(round) => outcome.research = round,
+                Err(error) => outcome
+                    .side_failures
+                    .push(format!("research: {}", error.message())),
+            }
+        }
+        if let Some(operations) = loops.operations.as_deref_mut() {
+            let drifted: Vec<String> = outcome
+                .learning
+                .iter()
+                .flat_map(|round| round.drift.iter())
+                .filter(|d| d.above_threshold)
+                .map(|d| d.reference.clone())
+                .collect();
+            let facts = crate::operations::IterationFacts {
+                at: now,
+                cycle: outcome.report.cycle,
+                cycle_started_at: outcome.report.started_at,
+                iteration_ms: monotonic(iteration_began).as_secs_f64() * 1000.0,
+                problems: outcome.report.problems().len(),
+                anomalies: outcome.research.as_ref().map(|r| r.anomalies),
+                drifted: &drifted,
+            };
+            match operations.observe(platform, &facts) {
+                Ok(round) => outcome.operations = Some(round),
+                Err(error) => outcome
+                    .side_failures
+                    .push(format!("operations: {}", error.message())),
+            }
         }
         if !outcome.report.traversed_every_stage() {
             failed += 1;

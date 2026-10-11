@@ -1,0 +1,399 @@
+//! The research and operations loops reached from the deep brain's run loop
+//! (W1.10, W1.12, W1.15, W3.5): gaps detected over platform state become
+//! ambient signals, the attention router decides what wakes, what wakes is
+//! queued as research with a priced information request, and the operations
+//! loop opens incidents and remediates only through its runbook.
+//!
+//! Each test asserts its premise first — that the platform holds the state
+//! the detector reads — so an empty platform cannot pass for a quiet one.
+
+use qip_contracts::ambient::AcquisitionStatus;
+use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
+use qip_deepbrain::config::DeepBrainConfig;
+use qip_deepbrain::node::{self, Loops};
+use qip_deepbrain::operations::{
+    CapabilitySwitch, IterationFacts, Operations, QUANTUM_ATTEMPT_PREFIX, quantum_outcome,
+};
+use qip_deepbrain::research::{ResearchConfig, ResearchLoop};
+use qip_deepbrain::status::NodeStatus;
+use qip_financial::quality::DataQuality;
+use qip_financial::universe::Universe;
+use qip_kernel::platform::SolverRoutingJournal;
+use qip_kernel::{Platform, PlatformConfig};
+use qip_market::bar::{Bar, Interval};
+use qip_market_ingestion::adapter::SensedRecord;
+use qip_observability::Telemetry;
+use qip_observability::aiops::{Effector, EntityKey, SignalClass};
+use qip_observability::metrics::{labels, names};
+use qip_risk::limits::LimitSet;
+use qip_storage::{ChainArchive, MemoryKeyValueStore};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+
+fn start() -> Timestamp {
+    Timestamp::from_secs(1_760_000_000)
+}
+
+fn platform() -> Platform {
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .unwrap_or_else(|e| panic!("the platform assembles: {e}"))
+}
+
+fn set(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|n| (*n).to_string()).collect()
+}
+
+fn coverage(pairs: &[(&str, &[&str])]) -> BTreeMap<String, BTreeSet<String>> {
+    pairs
+        .iter()
+        .map(|(class, instruments)| ((*class).to_string(), set(instruments)))
+        .collect()
+}
+
+fn research(coverage: BTreeMap<String, BTreeSet<String>>) -> ResearchLoop {
+    ResearchLoop::new(ResearchConfig::default(), coverage)
+        .unwrap_or_else(|e| panic!("the research loop assembles: {e}"))
+}
+
+fn bar(symbol: &str, at: Timestamp, close: f64) -> SensedRecord {
+    let price = |v: f64| Decimal::from_f64(v).unwrap_or_else(|| panic!("a price"));
+    SensedRecord::Bar(Box::new(Bar {
+        object_id: ObjectId::from_string(symbol.to_string()),
+        venue: "XNYS".to_string(),
+        interval: Interval::Day,
+        open_time: at,
+        open: price(close),
+        high: price(close * 1.001),
+        low: price(close * 0.999),
+        close: price(close),
+        volume: Decimal::from_int(1_000_000),
+        trade_count: 5_000,
+        vwap: None,
+        quality: DataQuality::default(),
+    }))
+}
+
+/// Sixty quiet days around 100 and then a 25% jump, for each symbol.
+fn jumps(symbols: &[&str]) -> Vec<SensedRecord> {
+    let mut records = Vec::new();
+    for symbol in symbols {
+        for day in 0..61i64 {
+            let close = if day == 60 {
+                125.0
+            } else if day % 2 == 0 {
+                100.1
+            } else {
+                99.9
+            };
+            let at = start().saturating_sub(Duration::from_days(61 - day));
+            records.push(bar(symbol, at, close));
+        }
+    }
+    records
+}
+
+#[test]
+fn an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router() {
+    let platform = platform();
+    assert!(platform.price_history().is_empty(), "premise: no history");
+    let metrics = platform.telemetry().metrics.clone();
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A", "obj-B"])]));
+
+    let round = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert_eq!(round.raised, 1, "{round:?}");
+    assert_eq!(round.admissions.get("queued"), Some(&1), "{round:?}");
+    assert_eq!(
+        round.attention.get(&("reflex_model_update", "activated")),
+        Some(&1),
+        "an unsupported-request gap is an assumption signal: {round:?}"
+    );
+    assert_eq!(loop_.desk().queue().len(), 1);
+    assert_eq!(
+        loop_.advisories().count(),
+        1,
+        "the mesh's output is an advisory"
+    );
+    // Full uncertainty, no economic value, against a 2000 bp acquisition:
+    // 4000 - 2000 clears the 1000 bp floor, so the request launches.
+    assert_eq!(round.info_launched, 1);
+    assert!(
+        loop_
+            .info_requests()
+            .all(|r| r.status() == AcquisitionStatus::InProgress)
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(
+        snapshot.counter(
+            names::RESEARCH_GAPS,
+            &labels([("class", "data"), ("outcome", "queued")])
+        ),
+        1
+    );
+    assert_eq!(
+        snapshot.gauge(names::RESEARCH_QUEUE_ITEMS, &labels([])),
+        Some(1.0)
+    );
+}
+
+#[test]
+fn with_no_eligible_jurisdiction_every_admission_is_refused_and_nothing_is_queued() {
+    let platform = platform();
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A"])]));
+    let round = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&[]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(round.raised, 1, "premise: a gap was raised");
+    assert_eq!(round.admissions.get("refused"), Some(&1), "{round:?}");
+    assert!(loop_.desk().queue().is_empty());
+    assert_eq!(round.info_launched, 0, "refused research asks for nothing");
+}
+
+#[test]
+fn a_gap_worth_less_than_its_cheapest_observation_launches_no_information_request() {
+    let platform = platform();
+    // One of three instruments covered: a weaker coverage gap than none.
+    let mut weak = platform;
+    weak.observe(vec![bar("obj-A", start(), 100.0)]);
+    assert!(
+        weak.price_history().contains_key("obj-A"),
+        "premise: the bar reached the price history"
+    );
+    let mut loop_ = research(coverage(&[("Equity", &["obj-A", "obj-B", "obj-C"])]));
+    let round = loop_
+        .sweep(&weak, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    // Severity 2/3: 6667 bp of uncertainty is worth 2667 against a 2000 bp
+    // acquisition, below the 1000 bp floor once the cost is paid.
+    assert_eq!(round.admissions.get("queued"), Some(&1), "{round:?}");
+    assert_eq!(round.info_launched, 0, "{round:?}");
+}
+
+#[test]
+fn price_jumps_on_several_subjects_reach_the_queue_through_the_anomaly_mapper_as_one_cluster() {
+    let mut platform = platform();
+    platform.observe(jumps(&["obj-A", "obj-B", "obj-C"]));
+    assert_eq!(platform.price_history().len(), 3, "premise: three series");
+    let mut loop_ = research(BTreeMap::new());
+
+    let round = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+
+    assert!(
+        round.anomalies >= 3,
+        "premise: the jumps are anomalies: {round:?}"
+    );
+    let clustered: Vec<String> = loop_
+        .desk()
+        .queue()
+        .ranked()
+        .iter()
+        .map(|e| e.item().research_question.clone())
+        .filter(|q| q.contains("subjects show the same"))
+        .collect();
+    assert_eq!(
+        clustered.len(),
+        1,
+        "one investigation nobody asked for: {round:?}"
+    );
+    let lineage = loop_
+        .desk()
+        .lineage(&clustered[0])
+        .unwrap_or_else(|| panic!("the cluster keeps its lineage"));
+    assert_eq!(lineage.derivation.rule, "detector:anomaly_cluster");
+}
+
+#[test]
+fn the_run_loop_sweeps_research_and_observes_operations_every_cycle() {
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+    let config = PlatformConfig::default();
+    let context = Context::new(clock.clone(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let node_config = DeepBrainConfig {
+        cycle_interval: Duration::from_millis(1),
+        max_cycles: Some(2),
+        ..DeepBrainConfig::default()
+    };
+    let roster = qip_deepbrain::roster::clear(start()).unwrap_or_else(|e| panic!("{e}"));
+    let status = Arc::new(Mutex::new(NodeStatus::opening(
+        &roster,
+        &node_config,
+        start(),
+    )));
+    let archive = ChainArchive::open(Arc::new(MemoryKeyValueStore::default()))
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mut research = research(coverage(&[("Equity", &["obj-A"])]));
+    let mut operations = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    let mut researched = 0;
+    let mut observed = 0;
+    node::run_with(
+        &mut platform,
+        &archive,
+        &node_config,
+        &status,
+        &Arc::new(AtomicBool::new(false)),
+        &clock,
+        0,
+        None,
+        Loops {
+            research: Some(&mut research),
+            operations: Some(&mut operations),
+        },
+        |outcome| {
+            researched += usize::from(outcome.research.is_some());
+            observed += usize::from(outcome.operations.is_some());
+            assert!(
+                outcome.side_failures.is_empty(),
+                "{:?}",
+                outcome.side_failures
+            );
+        },
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!((researched, observed), (2, 2));
+    let deployment = EntityKey::new("deployment", "qip-deepbrain");
+    assert!(
+        operations
+            .graph()
+            .classes_for(&deployment)
+            .contains(&SignalClass::Infrastructure)
+    );
+}
+
+// --- operations -------------------------------------------------------------
+
+fn facts(at: Timestamp, ms: f64, drifted: &[String]) -> IterationFacts<'_> {
+    IterationFacts {
+        at,
+        cycle: 1,
+        cycle_started_at: at,
+        iteration_ms: ms,
+        problems: 0,
+        anomalies: Some(2),
+        drifted,
+    }
+}
+
+#[test]
+fn a_level_shift_in_iteration_time_opens_one_incident_and_the_runbook_sheds_research() {
+    let platform = platform();
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    let mut incidents = Vec::new();
+    for i in 0..24i64 {
+        let ms = if i < 12 {
+            10.0 + (i % 2) as f64
+        } else {
+            1_000.0
+        };
+        let at = start().saturating_add(Duration::from_secs(i));
+        let round = ops
+            .observe(&platform, &facts(at, ms, &[]))
+            .unwrap_or_else(|e| panic!("{e}"));
+        incidents.extend(round.incident);
+        if i == 11 {
+            // Premise: a steady series opened nothing and shed nothing.
+            assert!(incidents.is_empty() && !ops.is_disabled("research"));
+        }
+    }
+    assert_eq!(
+        incidents.len(),
+        1,
+        "one shift is one incident: {incidents:?}"
+    );
+    let incident = &incidents[0];
+    assert!(incident.remediation.is_ok(), "{incident:?}");
+    assert!(ops.is_disabled("research"));
+    let audit = ops.remediator().audit();
+    assert_eq!(audit.records().len(), 1);
+    assert!(audit.verify());
+    let sources: BTreeSet<_> = incident.timeline.iter().map(|e| e.source).collect();
+    assert!(sources.contains(&qip_observability::aiops::TimelineSource::Telemetry));
+    assert!(sources.contains(&qip_observability::aiops::TimelineSource::DataAnomaly));
+}
+
+#[test]
+fn signals_of_all_five_classes_attach_to_the_shared_deployment_entity() {
+    let platform = platform();
+    let mut ops = Operations::new(start()).unwrap_or_else(|e| panic!("{e}"));
+    let drifted = vec!["model-1".to_string()];
+    ops.observe(&platform, &facts(start(), 10.0, &drifted))
+        .unwrap_or_else(|e| panic!("{e}"));
+    ops.observe_fills(&[("XNYS".to_string(), 40.0, start())], start())
+        .unwrap_or_else(|e| panic!("{e}"));
+    let deployment = EntityKey::new("deployment", "qip-deepbrain");
+    let classes = ops.graph().classes_for(&deployment);
+    assert_eq!(classes.len(), 5, "{classes:?}");
+    assert!(
+        ops.graph()
+            .classes_for(&EntityKey::new("venue", "XNYS"))
+            .contains(&SignalClass::TradingBehaviour)
+    );
+}
+
+#[test]
+fn the_effector_carries_out_nothing_but_disabling_this_nodes_own_research() {
+    let mut switch = CapabilitySwitch::default();
+    assert!(switch.apply("restart", "research").is_err());
+    assert!(
+        switch
+            .apply("disable_capability", "execution-engine")
+            .is_err()
+    );
+    assert!(
+        !switch.is_disabled("research"),
+        "premise: nothing applied yet"
+    );
+    assert!(switch.apply("disable_capability", "research").is_ok());
+    assert!(switch.is_disabled("research"));
+}
+
+fn routing(note: &str, ran: &[&str]) -> SolverRoutingJournal {
+    SolverRoutingJournal {
+        chosen: "classical".into(),
+        ran: ran.iter().map(|s| (*s).to_string()).collect(),
+        objective: 1.0,
+        classical_objective: 1.0,
+        improvement_over_classical: 0.0,
+        measured_quantum_advantage: None,
+        quantum_note: note.into(),
+    }
+}
+
+#[test]
+fn only_an_attempted_quantum_solve_is_a_job_and_one_with_no_run_failed() {
+    let attempted = format!("{QUANTUM_ATTEMPT_PREFIX} on ibm, a simulator");
+    assert_eq!(
+        quantum_outcome(&routing(
+            "no quantum provider is configured",
+            &["exact_enumeration"]
+        )),
+        None
+    );
+    assert_eq!(
+        quantum_outcome(&routing(&attempted, &["exact_enumeration", "quantum"])),
+        Some("succeeded")
+    );
+    assert_eq!(
+        quantum_outcome(&routing(&attempted, &["exact_enumeration"])),
+        Some("failed")
+    );
+}
