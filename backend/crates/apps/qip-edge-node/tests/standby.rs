@@ -171,6 +171,127 @@ fn run(sequence: &[Step]) -> std::result::Result<Option<u64>, String> {
     Ok(store.load().ok().flatten().map(|(record, _)| record.epoch))
 }
 
+/// A store that lands another process's write between a keeper's read and
+/// its swap: the race the interleaving model above cannot produce, because a
+/// keeper's tick there loads and swaps with nothing in between.
+#[derive(Debug)]
+struct Racing {
+    inner: Arc<MemoryLeaseStore>,
+    interloper: std::sync::Mutex<Option<LeaseRecord>>,
+}
+
+impl LeaseStore for Racing {
+    fn load(&self) -> Result<Option<(LeaseRecord, u64)>> {
+        let read = self.inner.load()?;
+        if let Some(next) = self.interloper.lock().expect("unpoisoned").take() {
+            let version = read.as_ref().map(|(_, version)| *version);
+            assert!(
+                self.inner.swap(version, &next)?,
+                "premise: the interloper's write landed"
+            );
+        }
+        Ok(read)
+    }
+    fn swap(&self, expected: Option<u64>, next: &LeaseRecord) -> Result<bool> {
+        self.inner.swap(expected, next)
+    }
+}
+
+/// A keeper whose read went stale before its swap loses the swap and is
+/// granted nothing: a holder's renewal does not overwrite the successor that
+/// promoted in between, and a standby's promotion does not overwrite a
+/// holder that renewed in between. Added by the round-2 mutation audit: the
+/// interleaving test's doc named "an unconditional renewal write" as a
+/// mutation it caught, and it survived — there is no gap between load and
+/// swap in that model. Mutation: swap the renewal (or the promotion) against
+/// a freshly re-read version instead of the one the decision was made on,
+/// and the stale keeper's write lands over the other's.
+#[test]
+fn a_keeper_whose_read_went_stale_loses_the_swap_and_is_granted_nothing() {
+    let timing = timing();
+    // Renewal half.
+    let inner = Arc::new(MemoryLeaseStore::new());
+    let racing = Arc::new(Racing {
+        inner: Arc::clone(&inner),
+        interloper: std::sync::Mutex::new(None),
+    });
+    let fence = Fence::new();
+    let mut primary = LeaseKeeper::new(
+        "primary",
+        Role::Primary,
+        timing,
+        Arc::clone(&racing) as Arc<dyn LeaseStore>,
+        fence.clone(),
+        vec![venue()],
+        Box::new(SimulatedSessions),
+    )
+    .expect("a keeper");
+    assert_eq!(
+        primary.tick(t(0)).expect("a store"),
+        LeaseEvent::Acquired { epoch: 1 }
+    );
+    let successor = LeaseRecord {
+        epoch: 2,
+        holder: "standby".to_string(),
+        renewed_at_ns: t(1).as_nanos(),
+    };
+    *racing.interloper.lock().expect("unpoisoned") = Some(successor.clone());
+    assert_eq!(primary.tick(t(1)).expect("a store"), LeaseEvent::Contended);
+    assert_eq!(
+        inner.load().expect("readable").map(|(record, _)| record),
+        Some(successor),
+        "the stale renewal overwrote the successor"
+    );
+    assert!(
+        fence.admits(t(0).saturating_add(timing.ttl)).is_err(),
+        "the lost renewal extended the hold"
+    );
+
+    // Promotion half: the primary's hold has lapsed past the margin, and it
+    // renews between the standby's read and its swap.
+    let inner = Arc::new(MemoryLeaseStore::new());
+    let holder = LeaseRecord {
+        epoch: 1,
+        holder: "primary".to_string(),
+        renewed_at_ns: t(0).as_nanos(),
+    };
+    assert!(inner.swap(None, &holder).expect("writable"), "premise");
+    let racing = Arc::new(Racing {
+        inner: Arc::clone(&inner),
+        interloper: std::sync::Mutex::new(None),
+    });
+    let fence = Fence::new();
+    let mut standby = LeaseKeeper::new(
+        "standby",
+        Role::Standby,
+        timing,
+        Arc::clone(&racing) as Arc<dyn LeaseStore>,
+        fence.clone(),
+        vec![venue()],
+        Box::new(SimulatedSessions),
+    )
+    .expect("a keeper");
+    let late = t(0)
+        .saturating_add(timing.ttl)
+        .saturating_add(timing.margin)
+        .saturating_add(Duration::from_secs(1));
+    let renewed = LeaseRecord {
+        renewed_at_ns: late.as_nanos(),
+        ..holder
+    };
+    *racing.interloper.lock().expect("unpoisoned") = Some(renewed.clone());
+    assert_eq!(standby.tick(late).expect("a store"), LeaseEvent::Contended);
+    assert_eq!(
+        inner.load().expect("readable").map(|(record, _)| record),
+        Some(renewed),
+        "the stale promotion overwrote the renewed holder"
+    );
+    assert!(
+        fence.admits(late).is_err(),
+        "the lost promotion was granted"
+    );
+}
+
 /// For every interleaving of seven steps — renewal, standby ticks, time
 /// shorter and longer than a hold, and a primary partitioned from the store
 /// while still running — at most one fence admits an order at any instant,
@@ -180,7 +301,10 @@ fn run(sequence: &[Step]) -> std::result::Result<Option<u64>, String> {
 /// from `LeaseKeeper::tick` and a standby promotes while the primary's hold
 /// is still valid — the first interleaving `TickPrimary, TickStandby` fails.
 /// Replacing the renewal's `swap(Some(version), …)` with an unconditional
-/// write fails it the other way, a former holder overwriting its successor.
+/// write is *not* caught here — each tick in this model loads and swaps with
+/// nothing between, so the version is always current (round-2 mutation
+/// audit); `a_keeper_whose_read_went_stale_loses_the_swap_and_is_granted_nothing`
+/// is the guard on that compare-and-swap.
 #[test]
 fn at_most_one_fence_admits_at_any_instant_over_every_interleaving() {
     // Premise: the model can reach both a promotion and a renewal, so the
