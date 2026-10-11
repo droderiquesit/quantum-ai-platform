@@ -85,4 +85,16 @@ USER 10001:10001
 
 COPY --from=build /out/qip /qip
 
+# The committed trust files (ADR 0110 decision 2, ADR 0112): the trust bundle
+# of public keys every process verifies the centre's artefacts against, and
+# the pinned Google roots a process authenticates a Google API with. Baked
+# into the image Binary Authorization admits rather than fetched at run time,
+# because a bundle fetched from a server moves trust from the attested image
+# to whatever answers the fetch. The whole directory, so an environment's file
+# is in the image the moment it is committed and the build needs no argument
+# naming it; `infrastructure/trust/README.md` says what may live there.
+# `image.yml` carries the same directory out of this image into the
+# execution node's boot image.
+COPY infrastructure/trust/ /etc/qip/trust/
+
 ENTRYPOINT ["/qip"]

@@ -48,16 +48,16 @@
 //! **The name a certificate carries.** The service account's email is not a
 //! DNS name, and the platform's peer checks ([`crate::tls::PeerNames`]) are
 //! DNS names, so [`WorkloadSubject`] maps `name@project.iam.gserviceaccount.com`
-//! to the DNS name `name.project.iam.gserviceaccount.com` and requests both
-//! that and the email as subject alternative names. That a workload can
+//! to the DNS name `name.project.iam.gserviceaccount.com` and requests that
+//! one name as its only subject alternative name. That a workload can
 //! obtain a certificate naming only *itself* (ADR 0112 §2) is not something
 //! this module can enforce — it asks for its own name, and a compromised
-//! process could ask for another. CA Service's `DEFAULT` subject mode lets
-//! a template constrain the requested names by pattern but not to the
-//! caller, so the guarantee needs either one CA pool, or one IAM-conditioned
-//! certificate template, per workload identity, or the API's
-//! `REFLECTED_SPIFFE` subject mode (which writes the caller's identity as a
-//! URI SAN, and would need `PeerNames` to match URIs as well as DNS names).
+//! process could ask for another. The pool enforces it: its workload
+//! template admits exactly one DNS SAN shaped as a service account's, and
+//! each requester's `certificateRequester` grant is IAM-conditioned on the
+//! SAN naming its own account (`infrastructure/terraform/security.tf`). That
+//! pairing is written from Google's documentation and has not been run
+//! against a live CA.
 //! Until the Terraform names one of those, the pool's requester binding is
 //! the only control on who may be named.
 
@@ -440,8 +440,12 @@ pub fn request_body(
             },
             "subjectConfig": {
                 "subjectAltName": {
+                    // One DNS SAN and nothing else: the pool's workload
+                    // template refuses any other shape, and each requester's
+                    // IAM condition admits only the SAN naming its own
+                    // service account (infrastructure/terraform/security.tf).
+                    // An email SAN beside it would make every request fail.
                     "dnsNames": [subject.dns_name()],
-                    "emailAddresses": [subject.email()],
                 },
             },
             "x509Config": {
@@ -1055,9 +1059,12 @@ uK+H33AIsPNdLe9rdYkpZkXurUOjti85jRIqsgxlMYNWn8iFIJSu2/SF8w==\n\
             san["dnsNames"],
             serde_json::json!(["qip-dev-fabricd.proj-1.iam.gserviceaccount.com"])
         );
+        // The pool's template admits exactly one DNS SAN; anything beside it
+        // is a request every CA would refuse.
         assert_eq!(
-            san["emailAddresses"],
-            serde_json::json!(["qip-dev-fabricd@proj-1.iam.gserviceaccount.com"])
+            san.as_object().map(|fields| fields.len()),
+            Some(1),
+            "the request carries a SAN kind the template refuses: {san}"
         );
         let x509 = &body["config"]["x509Config"];
         assert_eq!(x509["caOptions"]["isCa"], false);

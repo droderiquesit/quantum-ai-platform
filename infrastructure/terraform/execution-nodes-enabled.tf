@@ -31,6 +31,21 @@ variable "execution_nodes_enabled" {
   default     = false
   nullable    = false
 
+  # A node verifies the centre against the committed trust bundle and speaks
+  # mutual TLS on a CA Service certificate, and holds no shared key to fall
+  # back to (ADR 0110, ADR 0112). Enabling one where the environment has no
+  # bundle, no pinned Google roots or no CA would create a machine whose
+  # binary refuses to start, restarting for ever under `Restart=always` — so
+  # it is refused here, naming what is missing.
+  validation {
+    condition = !var.execution_nodes_enabled || (
+      var.artefact_trust_bundle_file != null
+      && var.google_tls_roots_file != null
+      && var.certificate_authority != null
+    )
+    error_message = "execution_nodes_enabled is true and the environment lacks what every node needs to start: a committed trust bundle (artefact_trust_bundle_file), the pinned Google roots (google_tls_roots_file) and a CA Service pool (certificate_authority). A node holds no shared key to fall back to."
+  }
+
   # Enabling nothing is a mistake that reads as success: the owner believes a
   # node was turned on and the plan shows no change.
   validation {

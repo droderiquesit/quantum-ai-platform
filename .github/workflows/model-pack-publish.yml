@@ -1,0 +1,307 @@
+# Publish a model pack: ADR 0110 decision 4's two-person rule, made a run.
+#
+# A model pack widens what the platform may do, so it is signed under the
+# `model-pack` key only by this workflow, only in a GitHub protected
+# environment a second person approves, and only over the bytes of the
+# reviewed commit. The two persons are the author of the commit that last
+# changed the pack and the environment's approver; neither credential is
+# minted by this platform, which is ADR 0076's condition for a two-person
+# rule to mean anything. A halt is never published here: halts are one-person
+# by design and are signed by the API.
+#
+# What enforces the rule, in the order it is checked:
+#
+#   1. The `model-pack-publish` environment, configured in the repository's
+#      settings (not in this file, and not by Terraform) with **required
+#      reviewers** and **"Prevent self-review"** on, and with deployment
+#      branches limited to the default branch. GitHub holds the job until an
+#      approver who is not the dispatcher approves. If the environment is
+#      missing those settings this workflow cannot tell, which is why 2 below
+#      exists rather than trusting 1.
+#   2. The `two people approved this` step reads the run's approvals from the
+#      GitHub API and refuses unless an approver approved this environment who
+#      is neither the dispatching actor nor the pack's author, so that at least
+#      two distinct identities stand behind the signature.
+#   3. Workload identity federation to `qip-<env>-pack-publisher`, through a
+#      pool whose provider admits only this repository, this workflow file,
+#      the default branch and this environment
+#      (`infrastructure/terraform/artefact-signing.tf`). There is no key: the
+#      token GitHub mints for this one job is exchanged for a short-lived
+#      credential, and the publisher holds `cloudkms.signer` on the
+#      model-pack key and on nothing else.
+#   4. The signature covers the publication record (author, approver,
+#      approval instant) inside the signed bytes, so a pack cannot be
+#      re-attributed after signing, and `qip_contracts::trust::Publication`
+#      refuses a record naming one person twice wherever it is read.
+#
+# Identity is derived from the committed tfvars, as every workflow here does:
+# a repository variable is forbidden (.claude/rules/domains/infrastructure.md).
+#
+# REQUIRED FOLLOW-UP, said at the top because the run fails without it: the
+# signing message is `qip_contracts::trust::signing_message` over
+# `ModelPack::signing_payload` — a domain tag and three length-prefixed parts
+# whose last includes the publication — and it is produced by the Rust that
+# defines it, never re-implemented here in shell. `qip-cli` has no
+# `model-pack` subcommand yet. This workflow calls
+#
+#   qip model-pack signing-message --pack P --author A --approver B
+#       --approved-at T --key-version V --out M
+#   qip model-pack attach-signature --pack P --author A --approver B
+#       --approved-at T --key-version V --signature-der S --out O
+#   qip model-pack verify --pack O --trust-bundle F
+#
+# and refuses, naming the gap, until that subcommand exists. Nothing is
+# signed before it does.
+
+name: model-pack-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "The environment whose model-pack key signs. prod is refused here: it is published by a human dispatch outside this pool."
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+          - stage
+      pack:
+        description: "The reviewed pack, by repository path: data/model-packs/<name>.json, unsigned, its publication filled in by this run."
+        required: true
+        type: string
+
+# Nothing by default; the one job asks for exactly what it uses.
+permissions: {}
+
+# One publication per environment at a time: two runs signing two packs
+# under one key would interleave nothing harmful, but two runs publishing the
+# same pack would produce two signatures for one review.
+concurrency:
+  group: model-pack-publish-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # The protected environment: required reviewers, self-review prevented,
+    # the default branch only. See the header's point 1.
+    environment: model-pack-publish
+    permissions:
+      contents: read
+      # The OIDC token workload identity federation exchanges.
+      id-token: write
+      # GET /repos/{owner}/{repo}/actions/runs/{run_id}/approvals.
+      actions: read
+    steps:
+      - name: refuse prod, a branch that is not the default, and a pack path that is not one
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+          PACK: ${{ inputs.pack }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$TARGET_ENVIRONMENT" = "prod" ]; then
+            echo "prod is not published from this workflow" >&2
+            exit 1
+          fi
+          case "$TARGET_ENVIRONMENT" in dev|test|stage) ;; *) echo "unknown environment" >&2; exit 1 ;; esac
+          if [ "$GITHUB_REF" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "dispatched on ${GITHUB_REF}; a pack is published from the reviewed default branch only" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$PACK" | grep -Eqx 'data/model-packs/[a-z0-9-]+\.json'; then
+            echo "pack must be data/model-packs/<name>.json" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # The pack's own history decides its author, so the whole history.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: the pack is the reviewed commit's
+        id: pack
+        env:
+          PACK: ${{ inputs.pack }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ -f "$PACK" ] || { echo "$PACK is not in the commit being published" >&2; exit 1; }
+          # The bytes signed are the bytes of this commit: a clean tree, at
+          # the SHA GitHub ran.
+          [ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "checkout is not $GITHUB_SHA" >&2; exit 1; }
+          git diff --quiet HEAD -- "$PACK" || { echo "$PACK differs from the commit" >&2; exit 1; }
+          change="$(git log -1 --format=%H -- "$PACK")"
+          [ -n "$change" ] || { echo "no commit introduced $PACK" >&2; exit 1; }
+          # The author as GitHub knows them — a login, which the approval
+          # API also returns — not the free-text name in the commit.
+          author="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/commits/${change}" | jq -r '.author.login // empty')"
+          [ -n "$author" ] || { echo "the commit that changed $PACK has no GitHub author; a publication must name a person" >&2; exit 1; }
+          case "$author" in *[!A-Za-z0-9-]*) echo "unexpected author login" >&2; exit 1 ;; esac
+          echo "author=${author}" >> "$GITHUB_OUTPUT"
+          echo "change=${change}" >> "$GITHUB_OUTPUT"
+          echo "pack $PACK last changed in $change by $author"
+
+      - name: two people approved this
+        id: approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTHOR: ${{ steps.pack.outputs.author }}
+        run: |
+          set -euo pipefail
+          approvals="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/approvals")"
+          # Approvals of this environment, by login, lower-cased: `Alice`
+          # approving `alice`'s commit is one person.
+          approvers="$(printf '%s' "$approvals" | jq -r '
+            [ .[] | select(.state == "approved")
+                  | select(any(.environments[]; .name == "model-pack-publish"))
+                  | .user.login | ascii_downcase ] | unique | .[]')"
+          author="$(printf '%s' "$AUTHOR" | tr '[:upper:]' '[:lower:]')"
+          actor="$(printf '%s' "$GITHUB_ACTOR" | tr '[:upper:]' '[:lower:]')"
+          approver=""
+          for login in $approvers; do
+            if [ "$login" != "$author" ] && [ "$login" != "$actor" ]; then
+              approver="$login"
+              break
+            fi
+          done
+          if [ -z "$approver" ]; then
+            echo "no approval of model-pack-publish by someone other than the pack's author (${author}) and the dispatcher (${actor}); approvals seen: $(printf '%s' "$approvers" | tr '\n' ' ')" >&2
+            echo "configure the environment with required reviewers and prevent-self-review, and have a second person approve" >&2
+            exit 1
+          fi
+          distinct="$(printf '%s\n%s\n' "$author" "$approver" | sort -u | wc -l)"
+          [ "$distinct" -ge 2 ] || { echo "fewer than two distinct identities stand behind this publication" >&2; exit 1; }
+          # Approval precedes this job's start, so this instant is after it.
+          echo "approver=${approver}" >> "$GITHUB_OUTPUT"
+          echo "approved_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "published by ${author} (author) and ${approver} (approver)"
+
+      # Project, number and region from the environment's committed tfvars,
+      # and the model-pack key version from the environment's committed trust
+      # bundle — the version every verifier holds, so this run cannot sign
+      # under a version no cell or brain trusts.
+      - name: derive the identity from the tfvars
+        id: identity
+        env:
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          set -euo pipefail
+          tfvars="infrastructure/environments/${TARGET_ENVIRONMENT}/terraform.tfvars"
+          [ -f "$tfvars" ] || { echo "no tfvars at $tfvars" >&2; exit 1; }
+          project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          number="$(sed -n 's/^project_number[[:space:]]*=[[:space:]]*\([0-9]*\)/\1/p' "$tfvars" | head -1)"
+          bundle="$(sed -n 's/^artefact_trust_bundle_file[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
+          if [ -z "$project" ] || [ -z "$number" ]; then
+            echo "$tfvars carries no project_id/project_number" >&2
+            exit 1
+          fi
+          for value in "$project" "$number"; do
+            case "$value" in *[!a-z0-9-]*) echo "$tfvars names a project containing a character a project cannot: '$value'" >&2; exit 1 ;; esac
+          done
+          if [ -z "$bundle" ]; then
+            echo "$tfvars names no artefact_trust_bundle_file: this environment has no committed trust bundle, so nothing could verify a pack signed here" >&2
+            exit 1
+          fi
+          printf '%s' "$bundle" | grep -Eqx 'infrastructure/trust/[a-z0-9-]+\.json' || { echo "unexpected bundle path '$bundle'" >&2; exit 1; }
+          [ -f "$bundle" ] || { echo "$bundle is named and not committed" >&2; exit 1; }
+          version="$(jq -r '[.keys[] | select(.class == "model-pack")] | if length == 1 then .[0].key_version else empty end' "$bundle")"
+          [ -n "$version" ] || { echo "$bundle publishes no single model-pack key version" >&2; exit 1; }
+          printf '%s' "$version" | grep -Eqx "projects/${project}/locations/[a-z0-9-]+/keyRings/qip-${TARGET_ENVIRONMENT}-artefacts/cryptoKeys/qip-${TARGET_ENVIRONMENT}-model-pack/cryptoKeyVersions/[0-9]+" \
+            || { echo "the bundle's model-pack version '$version' is not this environment's key" >&2; exit 1; }
+          if jq -e --arg v "$version" '(.revoked // []) | index($v)' "$bundle" >/dev/null; then
+            echo "$version is revoked in $bundle" >&2
+            exit 1
+          fi
+          {
+            echo "project=${project}"
+            echo "provider=projects/${number}/locations/global/workloadIdentityPools/qip-publish-${TARGET_ENVIRONMENT}/providers/github"
+            echo "account=qip-${TARGET_ENVIRONMENT}-pack-publisher@${project}.iam.gserviceaccount.com"
+            echo "bundle=${bundle}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
+
+      # The signing message, from the Rust that defines it. See the header's
+      # REQUIRED FOLLOW-UP: until `qip model-pack` exists this step refuses,
+      # and nothing below it runs.
+      - name: build the signing message with the qip CLI
+        working-directory: backend
+        env:
+          PACK: ${{ inputs.pack }}
+          AUTHOR: ${{ steps.pack.outputs.author }}
+          APPROVER: ${{ steps.approval.outputs.approver }}
+          APPROVED_AT: ${{ steps.approval.outputs.approved_at }}
+          KEY_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p qip-cli --bin qip
+          if ! ./target/release/qip help 2>&1 | grep -q 'model-pack'; then
+            echo "qip has no model-pack subcommand. The signing message is qip_contracts::trust::signing_message over ModelPack::signing_payload and is built by that code, not re-implemented in shell; add 'qip model-pack signing-message|attach-signature|verify' to qip-cli first." >&2
+            exit 1
+          fi
+          ./target/release/qip model-pack signing-message \
+            --pack "../${PACK}" --author "$AUTHOR" --approver "$APPROVER" \
+            --approved-at "$APPROVED_AT" --key-version "$KEY_VERSION" \
+            --out "${RUNNER_TEMP}/signing-message.bin"
+          sha256sum "${RUNNER_TEMP}/signing-message.bin"
+
+      - name: authenticate as the publisher (workload identity, no key)
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+        with:
+          workload_identity_provider: ${{ steps.identity.outputs.provider }}
+          service_account: ${{ steps.identity.outputs.account }}
+
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
+
+      # asymmetricSign over the SHA-256 digest of the signing message: gcloud
+      # hashes the input file locally and sends the digest, which is what an
+      # EC_SIGN_P256_SHA256 key signs. The DER signature comes back; the key
+      # never leaves the HSM.
+      - name: sign under the model-pack key
+        env:
+          KEY_VERSION: ${{ steps.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          gcloud kms asymmetric-sign \
+            --version "${KEY_VERSION##*/}" \
+            --key "$(printf '%s' "$KEY_VERSION" | sed -n 's#.*/cryptoKeys/\([^/]*\)/.*#\1#p')" \
+            --keyring "$(printf '%s' "$KEY_VERSION" | sed -n 's#.*/keyRings/\([^/]*\)/.*#\1#p')" \
+            --location "$(printf '%s' "$KEY_VERSION" | sed -n 's#.*/locations/\([^/]*\)/.*#\1#p')" \
+            --project "$(printf '%s' "$KEY_VERSION" | sed -n 's#^projects/\([^/]*\)/.*#\1#p')" \
+            --digest-algorithm sha256 \
+            --input-file "${RUNNER_TEMP}/signing-message.bin" \
+            --signature-file "${RUNNER_TEMP}/signature.der"
+          [ -s "${RUNNER_TEMP}/signature.der" ] || { echo "KMS returned no signature" >&2; exit 1; }
+
+      # The signed pack, verified against the committed bundle the fleet holds
+      # before it leaves this run. It is uploaded, not committed: the signed
+      # pack lands through a reviewed pull request like any other file.
+      - name: attach and verify against the committed bundle
+        working-directory: backend
+        env:
+          PACK: ${{ inputs.pack }}
+          AUTHOR: ${{ steps.pack.outputs.author }}
+          APPROVER: ${{ steps.approval.outputs.approver }}
+          APPROVED_AT: ${{ steps.approval.outputs.approved_at }}
+          KEY_VERSION: ${{ steps.identity.outputs.version }}
+          BUNDLE: ${{ steps.identity.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          ./target/release/qip model-pack attach-signature \
+            --pack "../${PACK}" --author "$AUTHOR" --approver "$APPROVER" \
+            --approved-at "$APPROVED_AT" --key-version "$KEY_VERSION" \
+            --signature-der "${RUNNER_TEMP}/signature.der" \
+            --out "${RUNNER_TEMP}/signed-pack.json"
+          ./target/release/qip model-pack verify \
+            --pack "${RUNNER_TEMP}/signed-pack.json" --trust-bundle "../${BUNDLE}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: signed-model-pack
+          path: ${{ runner.temp }}/signed-pack.json
+          if-no-files-found: error

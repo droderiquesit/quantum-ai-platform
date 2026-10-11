@@ -15,6 +15,14 @@ variables {
   internal_address = "10.0.21.10"
   boot_image       = "projects/test-project/global/images/qip-ledgerd-20261011"
   account_id       = "paper-book"
+
+  google_tls_roots_path = "/etc/qip/trust/google-roots.pem"
+  workload_certificates = {
+    ca_pool              = "projects/test-project/locations/us-east4/caPools/qip-dev-internal"
+    certificate_template = "projects/test-project/locations/us-east4/certificateTemplates/qip-dev-workload"
+    lifetime_secs        = 86400
+    trust_roots_pem      = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+  }
 }
 
 run "the_ledger_is_one_machine_with_no_external_address_on_its_own_archive_disk" {
@@ -109,4 +117,40 @@ run "a_ledger_with_no_zone_tag_is_refused" {
   }
 
   expect_failures = [var.network_tags]
+}
+
+# Item 10: the ledger's fabric client is mutual TLS on a CA Service workload
+# certificate, and qip-ledgerd refuses plaintext outside `local`.
+run "the_ledger_is_told_its_deployment_and_its_workload_certificate" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for line in [
+        "\nQIP_DEPLOYMENT=dev\n",
+        "\nQIP_TLS_MODE=cas\n",
+        "\nQIP_CAS_CA_POOL=projects/test-project/locations/us-east4/caPools/qip-dev-internal\n",
+        "\nQIP_CAS_CERTIFICATE_TEMPLATE=projects/test-project/locations/us-east4/certificateTemplates/qip-dev-workload\n",
+        "\nQIP_CAS_LIFETIME_SECS=86400\n",
+        "\nQIP_TLS_TRUST_ROOTS_PATH=/etc/qip/tls-trust-roots.pem\n",
+        "\nQIP_GOOGLE_TLS_ROOTS_PATH=/etc/qip/trust/google-roots.pem\n",
+      ] : strcontains(google_compute_instance.ledgerd.metadata["startup-script"], line)
+    ])
+    error_message = "The ledger's environment file lacks a variable qip-ledgerd needs for its mTLS fabric client."
+  }
+}
+
+run "a_ledger_certificate_living_longer_than_a_day_is_refused" {
+  command = plan
+
+  variables {
+    workload_certificates = {
+      ca_pool              = "projects/test-project/locations/us-east4/caPools/qip-dev-internal"
+      certificate_template = "projects/test-project/locations/us-east4/certificateTemplates/qip-dev-workload"
+      lifetime_secs        = 2592000
+      trust_roots_pem      = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+    }
+  }
+
+  expect_failures = [var.workload_certificates]
 }

@@ -106,8 +106,8 @@ from the other side.
 
 `modules/execution-node` derives the isolated range from the machine type —
 §41.3 gives cores 0 and 1 to the OS, the telemetry drainer and the
-control-plane client and isolates the rest, so a `c3-highcpu-8` is
-`isolcpus=2-7` and a `c3d-highcpu-16` is `isolcpus=2-15`. That range is in the
+control-plane client and isolates the rest, so a `c4-highcpu-8` is
+`isolcpus=2-7` and a `c4d-highcpu-16` is `isolcpus=2-15`. That range is in the
 image's kernel command line, and the node's startup script greps `/proc/cmdline`
 for its own shape's range and refuses when it is absent.
 

@@ -59,13 +59,28 @@ variables {
     "management"           = { region = "us-east4", subnet_cidr = "10.0.35.0/24" }
   }
 
+  # What every node needs beside it (ADR 0110, ADR 0112): the keys and the
+  # committed bundle it verifies against, the pinned Google roots, and the CA
+  # its certificate is issued from — set for every run so each refusal below
+  # fails on its own validation alone; the run that proves this one's refusal
+  # sets them null. The bundle and roots are the harness fixtures.
+  artefact_signing = {
+    bundle_not_after = "2099-01-01T00:00:00Z"
+  }
+  artefact_trust_bundle_file = "infrastructure/terraform/tests/fixtures/node-harness-bundle.json"
+  google_tls_roots_file      = "infrastructure/terraform/tests/fixtures/harness-roots.pem"
+  certificate_authority = {
+    location     = "us-east4"
+    organization = "Algorik"
+  }
+
   # As committed in dev: declared, not enabled, image and allocation null.
   execution_nodes = {
     "newyork-1" = {
       region       = "us-east4"
       zone         = "us-east4-a"
       subnet_cidr  = "10.67.0.0/20"
-      machine_type = "c3-highcpu-8"
+      machine_type = "c4-highcpu-8"
       boot_image   = null
       venues = {
         "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
@@ -114,7 +129,7 @@ run "enabling_a_node_with_no_baked_image_is_refused" {
         region                   = "us-east4"
         zone                     = "us-east4-a"
         subnet_cidr              = "10.67.0.0/20"
-        machine_type             = "c3-highcpu-8"
+        machine_type             = "c4-highcpu-8"
         boot_image               = null
         venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
         region_allocation        = "1000000"
@@ -140,8 +155,8 @@ run "enabling_a_node_with_no_chosen_allocation_is_refused" {
         region                   = "us-east4"
         zone                     = "us-east4-a"
         subnet_cidr              = "10.67.0.0/20"
-        machine_type             = "c3-highcpu-8"
-        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c3-highcpu-8-0123456789ab-r7"
+        machine_type             = "c4-highcpu-8"
+        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c4-highcpu-8-0123456789ab-r7"
         venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
         region_allocation        = null
         default_pricing          = ""
@@ -166,8 +181,8 @@ run "enabling_a_node_with_a_zero_allocation_is_refused" {
         region                   = "us-east4"
         zone                     = "us-east4-a"
         subnet_cidr              = "10.67.0.0/20"
-        machine_type             = "c3-highcpu-8"
-        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c3-highcpu-8-0123456789ab-r7"
+        machine_type             = "c4-highcpu-8"
+        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c4-highcpu-8-0123456789ab-r7"
         venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
         region_allocation        = "0.00"
         default_pricing          = ""
@@ -193,8 +208,8 @@ run "enabling_with_no_declared_node_is_refused" {
   expect_failures = [var.execution_nodes_enabled]
 }
 
-# Refused, whether or not the flag is on: an image baked for c3-highcpu-22
-# named on a c3-highcpu-8 node. Fails if the shape validation on
+# Refused, whether or not the flag is on: an image baked for c4-highcpu-16
+# named on a c4-highcpu-8 node. Fails if the shape validation on
 # `execution_nodes` in variables.tf is deleted or stops interpolating the
 # node's own machine_type.
 run "an_image_baked_for_another_machine_shape_is_refused" {
@@ -206,8 +221,8 @@ run "an_image_baked_for_another_machine_shape_is_refused" {
         region                   = "us-east4"
         zone                     = "us-east4-a"
         subnet_cidr              = "10.67.0.0/20"
-        machine_type             = "c3-highcpu-8"
-        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c3-highcpu-22-0123456789ab-r7"
+        machine_type             = "c4-highcpu-8"
+        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c4-highcpu-16-0123456789ab-r7"
         venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
         region_allocation        = "1000000"
         default_pricing          = ""
@@ -218,6 +233,91 @@ run "an_image_baked_for_another_machine_shape_is_refused" {
   }
 
   expect_failures = [var.execution_nodes]
+}
+
+# Refused: the flag on, the node complete, and the environment without what
+# the node needs to start — the committed trust bundle, the pinned Google
+# roots and a CA. The node holds no shared key to fall back to (ADR 0110) and
+# no plaintext mode (ADR 0112), so it would restart for ever. Fails if that
+# validation in execution-nodes-enabled.tf is deleted.
+run "enabling_a_node_without_its_trust_bundle_and_ca_is_refused" {
+  command = plan
+
+  variables {
+    execution_nodes_enabled = true
+    execution_nodes = {
+      "newyork-1" = {
+        region                   = "us-east4"
+        zone                     = "us-east4-a"
+        subnet_cidr              = "10.67.0.0/20"
+        machine_type             = "c4-highcpu-8"
+        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c4-highcpu-8-0123456789ab-r7"
+        venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
+        region_allocation        = "1000000"
+        default_pricing          = ""
+        strategy_plan_path       = ""
+        cross_region_mirror_path = ""
+      }
+    }
+    artefact_signing           = null
+    artefact_trust_bundle_file = null
+    google_tls_roots_file      = null
+    certificate_authority      = null
+  }
+
+  expect_failures = [var.execution_nodes_enabled]
+}
+
+# Each need on its own, so the validation cannot lose one conjunct and keep
+# passing on the others: the bundle alone missing, then the CA alone.
+run "enabling_a_node_with_no_committed_trust_bundle_is_refused" {
+  command = plan
+
+  variables {
+    execution_nodes_enabled = true
+    execution_nodes = {
+      "newyork-1" = {
+        region                   = "us-east4"
+        zone                     = "us-east4-a"
+        subnet_cidr              = "10.67.0.0/20"
+        machine_type             = "c4-highcpu-8"
+        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c4-highcpu-8-0123456789ab-r7"
+        venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
+        region_allocation        = "1000000"
+        default_pricing          = ""
+        strategy_plan_path       = ""
+        cross_region_mirror_path = ""
+      }
+    }
+    artefact_trust_bundle_file = null
+  }
+
+  expect_failures = [var.execution_nodes_enabled]
+}
+
+run "enabling_a_node_with_no_certificate_authority_is_refused" {
+  command = plan
+
+  variables {
+    execution_nodes_enabled = true
+    execution_nodes = {
+      "newyork-1" = {
+        region                   = "us-east4"
+        zone                     = "us-east4-a"
+        subnet_cidr              = "10.67.0.0/20"
+        machine_type             = "c4-highcpu-8"
+        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c4-highcpu-8-0123456789ab-r7"
+        venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
+        region_allocation        = "1000000"
+        default_pricing          = ""
+        strategy_plan_path       = ""
+        cross_region_mirror_path = ""
+      }
+    }
+    certificate_authority = null
+  }
+
+  expect_failures = [var.execution_nodes_enabled]
 }
 
 # The admitting half: the owner's flip, with an image baked for this shape
@@ -234,8 +334,8 @@ run "a_complete_node_is_provisioned_once_the_owner_enables_it" {
         region                   = "us-east4"
         zone                     = "us-east4-a"
         subnet_cidr              = "10.67.0.0/20"
-        machine_type             = "c3-highcpu-8"
-        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c3-highcpu-8-0123456789ab-r7"
+        machine_type             = "c4-highcpu-8"
+        boot_image               = "projects/node-plan-harness/global/images/qip-execution-node-c4-highcpu-8-0123456789ab-r7"
         venues                   = { "simulated-1" = { cidr = "192.0.2.0/24", port = 443 } }
         region_allocation        = "1000000"
         default_pricing          = ""
@@ -248,6 +348,17 @@ run "a_complete_node_is_provisioned_once_the_owner_enables_it" {
   assert {
     condition     = length(module.execution_node) == 1
     error_message = "A complete, enabled node was not planned: the gate refuses everything."
+  }
+
+  # The node may request exactly one certificate: its own, through the
+  # workload template.
+  assert {
+    condition = (
+      keys(google_privateca_ca_pool_iam_member.requesters) == ["edge-node-newyork-1"]
+      && google_privateca_ca_pool_iam_member.requesters["edge-node-newyork-1"].member == "serviceAccount:qip-exec-newyork-1-dev@node-plan-harness.iam.gserviceaccount.com"
+      && strcontains(google_privateca_ca_pool_iam_member.requesters["edge-node-newyork-1"].condition[0].expression, "hasOnly(['dns:qip-exec-newyork-1-dev.node-plan-harness.iam.gserviceaccount.com'])")
+    )
+    error_message = "The enabled node is not the one requester, conditioned on its own SAN."
   }
 
   assert {
