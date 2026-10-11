@@ -6,16 +6,17 @@
  *   node scripts/agent-lanes.mjs budget     --policy <p> --manifest <m> --lane <id>
  *   node scripts/agent-lanes.mjs check-diff --policy <p> --manifest <m> --lane <id> --files <list>
  *   node scripts/agent-lanes.mjs accept     --policy <p> --manifest <m> --lane <id> --cwd <checkout>
+ *   node scripts/agent-lanes.mjs spend      --policy <p> --manifest <m> --lane <id> --ledger <jsonl>
  *
  * A lane manifest is the orchestrator's plan, committed before any lane
  * starts: one entry per lane, naming the role it runs as, the paths it
  * owns, the lanes it waits for, the commands that decide whether it is
  * done, and what it may spend.
  *
- *   { "lanes": [ { "id": "r2-infra", "role": "cloud-platform-engineer",
+ *   { "lanes": [ { "id": "r2-infra", "role": "cloud-platform-engineer", "branch": "lane/r2-infra",
  *       "owns": ["infrastructure/terraform/modules/build-pool/**"],
  *       "depends_on": [], "acceptance": ["terraform test"],
- *       "budget": { "minutes": 120, "usd": 10 } } ] }
+ *       "budget": { "minutes": 120, "usd": 10, "tokens": 400000 } } ] }
  *
  * What it refuses, and the failure each prevents:
  *
@@ -28,11 +29,20 @@
  * - **A lane with no acceptance command**, or with a budget that is zero,
  *   missing or above the policy's ceiling. "Done" with no criterion is a
  *   lane's own opinion, and an unbounded lane is a bill nobody approved.
+ * - **A lane with no branch.**
  * - **A lane owning a path its role may not edit** — the role table is the
  *   one `agent-guard.mjs` enforces on the pull request, so the plan cannot
  *   promise a lane what the merge will refuse it.
  * - **A lane's diff leaving what it owns** (`check-diff`), which is the
  *   overlap the plan ruled out arriving anyway.
+ * - **A lane that spent more on models than its budget** (`spend`, SEC-9077),
+ *   read from the model gateway's ledger lines naming the lane as their
+ *   agent: billed tokens against `budget.tokens`, and their price from
+ *   `scripts/fleet/prices.json` against `budget.usd`. A billed line whose
+ *   tokens or price cannot be read makes the spend unknowable, and an
+ *   unknowable spend is refused rather than counted as zero — a quota that
+ *   reads a gap as "nothing spent" is one a lane passes by spending where
+ *   the ledger cannot see.
  *
  * Dev tooling. Node built-ins only.
  */
@@ -40,8 +50,10 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { matchesAny } from "./agent-guard.mjs";
+import { PRICES, costMicroUsd, priceRow, usd as usdText, usdToMicro } from "./fleet/worker.mjs";
 
 const LANE_ID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,199}$/;
 
 /** The literal directory prefix of a glob: everything before its first wildcard. */
 export function literalPrefix(glob) {
@@ -98,10 +110,20 @@ export function validate(manifest, policy) {
     if (!Number.isFinite(minutes) || minutes <= 0 || minutes > limits.max_minutes) {
       problems.push(`${id}'s budget.minutes must be in (0, ${limits.max_minutes}]`);
     }
-    if (!Number.isFinite(usd) || usd < 0 || usd > limits.max_usd) {
-      problems.push(`${id}'s budget.usd must be in [0, ${limits.max_usd}]`);
+    if (!Number.isFinite(usd) || usd < 0 || usd > limits.max_usd || usdToMicro(String(usd)) === null) {
+      problems.push(`${id}'s budget.usd must be a decimal in [0, ${limits.max_usd}]`);
+    }
+    const tokens = lane.budget?.tokens;
+    if (!Number.isSafeInteger(tokens) || tokens < 0 || tokens > limits.max_tokens) {
+      problems.push(`${id}'s budget.tokens must be a whole number in [0, ${limits.max_tokens}]`);
     }
     if (lane.depends_on !== undefined && !Array.isArray(lane.depends_on)) problems.push(`${id}'s depends_on is not a list`);
+    // The branch the lane pushes to. A lane with none cannot be dispatched to
+    // the sandbox, and a reviewer cannot tell which pull request is which
+    // lane's.
+    if (typeof lane.branch !== "string" || !BRANCH.test(lane.branch) || lane.branch.includes("..")) {
+      problems.push(`${id} names no branch, or one that is not a branch name`);
+    }
   }
   for (const [id, lane] of byId) {
     for (const dep of lane.depends_on ?? []) {
@@ -177,6 +199,52 @@ export function runAcceptance(lane, { cwd, spawn = spawnSync, now = Date.now, bu
   return { passed: true, results };
 }
 
+/**
+ * A lane's model spend, from the gateway's JSONL ledger, against its budget.
+ * Only lines whose `agent` is the lane's id count, and only billed ones
+ * (`billed !== false`, the gateway's own reading). Returns
+ * `{ tokens, micro, problems }`; any problem refuses the lane.
+ */
+export function judgeSpend(lane, ledgerText, { prices = PRICES } = {}) {
+  let tokens = 0;
+  let micro = 0;
+  const problems = [];
+  for (const [i, line] of String(ledgerText).split("\n").entries()) {
+    if (!line.trim()) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      problems.push(`ledger line ${i + 1} is not JSON, so the lane's spend cannot be known`);
+      continue;
+    }
+    if (entry.agent !== lane.id || entry.billed === false) continue;
+    const tin = entry.prompt_tokens;
+    const tout = entry.completion_tokens;
+    if (!Number.isSafeInteger(tin) || !Number.isSafeInteger(tout) || tin < 0 || tout < 0) {
+      problems.push(`ledger line ${i + 1} is billed to ${lane.id} with no readable token counts, so its spend cannot be known`);
+      continue;
+    }
+    tokens += tin + tout;
+    let row;
+    try {
+      row = priceRow(prices, entry.model);
+    } catch (cause) {
+      problems.push(`ledger line ${i + 1}: ${cause.message}`);
+      continue;
+    }
+    if (!row) {
+      problems.push(`ledger line ${i + 1} names ${JSON.stringify(entry.model)}, which has no price row, so its cost cannot be known`);
+      continue;
+    }
+    micro += costMicroUsd(row, tin, tout);
+  }
+  if (tokens > lane.budget.tokens) problems.push(`${lane.id} spent ${tokens} model tokens; its budget is ${lane.budget.tokens}`);
+  const cap = usdToMicro(String(lane.budget.usd));
+  if (cap === null || micro > cap) problems.push(`${lane.id} spent ${usdText(micro)} USD on models; its budget is ${lane.budget.usd}`);
+  return { tokens, micro, problems };
+}
+
 /** The files a lane's diff touches that it does not own. */
 export function outsideOwnership(lane, files) {
   return files.filter((f) => !matchesAny(f, lane.owns));
@@ -192,8 +260,8 @@ export function main(argv, { out = console.log, err = console.error } = {}) {
   const [mode] = argv;
   const policyPath = option(argv, "policy");
   const manifestPath = option(argv, "manifest");
-  if (!["validate", "budget", "check-diff", "accept"].includes(mode) || !policyPath || !manifestPath) {
-    err("usage: agent-lanes.mjs validate|budget|check-diff|accept --policy <p> --manifest <m> [--lane <id>] [--files <list>] [--cwd <dir>]");
+  if (!["validate", "budget", "check-diff", "accept", "spend"].includes(mode) || !policyPath || !manifestPath) {
+    err("usage: agent-lanes.mjs validate|budget|check-diff|accept|spend --policy <p> --manifest <m> [--lane <id>] [--files <list>] [--cwd <dir>] [--ledger <jsonl>]");
     return 64;
   }
   let policy;
@@ -221,6 +289,25 @@ export function main(argv, { out = console.log, err = console.error } = {}) {
   }
   if (mode === "budget") {
     out(String(lane.budget.minutes));
+    return 0;
+  }
+  if (mode === "spend") {
+    const ledgerPath = option(argv, "ledger");
+    if (!ledgerPath) {
+      err("spend needs --ledger, the model gateway's JSONL ledger");
+      return 64;
+    }
+    let text;
+    try {
+      text = readFileSync(ledgerPath, "utf8");
+    } catch (cause) {
+      err(`cannot read the ledger ${ledgerPath}: ${cause.message}`);
+      return 1;
+    }
+    const { tokens, micro, problems } = judgeSpend(lane, text);
+    for (const problem of problems) err(problem);
+    if (problems.length > 0) return 1;
+    out(`${lane.id} spent ${tokens} of ${lane.budget.tokens} tokens and ${usdText(micro)} of ${lane.budget.usd} USD on models`);
     return 0;
   }
   if (mode === "accept") {

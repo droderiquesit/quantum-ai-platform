@@ -20,6 +20,20 @@
 #   * The lane's diff is held to the paths it owns. Two lanes owning one
 #     boundary are refused at `validate` unless one waits for the other, and
 #     `check-diff` catches a lane that edited outside its plot anyway.
+#   * Its network is one proxy (SEC-9077, ADR 0117). The lane's commands run
+#     under the group `lane-egress`, which the runner's firewall lets reach
+#     loopback and nothing else, DNS included, and with `no_new_privs`, so
+#     the runner's own password-less `sudo` cannot lift them out of it. The
+#     only route off the machine is `scripts/agent-egress.mjs`, run as root
+#     from a read-only copy: HTTPS to `sandbox.egress_allow` in the policy,
+#     within its request and byte quotas, and no model provider at all
+#     (SEC-9078's development half). Any refusal fails the run.
+#   * The verdict is taken in the same step that ran the lane, after every
+#     process in `lane-egress` is killed, by root-owned copies of node and the
+#     scripts reading a root-owned log. A later step would not do: a lane can
+#     write `$GITHUB_ENV` (`BASH_ENV`, `NODE_OPTIONS`) and own every step that
+#     follows it. The step body is one brace group so bash has parsed all of
+#     it before the lane runs and cannot be handed a rewritten script.
 #
 # The trusted half — the scripts, the policy and the manifest — is checked
 # out from the default branch, so a lane cannot rewrite the rules it is
@@ -126,11 +140,57 @@ jobs:
           git -C lane diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" > "$RUNNER_TEMP/changed.txt"
           node trusted/scripts/agent-lanes.mjs check-diff --policy trusted/scripts/agent-policy.json \
             --manifest "trusted/$MANIFEST" --lane "$LANE" --files "$RUNNER_TEMP/changed.txt"
-      - name: run the lane's acceptance commands
+      # Before any of the lane's code runs: everything the verdict relies on is
+      # copied where the lane, as an unprivileged member of `lane-egress`,
+      # cannot write it.
+      - name: stage the trusted half read-only and start the egress proxy
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+        run: |
+          set -euo pipefail
+          sudo install -d -m 755 /opt/agent-trusted /var/lib/agent-egress
+          sudo cp -r trusted/scripts /opt/agent-trusted/scripts
+          sudo install -D -m 644 "trusted/$MANIFEST" "/opt/agent-trusted/$MANIFEST"
+          sudo install -m 755 "$(command -v node)" /opt/agent-trusted/node
+          sudo chown -R root:root /opt/agent-trusted
+          sudo chmod -R go-w /opt/agent-trusted
+          sudo groupadd --system lane-egress
+          for table in iptables ip6tables; do
+            sudo "$table" -A OUTPUT -m owner --gid-owner lane-egress -p udp --dport 53 -j REJECT
+            sudo "$table" -A OUTPUT -m owner --gid-owner lane-egress -p tcp --dport 53 -j REJECT
+            sudo "$table" -A OUTPUT -m owner --gid-owner lane-egress -o lo -j ACCEPT
+            sudo "$table" -A OUTPUT -m owner --gid-owner lane-egress -j REJECT
+          done
+          sudo nohup /opt/agent-trusted/node /opt/agent-trusted/scripts/agent-egress.mjs serve \
+            --policy /opt/agent-trusted/scripts/agent-policy.json --port 3128 \
+            --log /var/lib/agent-egress/egress.jsonl --ready /var/lib/agent-egress/ready \
+            > "$RUNNER_TEMP/egress-proxy.out" 2>&1 &
+          for _ in $(seq 50); do
+            if sudo test -s /var/lib/agent-egress/ready; then break; fi
+            sleep 0.2
+          done
+          sudo test -s /var/lib/agent-egress/ready || { cat "$RUNNER_TEMP/egress-proxy.out" >&2; echo "the egress proxy did not start" >&2; exit 1; }
+      - name: run the lane's acceptance commands inside the egress limit, then judge its egress
         env:
           MANIFEST: ${{ inputs.manifest }}
           LANE: ${{ inputs.lane }}
         run: |
-          set -euo pipefail
-          node trusted/scripts/agent-lanes.mjs accept --policy trusted/scripts/agent-policy.json \
-            --manifest "trusted/$MANIFEST" --lane "$LANE" --cwd lane
+          {
+            set -uo pipefail
+            lane_gid="$(getent group lane-egress | cut -d: -f3)"
+            proxy=http://127.0.0.1:3128
+            sudo setpriv --reuid="$(id -u)" --regid="$lane_gid" --clear-groups --no-new-privs -- \
+              env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 \
+                HTTPS_PROXY="$proxy" https_proxy="$proxy" HTTP_PROXY="$proxy" http_proxy="$proxy" \
+                NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost \
+              /opt/agent-trusted/node /opt/agent-trusted/scripts/agent-lanes.mjs accept \
+                --policy /opt/agent-trusted/scripts/agent-policy.json \
+                --manifest "/opt/agent-trusted/$MANIFEST" --lane "$LANE" --cwd lane
+            accepted=$?
+            sudo pkill -KILL -G lane-egress || true
+            sudo /opt/agent-trusted/node /opt/agent-trusted/scripts/agent-egress.mjs verdict \
+              --policy /opt/agent-trusted/scripts/agent-policy.json --log /var/lib/agent-egress/egress.jsonl
+            judged=$?
+            if [ "$accepted" -ne 0 ] || [ "$judged" -ne 0 ]; then exit 1; fi
+            exit 0
+          }

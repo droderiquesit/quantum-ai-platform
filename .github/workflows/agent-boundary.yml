@@ -4,15 +4,21 @@
 # Answers, for every pull request and every review of one: is this change
 # agent-authored, and if so does it stay inside the role its commits
 # declare, and has a person approved its head commit where it touches a
-# protected path? The rules are `scripts/agent-policy.json` and the judge is
-# `scripts/agent-guard.mjs`, both read from the default branch — never from
+# protected path? And, for a change with no agent marker that touches a
+# protected path, is every commit signed by a person's key or the head
+# approved by a person (GOV-9067, ADR 0117)? An approval counts only from
+# a reviewer this repository gives write access. The rules are
+# `scripts/agent-policy.json` and the judge is `scripts/agent-guard.mjs`,
+# both read from the default branch — never from
 # the pull request, which could otherwise rewrite the rule it is judged by.
 #
 # It re-runs on `pull_request_review`, because approval is what changes the
 # answer and a check that only ran on push would stay red after a person
 # approved. Whether this check is *required* before merge is a branch
-# protection setting this file cannot create; `deploy.yml`'s gate re-judges
-# the deployed commit the same way, so the boundary holds at deployment
+# protection setting this file cannot create — the owner enables it
+# (`docs/ops/runbooks/owner-switches.md`, "Require `agent boundary`").
+# `deploy.yml`'s gate re-judges every commit since the last deployment the
+# same way, so the boundary holds at deployment
 # whatever that setting is.
 #
 # Read-only, no secret, no credential: it reads the pull request through
@@ -61,6 +67,19 @@ jobs:
           gh api --paginate --slurp "repos/${THIS_REPOSITORY}/pulls/${PR}/files?per_page=100" | node -e "$flatten" > "$work/files.json"
           gh api --paginate --slurp "repos/${THIS_REPOSITORY}/pulls/${PR}/commits?per_page=100" | node -e "$flatten" > "$work/commits.json"
           gh api --paginate --slurp "repos/${THIS_REPOSITORY}/pulls/${PR}/reviews?per_page=100" | node -e "$flatten" > "$work/reviews.json"
+          # Each approver's permission on this repository, read from GitHub
+          # rather than believed from the review: only a writer's approval
+          # counts, as in GitHub's own required-approval rule. A login whose
+          # permission cannot be read is left out, so its approval does not
+          # count.
+          node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));for(const l of new Set(r.filter(x=>x.state==="APPROVED").map(x=>x.user?.login).filter(Boolean)))console.log(l)' "$work/reviews.json" > "$work/approvers.txt"
+          echo '{}' > "$work/permissions.json"
+          while IFS= read -r login; do
+            case "$login" in ''|*[!A-Za-z0-9-]*) continue ;; esac
+            permission="$(gh api "repos/${THIS_REPOSITORY}/collaborators/${login}/permission" --jq '.permission' 2>/dev/null || true)"
+            node -e 'const f=process.argv[1],m=JSON.parse(require("fs").readFileSync(f,"utf8"));m[process.argv[2]]=process.argv[3];require("fs").writeFileSync(f,JSON.stringify(m))' "$work/permissions.json" "$login" "$permission"
+          done < "$work/approvers.txt"
           node scripts/agent-guard.mjs change --policy scripts/agent-policy.json \
             --head-ref "$HEAD_REF" --head-sha "$HEAD_SHA" \
-            --files "$work/files.json" --commits "$work/commits.json" --reviews "$work/reviews.json"
+            --files "$work/files.json" --commits "$work/commits.json" --reviews "$work/reviews.json" \
+            --permissions "$work/permissions.json"

@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 26] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 28] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -147,9 +147,13 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 26] = [
     // there — a guard that first had to compile the workspace would run
     // after the steps it exists to precede — and Node is on every hosted
     // runner, built-ins only, nothing installed. `agent-lanes.mjs` reads the
-    // same `agent-policy.json` and is written in the guard's language.
-    // No ADR records either yet; the rule this list enforces says one is
-    // owed for a file on a workflow path, as for terraform-undeletable.py.
+    // same `agent-policy.json` and is written in the guard's language, and
+    // `agent-egress.mjs` is the agent sandbox's one way out (SEC-9077), run
+    // on `agent-sandbox.yml`'s path from a root-owned copy of the default
+    // branch's scripts. ADR 0117 records all three: the policy file, what
+    // the guard refuses, its blind spots and what would make it wrong.
+    "scripts/agent-egress.mjs",
+    "scripts/agent-egress.test.mjs",
     "scripts/agent-guard.mjs",
     "scripts/agent-guard.test.mjs",
     "scripts/agent-lanes.mjs",
@@ -183,7 +187,7 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 26] = [
     // installs Node and no Rust toolchain, and the gate must judge the
     // analysis in the job that ran it, so it is in Node, built-ins only.
     // On a workflow path, so it owes an ADR on the same terms as the agent
-    // guard above; none is written yet.
+    // guard above: ADR 0117, which records its policy file and threshold.
     "scripts/sast-gate.mjs",
     "scripts/sast-gate.test.mjs",
     // Sends the owner a text through a carrier email gateway over SMTP with
@@ -253,4 +257,57 @@ fn the_non_rust_tooling_outside_the_browser_layer_is_exactly_the_accepted_set() 
          file is gone, strike it from this list so the set stops describing a \
          tree nobody has"
     );
+}
+
+/// The Node tooling that sits on a workflow path, and the ADR that records
+/// each. A list entry saying "ADR 0117 records it" is a citation; this makes
+/// it one a build checks.
+const WORKFLOW_PATH_TOOLING_ADR: (&str, [&str; 4]) = (
+    "0117-",
+    [
+        "scripts/agent-guard.mjs",
+        "scripts/agent-lanes.mjs",
+        "scripts/agent-egress.mjs",
+        "scripts/sast-gate.mjs",
+    ],
+);
+
+#[test]
+fn the_node_tooling_on_workflow_paths_is_recorded_by_an_accepted_adr() {
+    // The failure this prevents is the one the list above recorded against
+    // itself: two scripts on workflow paths whose entries said an ADR was
+    // owed and none was written. Now the ADR exists, and this fails if it is
+    // renumbered, unaccepted, or stops naming a script it is cited for.
+    let (prefix, scripts) = WORKFLOW_PATH_TOOLING_ADR;
+    let adr_dir = qip_acceptance::repository_root().join("docs/adr");
+    let mut matches: Vec<String> = std::fs::read_dir(&adr_dir)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", adr_dir.display()))
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(prefix) && name.ends_with(".md"))
+        .collect();
+    matches.sort();
+    assert_eq!(
+        matches.len(),
+        1,
+        "expected exactly one ADR numbered {prefix}*, found {matches:?}"
+    );
+    let text = qip_acceptance::read(&format!("docs/adr/{}", matches[0]));
+    assert!(
+        text.contains("- **Status**: **Accepted**"),
+        "{} is not accepted, so the tooling it is cited for is still unrecorded",
+        matches[0]
+    );
+    for script in scripts {
+        assert!(
+            ACCEPTED_NON_RUST_TOOLING.contains(&script),
+            "{script} is cited as workflow-path tooling but is not in the accepted set"
+        );
+        let name = script.rsplit('/').next().unwrap_or(script);
+        assert!(
+            text.contains(name),
+            "{} does not name {name}, which the accepted tooling list cites it for",
+            matches[0]
+        );
+    }
 }
