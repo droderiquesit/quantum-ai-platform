@@ -1909,12 +1909,17 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-edge-node",
         "QIP_PEER_MESH_LISTEN",
-        THE_PEER_MESH_IS_LOOPBACK_ONLY,
+        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
     ),
     (
         "qip-edge-node",
         "QIP_PEER_MESH_PEERS",
-        THE_PEER_MESH_IS_LOOPBACK_ONLY,
+        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_PEER_MESH_CLOCK_BOUND_MS",
+        THE_PEER_MESH_HAS_NO_DEPLOYED_PEER,
     ),
     (
         "qip-edge-node",
@@ -1966,13 +1971,14 @@ const NO_STANDBY_PAIR_EXISTS: &str = "Unset is a node with no standby, \
      claim a failover the deployment cannot provide.";
 
 /// The node-to-node coordination mesh.
-const THE_PEER_MESH_IS_LOOPBACK_ONLY: &str = "The peer transport speaks \
-     plaintext frames and `PeerSettings::read` refuses any address that is \
-     not loopback, because a cross-region link in plaintext would carry \
-     reservations and fills unauthenticated (`qip-peer-link/src/wire.rs`). \
-     A deployed node's peers are on other hosts, so no value a deployment \
-     could set would start; the entry ends when the mTLS transport replaces \
-     the stream type.";
+const THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: &str = "The peer transport is \
+     mutual TLS off-host (ADR 0112) and plaintext only on loopback in a \
+     `local` deployment (`qip-peer-link/src/wire.rs`, `PeerSettings::validate`). \
+     A deployed node's peers are other execution nodes, and none exists: \
+     `execution_nodes = {}` in every environment, so there is no peer \
+     address to name and no peer workload certificate issued to admit. \
+     Unset, the node announces that it coordinates with no other cell \
+     directly; the clock bound is read only once a mesh is configured.";
 
 #[test]
 fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_be_unset() {
