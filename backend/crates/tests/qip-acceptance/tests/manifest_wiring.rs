@@ -1789,6 +1789,16 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_AMBIENT_JOURNAL",
+        "Unset, the ambient journal is as durable as the platform's own \
+         event log: beside it when that log is a file, in memory when it \
+         is. A deployment that set it would only move the file; a blank \
+         value or a journal whose chain does not verify stops the process \
+         (`qip-deepbrain/src/ambient_journal.rs`), so no value set here \
+         can make the mesh's attention unrecorded.",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_RESEARCH_JURISDICTION",
         "Unset, research is filed under the same one jurisdiction the \
          discovery desk's eligible set defaults to. Admission checks it \
