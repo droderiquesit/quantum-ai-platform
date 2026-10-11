@@ -1801,9 +1801,23 @@ fn per_horizon_brier_scores_are_recorded_with_horizon_label() -> Result<()> {
     // Verify per-horizon metrics are recorded with the horizon label.
     let snapshot = recorded(&platform);
 
-    // Format horizon as duration string (e.g., "3600s" for 1 hour).
-    let horizon_secs = horizon.as_secs_f64() as i64;
-    let horizon_label = format!("{}s", horizon_secs);
+    // The label is the horizon's fixed bucket, never the duration itself: a
+    // label built from a runtime value minted one series per distinct
+    // horizon (W0.8). The old form, `format!("{}s", secs)`, must no longer
+    // be recorded at all.
+    let horizon_label = qip_kernel::confidence::HorizonBucket::of(horizon)
+        .as_str()
+        .to_string();
+    let unbounded = format!("{}s", horizon.as_secs_f64() as i64);
+    assert!(
+        snapshot
+            .gauge(
+                names::BELIEF_BRIER_SCORE_BY_HORIZON,
+                &labels([("horizon", &unbounded)]),
+            )
+            .is_none(),
+        "the per-horizon series is still labelled by a runtime duration ({unbounded})"
+    );
 
     // Check that per-horizon Brier score is recorded.
     let brier = snapshot.gauge(

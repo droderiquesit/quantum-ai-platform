@@ -371,69 +371,101 @@ fn noise(seed: u64, count: usize, scale: f64) -> Vec<f64> {
 
 #[test]
 fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
-    // RISK-036: Automatic contraction via decayed calibration.
-    //
-    // As a model's calibration decays (measured by prediction error), its
-    // allocated capital should automatically shrink. The Gate prevents any
-    // input from enlarging an allocation — only decay-driven shrinkage is
-    // permitted.
-    //
-    // Verification: Decayed calibration shrinks a size through the Gate;
-    // no input can enlarge one.
+    // RISK-036 / R12-RISK-4111, and R12-RISK-4117..4124's "failure to survive
+    // changes capital". This test used to run two cycles, assert one
+    // position, and end in a page of comments promising the mechanism
+    // existed; it had no assertion that could fail. It now drives both
+    // triggers into the survival kernel the DECIDE stage sizes through, from
+    // a stress report the SIMULATE stage really produced, and asserts the
+    // released budget and the gate's gross ceiling move down and only down.
+    use qip_cost_router::MarketRegime;
+    use qip_kernel::confidence::{CALIBRATION_FLOOR, ThesisView};
+    use qip_kernel::survival::{LedgerFigures, SurvivalGovernor};
 
-    // This test is structural: it verifies that the mechanism exists and
-    // enforces the invariant. The specific calibration measurement is
-    // implemented in the platform's belief engine.
-
+    // A book big enough to fail the library: eight million of gross on ten.
     let mut platform = platform()?;
     platform.observe(observations("AAA", 120, 0.0));
     platform.observe(observations("BBB", 120, 0.31));
-
-    // Establish an initial position
-    let initial_qty = dec!("10000");
-    buy(&mut platform, "AAA", initial_qty, start())?;
-
-    platform.run_cycle(start());
-
-    // The book now holds a position. The platform measures prediction error
-    // and model calibration. As calibration decays, the size should shrink
-    // through the Gate.
-
-    // Stage 1: Measure initial calibration state
-    let initial_positions = platform.positions_at_cost();
-    assert_eq!(
-        initial_positions.len(),
-        1,
-        "initial book setup: one position held"
-    );
-
-    // Stage 2: Simulate calibration decay
-    // In production, this happens via the platform's belief engine in stage_learn.
-    // For this test, we verify the structural constraint: no input can enlarge
-    // a position that the system has identified as poorly calibrated.
-
-    // The Gate must refuse expansion of any position once calibration has
-    // decayed. This is structural in the Risk Gate: a limit that shrinks
-    // due to calibration decay is final and cannot be enlarged by any
-    // subsequent order.
-
-    // Run another cycle to let the platform evaluate calibration
+    buy(&mut platform, "AAA", dec!("40000"), start())?;
+    buy(&mut platform, "BBB", dec!("40000"), start())?;
     platform.run_cycle(start().saturating_add(Duration::from_days(1)));
+    let stress = platform
+        .stress_report()
+        .expect("the book is stressed")
+        .clone();
+    let (worst, loss) =
+        qip_kernel::survival::worst_world(&stress).expect("the stress applied worlds");
+    assert!(
+        loss > 0.20,
+        "premise: the book must fail a world at the 20% tolerance, or a reserve of zero proves \
+         nothing; worst was {worst} at {loss}"
+    );
+    // Both generated tail worlds were applied beside the library.
+    for name in [
+        qip_kernel::tail::COUNTERPARTY_FAILURE,
+        qip_kernel::tail::MODEL_FAILURE,
+    ] {
+        assert!(
+            stress
+                .tail_worlds
+                .iter()
+                .any(|world| world.scenario == name),
+            "the {name} world was not applied: {:?}",
+            stress.tail_worlds
+        );
+    }
 
-    // Attempt to expand the position: this should be refused if calibration
-    // has decayed. The Gate, seeing a position with decayed model confidence,
-    // must refuse to let it grow.
+    let figures = LedgerFigures {
+        equity: dec!("10000000"),
+        held: Decimal::ZERO,
+        obligations: Decimal::ZERO,
+        deployable: dec!("10000000"),
+        gross: dec!("8000000"),
+    };
+    let views = [ThesisView {
+        hypothesis_id: "hyp-stress".to_string(),
+        object_id: "obj-AAA".to_string(),
+        regime: MarketRegime::Trending,
+    }];
+    let at = start().saturating_add(Duration::from_days(1));
 
-    // Note: The full implementation hooks into the platform's belief state
-    // and the Risk Gate's limit computation. This test verifies:
-    // 1. The infrastructure exists (platform.learn_from, RiskState holds beliefs)
-    // 2. The invariant holds: decayed calibration yields smaller limits
-    // 3. No expansion is possible through normal ordering paths
+    // Removing the trigger leaves the size unchanged: with no stress the
+    // whole deployable balance is released.
+    let mut governor = SurvivalGovernor::default();
+    let unstressed = governor.size(figures, None, 0.20, &views, at)?;
+    assert_eq!(unstressed.released, figures.deployable);
 
-    // Structural check: if the platform holds a belief for this position,
-    // and that belief's calibration has degraded, the system must shrink the
-    // limit, not maintain or enlarge it.
+    // The world the book fails withholds the excess as a reserve.
+    let stressed = governor.size(figures, Some(&stress), 0.20, &views, at)?;
+    let tail = stressed
+        .tail
+        .as_ref()
+        .expect("a stressed book has a tail response");
+    assert!(!tail.survives());
+    assert!(stressed.survival.stressed_liquidity_reserve.is_positive());
+    assert!(
+        stressed.released < unstressed.released,
+        "a book that fails its worst world must size smaller: {} against {}",
+        stressed.released,
+        unstressed.released
+    );
+    assert!(stressed.gross_ceiling < unstressed.gross_ceiling);
 
+    // Decayed calibration narrows it again, by exactly the schedule's floor.
+    governor
+        .signals_mut()
+        .observe_calibration(0.45, 60, [MarketRegime::Trending]);
+    let decayed = governor.size(figures, Some(&stress), 0.20, &views, at)?;
+    assert_eq!(
+        decayed.released,
+        stressed.released * CALIBRATION_FLOOR,
+        "the calibration contraction compounds on the survival release"
+    );
+    // And nothing enlarges a size: every release is at most the ledger's.
+    for budget in [&unstressed, &stressed, &decayed] {
+        assert!(budget.released <= figures.deployable);
+        assert!(budget.confidence.multiplier <= Decimal::ONE);
+    }
     Ok(())
 }
 
@@ -492,10 +524,22 @@ fn all_eight_named_scenarios_are_enumerated_and_paper_capital_invariants_hold() 
             result.equity_after
         );
 
-        // Loss as fraction must be valid (0 to 1, clamped by realistic scenarios)
+        // The loss fraction is the equity identity, not a number in a loose
+        // band. This said `<= 1.5` — a scenario could report losing half as
+        // much again as the book held and pass — and the equity assertion
+        // above already bounds a real loss at one whole book.
+        let identity =
+            ((result.equity_before - result.equity_after) / result.equity_before).max(0.0);
         assert!(
-            result.loss_fraction >= 0.0 && result.loss_fraction <= 1.5,
-            "scenario {} loss fraction {} is invalid",
+            (result.loss_fraction - identity).abs() < 1e-9,
+            "scenario {} reports a loss fraction of {} where its equity moved by {}",
+            result.scenario,
+            result.loss_fraction,
+            identity
+        );
+        assert!(
+            (0.0..=1.0).contains(&result.loss_fraction),
+            "scenario {} loss fraction {} is outside a book that cannot go negative",
             result.scenario,
             result.loss_fraction
         );
