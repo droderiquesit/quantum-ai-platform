@@ -1240,7 +1240,33 @@ const NO_TERMS_HAVE_BEEN_READ_SO_THERE_IS_NOTHING_TO_ATTEST: &str = "The deep \
      it unset is not a capability withheld from an operator but the absence of \
      a claim nobody is yet entitled to make.";
 
+/// The edge node's fabric partition, which has no broker to name.
+const NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE: &str = "The node's spool drains to a \
+     `qip-fabricd` partition when one is named, and no environment runs a \
+     fabric broker an execution node can reach: there is no fabricd in the \
+     catalogue and no token for one in Secret Manager. Absent, the node says \
+     so at start, its spool drains to the tick lake alone and its journal \
+     reaches the store through the relay, so nothing is lost by the gap — the \
+     outcomes simply have no fabric partition yet. The entry ends when a \
+     fabric broker is deployed beside the nodes, and its token is mounted as \
+     a file like the envelope key.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_URL",
+        NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_TOKEN",
+        NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_PARTITION",
+        NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE,
+    ),
     (
         "qip-deepbrain",
         "QIP_MODEL_PROVIDER_ATTESTATION_PATH",

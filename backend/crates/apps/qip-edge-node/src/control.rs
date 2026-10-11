@@ -35,9 +35,11 @@
 //! bounded, every wait on the decision thread either non-blocking or given
 //! an explicit timeout.
 //!
-//! Additive. `StrategyInstaller::install`, `HaltFlag::poll` and
-//! `DarkRegionWire::poll` keep their signatures and behaviour for the mesh
-//! path and `main.rs` until SLICE-36 switches fabric mode over to this.
+//! `main.rs` now builds the [`Poller`] and the [`PlanCompiler`] and hands
+//! both to `scheduler::DecisionLoop`, so a deployed node opens neither file
+//! on its decision thread. `StrategyInstaller::install`, `HaltFlag::poll`
+//! and `DarkRegionWire::poll` keep their signatures and behaviour for the
+//! legacy `MeshLink::exchange` path and the tests that drive it.
 
 use crate::dark::DarkRegionWire;
 use crate::halt::HaltFlag;
