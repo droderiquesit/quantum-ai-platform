@@ -52,7 +52,7 @@ steps:
       if [ -n "${_DOCKERFILE}" ]; then
         recipe+=(--file "${_DOCKERFILE}")
       else
-        recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${_BINARY}")
+        recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${_BINARY}" --build-arg "QIP_SOURCE_COMMIT=${_REVISION}")
       fi
       labels=(
         --label "org.opencontainers.image.revision=${_REVISION}"

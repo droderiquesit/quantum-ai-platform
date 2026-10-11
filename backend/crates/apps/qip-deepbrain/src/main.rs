@@ -292,6 +292,11 @@ fn run() -> Result<()> {
             .as_deref(),
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+    // R12-GOV-6121: a deployed process states the commit it was built from,
+    // or it does not start — every decision it journals would otherwise name
+    // code nobody can check out (`qip_kernel::decision_record`).
+    qip_kernel::decision_record::require_source_commit(deployment)
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     let provenance =
         qip_deepbrain::trust::harden_central(&mut platform, envelope_key.as_deref(), deployment)
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
