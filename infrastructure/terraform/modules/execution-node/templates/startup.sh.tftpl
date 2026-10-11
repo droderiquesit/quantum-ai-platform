@@ -188,6 +188,13 @@ QIP_STORAGE_TARGET=engine
 QIP_STORAGE_ROOT=/var/lib/qip/journal
 QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
 QIP_HALT_FLAG_PATH=$HALT_DIR/engaged
+# REFLEX-8071: the sequence to roll the cell's policy away from, read on its
+# own thread as the flag above is. Absent is no request, so writing the path
+# changes nothing until an operator with root writes the sequence into the
+# file named rollback in the halt directory; the cell still refuses to
+# release a centre halt, return to a halt or serve an expired payload. Without
+# this line the resident previous policy had no operator on any node.
+QIP_POLICY_ROLLBACK_PATH=$HALT_DIR/rollback
 QIP_ARBITRAGE_STRATEGY=arbitrage-desk
 QIP_ARBITRAGE_MAX_LEGS=4
 QIP_VENUE_FEED=simulated

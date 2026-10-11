@@ -1135,6 +1135,41 @@ const NO_VOLUME_TO_ROOT_IT_IN: &str = "A storage root only means something on \
      disk. The entry ends when a central workload gets a volume, which is a \
      decision of its own.";
 
+/// The ambient journal's own path, which unset already places correctly.
+const THE_AMBIENT_JOURNAL_FOLLOWS_THE_EVENT_LOG: &str = "Unset, the ambient \
+     journal is exactly as durable as the platform's event log \
+     (`JournalDestination::resolve`): beside it when the log is a file, in \
+     memory when the log is, so an attention record never outlives or \
+     undershoots the decisions it explains. A separate path only means \
+     something on a workload with a volume to put it on, and a Cloud Run \
+     instance has none — a value here would name a file that vanishes with \
+     the instance while the log it annotates does not, which is the split \
+     the default exists to prevent. The entry ends when the deep brain gets \
+     a volume, which is a decision of its own.";
+
+/// Discovery profiles, which only shape a pass no environment runs.
+const PROFILES_FEED_A_DISCOVERY_PASS_NO_ENVIRONMENT_RUNS: &str = "The entity \
+     profiles turn each discovery target into tagged queries for the \
+     source-discovery pass (R12-DATA-2016), and that pass is off in every \
+     environment: `deepbrain_discover_every` and `source_candidates_file` are \
+     null in all four tfvars, and `variables.tf` calls turning either on alone \
+     a knob with no effect. A mount offered here would be a third such knob — \
+     profiles loaded, validated and never asked a question — reading in the \
+     banner as a capability the node does not exercise. Wiring it is a \
+     `config_files` arm from a `data/`-path root variable, made in the same \
+     reviewed change that turns discovery on, with the cadence and the \
+     candidate list it serves.";
+
+/// The knowledge-pack store, which keeps what a connector poll produces.
+const PACKS_COME_FROM_A_CONNECTOR_NO_ENVIRONMENT_POLLS: &str = "Knowledge \
+     packs are derived from connector polls, and the deep brain opens the \
+     pack store only inside its connector arm: with `deepbrain_connector` null \
+     in every environment there is no poll to derive one from, so `store` \
+     would be a durable store nothing writes, said in the banner as if it \
+     kept something. Unset is `off`, which is the true state. Turning it on \
+     is a retention decision about a bucket namespace that belongs in the \
+     reviewed change that first gives an environment a connector.";
+
 /// A bounded run, which is the opposite of what a service wants.
 const A_BOUNDED_RUN_IS_A_CRASH_LOOP: &str = "These stop the process on their \
      own — a bounded run is how the binary is exercised by hand and in CI. \
@@ -1526,6 +1561,21 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ("qip-api", "QIP_STORAGE_ROOT", NO_VOLUME_TO_ROOT_IT_IN),
     ("qip-deepbrain", "QIP_STORAGE_ROOT", NO_VOLUME_TO_ROOT_IT_IN),
     ("qip-fastbrain", "QIP_STORAGE_ROOT", NO_VOLUME_TO_ROOT_IT_IN),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_AMBIENT_JOURNAL",
+        THE_AMBIENT_JOURNAL_FOLLOWS_THE_EVENT_LOG,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH",
+        PROFILES_FEED_A_DISCOVERY_PASS_NO_ENVIRONMENT_RUNS,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_KNOWLEDGE_PACKS",
+        PACKS_COME_FROM_A_CONNECTOR_NO_ENVIRONMENT_POLLS,
+    ),
     (
         "qip-deepbrain",
         "QIP_DEEPBRAIN_MAX_CYCLES",

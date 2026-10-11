@@ -1539,6 +1539,12 @@ fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
     //   (R12-CAPITAL-4089). It reaches only `Platform::set_survival_policy`,
     //   reviewed above, with a policy `SurvivalPolicy::from_settings` refuses
     //   below the shipped floor.
+    // * `apply_survival_policy_from` — the same step over an injected
+    //   lookup, which `apply_survival_policy` calls with `std::env::var` so
+    //   the root's tests can drive the refusals without touching the process
+    //   environment. One function split in two, not a second door: it reaches
+    //   only `Platform::set_survival_policy`, with what
+    //   `SurvivalPolicy::from_settings` admitted, and nothing a request sends.
     //
     // A new entry is a reviewed change: name it with its reason, and say
     // which platform mutator it reaches.
@@ -1553,6 +1559,7 @@ fn every_function_the_api_hands_a_mutable_platform_to_is_named_here() {
         "readmit_connector",
         "hold_models_to_release",
         "apply_survival_policy",
+        "apply_survival_policy_from",
     ]
     .into_iter()
     .collect();

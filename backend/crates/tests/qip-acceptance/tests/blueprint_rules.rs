@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 28] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 30] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -188,6 +188,17 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 28] = [
     // analysis in the job that ran it, so it is in Node, built-ins only.
     // On a workflow path, so it owes an ADR on the same terms as the agent
     // guard above: ADR 0117, which records its policy file and threshold.
+    // A pull request that changes a rule names it (R12 GOV-9080), run by
+    // ci.yml's `rule-citation` job, which installs Node and no Rust
+    // toolchain: it reads the pull request body from the event file and the
+    // changed paths from `git diff`, and must refuse before anything is
+    // built, so a check that first compiled the workspace would be slower to
+    // say less. Built-ins only, nothing installed. It IS on a workflow path,
+    // so on the terms above it owes an ADR; none names it yet, which is why
+    // it is not in `WORKFLOW_PATH_TOOLING_ADR` below. Recording it there is
+    // the owner's decision, not this list's.
+    "scripts/rule-citation.mjs",
+    "scripts/rule-citation.test.mjs",
     "scripts/sast-gate.mjs",
     "scripts/sast-gate.test.mjs",
     // Sends the owner a text through a carrier email gateway over SMTP with
