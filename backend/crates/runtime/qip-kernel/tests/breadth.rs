@@ -669,3 +669,72 @@ fn an_event_market_is_created_only_where_the_access_book_permits_creation() -> R
     );
     Ok(())
 }
+
+/// R12-EVENT-5084: the belief is estimated from the books, not read off
+/// them. Three books whose implied midpoints sum to 1.2 — a 20% overround —
+/// must become a distribution proportional to those midpoints, so 0.5, 0.4
+/// and 0.3 become 5/12, 4/12 and 3/12.
+///
+/// The cycle tests above cannot see this: the synthetic venue's midpoints
+/// already sum to within a rounding of one, so a plane that skipped the
+/// division and let the rounding residual absorb the overround priced them
+/// identically. That mutation survived them; this test is why it no longer
+/// does. Mutation: divide by one instead of the total in `normalise` and the
+/// top outcome takes the whole overround (0.3 instead of 5/12).
+#[test]
+fn an_overround_book_set_is_normalised_into_a_distribution_proportional_to_its_midpoints()
+-> Result<()> {
+    let market = qip_prediction::demo_market(
+        VenueId::new(EVENT_VENUE),
+        start().saturating_add(Duration::from_days(30)),
+        qip_prediction::FeeSchedule::new(0, 0, 0)?,
+    )?;
+    let quotes = [
+        ("cut", "0.45", "0.55"),
+        ("hold", "0.35", "0.45"),
+        ("hike", "0.25", "0.35"),
+    ];
+    let books: Vec<(qip_prediction::OutcomeId, qip_market::book::OrderBook)> = quotes
+        .iter()
+        .map(|(id, bid, ask)| {
+            let price = |text: &str| Decimal::parse(text).expect("a literal price");
+            (
+                qip_prediction::OutcomeId::new(*id),
+                qip_market::book::OrderBook::from_levels(
+                    qip_core::ObjectId::from_string(format!("SYNTH-PREDICT-{}", id.to_uppercase())),
+                    EVENT_VENUE,
+                    start(),
+                    vec![qip_market::book::BookLevel::new(price(bid), dec!("10"))],
+                    vec![qip_market::book::BookLevel::new(price(ask), dec!("10"))],
+                ),
+            )
+        })
+        .collect();
+    let borrowed: Vec<_> = books.iter().map(|(id, book)| (id.clone(), book)).collect();
+    // Premise: the books really are overround, or proportionality is moot.
+    let midpoints: Decimal = quotes
+        .iter()
+        .map(|(_, bid, ask)| {
+            (Decimal::parse(bid).expect("bid") + Decimal::parse(ask).expect("ask")) / dec!("2")
+        })
+        .sum();
+    assert_eq!(midpoints, Decimal::parse("1.2").expect("literal"));
+
+    let (_, valuation) = EventMarketPlane::price(&market, &borrowed, start())?;
+    let total: Decimal = valuation.fair_values.values().copied().sum();
+    assert_eq!(total, Decimal::ONE);
+    let tolerance = Decimal::parse("0.000001").expect("literal");
+    for (id, twelfths) in [("cut", 5), ("hold", 4), ("hike", 3)] {
+        let fair = valuation
+            .fair_values
+            .get(&qip_prediction::OutcomeId::new(id))
+            .copied()
+            .expect("every outcome is priced");
+        let expected = Decimal::from_int(twelfths) / Decimal::from_int(12);
+        assert!(
+            (fair - expected).abs() < tolerance,
+            "{id}: {fair} is not {twelfths}/12 of the unit payoff"
+        );
+    }
+    Ok(())
+}

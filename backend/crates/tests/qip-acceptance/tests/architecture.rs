@@ -3716,3 +3716,92 @@ fn multiple_independent_stores_claim_ledger_authority_ledger_001_is_incorrect() 
         found_writers.len()
     );
 }
+
+/// The Reflex Mesh crates and the durable event fabric's crates.
+const REFLEX_MESH: &[&str] = &["qip-peer", "qip-peer-link"];
+const DURABLE_FABRIC: &[&str] = &[
+    "qip-events",
+    "qip-streaming",
+    "qip-transport",
+    "qip-fabricd",
+];
+
+#[test]
+fn reflex_mesh_traffic_and_durable_fabric_traffic_share_no_crate_in_either_direction() {
+    // R12-COVERAGE-7194. Multi-leg coordination between cells rides the
+    // Reflex Mesh (`qip-peer`'s protocol, `qip-peer-link`'s wire, ADR 0116);
+    // journals, replay and backpressure ride the event fabric. The point of
+    // keeping them apart is that a leg's latency is never paid for a
+    // durability guarantee, and a fabric outage or replay storm is never
+    // felt on the mesh. That holds only while neither stack can reach the
+    // other: one innocent edge — the peer link journaling its frames through
+    // `qip-events`, or the fabric's producer reusing the peer wire — would
+    // put an fsync or a replay cursor on the leg path, and nothing else in
+    // this suite would notice. `mesh_lane` separates Lane 0 from Lane 1; this
+    // separates Lane 1 from the fabric.
+    let graph = dependency_graph();
+    for name in REFLEX_MESH.iter().chain(DURABLE_FABRIC) {
+        assert!(
+            graph.contains_key(*name),
+            "{name} is not a crate in this workspace; this test constrains nothing"
+        );
+    }
+    for mesh in REFLEX_MESH {
+        let reachable = reachable_from(&graph, mesh);
+        for fabric in DURABLE_FABRIC {
+            assert!(
+                !reachable.contains(*fabric),
+                "{mesh} reaches the durable fabric crate {fabric}: {reachable:?}"
+            );
+        }
+    }
+    for fabric in DURABLE_FABRIC {
+        let reachable = reachable_from(&graph, fabric);
+        for mesh in REFLEX_MESH {
+            assert!(
+                !reachable.contains(*mesh),
+                "{fabric} reaches the Reflex Mesh crate {mesh}: {reachable:?}"
+            );
+        }
+    }
+    // Vacuity guards: the absences above mean something only if each stack
+    // is a stack, and if one binary really does host both — the edge node,
+    // where the temptation to share a writer is greatest.
+    assert!(reachable_from(&graph, "qip-peer-link").contains("qip-peer"));
+    assert!(reachable_from(&graph, "qip-fabricd").contains("qip-streaming"));
+    let node = reachable_from(&graph, "qip-edge-node");
+    assert!(
+        node.contains("qip-peer-link") && node.contains("qip-events"),
+        "the edge node no longer hosts both stacks: {node:?}"
+    );
+}
+
+#[test]
+fn the_causal_agency_engine_cannot_reach_a_quantum_or_classical_solver() {
+    // R12-COVERAGE-7191. A quantum-assisted search may one day rank a large
+    // intervention set, but its ranking must arrive as an input that the
+    // agency's classical causal validation, policy, identity, conduct and
+    // authorization gates (`qip_agency::guard::ActionGuard`,
+    // `conduct_brain::ConductGate`, `ActionPolicy::widen`) then judge — never
+    // as a call the engine makes and trusts. The way in would not be a direct
+    // `qip-quantum` edge, which a reviewer would question, but
+    // `qip-optimization-engine`, which looks like a reasonable thing for a
+    // planner to want. Transitively, so no intermediate crate can carry it.
+    let graph = dependency_graph();
+    assert!(
+        graph.contains_key("qip-agency"),
+        "qip-agency is not a crate in this workspace; this test constrains nothing"
+    );
+    let reachable = reachable_from(&graph, "qip-agency");
+    for solver in ["qip-quantum", "qip-optimization-engine"] {
+        assert!(
+            !reachable.contains(solver),
+            "qip-agency can reach {solver}, so a solver's ranking could be acted \
+             on without passing the agency's gates: {reachable:?}"
+        );
+    }
+    // Vacuity guard: the agency really does hold its gates' crates, and the
+    // solver crates really are solvers.
+    assert!(reachable.contains("qip-compliance"));
+    assert!(reachable_from(&graph, "qip-optimization-engine").contains("qip-quantum"));
+}
