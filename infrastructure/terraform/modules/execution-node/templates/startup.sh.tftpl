@@ -130,10 +130,18 @@ install -d -m 0700 -o qip-node -g qip-node "$RUN_DIR"
 mountpoint -q "$RUN_DIR" || mount -t tmpfs -o size=8m,mode=0700,noswap tmpfs "$RUN_DIR"
 chown qip-node:qip-node "$RUN_DIR"
 
-/usr/local/bin/qip-fetch-secret "${project_id}" "${capital_envelope_secret_id}" "$RUN_DIR/capital-envelope-key" \
-  || fail "could not read the capital envelope key. Without it the node cannot verify a grant and qip-edge-node will not start."
-chown qip-node:qip-node "$RUN_DIR/capital-envelope-key"
-chmod 0400 "$RUN_DIR/capital-envelope-key"
+# No capital-envelope key. The node verifies the centre's policy frames, halts
+# and grants against the trust bundle baked into its image (ADR 0110) — public
+# keys only — and `qip-edge-node` refuses to start holding both the bundle and
+# the shared key, because the key can mint what the bundle verifies. So the
+# shared HMAC secret is neither fetched nor readable by this identity.
+
+# The trust bundle and the pinned Google roots are image files, carried out of
+# the attested qip-edge-node image by `.github/workflows/image.yml`. Checked
+# here so a node baked before they were committed stops naming the file,
+# rather than starting a binary that stops naming the variable.
+[ -r "${trust_bundle_path}" ] || fail "${trust_bundle_path} is not on this image. The trust bundle is baked from infrastructure/trust/ (ADR 0110); bake an image from a commit that carries it."
+[ -r "${google_tls_roots_path}" ] || fail "${google_tls_roots_path} is not on this image. The node authenticates CA Service against the pinned Google roots baked from infrastructure/trust/ (ADR 0112)."
 
 # The venue credential is fetched only when the module bound one — which needs
 # the environment's autonomy ceiling to permit live trading *and* the node to be
@@ -163,6 +171,13 @@ chmod 0400 "$RUN_DIR/venue-credential"
 readonly HALT_DIR=/run/qip/halt
 install -d -m 0750 -o root -g qip-node "$HALT_DIR"
 
+%{ if fencing_lease_path != "" ~}
+# The fencing lease's directory, owned by the service user, which writes the
+# lease record. On this machine's own disk: see the module's
+# `fencing_lease_path` for why that alone does not fence a standby elsewhere.
+install -d -m 0700 -o qip-node -g qip-node "$(dirname "${fencing_lease_path}")"
+%{ endif ~}
+
 # --- 3. configuration -------------------------------------------------------
 #
 # Values only. Every credential above is named by path — `qip_core::secret`
@@ -176,6 +191,15 @@ install -d -m 0750 -o root -g qip-node "$HALT_DIR"
 # the line, and the listener is already waiting for it.
 
 install -d -m 0755 "$CONF_DIR"
+
+# The CA Service pool's CA certificates, which every mTLS peer of this node
+# chains to (ADR 0112). Public material, rendered by Terraform from the pool
+# and passed base64 so no character of it can reach the shell as syntax.
+echo '${cas_trust_roots_base64}' | base64 -d >"$CONF_DIR/tls-trust-roots.pem"
+chmod 0444 "$CONF_DIR/tls-trust-roots.pem"
+grep -q -- '-----BEGIN CERTIFICATE-----' "$CONF_DIR/tls-trust-roots.pem" \
+  || fail "the CA Service trust roots rendered empty; the node could authenticate no peer."
+
 cat >"$CONF_DIR/node.env" <<EOF
 QIP_CELL_ID=${node_id}
 QIP_CELL_REGION=${region}
@@ -186,7 +210,19 @@ QIP_VENUES=${venue_ids}
 QIP_HEALTH_PORT=${health_port}
 QIP_STORAGE_TARGET=engine
 QIP_STORAGE_ROOT=/var/lib/qip/journal
-QIP_CAPITAL_ENVELOPE_KEY_FILE=$RUN_DIR/capital-envelope-key
+# ADR 0110: the committed trust bundle, baked into the image. The node holds
+# public keys only and refuses an HMAC-signed frame.
+QIP_TRUST_BUNDLE_PATH=${trust_bundle_path}
+# ADR 0112: every link this node owns is mutual TLS on a CA Service workload
+# certificate, requested at start through the workload template for the one
+# SAN naming this node's own service account, renewed at two-thirds of its
+# life, its key in memory only. No plaintext fallback exists to select.
+QIP_TLS_MODE=cas
+QIP_CAS_CA_POOL=${cas_ca_pool}
+QIP_CAS_CERTIFICATE_TEMPLATE=${cas_certificate_template}
+QIP_CAS_LIFETIME_SECS=${cas_lifetime_secs}
+QIP_TLS_TRUST_ROOTS_PATH=$CONF_DIR/tls-trust-roots.pem
+QIP_GOOGLE_TLS_ROOTS_PATH=${google_tls_roots_path}
 QIP_HALT_FLAG_PATH=$HALT_DIR/engaged
 # REFLEX-8071: the sequence to roll the cell's policy away from, read on its
 # own thread as the flag above is. Absent is no request, so writing the path
@@ -219,6 +255,15 @@ QIP_STRATEGY_PLAN_PATH=${strategy_plan_path}
 # region it measured no round trip to, so a mirror nobody could satisfy stops
 # the node rather than leaving it composing transport edges across an ocean.
 QIP_CROSS_REGION_MIRROR_PATH=${cross_region_mirror_path}
+%{ if fencing_lease_path != "" ~}
+# The fencing lease (GCP-043), written on the primary and the standby alike,
+# each under its own role and name: a standby with no lease would trade as a
+# second primary, and `qip-edge-node` refuses a role or name without one. The
+# module refuses a standby with no lease at plan.
+QIP_FENCING_LEASE=${fencing_lease_path}
+QIP_NODE_ROLE=${node_role}
+QIP_NODE_NAME=${node_name}
+%{ endif ~}
 EOF
 chmod 0444 "$CONF_DIR/node.env"
 

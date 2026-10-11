@@ -1,7 +1,7 @@
 # The execution node
 
 The Algorik blueprint's §41.2 and §41.4 describe one workload that is not a
-container: a single Rust binary on a dedicated C3 or C3D, under systemd, with no
+container: a single Rust binary on a dedicated C4 or C4D (R12-REFLEX-8002), under systemd, with no
 container runtime, no external address, and the cores above 1 isolated. ADR 0022
 made the blueprint the architecture of record, ADR 0020 sequences the node's
 arrival, and ADR 0024 is the owner's instruction to provision the runtime in
@@ -34,7 +34,7 @@ ADR 0020's step 3 asks for.
 | Subnet | Its own range in the node's region, private Google access on, flow logs sampled |
 | Identity | One service account, federated through the metadata server. **No key, and none may ever be created** |
 | Grants | Secret Manager accessor on the capital envelope key; the venue credential only under the two conditions below; `monitoring.metricWriter` and `logging.logWriter`; object *creation* on the evidence bucket when one is named. No Artifact Registry role — there is no runtime to pull an image |
-| Machine | Instance template: C3/C3D high-CPU, gVNIC, `TIER_1` egress, compact placement, shielded (secure boot, vTPM, integrity monitoring), **no `access_config`, so no external address**. The disk is labelled `qip_journal=true` for `modules/backup` |
+| Machine | Instance template: C4/C4D high-CPU (C3/C3D and N2 refused at plan), gVNIC, `TIER_1` egress, compact placement, shielded (secure boot, vTPM, integrity monitoring), **no `access_config`, so no external address**. The disk is labelled `qip_journal=true` for `modules/backup` |
 | Supervision | A startup script that verifies the image and installs two systemd units with `Restart=always`: the egress proxy, and the node that requires it |
 | Egress proxy | `qip-egress.service`: a static Envoy on loopback running the one committed bootstrap (`infrastructure/egress/envoy.yaml`), the same file every Cloud Run sidecar mounts. The binary's adapters are configured with `http://127.0.0.1:910x` |
 | Telemetry | The Ops Agent's Prometheus receiver scrapes the health port on loopback every 30 s, carrying every `qip_edge_*` series to Cloud Monitoring, which is what the edge alert policies in `modules/observability` query |
@@ -185,7 +185,7 @@ execution_nodes = {
     region       = "europe-west2"
     zone         = "europe-west2-a"
     subnet_cidr  = "10.68.0.0/20"
-    machine_type = "c3-highcpu-8"
+    machine_type = "c4-highcpu-8"
     boot_image   = "projects/<project>/global/images/qip-execution-node-<build>"
     venues = {
       "sim-1" = { cidr = "203.0.113.0/24", port = 443 }

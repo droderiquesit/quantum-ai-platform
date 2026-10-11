@@ -282,7 +282,7 @@ variable "execution_nodes" {
       * `subnet_cidr` must overlap neither another node's nor any trust
         zone's. Overlapping ranges route to whichever subnet was created
         first, silently.
-      * `machine_type` is one of the C3/C3D high-CPU shapes §41.4 permits;
+      * `machine_type` is one of the C4/C4D high-CPU shapes R12-REFLEX-8002 permits;
         the module refuses anything else.
       * `boot_image` is one image by self-link, never a family. The image is
         the other half of the node — modules/execution-node/README.md.
@@ -1724,6 +1724,14 @@ variable "event_fabric_broker" {
     dns_domain           = string
     machine_type         = optional(string, "c3-standard-4")
     journal_disk_size_gb = optional(number, 100)
+    # ADR 0111: up to two more instances in the region, which the module
+    # admits only beside `managed_log` — the Spanner lease that makes three
+    # machines one leader and its followers rather than three writers.
+    additional_addresses = optional(list(string), [])
+    managed_log = optional(object({
+      spanner_database = string
+      lease_ttl_ms     = optional(number, 10000)
+    }))
   })
   default = null
 
@@ -1817,16 +1825,25 @@ variable "pam_entitlements" {
 
 variable "certificate_authority" {
   description = <<-EOT
-    A private Certificate Authority Service pool and root (SEC-9128), or null
-    for none. The pool issues leaf certificates only, for client and server
-    auth, for thirty days at most. `requesters` are the service accounts
-    granted `privateca.certificateRequester`. Null everywhere.
+    A private Certificate Authority Service pool and root (SEC-9128, ADR 0112
+    §2), or null for none. The pool issues leaf certificates only, for client
+    and server auth, for `max_certificate_lifetime_hours` at most — hours, not
+    months, and never more than 24. Who may request one is not an input: it is
+    derived in security.tf from the identities of the three Compute Engine
+    binaries that own their sockets (qip-fabricd, qip-ledgerd, qip-edge-node),
+    each bound to the workload template and to a SAN naming itself. Null
+    everywhere.
   EOT
 
   type = object({
-    location     = string
-    organization = string
-    requesters   = optional(set(string), [])
+    location                       = string
+    organization                   = string
+    max_certificate_lifetime_hours = optional(number, 24)
+    # Retired: requesters are derived, never listed. Kept only so that a
+    # tfvars still naming one is refused by name below rather than having the
+    # field silently dropped by type conversion — which would read, in a
+    # review, as a grant that exists.
+    requesters = optional(set(string))
   })
   default = null
 
@@ -1836,11 +1853,19 @@ variable "certificate_authority" {
   }
 
   validation {
-    condition = var.certificate_authority == null || alltrue([
-      for member in try(var.certificate_authority.requesters, []) :
-      can(regex("^serviceAccount:[a-z0-9-]+@[a-z0-9.-]+\\.iam\\.gserviceaccount\\.com$", member))
-    ])
-    error_message = "Certificate requesters are service accounts, written serviceAccount:<email>. A person does not request a workload's certificate."
+    condition     = var.certificate_authority == null || try(length(var.certificate_authority.requesters) == 0, true)
+    error_message = "certificate_authority.requesters is no longer an input. The requesters are exactly the service accounts of qip-fabricd, qip-ledgerd and each execution node, derived in security.tf and each conditioned on the workload template and its own SAN (ADR 0112 §2); a listed requester is an unconditioned grant that could request any name."
+  }
+
+  # ADR 0112 §2: "a short-lived certificate (hours, not months)". A stolen
+  # workload key dies with its certificate, so the bound is the exposure.
+  validation {
+    condition = var.certificate_authority == null || try(
+      var.certificate_authority.max_certificate_lifetime_hours >= 1
+      && var.certificate_authority.max_certificate_lifetime_hours <= 24
+      && floor(var.certificate_authority.max_certificate_lifetime_hours) == var.certificate_authority.max_certificate_lifetime_hours,
+    false)
+    error_message = "certificate_authority.max_certificate_lifetime_hours is a whole number of hours from 1 to 24. ADR 0112 §2 issues workload certificates for hours, not months: a key stolen from memory is usable for as long as its certificate lives."
   }
 }
 

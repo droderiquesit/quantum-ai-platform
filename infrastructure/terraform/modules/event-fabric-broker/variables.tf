@@ -27,8 +27,8 @@ variable "region" {
   nullable    = false
 
   validation {
-    condition     = length(var.region) > 0
-    error_message = "region must not be empty."
+    condition     = can(regex("^[a-z]+-[a-z]+[0-9]+$", var.region))
+    error_message = "region is a Google Cloud region such as us-east4; it is written into the broker's environment file and its lease key."
   }
 }
 
@@ -139,9 +139,20 @@ variable "broker_internal_addresses" {
   # with no consensus between them — two writers of one chain, each
   # acknowledging records the other never saw. Refused until FABRIC-086's
   # replication exists, rather than admitted and discovered in a fork.
+  # ADR 0111 (accepted): two to three instances per region, the leader chosen
+  # by the Spanner lease on the managed P0/P1 path (FABRIC-8096). Never more:
+  # the ADR names three as the ceiling a region's lease is sized for. And
+  # never two or more on the local single-broker fabric, where two machines
+  # are two writers of one chain with nothing to choose between them — the
+  # refusal ADR 0100 §3 made, kept for the configuration it still describes.
   validation {
-    condition     = length(var.broker_internal_addresses) <= 1
-    error_message = "broker_internal_addresses names more than one broker. The first build is RF1 with no consensus (ADR 0100 §3); two brokers are two writers of one chain. One address until FABRIC-086 lands."
+    condition     = length(var.broker_internal_addresses) <= 3
+    error_message = "broker_internal_addresses names more than three brokers. ADR 0111 runs two to three instances per region under one Spanner lease; a fourth is not a configuration the lease was sized for."
+  }
+
+  validation {
+    condition     = length(var.broker_internal_addresses) <= 1 || var.managed_log != null
+    error_message = "broker_internal_addresses names more than one broker and managed_log is null. Without ADR 0111's Spanner lease two brokers are two writers of one chain (ADR 0100 §3); name the managed log's database, or one address."
   }
 
   # Every address is a dotted IPv4 literal. It is written into a DNS record
@@ -232,5 +243,125 @@ variable "qip_storage_journal_device" {
   validation {
     condition     = can(regex("^/dev/[A-Za-z0-9/_.-]+$", var.qip_storage_journal_device))
     error_message = "qip_storage_journal_device is a device path under /dev made of letters, digits, '/', '_', '.' and '-'."
+  }
+}
+
+# --- ADR 0110 / 0111 / 0112: what the broker must be told to start ----------
+#
+# `qip-fabricd` refuses to start outside a `local` deployment without its
+# deployment named, without mutual TLS on its listener, and without the
+# workloads it admits. Each is a variable here, validated to the character
+# set it is written into the environment file with, because `templatefile`
+# escapes nothing.
+
+variable "deployment" {
+  type        = string
+  description = "The deployment the broker runs in (QIP_DEPLOYMENT): the environment's name. Never `local` on a machine."
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{0,30}$", var.deployment)) && var.deployment != "local"
+    error_message = "deployment is the environment's name, lower-case letters, digits and '-'; `local` is a developer's machine and admits plaintext, which a deployed broker must not."
+  }
+}
+
+variable "workload_certificates" {
+  description = <<-EOT
+    The CA Service pool and template the broker requests its mTLS workload
+    certificate from (ADR 0112 §2), the lifetime it asks for, and the pool's
+    CA certificates it verifies clients against. Full resource names by
+    project id, the form the requester grant's IAM condition matches.
+  EOT
+
+  type = object({
+    ca_pool              = string
+    certificate_template = string
+    lifetime_secs        = number
+    trust_roots_pem      = string
+  })
+  nullable = false
+
+  validation {
+    condition = (
+      can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/caPools/[A-Za-z0-9_-]+$", var.workload_certificates.ca_pool))
+      && can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/certificateTemplates/[A-Za-z0-9_-]+$", var.workload_certificates.certificate_template))
+    )
+    error_message = "workload_certificates names the CA pool and the template by full resource name with a project id; both are written into the broker's environment file."
+  }
+
+  validation {
+    condition     = var.workload_certificates.lifetime_secs >= 3600 && var.workload_certificates.lifetime_secs <= 86400 && floor(var.workload_certificates.lifetime_secs) == var.workload_certificates.lifetime_secs
+    error_message = "workload_certificates.lifetime_secs is a whole number of seconds from an hour to a day (ADR 0112 §2)."
+  }
+
+  validation {
+    condition     = strcontains(var.workload_certificates.trust_roots_pem, "-----BEGIN CERTIFICATE-----")
+    error_message = "workload_certificates.trust_roots_pem is the CA pool's PEM certificates."
+  }
+}
+
+variable "google_tls_roots_path" {
+  type        = string
+  description = "Where the boot image carries the pinned Google roots the broker authenticates CA Service (and the managed log's Spanner) against: /etc/qip/trust/<file>.pem."
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^/etc/qip/trust/[a-z0-9-]+\\.pem$", var.google_tls_roots_path))
+    error_message = "google_tls_roots_path is /etc/qip/trust/<name>.pem."
+  }
+}
+
+variable "admitted_peers" {
+  type        = list(string)
+  description = <<-EOT
+    The workloads the broker's listener admits (QIP_EVENT_FABRIC_ADMITTED_PEERS),
+    as the DNS SANs their CA Service certificates carry: each client's
+    service-account email with `@` read as `.`, the one name the workload
+    template lets that client obtain. Derived at the root from the same
+    identities granted certificate requests, so the two cannot disagree.
+  EOT
+  nullable    = false
+
+  # An empty list is "any certificate the pool issued", which on a pool every
+  # node can request from admits a node to a ledger's stream. qip-fabricd
+  # refuses it outside local; so does this.
+  validation {
+    condition     = length(var.admitted_peers) > 0
+    error_message = "admitted_peers is empty. A broker admitting every certificate its pool issues admits every workload in the environment; name the clients (the edge nodes and qip-ledgerd)."
+  }
+
+  validation {
+    condition = alltrue([
+      for peer in var.admitted_peers :
+      can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]\\.[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", peer))
+    ])
+    error_message = "Every admitted peer is a service account's SAN, <account>.<project>.iam.gserviceaccount.com — the only name the workload template issues."
+  }
+}
+
+variable "managed_log" {
+  description = <<-EOT
+    ADR 0111's managed P0/P1 commit path, or null for the local single-broker
+    fabric. `spanner_database` is the database holding the region's leader
+    lease (projects/<p>/instances/<i>/databases/<d>); `lease_ttl_ms` the
+    lease's life, which the broker bounds to 1.5–120 s. Required for more than
+    one broker: it is what makes two brokers one leader and a follower rather
+    than two writers.
+  EOT
+
+  type = object({
+    spanner_database = string
+    lease_ttl_ms     = optional(number, 10000)
+  })
+  default = null
+
+  validation {
+    condition     = var.managed_log == null || can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/instances/[a-z][a-z0-9-]{1,62}/databases/[a-z][a-z0-9_-]{1,29}$", var.managed_log.spanner_database))
+    error_message = "managed_log.spanner_database is projects/<project>/instances/<instance>/databases/<database>."
+  }
+
+  validation {
+    condition     = var.managed_log == null || try(var.managed_log.lease_ttl_ms >= 1500 && var.managed_log.lease_ttl_ms <= 120000 && floor(var.managed_log.lease_ttl_ms) == var.managed_log.lease_ttl_ms, false)
+    error_message = "managed_log.lease_ttl_ms is a whole number of milliseconds from 1500 to 120000, the bounds qip-fabricd enforces."
   }
 }

@@ -897,6 +897,68 @@ fn serve_one(mut stream: std::net::TcpStream, endpoint: &MeshEndpoint) {
 /// Mutation: drop `Decision::PolicyApplied` entries in `SpoolWriter`'s
 /// journal handling (or stop flushing in `DecisionLoop::turn`) and the
 /// acknowledgement never reaches the spool.
+/// A CA certificate `openssl req -x509` made for this test; its key was
+/// deleted unread. Public material, enough for an identity that holds roots
+/// and no certificate.
+const FIXTURE_ROOT: &str = "-----BEGIN CERTIFICATE-----
+MIIBqzCCAVOgAwIBAgIUYT43nsbEcR277bc6CUkHAo5ZbjowCgYIKoZIzj0EAwIw
+IzEhMB8GA1UEAwwYcWlwIHJlYWRpbmVzcyBmaXh0dXJlIENBMCAXDTI2MTAxMTEx
+MDEwOFoYDzIxMjYwOTE3MTEwMTA4WjAjMSEwHwYDVQQDDBhxaXAgcmVhZGluZXNz
+IGZpeHR1cmUgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATQZpXAff4IZ68a
+48wN/d71sb6foGUd8b+/60TuL8tLKMU3W8WOGutofeSFvdbum2VcgSIKSG5iAW4B
+oZz5lLOuo2MwYTAdBgNVHQ4EFgQUW/eoZJFiL/VbokTiODWFqzpfZx8wHwYDVR0j
+BBgwFoAUW/eoZJFiL/VbokTiODWFqzpfZx8wDwYDVR0TAQH/BAUwAwEB/zAOBgNV
+HQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDRgAwQwIfAxe48XHniN3HVZAeq+yZXgUP
+y+tWW22AN6xQlVPo3gIgJH4TQbQ5DbBEaFi8NBD1YPhsi93qd8LFwl7M9NuVuYo=
+-----END CERTIFICATE-----
+";
+
+/// ADR 0112's fail-closed rule, seen from outside the node: a fabric link
+/// on CA Service with no current certificate is refused at every handshake,
+/// and the health body a probe reads says so. Mutation: drop the
+/// `workload_certificate` field from `health_body` (or never apply
+/// `with_certificate`) and the parsed body has no such object; this fails.
+#[test]
+fn a_node_whose_fabric_certificate_is_not_current_says_so_in_its_health_body() -> Result<()> {
+    use qip_edge_node::health::HealthSnapshot;
+    use qip_edge_node::scheduler::HealthFacts;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let rig = rig(store as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let identity = qip_transport::tls::WorkloadIdentity::awaiting_issuance(
+        FIXTURE_ROOT.as_bytes(),
+        Arc::new(SystemClock),
+    )?;
+    let snapshot = HealthSnapshot::new(r#"{"turns":0}"#);
+    let mut decisions = rig
+        .decisions
+        .with_health(
+            snapshot.clone(),
+            HealthFacts {
+                cell: CELL.to_string(),
+                region: REGION.to_string(),
+                venues: 1,
+                halt_flag_path: None,
+                storage_target: "memory".to_string(),
+                durable: false,
+                started_secs: 0,
+            },
+        )
+        .with_certificate(Arc::new(qip_transport::cas::RenewalStatus::new(Arc::new(
+            identity,
+        ))));
+    decisions.turn(t(10))?;
+    let body: serde_json::Value = serde_json::from_str(&snapshot.read())
+        .map_err(|error| qip_core::error::Error::invalid(error.to_string()))?;
+    // Premise: the body is the decision thread's, not the placeholder.
+    assert!(body.get("cell").is_some(), "{body}");
+    assert_eq!(body["workload_certificate"]["current"], false, "{body}");
+    assert_eq!(
+        body["workload_certificate"]["source"],
+        "certificate_authority_service"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() -> Result<()> {
     use qip_contracts::reflex::Decision as Recorded;

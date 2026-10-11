@@ -54,6 +54,7 @@
 //! lease is configured.
 
 use qip_contracts::venue::VenueId;
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, Timestamp};
 use qip_edge::fencing::{Fence, FenceStatus};
@@ -66,8 +67,12 @@ use std::sync::{Arc, Mutex};
 
 /// The lease file. Unset is a node with no standby, announced at start.
 pub const LEASE_VARIABLE: &str = "QIP_FENCING_LEASE";
-/// `primary` or `standby`. Required when a lease is configured.
+/// `primary` or `standby`, required when a lease is configured; or
+/// [`UNPAIRED_ROLE`]. Outside a `local` deployment it is required always —
+/// see [`StandbySettings::read`].
 pub const ROLE_VARIABLE: &str = "QIP_NODE_ROLE";
+/// The [`ROLE_VARIABLE`] value of a deployed node that has no standby.
+pub const UNPAIRED_ROLE: &str = "unpaired";
 /// This process's name in the lease. Required when a lease is configured,
 /// and distinct between the primary and its standby.
 pub const NAME_VARIABLE: &str = "QIP_NODE_NAME";
@@ -660,16 +665,46 @@ pub struct StandbySettings {
 impl StandbySettings {
     /// `None` when no lease is configured. A role or name with no lease is
     /// refused: a standby that holds no lease is a second primary.
+    ///
+    /// Outside `local` the role is also **required**, and [`UNPAIRED_ROLE`]
+    /// is how a node with no standby says so. The execution-node module
+    /// renders the standby from the same startup script as the primary, so
+    /// a standby that boots with no lease sets nothing a refusal keyed on
+    /// the role could see: it looked exactly like a lone primary and traded
+    /// as a second one. Deciding "alone" by the absence of a variable fails
+    /// open in the one place it matters, so a deployed node must state it;
+    /// on a developer's machine absence still means alone.
     pub fn read(
         lease: Option<&str>,
         role: Option<&str>,
         name: Option<&str>,
+        deployment: Deployment,
     ) -> Result<Option<Self>> {
         fn present(value: Option<&str>) -> Option<&str> {
             value.map(str::trim).filter(|v| !v.is_empty())
         }
         let (lease, role, name) = (present(lease), present(role), present(name));
+        if role == Some(UNPAIRED_ROLE) {
+            if lease.is_some() || name.is_some() {
+                return Err(Error::invalid(format!(
+                    "configuration: {ROLE_VARIABLE}={UNPAIRED_ROLE} and {LEASE_VARIABLE} or \
+                     {NAME_VARIABLE} is set; a node with no standby holds no lease. Unset both, \
+                     or set {ROLE_VARIABLE} to `primary` or `standby`"
+                )));
+            }
+            return Ok(None);
+        }
         let Some(path) = lease else {
+            if role.is_none() && name.is_none() && deployment != Deployment::Local {
+                return Err(Error::invalid(format!(
+                    "configuration: {ROLE_VARIABLE} is not set and QIP_DEPLOYMENT is \
+                     `{deployment}`; a deployed node must say whether it runs alone, because a \
+                     standby that boots with no {LEASE_VARIABLE} cannot be told from a lone \
+                     primary and would trade as a second one. Set {ROLE_VARIABLE}=\
+                     {UNPAIRED_ROLE} on a node with no standby, or `primary`/`standby` with \
+                     {LEASE_VARIABLE} and {NAME_VARIABLE} on each node of a pair"
+                )));
+            }
             if role.is_some() || name.is_some() {
                 return Err(Error::invalid(format!(
                     "configuration: {ROLE_VARIABLE} or {NAME_VARIABLE} is set and \

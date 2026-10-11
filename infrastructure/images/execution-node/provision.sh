@@ -184,6 +184,19 @@ install -D -m 0755 -o root -g root qip-edge-node /usr/local/bin/qip-edge-node
 install -D -m 0755 -o root -g root envoy /usr/local/bin/envoy
 install -D -m 0755 -o root -g root qip-fetch-secret /usr/local/bin/qip-fetch-secret
 
+# The committed trust files — ADR 0110's bundle and ADR 0112's pinned Google
+# roots — carried out of the attested qip-edge-node image by the runner and
+# checked against the manifest above. Root-owned and world-readable: public
+# keys and public certificates, which the service user reads and must not be
+# able to replace. Possibly none: an environment that has committed no bundle
+# bakes an image with none, and the startup script refuses to start a node
+# configured with one that is absent.
+say "installing the trust files"
+install -d -m 0755 -o root -g root /etc/qip/trust
+if [ -d trust ]; then
+  find trust -maxdepth 1 -type f -exec install -m 0444 -o root -g root {} /etc/qip/trust/ \;
+fi
+
 # --- 4. the Ops Agent -------------------------------------------------------
 #
 # A node nothing scrapes is a node nobody can operate: the alert policies in

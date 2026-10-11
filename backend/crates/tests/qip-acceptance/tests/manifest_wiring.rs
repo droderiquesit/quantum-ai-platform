@@ -569,6 +569,28 @@ fn variable_literals(text: &str) -> BTreeSet<String> {
         .collect()
 }
 
+/// The variables `qip_transport::tls::link_source` reads: the `pub const`
+/// names `tls.rs` and `cas.rs` declare, and only those — a doc comment that
+/// mentions a variable is not a read.
+fn variables_read_through_link_source() -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for file in [
+        "backend/crates/libs/qip-transport/src/tls.rs",
+        "backend/crates/libs/qip-transport/src/cas.rs",
+    ] {
+        for line in read(file).lines() {
+            if line.starts_with("pub const ") && line.contains(": &str = \"QIP_") {
+                names.extend(variable_literals(line));
+            }
+        }
+    }
+    assert!(
+        names.contains("QIP_TLS_MODE") && names.contains("QIP_CAS_CA_POOL"),
+        "the link's variables are no longer declared where this scan looks: {names:?}"
+    );
+    names
+}
+
 /// Every `.rs` file under one crate's `src`, as text.
 fn sources_under(relative: &str) -> Vec<String> {
     files_with_extension(relative, "rs")
@@ -785,6 +807,15 @@ fn variables_read_by(
         // that connector's manifest names, and names none of them itself.
         if mentions_identifier(source, "ConnectorFeed") {
             by_connector.extend(variables_named_by_connector_manifests());
+        }
+        // A binary that decides its link through `qip_transport::tls::
+        // link_source` reads the link's variables through the lookup it hands
+        // in, and names none of them itself: the mode, the hand-placed files
+        // and, under `cas`, the CA Service settings (ADR 0112 §2). Without
+        // this a deployment wiring `QIP_TLS_MODE=cas` would read as setting
+        // variables nothing reads.
+        if mentions_identifier(source, "link_source") {
+            by_delegation.extend(variables_read_through_link_source());
         }
         literal.extend(variable_literals(source));
         for (identifier, variables) in constants {
@@ -1385,34 +1416,21 @@ const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
      binary's absent value is its stated interim posture rather than a \
      fallback: the API signs under the operator's shared key from Secret \
      Manager and says so in its banner, refused outside `local` from \
-     `qip_transport::trust::SHARED_KEY_REMOVED_AFTER`; the node verifies \
-     under the same key until the same date; and with no release packs the \
+     `qip_transport::trust::SHARED_KEY_REMOVED_AFTER`; and with no release packs the \
      API names no distillate to any cell outside `local`, which is the \
      fail-closed reading of REFLEX-9011. `local` signing keys are refused \
      outside a local deployment by the binary itself. The entry ends when the \
      key ring's class keys and the bundle are applied and mounted.";
 
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
-    (
-        "qip-api",
-        "QIP_ARTEFACT_SIGNER",
-        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
-    ),
-    (
-        "qip-api",
-        "QIP_TRUST_BUNDLE_PATH",
-        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
-    ),
-    (
-        "qip-api",
-        "QIP_KMS_KEY_VERSIONS_PATH",
-        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
-    ),
-    (
-        "qip-api",
-        "QIP_GOOGLE_TLS_ROOTS_PATH",
-        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
-    ),
+    // QIP_ARTEFACT_SIGNER, QIP_TRUST_BUNDLE_PATH, QIP_KMS_KEY_VERSIONS_PATH
+    // and QIP_GOOGLE_TLS_ROOTS_PATH on qip-api, and QIP_TRUST_BUNDLE_PATH on
+    // qip-edge-node, were argued here until the KMS keys and the committed
+    // bundle became Terraform (infrastructure/terraform/artefact-signing.tf).
+    // The catalogue now sets the API's four from `artefact_trust_bundle_file`
+    // (a `== null ? {} : {` arm, so each RunService omits them until its
+    // environment commits a bundle) and node.env sets the node's bundle path
+    // unconditionally, so the general rule covers all five.
     (
         "qip-api",
         "QIP_LOCAL_SIGNING_KEYS_PATH",
@@ -1421,11 +1439,6 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     (
         "qip-api",
         "QIP_MODEL_PACKS_PATH",
-        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
-    ),
-    (
-        "qip-edge-node",
-        "QIP_TRUST_BUNDLE_PATH",
         NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
     ),
     (
@@ -1953,9 +1966,31 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          and may not remove a shipped limit; nobody has written one, and an \
          environment-wide default would be a limit nobody calibrated.",
     ),
-    ("qip-edge-node", "QIP_FENCING_LEASE", NO_STANDBY_PAIR_EXISTS),
-    ("qip-edge-node", "QIP_NODE_ROLE", NO_STANDBY_PAIR_EXISTS),
-    ("qip-edge-node", "QIP_NODE_NAME", NO_STANDBY_PAIR_EXISTS),
+    // ADR 0110: the node verifies against the trust bundle the attested
+    // image carries, and the template no longer fetches the shared key.
+    // ADR 0112 §2: a deployed node's certificate is issued by CA Service
+    // (`QIP_TLS_MODE=cas`, which the template sets) over a key generated in
+    // memory; the hand-placed files are the workstation's path.
+    (
+        "qip-edge-node",
+        "QIP_TLS_CERTIFICATE_CHAIN_PATH",
+        HAND_PLACED_CERTIFICATES_ARE_A_WORKSTATION_PATH,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_TLS_PRIVATE_KEY_PATH",
+        HAND_PLACED_CERTIFICATES_ARE_A_WORKSTATION_PATH,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_CAPITAL_ENVELOPE_KEY",
+        "The shared HMAC key the node read before ADR 0110. Unset, the node \
+         verifies policy, halts and grants against QIP_TRUST_BUNDLE_PATH, \
+         which the template sets; set, a node's disk would again hold a key \
+         that mints what it verifies, the risk ADR 0110 exists to remove. The \
+         binary keeps reading it only until SHARED_KEY_REMOVED_AFTER \
+         (`qip-transport/src/trust.rs`), after which it is refused.",
+    ),
     (
         "qip-edge-node",
         "QIP_PEER_MESH_LISTEN",
@@ -2012,13 +2047,14 @@ const THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED: &str = "`QIP_DEEPBRAIN_TICK_EVERY` \
      nobody has made one for a deployment: a default here would let the \
      desk read data under terms nobody granted it.";
 
-/// The fencing lease and the two names that go with it.
-const NO_STANDBY_PAIR_EXISTS: &str = "Unset is a node with no standby, \
-     announced at start (`qip-edge-node/src/standby.rs`). The only lease \
-     store in the tree is a compare-and-swap over one file on one host — \
-     not a cross-zone store, and the module says so — and no environment \
-     deploys a node, let alone a primary and its standby. Setting it would \
-     claim a failover the deployment cannot provide.";
+/// The workload certificate as files rather than issued.
+const HAND_PLACED_CERTIFICATES_ARE_A_WORKSTATION_PATH: &str = "Unset because \
+     the node runs `QIP_TLS_MODE=cas`: its certificate is issued by CA \
+     Service over a key generated in memory and renewed in place (ADR 0112 \
+     §2), and `qip_transport::tls::link_source` refuses these files beside \
+     `cas`. Set, a private key would sit on the node's disk for as long as the \
+     file lived, which is what short-lived workload certificates exist to \
+     avoid.";
 
 /// The node-to-node coordination mesh.
 const THE_PEER_MESH_HAS_NO_DEPLOYED_PEER: &str = "The peer transport is \
@@ -2999,21 +3035,52 @@ fn the_node_takes_its_values_from_a_file_and_its_secrets_from_files_never_from_t
     // key is a key in /proc/<pid>/environ and in every crash dump.
     let startup = read(NODE_STARTUP);
     let set = variables_the_node_sets();
+    // ADR 0110: the node verifies the centre against the committed trust
+    // bundle baked into its image, and holds no shared key at all —
+    // `qip-edge-node` refuses to start with both, because the key can mint
+    // what the bundle verifies. This test required the envelope key's mount
+    // until the bundle existed; it now requires the bundle and refuses the
+    // key, by name and by path.
     assert!(
-        set.contains("QIP_CAPITAL_ENVELOPE_KEY_FILE"),
-        "node.env no longer names the envelope key by path"
+        set.contains("QIP_TRUST_BUNDLE_PATH"),
+        "node.env does not name the trust bundle the node verifies against"
     );
+    assert!(
+        startup.contains("QIP_TRUST_BUNDLE_PATH=${trust_bundle_path}\n"),
+        "node.env takes the trust bundle's path from somewhere other than the module's validated input"
+    );
+    assert!(
+        !set.contains("QIP_CAPITAL_ENVELOPE_KEY_FILE")
+            && !startup.contains("capital-envelope-key")
+            && !startup.contains("capital_envelope_secret_id"),
+        "the node still fetches or names the shared capital-envelope key beside the trust bundle"
+    );
+    // ADR 0112: every link the node owns is mutual TLS on a CA Service
+    // workload certificate; there is no plaintext mode to select.
+    assert!(
+        startup.contains("\nQIP_TLS_MODE=cas\n"),
+        "node.env does not put the node's links on CA Service workload certificates"
+    );
+    for variable in [
+        "QIP_CAS_CA_POOL",
+        "QIP_CAS_CERTIFICATE_TEMPLATE",
+        "QIP_TLS_TRUST_ROOTS_PATH",
+        "QIP_GOOGLE_TLS_ROOTS_PATH",
+    ] {
+        assert!(
+            set.contains(variable),
+            "node.env does not set {variable}, which the node's workload certificate needs"
+        );
+    }
     assert!(
         !set.contains("QIP_CAPITAL_ENVELOPE_KEY") && !set.contains("QIP_VENUE_CREDENTIAL"),
         "node.env carries a credential as a value"
     );
-    assert!(
-        startup.contains("/usr/local/bin/qip-fetch-secret \"${project_id}\" \"${capital_envelope_secret_id}\" \"$RUN_DIR/capital-envelope-key\""),
-        "the startup script no longer fetches the envelope key to the secrets tmpfs"
-    );
+    // The one secret a node may still hold, the venue credential, reaches a
+    // tmpfs at mode 0400 — and only where the module bound it.
     assert!(
         startup.contains("mount -t tmpfs -o size=8m,mode=0700,noswap tmpfs \"$RUN_DIR\"")
-            && startup.contains("chmod 0400 \"$RUN_DIR/capital-envelope-key\""),
+            && startup.contains("chmod 0400 \"$RUN_DIR/venue-credential\""),
         "the node's secrets are not on a tmpfs at mode 0400"
     );
     // And the ceiling is not set on the node: a cell's ceiling is structural,

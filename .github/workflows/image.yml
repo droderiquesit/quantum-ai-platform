@@ -117,15 +117,11 @@ on:
       machine_type:
         description: "The shape the image is built for. The kernel's isolated-core range is derived from it, so an image is valid for one shape only."
         required: true
-        default: "c3-highcpu-8"
+        default: "c4-highcpu-8"
         type: choice
         options:
-          - c3-highcpu-8
-          - c3-highcpu-22
-          - c3d-highcpu-8
-          - c3d-highcpu-16
           - c4-highcpu-8
-          - c4-highcpu-22
+          - c4-highcpu-16
           - c4d-highcpu-8
           - c4d-highcpu-16
       base_image:
@@ -690,6 +686,27 @@ jobs:
           readelf -l payload/envoy | grep -q INTERP || { echo "the vendored envoy has no ELF interpreter; the extraction read the wrong file" >&2; exit 1; }
           ls -l payload/
 
+      # The committed trust files (ADR 0110's bundle, ADR 0112's pinned Google
+      # roots), out of the same attested qip-edge-node image the binary came
+      # from: `infrastructure/docker/Dockerfile` copies `infrastructure/trust/`
+      # to `/etc/qip/trust/`, so the boot image carries exactly the bundle the
+      # attested image does and never a copy taken from the checkout. The
+      # node's startup script refuses to start a unit without the bundle it is
+      # configured with.
+      - name: carry the trust files out of the attested node image
+        env:
+          NODE_PREFIX: ${{ steps.identity.outputs.node_prefix }}
+          NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p payload/trust-extract payload/trust
+          crane export --platform linux/amd64 "${NODE_PREFIX}/qip-edge-node@${NODE_DIGEST}" - \
+            | tar -x -C payload/trust-extract etc/qip/trust
+          [ -d payload/trust-extract/etc/qip/trust ] || { echo "the attested qip-edge-node image carries no /etc/qip/trust; it predates the Dockerfile that bakes the trust files" >&2; exit 1; }
+          find payload/trust-extract/etc/qip/trust -maxdepth 1 -type f \( -name '*.json' -o -name '*.pem' \) -exec cp -- {} payload/trust/ \;
+          rm -rf payload/trust-extract
+          ls -l payload/trust/
+
       # The one input that is not an attested container image. Pinned by
       # version and by digest, fetched here where there is a route to the
       # internet, and verified before it is staged — the builder machine has
@@ -732,7 +749,7 @@ jobs:
           # proves the tarball is the one this run uploaded; this proves each
           # file inside it is the one this run put there, which is what lets
           # the image's own manifest name a digest per file.
-          ( cd payload && sha256sum qip-edge-node envoy qip-fetch-secret google-cloud-ops-agent.deb > MANIFEST.sha256 )
+          ( cd payload && sha256sum qip-edge-node envoy qip-fetch-secret google-cloud-ops-agent.deb $(find trust -type f | sort) > MANIFEST.sha256 )
           cat payload/MANIFEST.sha256
 
           # What the image will say about itself, on the image, at

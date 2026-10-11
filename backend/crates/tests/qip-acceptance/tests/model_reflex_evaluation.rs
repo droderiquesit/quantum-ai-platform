@@ -79,9 +79,7 @@ fn cell_running(model: DistilledModel) -> Cell {
     .unwrap();
     let mut payload = PolicyPayload::unproduced(1, CELL, t(10));
     payload.trained_models = Slot::produced(
-        ModelManifest {
-            models: BTreeMap::from([(model.name().to_string(), model.digest())]),
-        },
+        ModelManifest::unreleased(BTreeMap::from([(model.name().to_string(), model.digest())])),
         t(10),
     );
     let policy =

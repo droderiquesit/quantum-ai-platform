@@ -244,10 +244,19 @@ fn run() -> Result<()> {
     // ADR 0110 decision 5: which deployment this is, named and never
     // inferred. Absent is refused, so a deployment that forgot to say what it
     // is cannot run on the seed-derived key the way a developer's machine may.
-    let deployment = qip_core::deployment::Deployment::parse(
+    // And `local` is refused where the platform's own markers show this is
+    // deployed — Cloud Run's `K_*`, the GCE DMI name — so the one value that
+    // relaxes the guards cannot be set by an environment edit on a revision.
+    let deployment = qip_core::deployment::Deployment::parse_observed(
         std::env::var(qip_fastbrain::trust::DEPLOYMENT_VARIABLE)
             .ok()
             .as_deref(),
+        &qip_core::deployment::DeploymentMarkers::observe(
+            &|name| std::env::var(name).ok(),
+            std::fs::read_to_string(qip_core::deployment::COMPUTE_ENGINE_PRODUCT_FILE)
+                .ok()
+                .as_deref(),
+        ),
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     // R12-GOV-6121: a deployed process states the commit it was built from,

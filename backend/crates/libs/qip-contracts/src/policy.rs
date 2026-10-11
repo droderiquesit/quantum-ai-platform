@@ -279,11 +279,112 @@ impl<T> Slot<T> {
 
 /// A model named by digest. Weights never travel this fabric — a payload is
 /// policy, and ten ONNX artifacts are an artifact store's business.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelManifest {
     /// Model name to content digest, ordered so the wire form is stable.
     pub models: BTreeMap<String, String>,
+    /// The two-person release behind each named model, by model name (ADR
+    /// 0110, Amendment 1).
+    ///
+    /// The payload this manifest rides in is signed once per cycle by the
+    /// API's own `policy` key — issuance, not publication — so the payload's
+    /// signature alone would let one compromised process name any model to
+    /// every cell. Each pack carries its own `model-pack` signature, which
+    /// only the publish workflow's identity can make, naming the model and
+    /// digest the cell computes from the inline value
+    /// ([`ModelPack::inline_model`]); a cell under a trust bundle refuses a
+    /// payload naming a model without one ([`Self::check_releases`]).
+    ///
+    /// Off the wire while empty, so every payload signed before the field
+    /// existed keeps its slot digest.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub packs: BTreeMap<String, ModelPack>,
+}
+
+impl ModelManifest {
+    /// A manifest naming `models` with no release packs — the shape every
+    /// pre-amendment payload had, and the one a shared-key cell still reads.
+    pub fn unreleased(models: BTreeMap<String, String>) -> Self {
+        Self {
+            models,
+            packs: BTreeMap::new(),
+        }
+    }
+
+    /// Refuse unless every named model has a pack here that names it at its
+    /// digest, verifies under the `model-pack` key at `now`, names two
+    /// distinct people and has not expired; and unless every pack is for a
+    /// named model.
+    ///
+    /// The second half is not tidiness: a pack for a model the manifest does
+    /// not name is a release the centre chose not to run, and a cell that
+    /// admitted it beside the manifest would be reading two lists.
+    pub fn check_releases(
+        &self,
+        verifier: &dyn crate::trust::ArtefactVerifier,
+        now: Timestamp,
+    ) -> Result<()> {
+        for (name, digest) in &self.models {
+            let pack = self.packs.get(name).ok_or_else(|| {
+                Error::denied(format!(
+                    "the manifest names model `{name}` and carries no release pack for it; a \
+                     per-cycle payload is signed by one process, and a model reaches a cell only \
+                     under a two-person release signed by the model-pack key (ADR 0110, \
+                     Amendment 1)"
+                ))
+            })?;
+            match &pack.inline_model {
+                Some(inline) if inline.name == *name && inline.digest == *digest => {}
+                Some(inline) => {
+                    return Err(Error::denied(format!(
+                        "the release pack filed under model `{name}` (digest {digest}) names \
+                         `{}` at digest {}; a pack is the release of the model it names, not of \
+                         the slot it was filed under",
+                        inline.name, inline.digest
+                    )));
+                }
+                None => {
+                    return Err(Error::denied(format!(
+                        "the release pack for model `{name}` names no inline model, so it does \
+                         not say which weights the cell may run; publish the pack with its \
+                         inline_model set"
+                    )));
+                }
+            }
+            pack.verify(verifier, now).map_err(|error| {
+                Error::denied(format!(
+                    "the release pack for model `{name}` does not verify: {}",
+                    error.message()
+                ))
+            })?;
+        }
+        if let Some(stray) = self
+            .packs
+            .keys()
+            .find(|name| !self.models.contains_key(*name))
+        {
+            return Err(Error::denied(format!(
+                "the manifest carries a release pack for `{stray}` and does not name that model; \
+                 the manifest is the one list of what a cell may run"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The inline model a [`ModelPack`] releases to the cells: the name a
+/// compiled plan carries it under and `DistilledModel::digest()`, the digest
+/// the cell computes from the inline value.
+///
+/// Distinct from [`ModelPack::artifact_digest`], the SHA-256 of the artifact
+/// file: a cell never sees that file, so a pack naming only the file would
+/// be a release the cell cannot connect to anything it runs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InlineModel {
+    pub name: String,
+    pub digest: String,
 }
 
 /// A complete model pack carrying signed artifacts, calibration, and deployment constraints.
@@ -316,6 +417,12 @@ pub struct ModelPack {
     /// The two people who published this pack (ADR 0110 decision 4). Inside
     /// the signed bytes, so a pack cannot be re-attributed after signing.
     pub publication: crate::trust::Publication,
+    /// The inline model this pack releases to the cells, inside the signed
+    /// bytes. `None` releases the artifact to the centre only: such a pack
+    /// can still gate the kernel's manifest but no cell will run a model on
+    /// its strength ([`ModelManifest::check_releases`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_model: Option<InlineModel>,
 }
 
 impl ModelPack {
@@ -342,6 +449,14 @@ impl ModelPack {
         out.extend_from_slice(&self.expires_at.to_be_bytes());
         out.extend_from_slice(&length_prefixed_bytes(self.rollback_parent.as_bytes()));
         out.extend_from_slice(&self.publication.canonical());
+        // Appended only when present, after the last fixed-shape field, so
+        // a pack signed before the field existed keeps its bytes; the tag
+        // keeps a pack with the tail from ever reading as one without.
+        if let Some(inline) = &self.inline_model {
+            out.extend_from_slice(b"inline-model/v1");
+            out.extend_from_slice(&length_prefixed_bytes(inline.name.as_bytes()));
+            out.extend_from_slice(&length_prefixed_bytes(inline.digest.as_bytes()));
+        }
         out
     }
 

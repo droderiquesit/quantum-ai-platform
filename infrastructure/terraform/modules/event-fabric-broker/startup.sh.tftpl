@@ -4,8 +4,10 @@
 # ADR 0100 §1: the broker runs on a dedicated Compute Engine machine with no
 # external address. Rendered by Terraform's `templatefile`, which escapes
 # nothing: every substitution below is either base64 (a closed alphabet), a
-# number, or a device path the module's validation restricts to a closed
-# character set. A new substitution needs a validation in the same diff.
+# number, or a value — a device path, a region, a deployment name, a CA
+# Service or Spanner resource name, a SAN list — the module's validation
+# restricts to a closed character set with no shell syntax in it. A new
+# substitution needs a validation in the same diff.
 #
 # Fail closed throughout. This script used to end most steps in `|| true`,
 # including the mount — so a journal that failed to mount left the broker
@@ -60,10 +62,41 @@ install -d -m 0700 /etc/qip
 echo '${qip_events_config}' | base64 -d > /etc/qip/events.json
 echo '${qip_fabricd_config}' | base64 -d > /etc/qip/fabricd.json
 chmod 0600 /etc/qip/events.json /etc/qip/fabricd.json
+# The CA Service pool's CA certificates, every client of this listener chains
+# to (ADR 0112). Public material, base64 for the reason the header gives.
+echo '${cas_trust_roots_base64}' | base64 -d > /etc/qip/tls-trust-roots.pem
+chmod 0644 /etc/qip/tls-trust-roots.pem
+grep -q -- '-----BEGIN CERTIFICATE-----' /etc/qip/tls-trust-roots.pem \
+  || { echo "refusing to start: the CA Service trust roots rendered empty" >&2; exit 1; }
+[ -r '${google_tls_roots_path}' ] \
+  || { echo "refusing to start: ${google_tls_roots_path} is not on this image; the pinned Google roots are baked from infrastructure/trust/" >&2; exit 1; }
+
+# This instance's name in its region's lease, from the metadata server.
+instance_name="$(curl -fs -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/name)"
+case "$instance_name" in
+  ''|*[!a-z0-9-]*) echo "refusing to start: no usable instance name from the metadata server" >&2; exit 1 ;;
+esac
+
 cat > /etc/qip/fabricd.env <<EOF
 QIP_EVENT_FABRIC_DATA_DIR=$journal_mount
 QIP_EVENT_FABRIC_CATALOGUE=/etc/qip/events.json
 QIP_EVENT_FABRIC_LISTEN=$internal_ip:${broker_port}
+QIP_DEPLOYMENT=${deployment}
+QIP_TLS_MODE=cas
+QIP_CAS_CA_POOL=${cas_ca_pool}
+QIP_CAS_CERTIFICATE_TEMPLATE=${cas_certificate_template}
+QIP_CAS_LIFETIME_SECS=${cas_lifetime_secs}
+QIP_TLS_TRUST_ROOTS_PATH=/etc/qip/tls-trust-roots.pem
+QIP_GOOGLE_TLS_ROOTS_PATH=${google_tls_roots_path}
+QIP_EVENT_FABRIC_ADMITTED_PEERS=${admitted_peers}
+%{ if managed_log_database != "" ~}
+QIP_EVENT_FABRIC_REGION=${region}
+QIP_EVENT_FABRIC_INSTANCE=$instance_name
+QIP_EVENT_FABRIC_MANAGED_LOG=spanner
+QIP_EVENT_FABRIC_SPANNER_DATABASE=${managed_log_database}
+QIP_EVENT_FABRIC_LEASE_TTL_MS=${managed_log_lease_ttl_ms}
+%{ endif ~}
 EOF
 chmod 0600 /etc/qip/fabricd.env
 

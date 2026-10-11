@@ -46,7 +46,7 @@
 use qip_arbitrage::SearchSettings;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_core::deployment::Deployment;
+use qip_core::deployment::{COMPUTE_ENGINE_PRODUCT_FILE, Deployment, DeploymentMarkers};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, Duration, SystemClock};
 use qip_edge::cell::{CellConfig, Placer, PricingPolicy};
@@ -316,8 +316,20 @@ impl NodeConfig {
         // outright: a node whose allocation is unparseable or zero must never
         // reach the cell with a number it made up in place of one.
         let region_allocation = RegionCapital::read(Some(&region_allocation))?;
-        let deployment = Deployment::parse(Some(&deployment_name))
-            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+        // `local` is refused on a Compute Engine guest (the DMI product
+        // name) or under Cloud Run or Kubernetes: `add-metadata` setting
+        // local+plaintext must not re-admit the seed key and a plaintext
+        // fabric link on a deployed node.
+        let deployment = Deployment::parse_observed(
+            Some(&deployment_name),
+            &DeploymentMarkers::observe(
+                &|name| std::env::var(name).ok(),
+                std::fs::read_to_string(COMPUTE_ENGINE_PRODUCT_FILE)
+                    .ok()
+                    .as_deref(),
+            ),
+        )
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
         let venues: Vec<VenueId> = venues
             .split(',')
@@ -450,6 +462,7 @@ impl NodeConfig {
             std::env::var(LEASE_VARIABLE).ok().as_deref(),
             std::env::var(ROLE_VARIABLE).ok().as_deref(),
             std::env::var(NAME_VARIABLE).ok().as_deref(),
+            deployment,
         )?;
         let risk_limits = CellRiskLimits::read(
             std::env::var(RISK_LIMITS_VARIABLE).ok().as_deref(),
@@ -1016,17 +1029,47 @@ fn run() -> Result<()> {
         retention,
         lake_codec,
     )?)];
+    // The fabric link's issued certificate under `cas`, held for the life
+    // of `run` — which never returns while the node runs — because dropping
+    // it stops its renewal loop.
+    let mut issued: Option<qip_transport::cas::CasIdentity> = None;
     match config.fabric.take() {
         Some(fabric) => {
             // ADR 0112: the fabric is a link between Compute Engine
             // processes, so it is mutual TLS with this node's workload
             // certificate unless the deployment is `local` and said
-            // `plaintext`. No fallback: a certificate that will not load
-            // stops the node here.
-            let link = qip_transport::tls::LinkSecurity::from_lookup(config.deployment, &|name| {
+            // `plaintext`. No fallback: hand-placed files that will not load
+            // stop the node here; under `cas` the certificate is requested
+            // here and renewed on its own thread, off the decision thread,
+            // and a CA that cannot be reached leaves the sink's handshakes
+            // refused — outcomes wait in the spool — never a plaintext link.
+            use qip_transport::tls::{LinkSecurity, TlsSource, WorkloadIdentity};
+            let source = qip_transport::tls::link_source(config.deployment, &|name| {
                 std::env::var(name).ok()
             })
             .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            let link = match &source {
+                Some(TlsSource::Files(paths)) => {
+                    LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?))
+                }
+                Some(TlsSource::Issued(settings)) => {
+                    let started = qip_storage::gcp::workload_certificate::workload_certificate(
+                        settings,
+                        "qip-edge-node",
+                        Arc::clone(&clock),
+                    )?;
+                    if let Some(error) = started.status().last_error() {
+                        eprintln!(
+                            "qip-edge-node: no workload certificate yet; the fabric link refuses \
+                             until one arrives. The CA said: {error}"
+                        );
+                    }
+                    let link = LinkSecurity::issued(started.identity());
+                    issued = Some(started);
+                    link
+                }
+                None => LinkSecurity::Plaintext,
+            };
             println!(
                 "qip-edge-node: fabric at {} over {}",
                 fabric.url,
@@ -1095,6 +1138,7 @@ fn run() -> Result<()> {
         durable: config.storage.is_durable(),
         started_secs: started.as_secs(),
     };
+    let certificate = issued.as_ref().map(qip_transport::cas::CasIdentity::status);
     let snapshot = HealthSnapshot::new(r#"{"turns":0}"#);
     let mut decisions = DecisionLoop::new(
         cell,
@@ -1112,6 +1156,9 @@ fn run() -> Result<()> {
     .with_threads(Some(relay), Some(drain))
     .with_health(snapshot.clone(), health_facts)
     .with_meter(PassMeter::new(Arc::clone(metrics), PASS_INTERVAL)?);
+    if let Some(status) = certificate {
+        decisions = decisions.with_certificate(status);
+    }
     if let Some(feed) = feed {
         decisions = decisions.with_feed(feed, requoter);
     }

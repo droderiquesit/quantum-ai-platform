@@ -57,7 +57,7 @@
 use crate::platform::Platform;
 use qip_ai::registry::{ModelRegistry, PublishedArtifact};
 use qip_ai::serving::{ModelArtifact, ModelFormat, ModelProvider, ServedModel};
-use qip_contracts::policy::{ModelManifest, Slot};
+use qip_contracts::policy::{InlineModel, ModelManifest, Slot};
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_events::log::EventLog;
@@ -172,7 +172,7 @@ impl EventBody for ModelPromotion {
 /// What the `trained_models` slot carries this cycle, or why it ships
 /// unproduced — the same shape as the causal and episodic issues, so
 /// `pending_policy` reads all three alike.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ModelManifestIssue {
     manifest: ModelManifest,
     /// The newest promotion the manifest names, which is the instant a cell
@@ -188,7 +188,8 @@ pub struct ModelManifestIssue {
     /// told about and which one it superseded.
     pack: Option<ModelPack>,
     /// Promoted distillates left out because no verified release pack names
-    /// their artifact (ADR 0110), counted so the line says how many and why.
+    /// their artifact at the inline model the cells compute (ADR 0110),
+    /// counted so the line says how many and why.
     /// Always zero while no release packs are admitted.
     unreleased: usize,
 }
@@ -890,32 +891,44 @@ impl Platform {
     /// the line says which.
     pub fn model_manifest(&self) -> Result<ModelManifestIssue> {
         let mut models = BTreeMap::new();
+        let mut packs = BTreeMap::new();
         let mut produced_at: Option<Timestamp> = None;
         let mut advisory_only = 0usize;
         let mut unreleased = 0usize;
         for promotion in self.model_promotions.values() {
-            match &promotion.distilled {
-                // ADR 0110: with release packs admitted, a distillate whose
-                // artifact no verified pack names is not named to a cell —
-                // the cell runs inline only what a two-person release signed.
-                Some(_)
-                    if self
-                        .release_packs
-                        .as_ref()
-                        .is_some_and(|packs| !packs.contains_key(&promotion.artifact_digest)) =>
-                {
-                    unreleased += 1;
+            let Some(entry) = &promotion.distilled else {
+                advisory_only += 1;
+                continue;
+            };
+            // ADR 0110: with release packs admitted, a distillate is named to
+            // a cell only when a verified pack names its artifact *and* the
+            // inline model the cell will compute — name and digest — and
+            // the pack rides beside it, because a bundle cell verifies that
+            // pack itself rather than trusting this process's payload
+            // signature (Amendment 1). A pack for the artifact that names a
+            // different inline model, or none, would be refused by every
+            // cell, so it is withheld and counted here instead.
+            if let Some(released) = &self.release_packs {
+                let inline = InlineModel {
+                    name: entry.name.clone(),
+                    digest: entry.digest.clone(),
+                };
+                match released.get(&promotion.artifact_digest) {
+                    Some(pack) if pack.inline_model.as_ref() == Some(&inline) => {
+                        packs.insert(entry.name.clone(), pack.clone());
+                    }
+                    _ => {
+                        unreleased += 1;
+                        continue;
+                    }
                 }
-                Some(entry) => {
-                    models.insert(entry.name.clone(), entry.digest.clone());
-                    produced_at = Some(produced_at.map_or(promotion.at, |at| at.max(promotion.at)));
-                }
-                None => advisory_only += 1,
             }
+            models.insert(entry.name.clone(), entry.digest.clone());
+            produced_at = Some(produced_at.map_or(promotion.at, |at| at.max(promotion.at)));
         }
         match produced_at {
             Some(produced_at) => Ok(ModelManifestIssue {
-                manifest: ModelManifest { models },
+                manifest: ModelManifest { models, packs },
                 produced_at,
                 advisory_only,
                 pack: self.model_pack.clone(),
@@ -923,7 +936,7 @@ impl Platform {
             }),
             None if unreleased > 0 => Err(Error::not_found(format!(
                 "{unreleased} promoted distillate(s) held and no verified release pack names any \
-                 of their artifacts (ADR 0110); the trained_models slot ships unproduced and \
+                 of their artifacts at the inline model the cells compute (ADR 0110); the trained_models slot ships unproduced and \
                  every cell refuses a plan carrying a model inline until a two-person release \
                  signs one under the model-pack key"
             ))),

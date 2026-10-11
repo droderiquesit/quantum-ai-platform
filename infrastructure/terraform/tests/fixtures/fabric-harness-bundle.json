@@ -1,0 +1,29 @@
+{
+  "keys": [
+    {
+      "class": "envelope",
+      "key_version": "projects/fabric-plan-harness/locations/europe-west2/keyRings/qip-dev-artefacts/cryptoKeys/qip-dev-envelope/cryptoKeyVersions/1",
+      "public_key": "3059301306072a8648ce3d020106082a8648ce3d0301070342000486048609345c94128f0664fe35f6e07ef4cd993b7a9b7b5ed2cb1e338272815ebf220111d49a3d3198f28982ff8270f58ad1cf8080220622eb529417962f32f8",
+      "not_after": "2099-01-01T00:00:00Z"
+    },
+    {
+      "class": "halt",
+      "key_version": "projects/fabric-plan-harness/locations/europe-west2/keyRings/qip-dev-artefacts/cryptoKeys/qip-dev-halt/cryptoKeyVersions/1",
+      "public_key": "3059301306072a8648ce3d020106082a8648ce3d0301070342000486048609345c94128f0664fe35f6e07ef4cd993b7a9b7b5ed2cb1e338272815ebf220111d49a3d3198f28982ff8270f58ad1cf8080220622eb529417962f32f8",
+      "not_after": "2099-01-01T00:00:00Z"
+    },
+    {
+      "class": "model-pack",
+      "key_version": "projects/fabric-plan-harness/locations/europe-west2/keyRings/qip-dev-artefacts/cryptoKeys/qip-dev-model-pack/cryptoKeyVersions/1",
+      "public_key": "3059301306072a8648ce3d020106082a8648ce3d0301070342000486048609345c94128f0664fe35f6e07ef4cd993b7a9b7b5ed2cb1e338272815ebf220111d49a3d3198f28982ff8270f58ad1cf8080220622eb529417962f32f8",
+      "not_after": "2099-01-01T00:00:00Z"
+    },
+    {
+      "class": "policy",
+      "key_version": "projects/fabric-plan-harness/locations/europe-west2/keyRings/qip-dev-artefacts/cryptoKeys/qip-dev-policy/cryptoKeyVersions/1",
+      "public_key": "3059301306072a8648ce3d020106082a8648ce3d0301070342000486048609345c94128f0664fe35f6e07ef4cd993b7a9b7b5ed2cb1e338272815ebf220111d49a3d3198f28982ff8270f58ad1cf8080220622eb529417962f32f8",
+      "not_after": "2099-01-01T00:00:00Z"
+    }
+  ],
+  "revoked": []
+}

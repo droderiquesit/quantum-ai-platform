@@ -102,6 +102,28 @@ impl VerifiedPolicy {
                 payload.cell
             )));
         }
+        // ADR 0110, Amendment 1: the payload is one process's per-cycle
+        // issuance, so its signature cannot be what admits a model to the
+        // order path. Under a bundle every model the manifest names must
+        // carry its own two-person release under the `model-pack` key. The
+        // whole payload is refused rather than the model quietly dropped:
+        // a centre naming an unreleased model is compromised or broken, and
+        // a cell that edited the list would be running a third one nobody
+        // signed. A shared-key cell cannot verify a pack and keeps the
+        // pre-amendment reading until the shared key's removal date.
+        if let (TrustRoot::Bundle(verifier), Some(manifest)) =
+            (root, payload.trained_models.value())
+        {
+            manifest
+                .check_releases(verifier.as_ref(), now)
+                .map_err(|error| {
+                    Error::denied(format!(
+                        "policy payload {} is refused: {}",
+                        payload.sequence,
+                        error.message()
+                    ))
+                })?;
+        }
         Ok(Self {
             inner: payload,
             verified_at: now,

@@ -15,6 +15,7 @@ use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::policy::{GrantManifest, PolicyPayload, Slot};
 use qip_contracts::signal::{SignalKind, StrategyId};
 use qip_contracts::venue::VenueId;
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
 use qip_core::time::{Duration, Timestamp};
@@ -30,7 +31,7 @@ use qip_edge_node::gateway::SimulatedGateway;
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass};
 use qip_edge_node::standby::{
     FileLeaseStore, LeaseEvent, LeaseKeeper, LeaseRecord, LeaseStore, LeaseTiming,
-    MemoryLeaseStore, Role, SimulatedSessions, StandbySettings, VenueSessions,
+    MemoryLeaseStore, Role, SimulatedSessions, StandbySettings, UNPAIRED_ROLE, VenueSessions,
 };
 use qip_edge_node::{NodeAssembly, assemble};
 use qip_execution_engine::order::Side;
@@ -701,24 +702,81 @@ fn the_file_lease_store_lands_exactly_one_of_two_writes_from_one_reading() -> Re
 
 #[test]
 fn a_role_or_name_without_a_lease_is_refused_rather_than_run_as_a_second_primary() {
-    assert!(matches!(StandbySettings::read(None, None, None), Ok(None)));
+    assert!(matches!(
+        StandbySettings::read(None, None, None, Deployment::Local),
+        Ok(None)
+    ));
     for (role, name) in [
         (Some("standby"), None),
         (None, Some("b")),
         (Some("standby"), Some("b")),
     ] {
-        let error = StandbySettings::read(None, role, name).expect_err("no lease is refused");
+        let error = StandbySettings::read(None, role, name, Deployment::Local)
+            .expect_err("no lease is refused");
         assert!(
             error.message().starts_with("configuration:"),
             "{}",
             error.message()
         );
     }
-    assert!(StandbySettings::read(Some("/l"), Some("leader"), Some("a")).is_err());
-    assert!(StandbySettings::read(Some("/l"), None, Some("a")).is_err());
-    assert!(StandbySettings::read(Some("/l"), Some("primary"), None).is_err());
-    let settings = StandbySettings::read(Some("/l"), Some("standby"), Some("b"))
+    assert!(
+        StandbySettings::read(Some("/l"), Some("leader"), Some("a"), Deployment::Local).is_err()
+    );
+    assert!(StandbySettings::read(Some("/l"), None, Some("a"), Deployment::Local).is_err());
+    assert!(StandbySettings::read(Some("/l"), Some("primary"), None, Deployment::Local).is_err());
+    let settings = StandbySettings::read(Some("/l"), Some("standby"), Some("b"), Deployment::Local)
         .expect("well formed")
         .expect("configured");
     assert_eq!(settings.role, Role::Standby);
+}
+
+/// The failure this prevents: with `standby_enabled`, the execution-node
+/// module boots the standby from the same startup script as the primary,
+/// with no `QIP_FENCING_LEASE` and no role — indistinguishable from a lone
+/// primary, so it traded as a second one and every order went out twice.
+/// Mutation: drop the deployed-and-no-role refusal in
+/// `StandbySettings::read` and the role-less deployed node is admitted as
+/// alone; this fails.
+#[test]
+fn a_deployed_node_that_does_not_say_it_runs_alone_is_refused_rather_than_run_as_a_second_primary()
+{
+    // Premise: on a developer's machine absence still means alone.
+    assert!(matches!(
+        StandbySettings::read(None, None, None, Deployment::Local),
+        Ok(None)
+    ));
+    for deployment in [
+        Deployment::Dev,
+        Deployment::Test,
+        Deployment::Stage,
+        Deployment::Prod,
+    ] {
+        let error = StandbySettings::read(None, None, None, deployment)
+            .expect_err("a deployed node with no role was run as alone");
+        assert!(
+            error.message().contains("QIP_NODE_ROLE is not set")
+                && error.message().contains(UNPAIRED_ROLE),
+            "the refusal does not name the variable and the value to set: {}",
+            error.message()
+        );
+        // Saying so is enough for a node with no standby …
+        assert!(matches!(
+            StandbySettings::read(None, Some(UNPAIRED_ROLE), None, deployment),
+            Ok(None)
+        ));
+        // … and a pair still needs the lease on both nodes.
+        assert!(StandbySettings::read(None, Some("standby"), Some("b"), deployment).is_err());
+        assert!(
+            StandbySettings::read(Some("/l"), Some("standby"), Some("b"), deployment)
+                .expect("a configured standby")
+                .is_some()
+        );
+    }
+    // `unpaired` beside a lease is a contradiction, refused rather than
+    // resolved in either direction.
+    assert!(
+        StandbySettings::read(Some("/l"), Some(UNPAIRED_ROLE), Some("a"), Deployment::Prod)
+            .is_err()
+    );
+    assert!(StandbySettings::read(None, Some(UNPAIRED_ROLE), Some("a"), Deployment::Prod).is_err());
 }

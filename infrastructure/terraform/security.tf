@@ -27,6 +27,45 @@ locals {
   )
 
   project_resource = "//cloudresourcemanager.googleapis.com/projects/${var.project_id}"
+
+  # ADR 0112 §2's lifetime, in the duration form CA Service writes.
+  cas_maximum_lifetime = local.cas_on ? "${var.certificate_authority.max_certificate_lifetime_hours * 3600}s" : null
+
+  # The SAN every workload certificate carries: its service account's email
+  # with `@` read as `.` — a DNS name `webpki` can match and `PeerNames`
+  # admits, and one a reader maps back to the account by eye.
+  cas_san_shape = "subject_alt_names.size() == 1 && subject_alt_names.all(san, san.type == DNS && san.value.endsWith('.iam.gserviceaccount.com'))"
+
+  # The identities that may request one, keyed by a name known at plan so the
+  # grant's `for_each` never waits on an email — and written from account ids,
+  # which are configuration, so the plan shows each grant's member and SAN
+  # exactly. `cas_requester_emails` is what Google returned, and the grant's
+  # precondition holds the two together at apply.
+  cas_requesters = merge(
+    var.event_fabric_broker == null ? {} : { fabricd = "${google_service_account.fabricd[0].account_id}@${var.project_id}.iam.gserviceaccount.com" },
+    var.ledgerd == null ? {} : { ledgerd = "${module.ledgerd[0].service_account_id}@${var.project_id}.iam.gserviceaccount.com" },
+    { for id, node in module.execution_node : "edge-node-${id}" => "${node.service_account_id}@${var.project_id}.iam.gserviceaccount.com" },
+  )
+  cas_requester_emails = merge(
+    var.event_fabric_broker == null ? {} : { fabricd = google_service_account.fabricd[0].email },
+    var.ledgerd == null ? {} : { ledgerd = module.ledgerd[0].service_account_email },
+    { for id, node in module.execution_node : "edge-node-${id}" => node.service_account_email },
+  )
+  cas_san_of = { for key, email in local.cas_requesters : key => replace(email, "@", ".") }
+
+  # What each Compute Engine binary is told when CA Service is on: the pool
+  # and template by full resource name (project id, not number — the IAM
+  # condition above matches that form), the lifetime it asks for, and the
+  # pool's CA certificates it verifies peers against. Empty strings when off,
+  # which every module reads as "no CA Service in this environment".
+  cas_runtime = {
+    # Written from configuration so a plan shows them; the same shape as the
+    # resources' ids, which Google assigns as exactly this.
+    ca_pool       = local.cas_on ? "projects/${var.project_id}/locations/${var.certificate_authority.location}/caPools/${google_privateca_ca_pool.internal[0].name}" : ""
+    template      = local.cas_on ? "projects/${var.project_id}/locations/${var.certificate_authority.location}/certificateTemplates/${google_privateca_certificate_template.workload[0].name}" : ""
+    lifetime_secs = local.cas_on ? var.certificate_authority.max_certificate_lifetime_hours * 3600 : 0
+    trust_roots   = local.cas_on ? join("", google_privateca_certificate_authority.internal[0].pem_ca_certificates) : ""
+  }
 }
 
 resource "google_project_service" "security" {
@@ -97,23 +136,28 @@ resource "google_privileged_access_manager_entitlement" "this" {
   depends_on = [google_project_service.security]
 }
 
-# --- Certificate Authority Service (SEC-9128) -------------------------------
+# --- Certificate Authority Service (SEC-9128, ADR 0112 §2) ------------------
 #
-# A private CA for the identities that live outside a mesh — the fabric
-# broker, the ledger, the execution node. The pool's issuance policy is the
-# control: leaf certificates only (never a CA), client and server auth only,
-# at most thirty days, EC P-256 or RSA 3072+. The CA's key is HSM-backed.
+# A private CA for the identities that own their sockets — the fabric broker,
+# the ledger, the execution node — whose links are mutual TLS (ADR 0112
+# decision 1). The pool's issuance policy is the outer control: leaf
+# certificates only (never a CA), client and server auth only, EC P-256 or
+# RSA 3072+, for at most `max_certificate_lifetime_hours` (24 or fewer:
+# hours, not months). The CA's key is HSM-backed.
 #
-# The transport side is built: since ADR 0112 `qip-transport::tls` speaks
-# TLS 1.3 through rustls, its server *requires* a client certificate (there
-# is no optional-client-auth path), its client presents one, and a link is
-# mutual TLS by default everywhere but a `local` deployment — plaintext
-# outside `local` stops the process. `qip-fabricd`, `qip-ledgerd` and
-# `qip-edge-node` load their workload identity from files. This comment said
+# The transport side is built: since ADR 0112 `qip-tls` (formerly
+# `qip-transport::tls`) speaks TLS 1.3 through rustls, its server *requires* a
+# client certificate (there is no optional-client-auth path), its client
+# presents one, and a link is mutual TLS by default everywhere but a `local`
+# deployment — plaintext outside `local` stops the process. This comment said
 # until 2026-10-11 that the transport could not do mTLS, which had stopped
-# being true. What remains is issuance: nothing in this root yet requests a
-# leaf from this pool and delivers it to those files, so no deployed link
-# has presented one — nothing those binaries run on is applied.
+# being true.
+# The inner control is the workload template and the conditioned grants
+# below it: a workload may request a certificate only through the template,
+# and only for the one SAN that names its own service account — which is what
+# "a node can only obtain a certificate naming itself" (ADR 0112 §2) is, here.
+# The three binaries are told the pool and the template in their startup
+# configuration (QIP_TLS_MODE=cas, QIP_CAS_CA_POOL, …) when this is on.
 resource "google_privateca_ca_pool" "internal" {
   count = local.cas_on ? 1 : 0
 
@@ -128,7 +172,7 @@ resource "google_privateca_ca_pool" "internal" {
   }
 
   issuance_policy {
-    maximum_lifetime = "2592000s"
+    maximum_lifetime = local.cas_maximum_lifetime
 
     allowed_key_types {
       elliptic_curve {
@@ -172,7 +216,7 @@ resource "google_privateca_certificate_authority" "internal" {
   location                 = var.certificate_authority.location
   type                     = "SELF_SIGNED"
 
-  # Ten years for the root; the leaves it signs live thirty days at most.
+  # Ten years for the root; the leaves it signs live hours (ADR 0112 §2).
   lifetime = "315360000s"
 
   # Deleting a CA that still has live certificates is refused, and a
@@ -212,15 +256,88 @@ resource "google_privateca_certificate_authority" "internal" {
   labels = local.labels
 }
 
-# Who may request a leaf. Service accounts only; the pool's policy bounds
-# what they get.
+# The one template a workload certificate is issued through.
+#
+# `allow_subject_passthrough = false`: the subject is not an identity here and
+# a requester may not choose one. `allow_subject_alt_names_passthrough = true`
+# is not the loosening it reads as: with it false CA Service discards every
+# requested SAN, and a certificate with no SAN carries no identity for a peer
+# to check (`qip_transport::tls::PeerNames` matches DNS SANs). So the SAN
+# passes through and two things bound it — this expression, which admits
+# exactly one DNS SAN shaped as a service account's (the account's email
+# with `@` read as `.`, injective because an account id cannot contain a
+# dot), and the conditioned grant below, which admits only the requester's
+# own. The template's CEL cannot see the caller; the grant's condition can
+# see the request, and is per caller — so the pair is what binds a SAN to an
+# identity.
+resource "google_privateca_certificate_template" "workload" {
+  count = local.cas_on ? 1 : 0
+
+  project          = var.project_id
+  name             = "qip-${var.environment}-workload"
+  location         = var.certificate_authority.location
+  description      = "mTLS workload certificates for qip Compute Engine binaries: one DNS SAN naming the requester's own service account (ADR 0112 §2)."
+  maximum_lifetime = local.cas_maximum_lifetime
+
+  identity_constraints {
+    allow_subject_passthrough           = false
+    allow_subject_alt_names_passthrough = true
+
+    cel_expression {
+      title       = "one SAN shaped as a service account"
+      description = "Exactly one DNS SAN, a service account email with '@' as '.'. Each requester's IAM condition narrows it to its own."
+      expression  = local.cas_san_shape
+    }
+  }
+
+  predefined_values {
+    ca_options {
+      is_ca = false
+    }
+    key_usage {
+      base_key_usage {
+        digital_signature = true
+        key_encipherment  = true
+      }
+      extended_key_usage {
+        server_auth = true
+        client_auth = true
+      }
+    }
+  }
+
+  labels = local.labels
+
+  depends_on = [google_project_service.security]
+}
+
+# Who may request a leaf: exactly the three binaries' identities, each only
+# through the template and only for its own SAN. Derived, never listed —
+# `certificate_authority.requesters` is refused — so the set follows the
+# machines this environment declares and nothing else can be in it. The
+# template is written `<project id>/-/<id>` because that is the form CA
+# Service evaluates, and a requester must therefore name the template by
+# project id, never number (QIP_CAS_CERTIFICATE_TEMPLATE below is that form).
 resource "google_privateca_ca_pool_iam_member" "requesters" {
-  for_each = local.cas_on ? var.certificate_authority.requesters : toset([])
+  for_each = local.cas_on ? local.cas_requesters : {}
 
   project = var.project_id
   ca_pool = google_privateca_ca_pool.internal[0].id
   role    = "roles/privateca.certificateRequester"
-  member  = each.value
+  member  = "serviceAccount:${each.value}"
+
+  condition {
+    title       = "own-san-via-workload-template"
+    description = "Only through the workload template, and only for the SAN naming this service account."
+    expression  = "api.getAttribute('privateca.googleapis.com/template', '') == '${var.project_id}/-/${google_privateca_certificate_template.workload[0].name}' && api.getAttribute('privateca.googleapis.com/subject_alt_names', []).hasOnly(['dns:${local.cas_san_of[each.key]}'])"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = each.value == local.cas_requester_emails[each.key]
+      error_message = "The planned email for ${each.key} is not the email of the account Google created; the grant and its SAN would name an identity nothing runs as."
+    }
+  }
 }
 
 # --- VPC Service Controls (SEC-9129) -----------------------------------------

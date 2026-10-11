@@ -117,6 +117,7 @@
 //! dependencies and in unreviewable complexity than it saves.
 
 pub mod breaker;
+pub mod cas;
 pub mod deadletter;
 pub mod error;
 pub mod event_fabric;

@@ -16,9 +16,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use qip_core::deployment::Deployment;
+use qip_core::deployment::{COMPUTE_ENGINE_PRODUCT_FILE, Deployment, DeploymentMarkers};
 use qip_core::error::{Error, Result};
-use qip_transport::tls::{PeerNames, TLS_MODE_VARIABLE, TlsPaths, link_mode};
+#[cfg(test)]
+use qip_transport::tls::TLS_MODE_VARIABLE;
+use qip_transport::tls::{PeerNames, TlsSource, link_source};
 
 /// Which deployment this broker runs in (ADR 0110 decision 5, ADR 0112).
 /// Required: it decides whether the protocol listener may be plaintext,
@@ -168,7 +170,7 @@ pub struct Config {
     /// [`DEPLOYMENT`] is `local` and `QIP_TLS_MODE=plaintext` says so. The
     /// health listener is plaintext either way: a probe carries no
     /// certificate, and health on its own listener is FABRIC-073's point.
-    pub listener_tls: Option<TlsPaths>,
+    pub listener_tls: Option<TlsSource>,
     /// [`ADMITTED_PEERS`], validated as names a certificate can carry.
     pub admitted_peers: Vec<String>,
 }
@@ -382,11 +384,36 @@ fn archive_target(variables: &BTreeMap<String, String>, data_dir: &str) -> Resul
 impl Config {
     /// Read the process environment. The only place this binary does.
     pub fn from_environment() -> Result<Self> {
-        Self::parse(&std::env::vars().collect())
+        let variables: BTreeMap<String, String> = std::env::vars().collect();
+        // The broker runs on Compute Engine (`modules/event-fabric-broker`),
+        // so the DMI product name is the marker that matters here: it is
+        // what refuses `local` on a node an `add-metadata` edit relabelled.
+        let markers = DeploymentMarkers::observe(
+            &|name| variables.get(name).cloned(),
+            std::fs::read_to_string(COMPUTE_ENGINE_PRODUCT_FILE)
+                .ok()
+                .as_deref(),
+        );
+        Self::parse_with(&variables, &markers)
     }
 
-    /// Validate `variables`, refusing the first thing wrong by name.
+    /// Validate `variables`, refusing the first thing wrong by name, with
+    /// the deployment markers observed from `variables` alone — the form a
+    /// test drives. The process itself goes through [`Self::parse_with`]
+    /// with the host's DMI product name as well.
     pub fn parse(variables: &BTreeMap<String, String>) -> Result<Self> {
+        Self::parse_with(
+            variables,
+            &DeploymentMarkers::observe(&|name| variables.get(name).cloned(), None),
+        )
+    }
+
+    /// Validate `variables` against what the root observed of its platform:
+    /// [`DEPLOYMENT`]=`local` is refused wherever `markers` is not empty.
+    pub fn parse_with(
+        variables: &BTreeMap<String, String>,
+        markers: &DeploymentMarkers,
+    ) -> Result<Self> {
         let data_dir = required(
             variables,
             DATA_DIR,
@@ -433,12 +460,14 @@ impl Config {
         // ADR 0112: decided here, before anything is opened, from the
         // deployment and the TLS variables; the identity itself is loaded by
         // `start`, after storage is proven and before the port is bound.
-        let deployment = Deployment::parse(present(variables, DEPLOYMENT))?;
-        let listener_tls = link_mode(
-            deployment,
-            present(variables, TLS_MODE_VARIABLE),
-            TlsPaths::from_lookup(&|name| present(variables, name).map(str::to_string))?.as_ref(),
-        )?;
+        let deployment = Deployment::parse_observed(present(variables, DEPLOYMENT), markers)?;
+        // `cas` (ADR 0112 §2) is decided here too, and its settings are
+        // validated here — pool, template, lifetime bounds, both roots — so a
+        // malformed pool stops the broker before storage is touched; the
+        // certificate itself is requested in `main`.
+        let listener_tls = link_source(deployment, &|name| {
+            present(variables, name).map(str::to_string)
+        })?;
         let admitted_peers: Vec<String> = present(variables, ADMITTED_PEERS)
             .map(|names| {
                 names
@@ -450,6 +479,21 @@ impl Config {
             })
             .unwrap_or_default();
         PeerNames::new(admitted_peers.clone())?;
+        // An empty list admits every certificate the CA pool chains — and
+        // the pool issues to every workload in the environment, the API's
+        // and the ledger's and each cell's alike. So outside `local` the
+        // broker names who may produce and consume, and a deployment that
+        // forgot to is refused here rather than served to anyone holding a
+        // certificate from the pool.
+        if deployment != Deployment::Local && admitted_peers.is_empty() {
+            return Err(Error::invalid(format!(
+                "{ADMITTED_PEERS} is not set and {DEPLOYMENT} is `{deployment}`; with no list \
+                 the broker admits any certificate its roots chain, which is every workload the \
+                 environment's CA pool has issued to. Set {ADMITTED_PEERS} to the \
+                 comma-separated certificate names of the workloads that produce to and consume \
+                 from this broker"
+            )));
+        }
         if listener_tls.is_none() && !admitted_peers.is_empty() {
             return Err(Error::invalid(format!(
                 "{ADMITTED_PEERS} names workloads and the protocol listener is plaintext; a \
@@ -613,8 +657,125 @@ mod tests {
             tls.insert(name.to_string(), value.to_string());
         }
         let config = Config::parse(&tls).expect("a deployed broker with a certificate");
-        assert!(config.listener_tls.is_some());
+        assert!(matches!(config.listener_tls, Some(TlsSource::Files(_))));
         assert_eq!(config.admitted_peers.len(), 2);
+    }
+
+    /// ADR 0112 §2 at the broker: `cas` parses to an issued source with its
+    /// settings validated, and a malformed pool stops the parse. Mutation:
+    /// parse the broker's TLS with `link_mode` again (which cannot read the
+    /// pool) and the first assertion fails.
+    #[test]
+    fn a_broker_on_certificate_authority_service_is_validated_before_it_starts() {
+        let mut cas = complete();
+        cas.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        for (name, value) in [
+            (TLS_MODE_VARIABLE, "cas"),
+            (
+                qip_transport::cas::CA_POOL_VARIABLE,
+                "projects/p/locations/europe-west2/caPools/qip-prod-internal",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/pool-roots.pem",
+            ),
+            (
+                qip_transport::cas::GOOGLE_TLS_ROOTS_VARIABLE,
+                "/etc/qip/tls/google-roots.pem",
+            ),
+            (ADMITTED_PEERS, "edge-node.prod.qip.internal"),
+        ] {
+            cas.insert(name.to_string(), value.to_string());
+        }
+        let config = Config::parse(&cas).expect("a broker on CA Service");
+        assert!(matches!(config.listener_tls, Some(TlsSource::Issued(_))));
+        cas.insert(
+            qip_transport::cas::CA_POOL_VARIABLE.to_string(),
+            "qip-prod-internal".to_string(),
+        );
+        assert!(
+            Config::parse(&cas).is_err(),
+            "a malformed pool was accepted"
+        );
+    }
+
+    /// A deployed broker with a certificate and the peer list, as
+    /// `a_broker_serves_plaintext_only_where_a_local_deployment_chose_it`
+    /// builds it.
+    fn deployed_tls() -> BTreeMap<String, String> {
+        let mut tls = complete();
+        tls.remove(TLS_MODE_VARIABLE);
+        tls.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        for (name, value) in [
+            (
+                qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+                "/etc/qip/tls/chain.pem",
+            ),
+            (
+                qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+                "/run/qip/tls/key.pem",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/roots.pem",
+            ),
+            (ADMITTED_PEERS, "edge-node.prod.qip.internal"),
+        ] {
+            tls.insert(name.to_string(), value.to_string());
+        }
+        tls
+    }
+
+    /// The failure this prevents: with the list unset, `PeerNames::admit`
+    /// returns `Ok(None)` and the broker serves any certificate the CA pool
+    /// chains — every workload in the environment. Mutation: delete the
+    /// empty-list refusal in `parse_with` and the deployed broker with no
+    /// list (and with a list of only separators) parses; this fails.
+    #[test]
+    fn a_deployed_broker_refuses_to_start_without_naming_the_peers_it_admits() {
+        // Premise: the deployed fixture is accepted with its list.
+        assert!(Config::parse(&deployed_tls()).is_ok());
+        for list in [None, Some(""), Some(" , ,")] {
+            let mut variables = deployed_tls();
+            match list {
+                None => variables.remove(ADMITTED_PEERS),
+                Some(value) => variables.insert(ADMITTED_PEERS.to_string(), value.to_string()),
+            };
+            let error = Config::parse(&variables).expect_err("a deployed broker admitted anyone");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("{ADMITTED_PEERS} is not set")),
+                "{list:?}: {error}"
+            );
+        }
+        // `local` keeps the open list a developer's two-process run needs.
+        assert!(Config::parse(&complete()).is_ok());
+    }
+
+    /// The failure this prevents: `gcloud compute instances add-metadata`
+    /// setting `QIP_DEPLOYMENT=local` and `QIP_TLS_MODE=plaintext` on the
+    /// broker's VM brought its protocol listener up in plaintext. Mutation:
+    /// call `Deployment::parse_observed` with `&DeploymentMarkers::none()`
+    /// in `parse_with` and both relabelled brokers parse; this fails.
+    #[test]
+    fn a_broker_that_can_see_it_is_deployed_refuses_local() {
+        // Premise: the local plaintext fixture parses with no marker.
+        assert!(Config::parse_with(&complete(), &DeploymentMarkers::none()).is_ok());
+        let on_compute_engine =
+            DeploymentMarkers::observe(&|_| None, Some("Google Compute Engine\n"));
+        let error = Config::parse_with(&complete(), &on_compute_engine)
+            .expect_err("local was admitted on a Compute Engine guest");
+        assert!(
+            error.to_string().contains("can see it is deployed"),
+            "{error}"
+        );
+        assert!(error.to_string().contains("product_name"), "{error}");
+
+        let mut on_cloud_run = complete();
+        on_cloud_run.insert("K_SERVICE".to_string(), "fabricd".to_string());
+        let error = Config::parse(&on_cloud_run).expect_err("local was admitted on Cloud Run");
+        assert!(error.to_string().contains("K_SERVICE"), "{error}");
     }
 
     fn bucket() -> BTreeMap<String, String> {

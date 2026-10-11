@@ -11,8 +11,12 @@
 //!   capital for every region, which is the property ADR 0110 exists for.
 //! * [`TrustRoot::SharedKey`] — the HMAC key the platform used before ADR
 //!   0110. Kept for one release so a fleet can move without a flag day, and
-//!   refused at start-up after [`SHARED_KEY_REMOVED_AFTER`] — see
-//!   [`refuse_shared_key_after_removal`].
+//!   refused after [`SHARED_KEY_REMOVED_AFTER`] — see
+//!   [`refuse_shared_key_after_removal`] — at start-up *and at every check*.
+//!   A start-up refusal alone let a node started on 2027-01-31 verify with
+//!   the shared key for as long as it stayed up, which for a cell nobody
+//!   restarts is for ever. Outside `local` only, mirroring the start-up rule
+//!   exactly: a developer's harness keeps the key it was built on.
 //!
 //! **Never both.** A cell that accepted either scheme would be exactly as
 //! strong as the weaker one, which ADR 0110's order of work names. A bundle
@@ -25,6 +29,7 @@
 //! still be able to accept a halt (ADR 0008).
 
 use qip_contracts::trust::{ArtefactClass, ArtefactSignature, ArtefactVerifier, SIGNATURE_SCHEME};
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_core::hash::to_hex;
 use qip_core::{Timestamp, hmac_sha256};
@@ -42,7 +47,13 @@ pub enum TrustRoot {
     /// Public keys under ADR 0110. Asymmetric signatures only.
     Bundle(Arc<BundleVerifier>),
     /// The pre-ADR-0110 shared HMAC key. Never empty.
-    SharedKey(Vec<u8>),
+    SharedKey {
+        key: Vec<u8>,
+        /// Whether [`SHARED_KEY_REMOVED_AFTER`] binds this root — every
+        /// deployment but `local`. Carried on the root because the check
+        /// runs per artefact, long after the deployment was read.
+        removal_applies: bool,
+    },
 }
 
 // The shared key is deliberately absent from `Debug`; the bundle holds only
@@ -54,7 +65,13 @@ impl std::fmt::Debug for TrustRoot {
                 .debug_tuple("Bundle")
                 .field(&verifier.bundle().keys().len())
                 .finish(),
-            Self::SharedKey(_) => f.debug_tuple("SharedKey").field(&"<redacted>").finish(),
+            Self::SharedKey {
+                removal_applies, ..
+            } => f
+                .debug_struct("SharedKey")
+                .field("key", &"<redacted>")
+                .field("removal_applies", removal_applies)
+                .finish(),
         }
     }
 }
@@ -62,13 +79,28 @@ impl std::fmt::Debug for TrustRoot {
 impl TrustRoot {
     /// A shared-key root, refusing an empty key: a cell that accepted one
     /// would verify nothing while looking like it verified everything.
+    ///
+    /// Bound by [`SHARED_KEY_REMOVED_AFTER`] at every check — the restrictive
+    /// default, because a constructor that does not know its deployment must
+    /// not be the one that exempts it. [`Self::shared_key_in`] is the form a
+    /// composition root uses.
     pub fn shared_key(key: &[u8]) -> Result<Self> {
+        Self::shared_key_in(key, Deployment::Prod)
+    }
+
+    /// A shared-key root for `deployment`: bound by the removal date at
+    /// every check unless the deployment is `local`, the same cut the
+    /// start-up refusal makes.
+    pub fn shared_key_in(key: &[u8], deployment: Deployment) -> Result<Self> {
         if key.is_empty() {
             return Err(Error::denied(
                 "a cell with no key cannot verify anything the centre sends and must not trade",
             ));
         }
-        Ok(Self::SharedKey(key.to_vec()))
+        Ok(Self::SharedKey {
+            key: key.to_vec(),
+            removal_applies: !deployment.permits_reproducible_keys(),
+        })
     }
 
     pub fn bundle(verifier: BundleVerifier) -> Self {
@@ -86,7 +118,7 @@ impl TrustRoot {
                 "trust bundle of {} public key(s); asymmetric signatures only (ADR 0110)",
                 verifier.bundle().keys().len()
             ),
-            Self::SharedKey(_) => format!(
+            Self::SharedKey { .. } => format!(
                 "SHARED HMAC KEY — whoever can verify can also sign; refused from \
                  {SHARED_KEY_REMOVED_AFTER}"
             ),
@@ -104,7 +136,15 @@ impl TrustRoot {
     ) -> Result<()> {
         match self {
             Self::Bundle(verifier) => verifier.verify(class, canonical, signature, now),
-            Self::SharedKey(key) => {
+            Self::SharedKey {
+                key,
+                removal_applies,
+            } => {
+                // Before the MAC is computed: past the date a valid MAC is
+                // no evidence, because every node that verifies can mint it.
+                if *removal_applies {
+                    refuse_shared_key_after_removal(now)?;
+                }
                 if ArtefactSignature::parse(signature).is_ok() {
                     return Err(Error::denied(format!(
                         "this cell verifies with a shared key and the {class} artefact carries an \
@@ -183,5 +223,42 @@ mod tests {
         );
         assert!(TrustRoot::shared_key(b"").is_err());
         assert!(!format!("{root:?}").contains("thirty-two"));
+    }
+
+    /// The failure this prevents: the removal date was checked only when
+    /// the node started, so a cell started the day before kept accepting
+    /// policy, halts and capital under a key every node holds — and can
+    /// therefore mint — for as long as it stayed up. Mutation: delete the
+    /// `refuse_shared_key_after_removal(now)?` in `check`'s shared-key arm
+    /// and the genuine MAC below verifies after the date; this fails.
+    #[test]
+    fn a_running_cell_stops_accepting_the_shared_key_at_its_removal_date() {
+        const KEY: &[u8] = b"a-shared-key-of-thirty-two-bytes!";
+        let mac = to_hex(&hmac_sha256(KEY, b"payload"));
+        let before = Timestamp::from_civil(2027, 1, 31);
+        let after = Timestamp::from_civil(2027, 2, 1);
+        for root in [
+            TrustRoot::shared_key(KEY).expect("a key"),
+            TrustRoot::shared_key_in(KEY, Deployment::Prod).expect("a key"),
+            TrustRoot::shared_key_in(KEY, Deployment::Test).expect("a key"),
+        ] {
+            // Premise: the same root and the same MAC, accepted the day before.
+            assert!(
+                root.check(ArtefactClass::Halt, b"payload", &mac, before)
+                    .is_ok()
+            );
+            let refused = root
+                .check(ArtefactClass::Halt, b"payload", &mac, after)
+                .expect_err("a shared-key MAC verified after the removal date");
+            assert!(refused.message().contains(SHARED_KEY_REMOVED_AFTER));
+            assert!(refused.message().contains("QIP_TRUST_BUNDLE_PATH"));
+        }
+        // `local` keeps it, exactly as at start-up.
+        let local = TrustRoot::shared_key_in(KEY, Deployment::Local).expect("a key");
+        assert!(
+            local
+                .check(ArtefactClass::Halt, b"payload", &mac, after)
+                .is_ok()
+        );
     }
 }

@@ -18,28 +18,38 @@ mock_provider "google" {}
 # replaced them are the fixtures `affinity.tftest.hcl` and
 # `capacity.tftest.hcl` use, or the module's own defaults.
 variables {
-  project_id                 = "standby-test-harness"
-  environment                = "dev"
-  node_id                    = "primary"
-  region                     = "us-east4"
-  zone                       = "us-east4-a"
-  standby_zone               = "us-east4-c"
-  network_id                 = "projects/standby-test-harness/global/networks/qip"
-  subnet_cidr                = "10.41.0.0/24"
-  standby_subnet_cidr        = "10.41.1.0/24"
-  machine_type               = "c3-highcpu-8"
-  boot_image                 = "projects/standby-test-harness/global/images/qip-edge-node"
-  node_count                 = 1
-  create_egress_nat          = false
-  shadow_mode                = true
-  default_pricing            = ""
-  strategy_plan_path         = ""
-  cross_region_mirror_path   = ""
-  region_allocation          = "0.25"
-  health_port                = 8080
-  required_hugepages_gb      = 16
-  watchdog_seconds           = 60
-  capital_envelope_secret_id = "qip-capital-envelope-key"
+  project_id               = "standby-test-harness"
+  environment              = "dev"
+  node_id                  = "primary"
+  region                   = "us-east4"
+  zone                     = "us-east4-a"
+  standby_zone             = "us-east4-c"
+  network_id               = "projects/standby-test-harness/global/networks/qip"
+  subnet_cidr              = "10.41.0.0/24"
+  standby_subnet_cidr      = "10.41.1.0/24"
+  machine_type             = "c4-highcpu-8"
+  boot_image               = "projects/standby-test-harness/global/images/qip-edge-node"
+  node_count               = 1
+  create_egress_nat        = false
+  shadow_mode              = true
+  default_pricing          = ""
+  strategy_plan_path       = ""
+  cross_region_mirror_path = ""
+  region_allocation        = "0.25"
+  health_port              = 8080
+  required_hugepages_gb    = 16
+  watchdog_seconds         = 60
+  trust_bundle_path        = "/etc/qip/trust/harness.json"
+  google_tls_roots_path    = "/etc/qip/trust/google-roots.pem"
+  workload_certificates = {
+    ca_pool              = "projects/harness-project/locations/us-east4/caPools/qip-harness-internal"
+    certificate_template = "projects/harness-project/locations/us-east4/certificateTemplates/qip-harness-workload"
+    lifetime_secs        = 86400
+    trust_roots_pem      = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+  }
+  # The lease both nodes hold. Every run that enables a standby needs one;
+  # the run that proves the refusal clears it.
+  fencing_lease_path         = "/var/lib/qip/fencing/lease.json"
   venue_credential_secret_id = null
   venue_credential_readable  = false
   venues = {
@@ -51,6 +61,46 @@ variables {
   evidence_bucket      = null
   egress_endpoints     = { "gcp" = "http://127.0.0.1:9105" }
   egress_bootstrap     = "static_resources:\n${join("\n", [for i in range(60) : "  # bootstrap line ${i} keeps this fixture past the one-kilobyte floor the module refuses below"])}\n"
+}
+
+# Item 13: a standby with no fencing lease boots as a second primary — both
+# nodes would trade the cell and every order goes out twice. Refused at plan.
+# Fails if the fencing_lease_path validation is deleted.
+run "a_standby_with_no_fencing_lease_is_refused" {
+  command = plan
+
+  variables {
+    standby_enabled    = true
+    fencing_lease_path = ""
+  }
+
+  expect_failures = [var.fencing_lease_path]
+}
+
+# And the lease reaches both machines, each under its own role and name —
+# the primary as the holder, the standby as the one that waits.
+run "the_primary_and_the_standby_both_hold_the_fencing_lease_under_their_own_role" {
+  command = plan
+
+  variables {
+    standby_enabled = true
+  }
+
+  assert {
+    condition = (
+      strcontains(google_compute_instance_template.node.metadata["startup-script"], "\nQIP_FENCING_LEASE=/var/lib/qip/fencing/lease.json\nQIP_NODE_ROLE=primary\n")
+      && strcontains(google_compute_instance_template.standby[0].metadata["startup-script"], "\nQIP_FENCING_LEASE=/var/lib/qip/fencing/lease.json\nQIP_NODE_ROLE=standby\n")
+    )
+    error_message = "The primary and the standby are not both started holding the fencing lease under their own role."
+  }
+
+  assert {
+    condition = (
+      strcontains(google_compute_instance_template.node.metadata["startup-script"], "\nQIP_NODE_NAME=qip-dev-exec-primary-primary\n")
+      && strcontains(google_compute_instance_template.standby[0].metadata["startup-script"], "\nQIP_NODE_NAME=qip-dev-exec-primary-standby\n")
+    )
+    error_message = "The two nodes do not hold the lease under distinct names."
+  }
 }
 
 run "a_standby_node_is_provisioned_in_a_different_zone" {

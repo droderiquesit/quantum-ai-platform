@@ -19,8 +19,9 @@ locals {
   # template alone started nothing: this module declared a template and two
   # DNS records and no instance, so `enabled = true` produced a name that
   # resolved to an address no machine held (W4.2). `broker_internal_addresses`
-  # is refused at more than one (variables.tf): RF1 with no consensus means a
-  # second broker is a second writer of the same chain.
+  # admits one broker on the local fabric and two or three only with ADR
+  # 0111's managed log (variables.tf), whose Spanner lease makes them one
+  # leader and its followers rather than several writers of one chain.
   brokers = var.enabled && var.zone != "" ? toset(var.broker_internal_addresses) : toset([])
 }
 
@@ -94,6 +95,16 @@ resource "google_compute_instance_template" "event_fabric_broker" {
       qip_fabricd_config         = base64encode(var.qip_fabricd_config)
       qip_storage_journal_device = var.qip_storage_journal_device
       broker_port                = var.broker_port
+      deployment                 = var.deployment
+      region                     = var.region
+      cas_ca_pool                = var.workload_certificates.ca_pool
+      cas_certificate_template   = var.workload_certificates.certificate_template
+      cas_lifetime_secs          = var.workload_certificates.lifetime_secs
+      cas_trust_roots_base64     = base64encode(var.workload_certificates.trust_roots_pem)
+      google_tls_roots_path      = var.google_tls_roots_path
+      admitted_peers             = join(",", var.admitted_peers)
+      managed_log_database       = var.managed_log == null ? "" : var.managed_log.spanner_database
+      managed_log_lease_ttl_ms   = var.managed_log == null ? 0 : var.managed_log.lease_ttl_ms
     })
     block-project-ssh-keys = "true"
   }
@@ -122,11 +133,14 @@ resource "google_compute_instance_template" "event_fabric_broker" {
   }
 }
 
-# The broker itself: one machine from the template, on the stable address
-# the DNS records name. Not a managed instance group: a group's surge
-# creates the replacement before retiring the original, and two brokers on
-# one chain under RF1 are two writers (ADR 0100 §2) — the property a group
-# exists to provide is the one this workload must not have.
+# The brokers: one machine per stable address the DNS records name. Not a
+# managed instance group: a group's surge creates a replacement before
+# retiring the original, outside any lease the broker takes, and on the local
+# fabric two brokers on one chain are two writers (ADR 0100 §2). With the
+# managed log the region's two or three instances contend for one Spanner
+# lease and only its holder writes (ADR 0111). All share `var.zone` today —
+# spreading them across zones (FABRIC-008) is a variable this module does not
+# have yet.
 resource "google_compute_instance_from_template" "event_fabric_broker" {
   for_each = local.brokers
 

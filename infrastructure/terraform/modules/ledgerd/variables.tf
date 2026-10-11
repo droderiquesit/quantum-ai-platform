@@ -136,3 +136,53 @@ variable "listen_port" {
     error_message = "listen_port is a whole number between 1025 and 65535."
   }
 }
+
+# ADR 0112: the ledger's fabric client is mutual TLS on a CA Service workload
+# certificate, and the binary refuses plaintext outside `local`. Its
+# deployment is `var.environment` (QIP_DEPLOYMENT), already validated above.
+
+variable "workload_certificates" {
+  description = <<-EOT
+    The CA Service pool and template qip-ledgerd requests its mTLS workload
+    certificate from (ADR 0112 §2), the lifetime it asks for, and the pool's
+    CA certificates it verifies the broker against. Full resource names by
+    project id, the form the requester grant's IAM condition matches.
+  EOT
+
+  type = object({
+    ca_pool              = string
+    certificate_template = string
+    lifetime_secs        = number
+    trust_roots_pem      = string
+  })
+  nullable = false
+
+  validation {
+    condition = (
+      can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/caPools/[A-Za-z0-9_-]+$", var.workload_certificates.ca_pool))
+      && can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/certificateTemplates/[A-Za-z0-9_-]+$", var.workload_certificates.certificate_template))
+    )
+    error_message = "workload_certificates names the CA pool and the template by full resource name with a project id; both are written into the ledger's environment file."
+  }
+
+  validation {
+    condition     = var.workload_certificates.lifetime_secs >= 3600 && var.workload_certificates.lifetime_secs <= 86400 && floor(var.workload_certificates.lifetime_secs) == var.workload_certificates.lifetime_secs
+    error_message = "workload_certificates.lifetime_secs is a whole number of seconds from an hour to a day (ADR 0112 §2)."
+  }
+
+  validation {
+    condition     = strcontains(var.workload_certificates.trust_roots_pem, "-----BEGIN CERTIFICATE-----")
+    error_message = "workload_certificates.trust_roots_pem is the CA pool's PEM certificates."
+  }
+}
+
+variable "google_tls_roots_path" {
+  type        = string
+  description = "Where the boot image carries the pinned Google roots qip-ledgerd authenticates CA Service and Spanner against: /etc/qip/trust/<file>.pem."
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^/etc/qip/trust/[a-z0-9-]+\\.pem$", var.google_tls_roots_path))
+    error_message = "google_tls_roots_path is /etc/qip/trust/<name>.pem."
+  }
+}

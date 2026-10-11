@@ -144,6 +144,69 @@ every central binary stops in `dev`.
    date it is removed, then removed. A cell accepting both indefinitely
    would be as weak as the weaker.
 
+## Amendment 1 (2026-10-11): a per-cycle policy payload is issuance, and what it may widen carries its own release
+
+**Why an amendment.** Decision 4's first bullet lists "policy" among the
+widening artefacts a two-person workflow publishes, and decision 1 names the
+`policy` key as the one that signs "policy payloads". Read together they say
+a human approves every payload. But a payload is issued per cell per cycle
+by the API (`qip-api/src/signing.rs` signs it under the `policy` key; the
+round-2 code already did), it carries the halt bit and every slot's
+freshness, and a cell narrows as soon as it stops receiving one. A second
+approver per cycle is either an outage — no payload, every cell stale and
+narrowing, fleet-wide — or a rubber stamp that a two-person rule exists to
+forbid. The record already reasoned this way once: decision 4's second
+bullet makes *envelope issuance* automated and single-signer "by necessity"
+and moves the two-person rule onto "the limits an envelope may carry".
+This amendment applies the same reasoning to the payload, by name, rather
+than leaving the text saying one thing and the code doing another.
+
+**Decision.**
+
+1. **The per-cycle policy payload is exempt from the two-person rule.** It
+   is signed by the API's own service account under the `policy` key, which
+   is that account's alone (`cloudkms.signer` on `policy`, `halt` and
+   `envelope`; never on `model-pack`). The publish workflow's identity holds
+   `cloudkms.signer` on `model-pack` and on nothing the API signs. The two
+   sets are disjoint and the Terraform tests assert it.
+2. **Exempt is not the same as trusted.** A payload's signature proves one
+   process issued it; it must therefore never be what admits a widening item
+   to the order path. Each widening item a payload carries must carry its own
+   two-person signature, verified *by the cell*, not merely by the centre
+   before issuance:
+   - **Models — implemented.** The `trained_models` manifest carries, beside
+     each named model, the `ModelPack` that released it
+     (`ModelManifest::packs`), and every pack names the inline model the
+     cell computes — name and `DistilledModel::digest()` — inside its signed
+     bytes (`ModelPack::inline_model`). A cell under a trust bundle refuses
+     the whole payload when a named model has no pack, a pack names other
+     weights or none, a pack fails the `model-pack` key, expires, or names
+     one person twice, or a pack is filed for a model the manifest does not
+     name (`ModelManifest::check_releases`, called from
+     `VerifiedPolicy::verify_with`; proven by
+     `qip-edge/tests/model_release.rs`). The kernel names a distillate only
+     when an admitted pack covers its artifact *and* its inline model
+     (`Platform::model_manifest`). So a compromised API can withhold a model,
+     never introduce one.
+   - **Limits — not yet, and said so.** The limits an envelope or the
+     `risk_envelope` slot may carry still arrive as reviewed configuration
+     deployed by `deploy.yml`, not as a separately signed two-person
+     artefact the cell verifies. Until they do, a compromised API could
+     issue a payload or envelope inside whatever the cell's own
+     construction-time ceilings admit — which is the cell's own fence (ADR
+     0008, ADR 0039) and paper capital only, but it is not this record's
+     two-person rule. That artefact is named here as the remaining gap
+     rather than claimed.
+3. **Halts stay one-person** (decision 4, unchanged): a halt only restricts.
+4. A shared-key cell cannot verify a pack and keeps the pre-amendment
+   reading until `SHARED_KEY_REMOVED_AFTER`, after which it does not start.
+
+**What would make this amendment wrong.** A cell under a bundle running an
+inline model whose pack it did not verify; the API's service account holding
+`cloudkms.signer` on `model-pack`; a per-cycle payload cited as a two-person
+artefact; or the limits gap above described as closed before a signed limits
+artefact exists and a cell checks it.
+
 ## Consequences
 
 - A cell holds only public keys. Reading a node's disk no longer grants the

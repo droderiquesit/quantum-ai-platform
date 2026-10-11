@@ -156,9 +156,7 @@ fn package(plan_digest: &str, grant_name: &str) -> Result<VerifiedPolicy> {
         t(5),
     );
     payload.trained_models = Slot::produced(
-        ModelManifest {
-            models: BTreeMap::from([(MODEL.to_string(), model()?.digest())]),
-        },
+        ModelManifest::unreleased(BTreeMap::from([(MODEL.to_string(), model()?.digest())])),
         t(5),
     );
     payload.capital_grants = Slot::produced(

@@ -285,10 +285,19 @@ fn run() -> Result<()> {
     // ADR 0110 decision 5: which deployment this is, named and never
     // inferred. Absent is refused, so a deployment that forgot to say what it
     // is cannot run on the seed-derived key the way a developer's machine may.
-    let deployment = qip_core::deployment::Deployment::parse(
+    // And `local` is refused where the platform's own markers show this is
+    // deployed — Cloud Run's `K_*`, the GCE DMI name — so the one value that
+    // relaxes the guards cannot be set by an environment edit on a revision.
+    let deployment = qip_core::deployment::Deployment::parse_observed(
         std::env::var(qip_api::trust::DEPLOYMENT_VARIABLE)
             .ok()
             .as_deref(),
+        &qip_core::deployment::DeploymentMarkers::observe(
+            &|name| std::env::var(name).ok(),
+            std::fs::read_to_string(qip_core::deployment::COMPUTE_ENGINE_PRODUCT_FILE)
+                .ok()
+                .as_deref(),
+        ),
     )
     .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
     // R12-GOV-6121: a deployed process states the commit it was built from,
@@ -436,6 +445,9 @@ fn run() -> Result<()> {
                 envelope_key.as_ref().map(|key| key.as_bytes().to_vec()),
             )
             .map(|mut backbone| {
+                // The shared key's removal date, re-checked at each dispatch
+                // and not only by `signing::configure` above.
+                backbone.bind_shared_key_to(deployment);
                 // Under ADR 0110 the class keys replace the shared key for
                 // payloads and halts as well as for envelopes.
                 if let qip_api::signing::SigningPosture::Asymmetric(signers) = &signing {

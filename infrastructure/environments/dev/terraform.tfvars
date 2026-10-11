@@ -187,8 +187,9 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #   * `10.67.0.0/20` is that block. It overlaps neither the trust zones
 #     (10.0.32-35.0/24), nor the console (10.0.16.0/26), nor the control
 #     plane's endpoint (10.0.36.0/28).
-#   * `c3-highcpu-8` is the smallest shape §41.4 permits, which is the right
-#     one for a node configured for a single venue. Note what it costs: the
+#   * `c4-highcpu-8` is the smallest C4 shape R12-REFLEX-8002 permits (C3,
+#     which §41.4 once allowed, is refused at plan), the right one for a node
+#     configured for a single venue. Note what it costs: the
 #     module derives `isolcpus=2-7`, and §41.3's thread assignment wants
 #     2-15. modules/execution-node/README.md says so and the module exports
 #     `isolated_cpus` so a deployment can see which of the two it got.
@@ -214,7 +215,7 @@ gitops_master_ipv4_cidr_block = "10.0.36.0/28"
 #     container runtime, /usr/local/bin/{qip-edge-node,envoy,qip-fetch-secret},
 #     the Ops Agent). It has never been dispatched, so there is no self-link.
 #     The path it will be is fixed by the bake:
-#     `projects/algorik-qip-dev/global/images/qip-execution-node-c3-highcpu-8-<commit12>-r<run>`,
+#     `projects/algorik-qip-dev/global/images/qip-execution-node-c4-highcpu-8-<commit12>-r<run>`,
 #     printed by the run as `self_link`. The image is built for one machine
 #     shape — the isolated-core range is in its kernel command line — and the
 #     root's validation on `execution_nodes` refuses an image whose name
@@ -238,7 +239,7 @@ execution_nodes = {
     region       = "us-east4"
     zone         = "us-east4-a"
     subnet_cidr  = "10.67.0.0/20"
-    machine_type = "c3-highcpu-8"
+    machine_type = "c4-highcpu-8"
     boot_image   = null
     venues = {
       "simulated-1" = { cidr = "192.0.2.0/24", port = 443 }
