@@ -35,8 +35,10 @@ coordination protocol and its link. The five functions blueprint section 4 place
 Lane 1 (peer reflex messages, opportunity tokens, distributed reservations,
 multi-leg coordination, hedge and unwind commands) are registered as `MeshFunction`,
 defined in `qip-peer` and re-exported as `qip_mesh::peer`. `qip-peer-link` carries
-them node to node over loopback until ADR 0112's mTLS transport exists, on a
-session thread of its own. `qip-acceptance`'s `mesh_lane` suite compares that
+them node to node under ADR 0112's mutual TLS (plaintext on loopback only, in a
+`local` deployment), on a session thread of its own, which also runs the cycle
+itself — origination from the cell's published leg authorities, reservation,
+FIRE, paper fill and unwind — so the reflex pass never waits on any of it. `qip-acceptance`'s `mesh_lane` suite compares that
 registry with the `qip-mesh` and `qip-peer` rows below and fails (MESH-013) when a
 crate in `qip-edge`'s closure or at Lane 0 depends on or names `qip-mesh`,
 `qip-peer`, `qip-peer-link` or a coordination type; when the node links any other
@@ -72,7 +74,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-edge-node | 1 | the cell's composition root. Hosts Lane 0 (the cell) and Lane 1 (the peer link), and its decision loop reaches Lane 1 only through `qip_peer_link::boundary`; paper passes without any cognitive process present |
 | qip-mesh | 1 | cell and centre exchange of signed deltas and grants, and the host of the peer coordination protocol's five functions, re-exported as `qip_mesh::peer`; latency accepted, never awaited by a pass |
 | qip-peer | 1 | the peer coordination protocol, pure: frames in, state and refusals out; depends on qip-core, serde and serde_json alone, so no warehouse client is reachable from it (DATA-058) |
-| qip-peer-link | 1 | the peer wire and session on threads of their own, with explicit connect and write timeouts; reached from the reflex node only through a port that offers with `try_send` and reports from atomics |
+| qip-peer-link | 1 | the peer wire (mutual TLS 1.3 through `qip_transport::tls`) and session on threads of their own, with explicit connect, write and handshake timeouts; runs the peer cycle on the session thread; reached from the reflex node only through a port that offers with `try_send` and reports from atomics |
 | qip-streaming | 1 | stream transports with explicit bounds; a refusing port rather than a silent fallback |
 | qip-chain | 1 | signed chain records over qip-transport; bounded round trips |
 | qip-fabricd | 1 | the in-tree fabric daemon; journal appends acknowledged locally |

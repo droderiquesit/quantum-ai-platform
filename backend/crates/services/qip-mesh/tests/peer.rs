@@ -34,6 +34,7 @@ fn at(ms: i64) -> Timestamp {
 fn leg(id: &str, node: &str, unwind: i64) -> EpochLeg {
     EpochLeg {
         leg: id.into(),
+        execution: None,
         node: node.into(),
         size: d(100),
         unwind_loss: d(unwind),

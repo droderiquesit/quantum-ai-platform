@@ -100,7 +100,7 @@ use qip_edge_node::{NodeAssembly, assemble_with_risk};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::Metrics;
-use qip_peer_link::{LISTEN_VARIABLE, PEERS_VARIABLE, PeerSettings};
+use qip_peer_link::{CLOCK_BOUND_VARIABLE, LISTEN_VARIABLE, PEERS_VARIABLE, PeerSettings};
 use qip_routing::reprice::RepricePolicy;
 use qip_storage::lake::LAKE_NAMESPACE;
 use qip_storage::segment::log::{SegmentLog, SegmentLogConfig};
@@ -413,10 +413,21 @@ impl NodeConfig {
 
         let fabric = read_fabric(&|name| std::env::var(name).ok())?;
         let writer_cpu = parse_writer_cpu(std::env::var(WRITER_CPU_VARIABLE).ok().as_deref())?;
+        // ADR 0112: the peer mesh is mutual TLS with this node's workload
+        // certificate, and plaintext only where the deployment is `local`
+        // and says `plaintext` — and then on loopback alone. The certificate
+        // is loaded only when a peer mesh is configured, so a cell with no
+        // peers needs none.
         let peers = PeerSettings::read(
             &cell_id,
             std::env::var(LISTEN_VARIABLE).ok().as_deref(),
             std::env::var(PEERS_VARIABLE).ok().as_deref(),
+            std::env::var(CLOCK_BOUND_VARIABLE).ok().as_deref(),
+            &|| {
+                qip_transport::tls::LinkSecurity::from_lookup(deployment, &|name| {
+                    std::env::var(name).ok()
+                })
+            },
         )?;
         let standby = StandbySettings::read(
             std::env::var(LEASE_VARIABLE).ok().as_deref(),
@@ -1097,9 +1108,11 @@ fn run() -> Result<()> {
         Some(settings) => {
             let (port, local) = qip_peer_link::spawn(settings, Arc::clone(&clock))?;
             println!(
-                "qip-edge-node: peer mesh listening on {local} for {} peer(s), plaintext on \
-                 loopback only until the mTLS transport of ADR 0112 is built",
-                settings.peers.len()
+                "qip-edge-node: peer mesh listening on {local} for {} peer(s) over {}; joins an \
+                 epoch only with every counterparty's clock measured within {} ms",
+                settings.peers.len(),
+                settings.security.describe(),
+                settings.clock_bound.as_millis()
             );
             decisions = decisions.with_peers(port);
         }

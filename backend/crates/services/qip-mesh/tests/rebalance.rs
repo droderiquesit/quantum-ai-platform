@@ -13,6 +13,7 @@ fn d(n: i64) -> Decimal {
 fn epoch() -> OpportunityEpoch {
     let leg = |id: &str, node: &str| EpochLeg {
         leg: id.into(),
+        execution: None,
         node: node.into(),
         size: d(100),
         unwind_loss: d(1),

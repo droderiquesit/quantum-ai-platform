@@ -200,3 +200,36 @@ is unchanged.
 - **ADR 0112's mTLS transport arriving.** If `rustls` cannot be confined to
   `qip-peer-link`, this placement needs revisiting. It should only replace
   the stream type there.
+
+## Addendum, 2026-10-11: what round 3 put through the port
+
+Recorded here because each change was made under this ADR's rules and a
+reader checking them needs to find them beside the rules.
+
+- **`try_publish` takes an `Offer`, not only quotes.** `Offer` is plain data:
+  the touch, and a `LegAuthority` per book — the most the cell's own gate,
+  run on the decision thread, lets it trade as one leg of a peer cycle, at
+  what limit, until when. `Vec<EdgeQuote>` still converts into it. The port
+  still declares exactly `try_publish` and `status`, and nothing in its file
+  can wait; `mesh_lane.rs` reads it unchanged. The cycle itself (origination,
+  reservation, FIRE, paper fill, unwind) runs on the session thread in
+  `qip-peer-link/src/saga.rs`, and reserves or sends only inside the newest
+  authority. Outcomes return as counters in `PeerStatus` — read from atomics,
+  decided on by nothing on the decision thread. This is the "later pass, from
+  the cell's own state" shape §"What would make this wrong" asks for, applied
+  in reverse: the cell decides first, and Lane 1 acts inside the decision.
+- **mTLS arrived, and `rustls` is confined as required.** The wire's stream
+  type gained a TLS 1.3 session (`rustls` client and server connections);
+  identity loading, the configs and the admitted-name check are reused from
+  `qip_transport::tls`, a Lane 0 library the node already linked, so the
+  hosted set did not grow. Plaintext remains only for `QIP_DEPLOYMENT=local`
+  with `QIP_TLS_MODE=plaintext`, on loopback.
+- **Clock offsets are measured on the session thread** by probe and echo
+  (`qip_peer` `clock_probe`/`clock_echo`), so the endpoint no longer refuses
+  every token as `clock_unknown`.
+- **Known limit, not resolved here:** a peer cycle's paper fills are counted
+  in `PeerStatus` and never reach the cell's hash-chained journal, because
+  the loop cannot receive them through a port with no receiving method.
+  Journaling them needs either the session to write its own record stream or
+  a decision on a bounded, non-blocking drain; that is an ADR question, not a
+  code change.

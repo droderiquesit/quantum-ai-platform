@@ -816,6 +816,9 @@ version = "0.1.0"
 dependencies = [
  "qip-core",
  "qip-peer",
+ "qip-transport",
+ "ring",
+ "rustls",
 ]
 
 [[package]]

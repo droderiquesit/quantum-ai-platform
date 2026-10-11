@@ -23,7 +23,8 @@
 //!    waits; a refusal leaves the entries unshipped and in memory;
 //! 8. leaves a state delta for the mesh worker and a body for the health
 //!    thread, each with `try_lock`;
-//! 9. offers this cell's touch to its peers through
+//! 9. offers this cell's touch, and the legs its gate authorises in a
+//!    peer-coordinated cycle, to the peer link through
 //!    `qip_peer_link::boundary::ReflexPort` — one `try_send`, after the
 //!    flush, so a peer outage can hold neither the journal nor the centre's
 //!    downlink (MESH-5050). Receiving peers' frames, framing the edge state
@@ -55,7 +56,7 @@
 
 use crate::arbitrage::ArbitrageInstaller;
 use crate::control::{Handoff as ControlHandoff, PlanCompiler, Poller, Readings};
-use crate::edge_quotes::executable_quotes;
+use crate::edge_quotes::cell_offer;
 use crate::event_fabric::drain::DrainThread;
 use crate::event_fabric::inputs::{Recorded, RecordedInputs};
 use crate::event_fabric::mirror::FabricMirror;
@@ -532,7 +533,7 @@ impl DecisionLoop {
         // The peer mesh, last: after the flush and the centre's delta, so
         // nothing a peer does — or fails to do — stands in front of either.
         if let Some(port) = &self.peers
-            && !port.try_publish(executable_quotes(&self.cell))
+            && !port.try_publish(cell_offer(&self.cell, now))
         {
             // A full queue or a stopped session: this turn's touch is
             // dropped, never waited for, and the next turn's supersedes it.
@@ -748,7 +749,7 @@ impl DecisionLoop {
             Some(port) => {
                 let status = port.status();
                 format!(
-                    r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{},"dropped_offers":{},"quotes_refused":{},"session_turns":{}}}"#,
+                    r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{},"dropped_offers":{},"quotes_refused":{},"quotes_withheld":{},"session_turns":{},"clocks_measured":{},"cycles_originated":{},"reservations":{},"declines":{},"fires":{},"legs_sent":{},"fills":{},"unwinds":{},"cycles_rejected":{}}}"#,
                     status.edge_peers_held,
                     status.refusals,
                     status.sent,
@@ -759,7 +760,17 @@ impl DecisionLoop {
                     status.publish_failures,
                     status.dropped_offers,
                     status.quotes_refused,
+                    status.quotes_withheld,
                     status.turns,
+                    status.clocks_measured,
+                    status.cycles_originated,
+                    status.reservations,
+                    status.declines,
+                    status.fires,
+                    status.legs_sent,
+                    status.fills,
+                    status.unwinds,
+                    status.cycles_rejected,
                 )
             }
             None => "null".to_string(),

@@ -9,7 +9,7 @@
 //! `qip-contracts`, MESH-013 failed on it, correctly.
 //!
 //! The crate sits under `edge/` and not `libs/` because it owns a
-//! `TcpListener` and `TcpStream`: a library that opens a socket is a
+//! `TcpListener` and `TcpStream`, under mutual TLS off-host (ADR 0112): a library that opens a socket is a
 //! service in the wrong directory (`00-boundaries.md`, enforced by
 //! `only_the_named_libraries_open_sockets`). Its dependencies are `qip-peer`
 //! and `qip-core`; it links no cell, so nothing here can reach `Cell::work`.
@@ -20,13 +20,18 @@
 //!   port. Called by the node's composition root and nothing else there.
 //! * [`boundary`] — [`boundary::ReflexPort`], the decision loop's whole view:
 //!   `try_publish` and `status`, neither of which can wait.
+//! * [`saga`] — the peer cycle on the session thread: origination from the
+//!   cell's leg authorities and peers' edge states, reservation, FIRE,
+//!   paper execution, fill and unwind.
 
 pub mod boundary;
 mod host;
+pub mod saga;
 pub mod wire;
 
-pub use host::{TURN, spawn};
+pub use host::{PROBE_INTERVAL, TURN, spawn};
 pub use wire::{
-    LISTEN_VARIABLE, MAX_FRAME, PEERS_VARIABLE, PeerLink, PeerSession, PeerSettings, PeerTurn,
-    PeerWireStats, node_limits,
+    CLOCK_BOUND_VARIABLE, DEFAULT_CLOCK_BOUND, InboundFrame, LISTEN_VARIABLE, MAX_CLOCK_BOUND,
+    MAX_FRAME, PEERS_VARIABLE, PeerLink, PeerSession, PeerSettings, PeerTurn, PeerWireStats,
+    limits_with, node_limits,
 };

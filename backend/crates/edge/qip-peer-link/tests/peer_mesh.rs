@@ -22,7 +22,8 @@ use qip_peer::{
     ReservationBook, ReservationOutcome, encode,
 };
 use qip_peer_link::boundary::EdgeQuote;
-use qip_peer_link::{MAX_FRAME, PeerSession, PeerSettings};
+use qip_peer_link::{DEFAULT_CLOCK_BOUND, MAX_FRAME, PeerSession, PeerSettings};
+use qip_transport::tls::LinkSecurity;
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
@@ -45,6 +46,8 @@ fn settings(node: &str, listen: SocketAddr, peer: &str, peer_at: SocketAddr) -> 
         node: node.to_string(),
         listen,
         peers: BTreeMap::from([(peer.to_string(), peer_at)]),
+        security: LinkSecurity::plaintext_for_tests(),
+        clock_bound: DEFAULT_CLOCK_BOUND,
     }
 }
 
@@ -65,7 +68,7 @@ fn deliver(session: &mut PeerSession, now: Timestamp) -> usize {
         let frames = session.link().take_inbound();
         if !frames.is_empty() {
             for frame in &frames {
-                let _ = session.endpoint_mut().receive(frame, now);
+                let _ = session.endpoint_mut().receive(&frame.frame, now);
             }
             return frames.len();
         }
@@ -81,6 +84,7 @@ fn deliver(session: &mut PeerSession, now: Timestamp) -> usize {
 fn leg(id: &str, node: &str, unwind: i64) -> EpochLeg {
     EpochLeg {
         leg: id.into(),
+        execution: None,
         node: node.into(),
         size: Decimal::from_int(100),
         unwind_loss: Decimal::from_int(unwind),
@@ -369,7 +373,7 @@ fn a_quote_published_through_the_port_reaches_a_peer_and_a_crossed_one_is_refuse
     let began = std::time::Instant::now();
     let held = loop {
         for frame in europe.link().take_inbound() {
-            let _ = europe.endpoint_mut().receive(&frame, at(1));
+            let _ = europe.endpoint_mut().receive(&frame.frame, at(1));
         }
         if let Some(held) = europe.endpoint().peer_edges("americas") {
             break held.to_vec();

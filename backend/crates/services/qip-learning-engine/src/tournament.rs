@@ -414,6 +414,9 @@ pub struct InfluenceWeight {
     pub forecaster: String,
     pub market_share: f64,
     pub calibration: f64,
+    /// [`information_factor`] of the mean leave-one-out information value:
+    /// one half for a forecaster that adds nothing the others did not, and
+    /// zero, not one half, for a record whose value is not a finite number.
     pub information: f64,
     pub cost: f64,
     pub latency: f64,
@@ -429,6 +432,35 @@ pub struct PromotionDecision {
     pub lane: PromotionLane,
     pub promoted: bool,
     pub reason: String,
+}
+
+/// The information factor of a forecaster whose mean leave-one-out
+/// information value is `mean_value` nats: `r / (1 + r)` with
+/// `r = exp(mean_value)`, computed as `1 / (1 + exp(−mean_value))` so a large
+/// value cannot overflow to `∞ / ∞`.
+///
+/// Why not `exp(min(mean_value, 0))`, the factor this replaced: it read one
+/// for every forecaster whose value was zero or better, so a forecaster that
+/// added *nothing* — an exact copy of another, whose leave-one-out value is
+/// zero because the aggregate pools identical distributions as one signal —
+/// kept the same full weight as one whose forecasts the ensemble could not
+/// have produced without it. Each copy then drew a full share of influence
+/// and compute for the same information, and the ensemble double-counted it
+/// everywhere influence is read rather than pooled (R12-MODEL-3090). Here
+/// the factor is strictly increasing in the value, so zero incremental
+/// information reads one half and anything that genuinely moved the
+/// aggregate toward what happened reads above it.
+///
+/// A value that is not a finite number earns nothing: it is not a
+/// measurement anybody made — every stored value is the difference of two
+/// logarithms of probabilities floored at [`PROBABILITY_FLOOR`] — and
+/// reading it as neutral would grant influence on a corrupted record, while
+/// letting it through would make every forecaster's normalised weight NaN.
+fn information_factor(mean_value: f64) -> f64 {
+    if !mean_value.is_finite() {
+        return 0.0;
+    }
+    1.0 / (1.0 + (-mean_value).exp())
 }
 
 /// The meta-model (R12-MODEL-3095): which forecasters are likely to fail in
@@ -1296,9 +1328,13 @@ impl Tournament {
     /// * **market share** — the forecaster's synthetic-credit balance over
     ///   the largest balance among those weighed;
     /// * **calibration** — `1 − ECE` over its whole record;
-    /// * **information** — `exp(min(mean information value, 0))`: a
-    ///   forecaster that adds information keeps full weight, one that
-    ///   subtracts it decays;
+    /// * **information** — [`information_factor`] of the mean leave-one-out
+    ///   information value: `r / (1 + r)` where `r = exp(mean value)` is the
+    ///   geometric-mean ratio of the probability the aggregate *with* the
+    ///   forecaster put on what happened to the probability the aggregate
+    ///   *without* it did. A forecaster that adds nothing the others did not
+    ///   already say reads one half, one that adds information approaches
+    ///   one, one that subtracts it approaches zero;
     /// * **cost** and **latency** — `m / (m + x)` where `x` is its mean and
     ///   `m` the median across those weighed, so the median forecaster reads
     ///   one half and the cheapest approach one;
@@ -1371,7 +1407,7 @@ impl Tournament {
                     f.all_scores().filter_map(|s| s.information_value).collect();
                 let information = Measure::mean(&information_values, "")
                     .value()
-                    .map_or(1.0, |iv| iv.min(0.0).exp());
+                    .map_or(1.0, information_factor);
                 InfluenceWeight {
                     forecaster: f.spec.id.clone(),
                     market_share,
@@ -1835,6 +1871,130 @@ mod tests {
             value("other").abs() > 1e-6,
             "premise: a distinct view moves the aggregate"
         );
+        Ok(())
+    }
+
+    /// Mark every forecaster active, so influence weighs each on the record
+    /// it has rather than on whether review happened to promote it.
+    fn activate_all(t: &mut Tournament) {
+        for f in t.forecasters.values_mut() {
+            f.standing = Standing::Active;
+        }
+    }
+
+    fn mean_information(t: &Tournament, name: &str) -> f64 {
+        t.forecasters.get(name).map_or(f64::NAN, |f| {
+            let values: Vec<f64> = f.all_scores().filter_map(|s| s.information_value).collect();
+            Measure::mean(&values, "").value().unwrap_or(f64::NAN)
+        })
+    }
+
+    /// R12-MODEL-3090. The failure prevented: an exact copy of a forecaster
+    /// carries none of its own information, yet under `exp(min(value, 0))`
+    /// each copy kept the full information factor of one — the same factor
+    /// the forecaster earned alone — so two copies drew two full shares of
+    /// influence and compute for one signal. Mutation: restoring
+    /// `iv.min(0.0).exp()` reads one for the twins and for the solo, and the
+    /// strict comparison fails.
+    #[test]
+    fn two_identical_forecasters_each_lose_influence_for_carrying_no_incremental_information()
+    -> Result<()> {
+        let mut alone = Tournament::new();
+        alone.admit(spec("solo"), at(0))?;
+        rounds(&mut alone, "quiet", 0, 12, &[("solo", 8_000)], "up", 60.0)?;
+        activate_all(&mut alone);
+
+        let mut paired = Tournament::new();
+        paired.admit(spec("twin-a"), at(0))?;
+        paired.admit(spec("twin-b"), at(0))?;
+        rounds(
+            &mut paired,
+            "quiet",
+            0,
+            12,
+            &[("twin-a", 8_000), ("twin-b", 8_000)],
+            "up",
+            60.0,
+        )?;
+        activate_all(&mut paired);
+
+        // Premise: alone, the forecaster beats a uniform guess; as a pair,
+        // each twin is exactly redundant with the other.
+        let solo_value = mean_information(&alone, "solo");
+        assert!(solo_value > 0.1, "premise: solo informative, {solo_value}");
+        for twin in ["twin-a", "twin-b"] {
+            let value = mean_information(&paired, twin);
+            assert!(value.abs() < 1e-12, "premise: {twin} redundant, {value}");
+        }
+
+        let solo = alone.influence("quiet");
+        let pair = paired.influence("quiet");
+        assert_eq!(pair.len(), 2, "premise: both twins are weighed");
+        let solo_factor = solo["solo"].information;
+        for twin in ["twin-a", "twin-b"] {
+            let factor = pair[twin].information;
+            assert!(
+                factor < solo_factor,
+                "{twin} kept information factor {factor} against the solo's {solo_factor}"
+            );
+            assert!(factor < 1.0, "{twin} kept full information weight");
+        }
+        Ok(())
+    }
+
+    /// R12-MODEL-3090: influence moves with incremental information. Two
+    /// twins always say "up"; a third forecaster calls the direction the
+    /// twins cannot. The failure prevented is the third and the twins
+    /// reading the same information factor although only one of the three
+    /// carries information the others lack. Mutation: restoring
+    /// `iv.min(0.0).exp()` reads one for all three and the comparison
+    /// fails.
+    #[test]
+    fn a_forecaster_with_unique_informative_forecasts_outweighs_a_redundant_one() -> Result<()> {
+        let mut t = Tournament::new();
+        for name in ["twin-a", "twin-b", "caller"] {
+            t.admit(spec(name), at(0))?;
+        }
+        for i in 0..12i64 {
+            let day = 2 * i;
+            let id = format!("u-{day}");
+            let up = i % 2 == 0;
+            t.open(question(&id, "quiet", day), at(day))?;
+            t.submit(&id, forecast("twin-a", &id, 8_000, day), at(day))?;
+            t.submit(&id, forecast("twin-b", &id, 8_000, day), at(day))?;
+            let call = if up { 8_000 } else { 2_000 };
+            t.submit(&id, forecast("caller", &id, call, day), at(day))?;
+            let outcome = if up { "up" } else { "not_up" };
+            t.resolve(&id, resolution(outcome, 60.0, day + 1), at(day + 1))?;
+        }
+        activate_all(&mut t);
+
+        // Premise: the caller adds information the twins lack; each twin
+        // adds none the other did not.
+        let caller_value = mean_information(&t, "caller");
+        assert!(
+            caller_value > 0.0,
+            "premise: caller informative, {caller_value}"
+        );
+        for twin in ["twin-a", "twin-b"] {
+            let value = mean_information(&t, twin);
+            assert!(value.abs() < 1e-12, "premise: {twin} redundant, {value}");
+        }
+
+        let influence = t.influence("quiet");
+        assert_eq!(influence.len(), 3, "premise: all three are weighed");
+        let caller = influence["caller"].information;
+        for twin in ["twin-a", "twin-b"] {
+            let factor = influence[twin].information;
+            assert!(
+                caller > factor,
+                "caller's information factor {caller} did not exceed {twin}'s {factor}"
+            );
+            assert!(
+                influence["caller"].weight > influence[twin].weight,
+                "the redundant {twin} kept as much say as the caller"
+            );
+        }
         Ok(())
     }
 
