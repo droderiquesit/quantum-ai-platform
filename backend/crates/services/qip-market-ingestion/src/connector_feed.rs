@@ -575,6 +575,14 @@ impl ConnectorFeed {
         self.pending_evidence.drain(..).collect()
     }
 
+    /// The transport this feed polls through, for asking the source for an
+    /// extent again (R12-DATA-1037) over the same egress route, timeouts and
+    /// credentials the original fetch used, rather than a second client
+    /// nobody configured.
+    pub fn transport_mut(&mut self) -> &mut dyn SourceTransport {
+        self.transport.as_mut()
+    }
+
     /// Take the knowledge packs every poll released since the last call
     /// produced, oldest first, each with its measured footprint, for the
     /// composition root to persist (R12-DATA-1041). Before this the pack was

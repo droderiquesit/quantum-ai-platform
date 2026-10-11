@@ -629,6 +629,12 @@ impl ReferenceLedger {
         Ok(())
     }
 
+    /// Every reference the ledger holds, in extent order — what a re-fetch
+    /// pass walks (R12-DATA-1037).
+    pub fn references(&self) -> impl Iterator<Item = &DataReference> {
+        self.entries.values()
+    }
+
     /// Why and since when `reference`'s extent can no longer be re-fetched,
     /// if a re-fetch has failed since it was last served.
     pub fn unretrievable(&self, reference: &DataReference) -> Option<&Unretrievable> {

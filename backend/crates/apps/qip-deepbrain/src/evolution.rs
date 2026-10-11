@@ -362,6 +362,12 @@ pub struct EvolutionEngine {
     /// own standing gate, each referenced on the platform's ledger. Empty in
     /// every shipped deployment; see [`crate::connectors`].
     connectors: Vec<ConnectorArm>,
+    /// Re-fetch the connector arms' referenced extents every this many
+    /// cycles (R12-DATA-1037). Zero, the default, never does.
+    refetch_every: u64,
+    /// Scores each connector against the own stream (R12-DATA-2022, 2025,
+    /// 1105). `None`, the default, observes and scores nothing.
+    source_alpha: Option<crate::source_alpha::SourceAlphaDesk>,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -405,6 +411,8 @@ impl EvolutionEngine {
             campaign_config: CampaignConfig::standard()?,
             admission: None,
             connectors: Vec::new(),
+            refetch_every: 0,
+            source_alpha: None,
         })
     }
 
@@ -438,6 +446,55 @@ impl EvolutionEngine {
     ) -> Self {
         self.admission = Some((admission, manifest));
         self
+    }
+
+    /// Re-fetch every arm's referenced extents every `every` cycles; zero
+    /// disables the pass.
+    pub fn with_refetch(mut self, every: u64) -> Self {
+        self.refetch_every = every;
+        self
+    }
+
+    /// Run a re-fetch pass over every connector arm if this cycle is on its
+    /// cadence; `Ok(None)` otherwise. A licence refusal stops the pass and
+    /// is returned, as a poll's does.
+    pub fn maybe_refetch(
+        &mut self,
+        platform: &mut Platform,
+        cycle: u64,
+        now: Timestamp,
+    ) -> Result<Option<Vec<qip_data_finder::refetch::ReFetchFinding>>> {
+        if self.refetch_every == 0 || !cycle.is_multiple_of(self.refetch_every) {
+            return Ok(None);
+        }
+        let mut findings = Vec::new();
+        for arm in &mut self.connectors {
+            findings.extend(arm.refetch(platform, crate::connectors::REFETCH_BUDGET, now)?);
+        }
+        Ok(Some(findings))
+    }
+
+    /// Score every connector arm against the own stream every `every`
+    /// cycles; zero attaches nothing, so nothing is observed either.
+    pub fn with_source_alpha(mut self, every: u64) -> Self {
+        self.source_alpha = (every > 0).then(|| crate::source_alpha::SourceAlphaDesk::new(every));
+        self
+    }
+
+    /// The source-alpha desk, when one is attached.
+    pub fn source_alpha(&self) -> Option<&crate::source_alpha::SourceAlphaDesk> {
+        self.source_alpha.as_ref()
+    }
+
+    /// Score the sources if this cycle is on the desk's cadence.
+    pub fn maybe_score_sources(
+        &mut self,
+        cycle: u64,
+        now: Timestamp,
+    ) -> Option<crate::source_alpha::SourceAlphaRound> {
+        self.source_alpha
+            .as_mut()
+            .and_then(|desk| desk.maybe_score(cycle, now))
     }
 
     /// Attach a discovery desk (§7.4-§7.6.2). Replaces one attached before.
@@ -684,15 +741,24 @@ impl EvolutionEngine {
     /// inside one poll, re-opened one seam up.
     pub fn sense(&mut self, platform: &mut Platform, until: Timestamp) -> Result<usize> {
         let own = self.adapter.poll(until)?;
+        if let Some(desk) = self.source_alpha.as_mut() {
+            desk.observe_own(&own);
+        }
         let mut absorbed = Self::absorb(&mut self.history, self.config.history_cap, platform, own);
         for arm in &mut self.connectors {
             let records = arm.poll(platform, until)?;
+            if let Some(desk) = self.source_alpha.as_mut() {
+                desk.observe_source(arm.source_id(), &records);
+            }
             absorbed += Self::absorb(
                 &mut self.history,
                 self.config.history_cap,
                 platform,
                 records,
             );
+        }
+        if let Some(desk) = self.source_alpha.as_mut() {
+            desk.end_sense();
         }
         Ok(absorbed)
     }
@@ -3037,6 +3103,210 @@ mod tests {
                 .is_some_and(|text| text.contains(ETAG)),
             "the re-fetch instruction does not name the version to compare against"
         );
+        Ok(())
+    }
+
+    /// A Coinbase arm whose source answers `answers` in turn: the health
+    /// check at connect, then the poll, then whatever is asked after.
+    fn scripted_coinbase_arm(
+        at: Timestamp,
+        answers: Vec<qip_market_ingestion::connector::emulator::RecordedAnswer>,
+    ) -> Result<ConnectorArm> {
+        scripted_coinbase_arm_on(&ObjectId::from_string("BTC-USD"), at, answers)
+    }
+
+    fn scripted_coinbase_arm_on(
+        subject: &ObjectId,
+        at: Timestamp,
+        answers: Vec<qip_market_ingestion::connector::emulator::RecordedAnswer>,
+    ) -> Result<ConnectorArm> {
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector::emulator::{RecordedExchange, SourceEmulator};
+        use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+        let mut manifest = CoinbaseTickerConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let connector = CoinbaseTickerConnector::new(
+            manifest.clone(),
+            "BTC-USD",
+            subject.clone(),
+            CoinbaseTickerConnector::VENUE,
+        )?;
+        ConnectorArm::over_transport(
+            Box::new(connector),
+            manifest.clone(),
+            Box::new(SourceEmulator::new(vec![RecordedExchange::new(
+                manifest.endpoint.path.clone(),
+                answers,
+            )])),
+            &RegistrationRegistry::shipped(),
+            7,
+            at,
+        )
+    }
+
+    fn ticker_body(at: Timestamp) -> String {
+        format!(
+            r#"{{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"{}"}}"#,
+            at.to_rfc3339()
+        )
+    }
+
+    /// R12-DATA-1037, through the engine `main.rs` builds and the cadence
+    /// the node loop drives: an extent the platform referenced is asked for
+    /// again through the connector's own transport and the manifest's
+    /// locator; one the source still serves byte-for-byte reads unchanged,
+    /// and one it has since withdrawn is marked on the platform's ledger as
+    /// no longer re-fetchable. `ReFetchDriver` had no caller in any binary,
+    /// so a backtest resting on a withdrawn extent read exactly like one
+    /// resting on a served one.
+    ///
+    /// Mutated by making `ConnectorArm::refetch` skip
+    /// `platform.mark_unretrievable`: the ledger marker assertion fails;
+    /// and by making `maybe_refetch` return `Ok(None)` always: the on-cadence
+    /// assertion fails. Both restored.
+    #[test]
+    fn a_referenced_extent_is_refetched_on_cadence_and_a_withdrawn_one_is_marked_unretrievable()
+    -> Result<()> {
+        use qip_data_finder::reference::RevisionCheck;
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+
+        // Served unchanged.
+        let mut platform = platform()?;
+        let mut engine =
+            engine(0).with_connector(scripted_coinbase_arm(now, vec![ok(), ok(), ok()])?);
+        engine = engine.with_refetch(2);
+        engine.sense(&mut platform, now)?;
+        assert_eq!(
+            platform.reference_ledger().len(),
+            1,
+            "premise: one reference"
+        );
+        assert!(engine.maybe_refetch(&mut platform, 1, now)?.is_none());
+        let unchanged = engine
+            .maybe_refetch(&mut platform, 2, now)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert_eq!(unchanged.len(), 1, "{unchanged:?}");
+        assert_eq!(unchanged[0].check, Some(RevisionCheck::Unchanged));
+        assert!(
+            platform
+                .reference_ledger()
+                .unretrievable_extents()
+                .next()
+                .is_none()
+        );
+
+        // Withdrawn since.
+        let mut platform = self::platform()?;
+        let withdrawn = RecordedAnswer::json(404, r#"{"message":"NotFound"}"#);
+        let mut engine = engine_with_every(0)
+            .with_connector(scripted_coinbase_arm(now, vec![ok(), ok(), withdrawn])?)
+            .with_refetch(1);
+        engine.sense(&mut platform, now)?;
+        let reference = platform
+            .reference_ledger()
+            .references()
+            .next()
+            .cloned()
+            .ok_or_else(|| Error::not_found("premise: the poll was referenced"))?;
+        assert!(
+            platform
+                .reference_ledger()
+                .unretrievable(&reference)
+                .is_none()
+        );
+        let findings = engine
+            .maybe_refetch(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert_eq!(findings[0].check, Some(RevisionCheck::Unretrievable));
+        assert!(
+            platform
+                .reference_ledger()
+                .unretrievable(&reference)
+                .is_some(),
+            "the withdrawn extent is not marked on the platform's ledger"
+        );
+        Ok(())
+    }
+
+    /// R12-DATA-2022, R12-DATA-2025 and R12-DATA-1105, through the engine
+    /// `main.rs` builds: a connector polled beside the own stream is scored
+    /// on its incremental information gain over that stream and on its
+    /// realised contribution to the move that followed, and the score is
+    /// kept. `incremental_information_gain` and `realised_contribution` had
+    /// no caller outside qip-data-finder, so no source this node polled was
+    /// ever priced on evidence.
+    ///
+    /// Mutated by deleting the `desk.observe_source(..)` call in
+    /// `EvolutionEngine::sense`: no pair is ever aligned, the round holds no
+    /// score and the first assertion fails. Restored.
+    #[test]
+    fn a_polled_connector_is_scored_against_the_own_stream_and_the_score_is_kept() -> Result<()> {
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let mut platform = platform()?;
+        let mut warm = engine(0);
+        let mut now = start();
+        for _ in 0..5 {
+            now = now.saturating_add(Duration::from_mins(1));
+            warm.sense(&mut platform, now)?;
+        }
+        let subject = warm
+            .history
+            .keys()
+            .next()
+            .map(ObjectId::from_string)
+            .ok_or_else(|| Error::not_found("premise: the own stream printed a subject"))?;
+
+        // One answer for the health check, then one distinct print per
+        // sense: its own trade id, its own instant, a price that wanders.
+        let senses = 16usize;
+        let mut answers = vec![RecordedAnswer::json(200, ticker_body(now))];
+        let mut level = 64_000.0_f64;
+        for index in 0..senses {
+            let at = now.saturating_add(Duration::from_mins(index as i64 + 1));
+            level += [7.5, -3.25, 11.0, -9.5, 2.75][index % 5] * (1.0 + index as f64 / 10.0);
+            answers.push(RecordedAnswer::json(
+                200,
+                format!(
+                    r#"{{"ask":"{a:.2}","bid":"{b:.2}","volume":"9184.4","trade_id":{id},"price":"{p:.2}","size":"0.0018","time":"{t}"}}"#,
+                    a = level + 0.5,
+                    b = level - 0.5,
+                    id = 712_553_481 + index,
+                    p = level,
+                    t = at.to_rfc3339()
+                ),
+            ));
+        }
+        let mut engine = warm
+            .with_connector(scripted_coinbase_arm_on(&subject, now, answers)?)
+            .with_source_alpha(senses as u64);
+        for _ in 0..senses {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        assert!(engine.maybe_score_sources(senses as u64 - 1, now).is_none());
+        let round = engine
+            .maybe_score_sources(senses as u64, now)
+            .ok_or_else(|| Error::not_found("no round on the cadence"))?;
+        let score = round
+            .scores
+            .iter()
+            .find(|score| score.source == "coinbase-spot-ticker")
+            .ok_or_else(|| Error::not_found(format!("the connector was not scored: {round:?}")))?;
+        assert_eq!(score.subject, subject.as_str());
+        let alpha = score.outcome.clone().map_err(Error::invalid)?;
+        assert!(
+            (0.0..=1.0).contains(&alpha.incremental_gain)
+                && (-1.0..=1.0).contains(&alpha.realised_contribution),
+            "{alpha:?}"
+        );
+        let kept = engine
+            .source_alpha()
+            .ok_or_else(|| Error::not_found("the desk"))?
+            .history("coinbase-spot-ticker")
+            .count();
+        assert_eq!(kept, 1, "the score was not kept");
         Ok(())
     }
 

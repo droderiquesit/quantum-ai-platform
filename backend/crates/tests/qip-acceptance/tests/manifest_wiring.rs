@@ -1923,6 +1923,33 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          a default here would be rights nobody evaluated. No deployment \
          polls a connector from this binary today in any case.",
     ),
+    // R12-DATA-1041, 1037, 2022/2025/1105 and 2016: four switches over the
+    // connector arms and the discovery desk, each off when unset.
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_KNOWLEDGE_PACKS",
+        THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_REFETCH_EVERY",
+        THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY",
+        THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH",
+        "Unset, a discovery target generates no query and the pass reports \
+         it unprofiled. A profile only directs a pass over a candidate \
+         catalogue, and no environment mounts one \
+         (`QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH` is null everywhere); a \
+         profile file mounted first would be an operator's statement about \
+         entities nothing will look for. Malformed, it stops the process.",
+    ),
     // Round 2's tick learning desk (R12-TICK; `qip-deepbrain/src/tick_desk.rs`).
     (
         "qip-deepbrain",
@@ -2053,6 +2080,13 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
 ];
 
 /// Round 2's tick learning desk, all nine of its variables.
+const THE_CONNECTOR_DESKS_HAVE_NOTHING_TO_ACT_ON: &str = "Unset, the desk is \
+    off: no knowledge pack is kept, no referenced extent is re-fetched, no \
+    source is scored. Each acts only on the deep brain's catalogued connector \
+    arms, and no deployment polls a connector from this binary today, so a \
+    value set here would select a desk with nothing to read. A value that is \
+    not `store`/`off` or a cycle count stops the process.";
+
 const THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED: &str = "`QIP_DEEPBRAIN_TICK_EVERY` \
      unset or 0 leaves the desk off, and every other variable of the desk is \
      read only once it is on. Turning it on requires \
