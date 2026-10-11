@@ -302,7 +302,10 @@ impl Platform {
     /// Market Factory listed it — `None` when nothing is listed there or the
     /// broker is not one a factory may list on. A copy, so nothing reaches
     /// the venue through it. Without it no caller could see whether a market
-    /// the factory journaled as seeded was ever put on the venue.
+    /// the factory journaled as seeded was ever put on the venue, and a test
+    /// of seeding that read the factory's own record passed with the venue
+    /// holding nothing (R12-EXEC-5080). `&mut self` only because the broker
+    /// exposes its listing venue mutably.
     pub fn listed_book(&mut self, object_id: &str) -> Option<qip_market::book::OrderBook> {
         self.broker
             .listing_venue()
@@ -317,18 +320,6 @@ impl Platform {
     /// The Market Factory, for an operator replacing its permission register.
     pub fn market_factory_mut(&mut self) -> Option<&mut FactoryStage> {
         self.breadth.factory.as_mut()
-    }
-
-    /// The book the desk's simulated venue lists for `object_id`, as the
-    /// venue holds it, not as the factory computed it (R12-EXEC-5080).
-    ///
-    /// A copy, and `&mut self` only because the broker exposes its listing
-    /// venue mutably. A test of seeding that read the factory's own record
-    /// passed with the venue holding nothing.
-    pub fn listed_book(&mut self, object_id: &str) -> Option<qip_market::book::OrderBook> {
-        self.broker
-            .listing_venue()
-            .and_then(|venue| venue.listed_book(object_id).cloned())
     }
 
     /// Replace the Market Factory's permission register with `entries`, as
