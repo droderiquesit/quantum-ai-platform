@@ -405,6 +405,12 @@ pub struct Platform {
     /// naming its predecessor and delta (MODEL-037). Rebuilt from the same
     /// log records as `model_promotions` and advanced only beside it.
     pub(crate) model_pack: Option<crate::model_serving::ModelPack>,
+    /// The signed release packs (ADR 0110) the `trained_models` slot is held
+    /// to, by artifact digest, once a composition root admits them through
+    /// `Platform::admit_model_packs` (`crate::model_trust`). `None` names
+    /// every promoted distillate, as before; `Some` names only those a
+    /// verified, two-person pack covers — `Some` of nothing names none.
+    pub(crate) release_packs: Option<BTreeMap<String, qip_contracts::policy::ModelPack>>,
     /// Who moves the production alias in this process: the model desk named
     /// through `Platform::name_model_desk` (MODEL-057). `None` until one is
     /// named, and a promotion or rollback is refused while it is, because a
@@ -4769,6 +4775,7 @@ impl Platform {
             model_provider,
             model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
+            release_packs: None,
             model_desk: None,
             fallback: qip_data_finder::retention::FallbackSeries::bounded(),
             fallback_refused: BTreeSet::new(),

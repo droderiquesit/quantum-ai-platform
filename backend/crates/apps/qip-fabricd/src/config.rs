@@ -16,7 +16,18 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
+use qip_transport::tls::{PeerNames, TLS_MODE_VARIABLE, TlsPaths, link_mode};
+
+/// Which deployment this broker runs in (ADR 0110 decision 5, ADR 0112).
+/// Required: it decides whether the protocol listener may be plaintext,
+/// and an omission must not decide that.
+pub const DEPLOYMENT: &str = "QIP_DEPLOYMENT";
+/// The workload names a client certificate must be valid for, comma
+/// separated (ADR 0112). Empty or unset admits any certificate the CA pool
+/// issued, which is the pool template's identity control alone.
+pub const ADMITTED_PEERS: &str = "QIP_EVENT_FABRIC_ADMITTED_PEERS";
 
 /// Where partition segments, the leader epoch and consumer checkpoints live.
 pub const DATA_DIR: &str = "QIP_EVENT_FABRIC_DATA_DIR";
@@ -151,6 +162,15 @@ pub struct Config {
     pub managed: Option<ManagedConfig>,
     /// The hot window, in batches per partition, when retention is on.
     pub hot_batches: Option<u64>,
+    /// The protocol listener's workload certificate (ADR 0112): `Some` is
+    /// mutual TLS with a client certificate required on every connection;
+    /// `None` is plaintext, which [`Config::parse`] admits only when
+    /// [`DEPLOYMENT`] is `local` and `QIP_TLS_MODE=plaintext` says so. The
+    /// health listener is plaintext either way: a probe carries no
+    /// certificate, and health on its own listener is FABRIC-073's point.
+    pub listener_tls: Option<TlsPaths>,
+    /// [`ADMITTED_PEERS`], validated as names a certificate can carry.
+    pub admitted_peers: Vec<String>,
 }
 
 /// The proxy endpoint and the one lasting credential a Google API is reached
@@ -410,6 +430,33 @@ impl Config {
                 "{PARTITIONS} must be between 1 and {MAXIMUM_PARTITIONS}, not {partitions}"
             )));
         }
+        // ADR 0112: decided here, before anything is opened, from the
+        // deployment and the TLS variables; the identity itself is loaded by
+        // `start`, after storage is proven and before the port is bound.
+        let deployment = Deployment::parse(present(variables, DEPLOYMENT))?;
+        let listener_tls = link_mode(
+            deployment,
+            present(variables, TLS_MODE_VARIABLE),
+            TlsPaths::from_lookup(&|name| present(variables, name).map(str::to_string))?.as_ref(),
+        )?;
+        let admitted_peers: Vec<String> = present(variables, ADMITTED_PEERS)
+            .map(|names| {
+                names
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        PeerNames::new(admitted_peers.clone())?;
+        if listener_tls.is_none() && !admitted_peers.is_empty() {
+            return Err(Error::invalid(format!(
+                "{ADMITTED_PEERS} names workloads and the protocol listener is plaintext; a \
+                 peer list nothing can check reads as a control. Configure the listener's \
+                 certificate or unset {ADMITTED_PEERS}"
+            )));
+        }
         let housekeeping_ms =
             optional_number(variables, HOUSEKEEPING_MS)?.unwrap_or(DEFAULT_HOUSEKEEPING_MS);
         if housekeeping_ms == 0 {
@@ -435,6 +482,8 @@ impl Config {
             housekeeping_ms,
             managed: managed_config(variables)?,
             hot_batches,
+            listener_tls,
+            admitted_peers,
         })
     }
 }
@@ -452,6 +501,8 @@ mod tests {
             (LISTEN, "127.0.0.1:7100"),
             (HEALTH_LISTEN, "127.0.0.1:7101"),
             (PARTITIONS, "4"),
+            (DEPLOYMENT, "local"),
+            (TLS_MODE_VARIABLE, "plaintext"),
         ]
         .into_iter()
         .map(|(name, value)| (name.to_string(), value.to_string()))
@@ -474,6 +525,7 @@ mod tests {
             LISTEN,
             HEALTH_LISTEN,
             PARTITIONS,
+            DEPLOYMENT,
         ] {
             let mut variables = complete();
             variables.remove(name);
@@ -511,6 +563,58 @@ mod tests {
             variables.insert(PARTITIONS.to_string(), bad.to_string());
             assert!(Config::parse(&variables).is_err(), "partitions = {bad}");
         }
+    }
+
+    /// ADR 0112 at the broker. Mutation: let `plaintext` through outside
+    /// `local`, or treat an unset mode with no certificate as plaintext, and
+    /// one of these parses; this fails.
+    #[test]
+    fn a_broker_serves_plaintext_only_where_a_local_deployment_chose_it() {
+        // Premise: the local plaintext fixture is accepted and is plaintext.
+        assert_eq!(
+            Config::parse(&complete())
+                .expect("local plaintext")
+                .listener_tls,
+            None
+        );
+        let mut deployed = complete();
+        deployed.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        let error = Config::parse(&deployed).expect_err("plaintext was admitted in prod");
+        assert!(error.to_string().contains("mutual TLS"), "{error}");
+
+        let mut unset = complete();
+        unset.remove(TLS_MODE_VARIABLE);
+        assert!(
+            Config::parse(&unset).is_err(),
+            "an unset mode with no certificate came up plaintext"
+        );
+
+        let mut tls = complete();
+        tls.remove(TLS_MODE_VARIABLE);
+        tls.insert(DEPLOYMENT.to_string(), "prod".to_string());
+        for (name, value) in [
+            (
+                qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+                "/etc/qip/tls/chain.pem",
+            ),
+            (
+                qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+                "/run/qip/tls/key.pem",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/roots.pem",
+            ),
+            (
+                ADMITTED_PEERS,
+                "edge-node.prod.qip.internal, ledgerd.prod.qip.internal",
+            ),
+        ] {
+            tls.insert(name.to_string(), value.to_string());
+        }
+        let config = Config::parse(&tls).expect("a deployed broker with a certificate");
+        assert!(config.listener_tls.is_some());
+        assert_eq!(config.admitted_peers.len(), 2);
     }
 
     fn bucket() -> BTreeMap<String, String> {

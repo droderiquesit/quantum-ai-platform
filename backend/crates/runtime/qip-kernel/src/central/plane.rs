@@ -1541,6 +1541,46 @@ impl CentralPlane {
         self.key_is_reproducible
     }
 
+    /// Sign every capital envelope from now on under ADR 0110's `envelope`
+    /// key, and verify them with the public keys the cells hold.
+    ///
+    /// Called by a composition root before anything is served, like the key
+    /// swap in `harden_central`. The plane's other signatures — compliance
+    /// records, strategy DNA — keep the operator's shared key, which is why
+    /// [`Self::signing_key_is_reproducible`] still matters after this.
+    ///
+    /// Proven before it is installed: one probe envelope payload is signed
+    /// and verified through the pair offered, so a signer whose key is not
+    /// in the verifier's bundle is refused here rather than discovered as a
+    /// fleet refusing every grant.
+    pub fn install_envelope_signer(
+        &mut self,
+        signer: std::sync::Arc<dyn qip_contracts::trust::ArtefactSigner>,
+        verifier: std::sync::Arc<dyn qip_contracts::trust::ArtefactVerifier>,
+        now: Timestamp,
+    ) -> Result<()> {
+        let probe = b"capital-envelope signer probe";
+        let signature = qip_contracts::trust::sign_artefact(
+            signer.as_ref(),
+            qip_contracts::trust::ArtefactClass::Envelope,
+            probe,
+        )?;
+        verifier.verify(
+            qip_contracts::trust::ArtefactClass::Envelope,
+            probe,
+            &signature,
+            now,
+        )?;
+        self.issuer = EnvelopeIssuer::asymmetric(signer, verifier)?;
+        Ok(())
+    }
+
+    /// Whether this plane's envelopes carry an asymmetric signature (ADR
+    /// 0110) rather than the shared key's MAC.
+    pub const fn envelope_signing_is_asymmetric(&self) -> bool {
+        self.issuer.is_asymmetric()
+    }
+
     /// The compliance report, carrying this plane's own signing posture.
     ///
     /// The caveat is added here rather than inside `qip-compliance`, which

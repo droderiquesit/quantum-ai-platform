@@ -1032,6 +1032,19 @@ pub fn pending_policy(
     pending
 }
 
+/// The `policy` and `halt` signers a backbone dispatches under (ADR 0110).
+#[derive(Clone, Debug)]
+pub struct PolicySigners {
+    pub policy: Arc<dyn qip_contracts::trust::ArtefactSigner>,
+    pub halt: Arc<dyn qip_contracts::trust::ArtefactSigner>,
+}
+
+/// One dispatch's signer, chosen once per call.
+enum Signing {
+    Asymmetric(Arc<dyn qip_contracts::trust::ArtefactSigner>),
+    Shared(Vec<u8>),
+}
+
 /// The centre's half of the mesh, assembled and serving.
 pub struct MeshBackbone {
     receiver: CellDeltaReceiver,
@@ -1041,6 +1054,11 @@ pub struct MeshBackbone {
     /// be refused by every cell anyway, and signing with a made-up key would
     /// manufacture a second trust root.
     policy_key: Option<Vec<u8>>,
+    /// ADR 0110's `policy` and `halt` signers. When set they are the only
+    /// signers: `policy_key` is not consulted, because a fleet receiving
+    /// frames under two schemes would have to accept both, and a cell that
+    /// accepts both is as weak as the weaker.
+    signers: Option<PolicySigners>,
     lanes: BTreeMap<String, CapitalLane>,
     listeners: Vec<MeshListener>,
     counters: BackboneCounters,
@@ -1065,6 +1083,7 @@ impl std::fmt::Debug for MeshBackbone {
                 "policy_key",
                 &self.policy_key.as_ref().map(|_| "<redacted>"),
             )
+            .field("signers", &self.signers.is_some())
             .field("cells", &self.lanes.len())
             .field("listeners", &self.listeners.len())
             .field("counters", &self.counters)
@@ -1181,6 +1200,7 @@ impl MeshBackbone {
         Ok(Self {
             receiver,
             policy_key,
+            signers: None,
             lanes,
             listeners,
             counters: BackboneCounters::default(),
@@ -1188,6 +1208,19 @@ impl MeshBackbone {
             last_undecodable: None,
             regions: settings.regions.clone(),
         })
+    }
+
+    /// Sign every payload and halt from now on under ADR 0110's class keys.
+    ///
+    /// Called once, by the composition root, with signers it has already
+    /// proven against the trust bundle the cells hold.
+    pub fn sign_with(&mut self, signers: PolicySigners) {
+        self.signers = Some(signers);
+    }
+
+    /// Whether payloads and halts go out under asymmetric signatures.
+    pub const fn signs_asymmetrically(&self) -> bool {
+        self.signers.is_some()
     }
 
     /// The cells this backbone serves, for building payloads.
@@ -1213,16 +1246,23 @@ impl MeshBackbone {
             dispositions: pending.dispositions,
             ..PolicySummary::default()
         };
-        let Some(key) = self.policy_key.clone() else {
-            summary.unsigned = pending.payloads.len();
-            return summary;
+        let signing = match (&self.signers, &self.policy_key) {
+            (Some(signers), _) => Signing::Asymmetric(Arc::clone(&signers.policy)),
+            (None, Some(key)) => Signing::Shared(key.clone()),
+            (None, None) => {
+                summary.unsigned = pending.payloads.len();
+                return summary;
+            }
         };
         for (cell, payload) in pending.payloads {
             let Some(lane) = self.lanes.get_mut(&cell) else {
                 summary.unserved += 1;
                 continue;
             };
-            let signed = match payload.signed(&key) {
+            let signed = match match &signing {
+                Signing::Asymmetric(signer) => payload.signed_by(signer.as_ref()),
+                Signing::Shared(key) => payload.signed(key),
+            } {
                 Ok(signed) => signed,
                 Err(error) => {
                     summary.errors.push(format!("{cell}: {}", error.message()));
@@ -1245,12 +1285,21 @@ impl MeshBackbone {
     /// own halted flag re-carries the state for any cell that missed this.
     pub fn broadcast_halt(&mut self, reason: &str, now: Timestamp) -> PolicySummary {
         let mut summary = PolicySummary::default();
-        let Some(key) = self.policy_key.clone() else {
-            summary.unsigned = self.lanes.len();
-            return summary;
+        let signing = match (&self.signers, &self.policy_key) {
+            (Some(signers), _) => Signing::Asymmetric(Arc::clone(&signers.halt)),
+            (None, Some(key)) => Signing::Shared(key.clone()),
+            (None, None) => {
+                summary.unsigned = self.lanes.len();
+                return summary;
+            }
         };
         for (cell, lane) in &mut self.lanes {
-            let command = match HaltCommand::new(cell.clone(), now, reason).signed(&key) {
+            let unsigned = HaltCommand::new(cell.clone(), now, reason);
+            let command = match match &signing {
+                // One signer: a halt never waits on a second approver.
+                Signing::Asymmetric(signer) => unsigned.signed_by(signer.as_ref()),
+                Signing::Shared(key) => unsigned.signed(key),
+            } {
                 Ok(signed) => signed,
                 Err(error) => {
                     summary.errors.push(format!("{cell}: {}", error.message()));

@@ -482,6 +482,7 @@ resource "google_compute_instance_template" "node" {
       watchdog_seconds           = var.watchdog_seconds
       capital_envelope_secret_id = var.capital_envelope_secret_id
       venue_credential_secret_id = local.venue_credential_bound ? var.venue_credential_secret_id : ""
+      deployment                 = var.environment
     })
   }
 }
@@ -907,6 +908,7 @@ resource "google_compute_instance_template" "standby" {
       watchdog_seconds           = var.watchdog_seconds
       capital_envelope_secret_id = var.capital_envelope_secret_id
       venue_credential_secret_id = local.venue_credential_bound ? var.venue_credential_secret_id : ""
+      deployment                 = var.environment
     })
   }
 }

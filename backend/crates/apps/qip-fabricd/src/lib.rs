@@ -68,6 +68,7 @@ use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service};
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::Route;
 use qip_transport::server::{Handler, Method, Request, Response, Server, ServerLimits};
+use qip_transport::tls::{PeerNames, TlsServer, WorkloadIdentity};
 
 use crate::config::{ArchiveTarget, Config, ManagedBackend, ManagedConfig};
 use crate::health::Health;
@@ -493,18 +494,32 @@ pub fn start_with_seams(
         health.lease_pass(&report);
     }
 
-    let data = Server::bind(
-        &config.listen,
-        Arc::new(DataPlane {
-            service: service.clone(),
-            telemetry: telemetry.clone(),
-            clock,
-        }),
-        ServerLimits {
-            max_body: MAXIMUM_REQUEST_BYTES,
-            ..ServerLimits::default()
-        },
-    )?;
+    let data_plane = Arc::new(DataPlane {
+        service: service.clone(),
+        telemetry: telemetry.clone(),
+        clock,
+    });
+    let data_limits = ServerLimits {
+        max_body: MAXIMUM_REQUEST_BYTES,
+        ..ServerLimits::default()
+    };
+    // ADR 0112: the protocol listener is mutual TLS whenever the
+    // configuration carries a certificate, which outside a `local`
+    // deployment it must. Loaded here — after storage is proven, before the
+    // port is bound — and a certificate that will not load stops the broker:
+    // there is no fallback to the plaintext listener below.
+    let data = match &config.listener_tls {
+        Some(paths) => Server::bind_tls(
+            &config.listen,
+            data_plane,
+            data_limits,
+            TlsServer {
+                config: WorkloadIdentity::from_files(paths)?.server_config()?,
+                peers: PeerNames::new(config.admitted_peers.clone())?,
+            },
+        )?,
+        None => Server::bind(&config.listen, data_plane, data_limits)?,
+    };
     let probe = Server::bind(
         &config.health_listen,
         Arc::new(HealthPlane {

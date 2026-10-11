@@ -22,6 +22,7 @@ use qip_ledgerd::consumer::{Connect, thread_sleeper};
 use qip_storage::{GcpAccess, gcp};
 use qip_transport::event_fabric::auth::BearerToken;
 use qip_transport::event_fabric::transport::{FabricTransport, HttpTransport};
+use qip_transport::tls::{LinkSecurity, WorkloadIdentity};
 
 fn main() {
     let started = LedgerConfig::from_environment().and_then(|config| {
@@ -31,11 +32,20 @@ fn main() {
         let direct = std::env::var(FABRIC_TOKEN).ok();
         let path = std::env::var(format!("{FABRIC_TOKEN}{}", qip_core::secret::FILE_SUFFIX)).ok();
         BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;
+        // ADR 0112: the fabric link is mutual TLS with this workload's
+        // certificate unless a local deployment chose plaintext. Loaded once,
+        // here, so a certificate that will not load stops the ledger before
+        // a worker starts; there is no fallback.
+        let link = match &config.fabric_tls {
+            Some(paths) => LinkSecurity::MutualTls(Arc::new(WorkloadIdentity::from_files(paths)?)),
+            None => LinkSecurity::Plaintext,
+        };
+        eprintln!("qip-ledgerd: fabric link {}", link.describe());
         let url = config.fabric_url.clone();
         let connect: Connect = Arc::new(move || {
             let token = BearerToken::resolve(FABRIC_TOKEN, direct.clone(), path.clone())?;
             let transport: Box<dyn FabricTransport + Send> =
-                Box::new(HttpTransport::new(url.clone(), token));
+                Box::new(HttpTransport::over(&link, &url, token)?);
             Ok(transport)
         });
         let clock: Arc<dyn qip_core::Clock> = Arc::new(SystemClock);

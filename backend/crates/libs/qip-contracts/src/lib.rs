@@ -61,6 +61,7 @@ pub mod routing;
 pub mod schema;
 pub mod signal;
 pub mod time;
+pub mod trust;
 pub mod venue;
 pub mod wire;
 

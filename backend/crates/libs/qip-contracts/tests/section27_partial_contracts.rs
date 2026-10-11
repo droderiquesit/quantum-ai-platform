@@ -285,7 +285,7 @@ fn a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode() -> Result
 }
 
 #[test]
-fn a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode() -> Result<()> {
+fn a_model_pack_missing_any_of_its_nine_fields_is_refused_on_decode() -> Result<()> {
     let pack = ModelPack {
         artifact_digest: s(DIGEST_A),
         signature: s("sig"),
@@ -295,6 +295,11 @@ fn a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode() -> Result
         budget_microseconds: 50,
         expires_at: 1_760_003_600,
         rollback_parent: s(""),
+        publication: qip_contracts::trust::Publication {
+            author: "author".to_string(),
+            approver: "approver".to_string(),
+            approved_at: Timestamp::from_secs(1_760_000_000),
+        },
     };
     pack.validate()?;
     every_field_is_required(&pack)

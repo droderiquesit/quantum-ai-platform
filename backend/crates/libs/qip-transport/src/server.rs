@@ -23,12 +23,34 @@
 //! error handling is the load-bearing part: a client leaving an event stream
 //! does not say so, it stops reading, and the failed write is the only notice
 //! the server gets.
+//!
+//! # Mutual TLS (ADR 0112)
+//!
+//! [`Server::bind_tls`] serves the same handlers over TLS 1.3 with a
+//! **required** client certificate: a peer without one chained to the
+//! configured roots fails the handshake and never reaches a handler. The
+//! identity the certificate was admitted under is handed to the handler in
+//! the [`PEER_IDENTITY_HEADER`] header, which the server strips from every
+//! request on every connection first — plaintext included — so a client
+//! can never supply it itself. A server bound with [`Server::bind`] is
+//! plaintext and says so; the choice is the composition root's, made once
+//! through [`crate::tls::LinkSecurity`].
 
 use qip_core::error::{Error, Result};
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
+
+use crate::tls::TlsServer;
+
+/// The header a handler reads the TLS-verified peer identity from.
+///
+/// Written only by the server, after the handshake, from the name the
+/// peer's certificate was admitted under ([`crate::tls::PeerNames`]); any
+/// copy a client sent is removed before the handler sees the request, on
+/// plaintext and TLS connections alike.
+pub const PEER_IDENTITY_HEADER: &str = "x-qip-peer-identity";
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration as StdDuration;
 
@@ -485,6 +507,9 @@ where
 /// The server.
 pub struct Server {
     listener: TcpListener,
+    /// `Some` for a mutual-TLS server: every connection must complete a
+    /// handshake presenting a client certificate before it is read.
+    tls: Option<TlsServer>,
     limits: ServerLimits,
     handler: Arc<dyn Handler>,
     shutdown: Arc<AtomicBool>,
@@ -507,11 +532,30 @@ impl Server {
             .map_err(|e| Error::io(format!("cannot bind {address}: {e}")))?;
         Ok(Self {
             listener,
+            tls: None,
             limits,
             handler,
             shutdown: Arc::new(AtomicBool::new(false)),
             requests: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// Bind a mutual-TLS server (ADR 0112): TLS 1.3, a client certificate
+    /// required on every connection and checked against `tls.peers`.
+    pub fn bind_tls(
+        address: &str,
+        handler: Arc<dyn Handler>,
+        limits: ServerLimits,
+        tls: TlsServer,
+    ) -> Result<Self> {
+        let mut server = Self::bind(address, handler, limits)?;
+        server.tls = Some(tls);
+        Ok(server)
+    }
+
+    /// Whether this server requires mutual TLS.
+    pub const fn is_mutual_tls(&self) -> bool {
+        self.tls.is_some()
     }
 
     pub fn local_address(&self) -> Result<String> {
@@ -557,11 +601,12 @@ impl Server {
 
             let handler = self.handler.clone();
             let limits = self.limits;
+            let tls = self.tls.clone();
             let requests = self.requests.clone();
             let live_count = live.clone();
             live.fetch_add(1, Ordering::Relaxed);
             std::thread::spawn(move || {
-                serve_connection(stream, handler.as_ref(), limits);
+                accept_connection(stream, handler.as_ref(), limits, tls.as_ref());
                 requests.fetch_add(1, Ordering::Relaxed);
                 live_count.fetch_sub(1, Ordering::Relaxed);
             });
@@ -575,22 +620,96 @@ impl Server {
             .listener
             .accept()
             .map_err(|e| Error::io(format!("accept failed: {e}")))?;
-        serve_connection(stream, self.handler.as_ref(), self.limits);
+        accept_connection(
+            stream,
+            self.handler.as_ref(),
+            self.limits,
+            self.tls.as_ref(),
+        );
         self.requests.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
 
-fn serve_connection(mut stream: TcpStream, handler: &dyn Handler, limits: ServerLimits) {
+/// Set the socket's limits and hand the connection to the plaintext or the
+/// TLS path. The TLS path never falls through to the plaintext one.
+fn accept_connection(
+    stream: TcpStream,
+    handler: &dyn Handler,
+    limits: ServerLimits,
+    tls: Option<&TlsServer>,
+) {
     let _ = stream.set_read_timeout(Some(limits.read_timeout));
     let _ = stream.set_write_timeout(Some(limits.write_timeout));
-
     let peer = stream
         .peer_addr()
         .map(|address| address.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+    match tls {
+        None => {
+            let mut stream = stream;
+            serve_connection(&mut stream, &peer, None, handler, limits);
+        }
+        Some(tls) => serve_tls_connection(stream, &peer, handler, limits, tls),
+    }
+}
 
-    let request = match read_request(&stream, &peer, limits) {
+/// Complete a mutual-TLS handshake, admit the peer's certificate, then serve
+/// the request over the session.
+///
+/// A peer that presents no certificate, or one the roots do not chain,
+/// fails inside `complete_io` and the connection is dropped there: no
+/// request is read and no handler runs. The handshake is bounded by the
+/// socket timeouts [`accept_connection`] already set.
+fn serve_tls_connection(
+    mut socket: TcpStream,
+    peer: &str,
+    handler: &dyn Handler,
+    limits: ServerLimits,
+    tls: &TlsServer,
+) {
+    let Ok(mut session) = rustls::ServerConnection::new(Arc::clone(&tls.config)) else {
+        return;
+    };
+    while session.is_handshaking() {
+        if session.complete_io(&mut socket).is_err() {
+            return;
+        }
+    }
+    let admitted = session
+        .peer_certificates()
+        .and_then(<[_]>::first)
+        .map(|leaf| tls.peers.admit(leaf));
+    let mut stream = rustls::StreamOwned::new(session, socket);
+    match admitted {
+        Some(Ok(identity)) => {
+            serve_connection(&mut stream, peer, identity.as_deref(), handler, limits)
+        }
+        // Unreachable with a verifier that requires a certificate, and
+        // refused rather than assumed: a session with no peer certificate is
+        // not an authenticated one.
+        None | Some(Err(_)) => {
+            let response = Response::json(
+                403,
+                r#"{"error":"the client certificate does not name a workload this server admits"}"#,
+            )
+            .with_security_headers();
+            let _ = stream.write_all(&response.encode(true));
+            let _ = stream.flush();
+        }
+    }
+    stream.conn.send_close_notify();
+    let _ = stream.flush();
+}
+
+fn serve_connection<S: Read + Write>(
+    stream: &mut S,
+    peer: &str,
+    identity: Option<&str>,
+    handler: &dyn Handler,
+    limits: ServerLimits,
+) {
+    let request = match read_request(&mut *stream, peer, limits) {
         Ok(request) => request,
         Err(status) => {
             let response = Response::json(
@@ -610,6 +729,14 @@ fn serve_connection(mut stream: TcpStream, handler: &dyn Handler, limits: Server
             return;
         }
     };
+    // The identity header is the server's to write and nobody else's.
+    let mut request = request;
+    request.headers.remove(PEER_IDENTITY_HEADER);
+    if let Some(identity) = identity {
+        request
+            .headers
+            .insert(PEER_IDENTITY_HEADER.to_string(), identity.to_string());
+    }
 
     // A live stream takes the connection over, because its response has no
     // length and is written for as long as the client stays. Offered before
@@ -620,7 +747,7 @@ fn serve_connection(mut stream: TcpStream, handler: &dyn Handler, limits: Server
     if request.method != Method::Head {
         match handler.stream(&request) {
             StreamDecision::Accepted(mut body) => {
-                let _ = pump(&mut stream, body.as_mut());
+                let _ = pump(stream, body.as_mut());
                 return;
             }
             StreamDecision::Refused(response) => refusal = Some(response),
@@ -641,8 +768,8 @@ fn serve_connection(mut stream: TcpStream, handler: &dyn Handler, limits: Server
 }
 
 /// Read and parse one request, or the status to refuse it with.
-fn read_request(
-    stream: &TcpStream,
+fn read_request<R: Read>(
+    stream: R,
     peer: &str,
     limits: ServerLimits,
 ) -> std::result::Result<Request, u16> {

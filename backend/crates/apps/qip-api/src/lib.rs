@@ -56,6 +56,7 @@ pub mod routes;
 pub mod rule_views;
 pub mod schema;
 pub mod self_model_views;
+pub mod signing;
 pub mod statement;
 pub mod stream;
 pub mod tracing;

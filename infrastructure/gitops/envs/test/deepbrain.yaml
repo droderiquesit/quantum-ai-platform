@@ -67,6 +67,8 @@ spec:
         value: '300'
       - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
         value: 0.0.0.0:8080
+      - name: QIP_DEPLOYMENT
+        value: test
       - name: QIP_QUANTUM_INSPIRED
         value: 'on'
       - name: QIP_QUANTUM_PROVIDER

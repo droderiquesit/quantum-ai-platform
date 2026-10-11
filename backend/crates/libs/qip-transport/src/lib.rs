@@ -59,6 +59,17 @@
 //!
 //! # Security: plaintext, unauthenticated, and bounded by the network
 //!
+//! **Since ADR 0112 this section describes the mesh only.** [`tls`] carries
+//! mutual TLS 1.3 through `rustls` on the `ring` provider for every link the
+//! platform owns between Compute Engine processes — the event fabric's
+//! client ([`event_fabric::transport::HttpTransport::over`]) and server
+//! ([`server::Server::bind_tls`]) — and server-authenticated TLS for calls
+//! out to Google APIs ([`http::TlsHttpClient`], used by [`kms`]). [`trust`]
+//! verifies ECDSA P-256 signatures on the centre's artefacts against a trust
+//! bundle (ADR 0110). Plaintext remains for the mesh between the API on
+//! Cloud Run and a cell, where ADR 0112 assigns IAM-authenticated invocation
+//! rather than in-container TLS, and on a `local` deployment that says so.
+//!
 //! This transport has **no TLS and no authentication of the peer.** Anything
 //! that can route a packet to the port can publish a state delta or drain the
 //! inbox, and anything on the path can read and alter what is in flight.
@@ -110,16 +121,20 @@ pub mod deadletter;
 pub mod error;
 pub mod event_fabric;
 pub mod http;
+pub mod kms;
 pub mod mesh;
 pub mod queue;
 pub mod retry;
 pub mod server;
 pub mod spool;
+pub mod tls;
+pub mod trust;
 
 pub use deadletter::{DeadLetter, DeadLetterReason, DeadLetterSink, MemoryDeadLetters};
 pub use error::TransportError;
 pub use http::{
-    ClientLimits, HttpClient, HttpError, HttpRequest, HttpResponse, Method, Phase, Url,
+    ClientLimits, HttpClient, HttpError, HttpRequest, HttpResponse, Method, Phase, TlsHttpClient,
+    Url,
 };
 pub use mesh::{
     Admission, DeadLettered, Delivery, EndpointResponse, FlushReport, InboxFrame, InboxHealth,

@@ -295,7 +295,11 @@ pub struct ModelManifest {
 pub struct ModelPack {
     /// Artifact digest of the signed model, hex-encoded SHA-256.
     pub artifact_digest: String,
-    /// Signature over the digest, HMAC-SHA256 keyed with the region key.
+    /// `ecdsa-p256-sha256:<key version>:<hex DER>` over
+    /// [`ModelPack::signing_payload`] under the `model-pack` key (ADR 0110).
+    /// Until 2026-10-11 this was described as an HMAC and checked only for
+    /// being non-empty, so any string loaded; [`ModelPack::verify`] is now the
+    /// check and [`ModelPack::validate`] is only the shape.
     pub signature: String,
     /// Feature names this model consumes, in canonical order.
     pub features: Vec<String>,
@@ -309,9 +313,93 @@ pub struct ModelPack {
     pub expires_at: u64,
     /// Digest of the model pack this one replaces, empty string if no rollback parent.
     pub rollback_parent: String,
+    /// The two people who published this pack (ADR 0110 decision 4). Inside
+    /// the signed bytes, so a pack cannot be re-attributed after signing.
+    pub publication: crate::trust::Publication,
 }
 
 impl ModelPack {
+    /// The bytes the `model-pack` key signs: every field but the signature,
+    /// each length-prefixed, in declaration order.
+    ///
+    /// Explicit rather than the serialised JSON so the bytes cannot move with
+    /// a serialiser's float formatting: the calibration enters as its IEEE
+    /// bits, and two packs that print alike but differ in the last bit sign
+    /// differently.
+    pub fn signing_payload(&self) -> Vec<u8> {
+        let mut out = b"model-pack/v1".to_vec();
+        out.extend_from_slice(&length_prefixed_bytes(self.artifact_digest.as_bytes()));
+        out.extend_from_slice(&(self.features.len() as u64).to_be_bytes());
+        for feature in &self.features {
+            out.extend_from_slice(&length_prefixed_bytes(feature.as_bytes()));
+        }
+        out.extend_from_slice(&self.calibration.to_bits().to_be_bytes());
+        out.extend_from_slice(&(self.allowed_universes.len() as u64).to_be_bytes());
+        for universe in &self.allowed_universes {
+            out.extend_from_slice(&length_prefixed_bytes(universe.as_bytes()));
+        }
+        out.extend_from_slice(&self.budget_microseconds.to_be_bytes());
+        out.extend_from_slice(&self.expires_at.to_be_bytes());
+        out.extend_from_slice(&length_prefixed_bytes(self.rollback_parent.as_bytes()));
+        out.extend_from_slice(&self.publication.canonical());
+        out
+    }
+
+    /// Sign under the `model-pack` key. The publication is checked first, so
+    /// a one-person pack is never signed at all.
+    pub fn signed_by(mut self, signer: &dyn crate::trust::ArtefactSigner) -> Result<Self> {
+        self.publication.validate()?;
+        self.signature = crate::trust::sign_artefact(
+            signer,
+            crate::trust::ArtefactClass::ModelPack,
+            &self.signing_payload(),
+        )?;
+        Ok(self)
+    }
+
+    /// The check that decides whether a pack loads (R12-MODEL-4023): its
+    /// shape, its two-person publication, its expiry, and its signature under
+    /// a `model-pack` key the verifier trusts at `now`.
+    ///
+    /// Every arm refuses. A pack whose signature verifies but whose
+    /// publication names one person is a one-person publish a compromised
+    /// signer could produce, and is refused for that, not admitted for the
+    /// signature.
+    pub fn verify(
+        &self,
+        verifier: &dyn crate::trust::ArtefactVerifier,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.validate()?;
+        self.publication.validate()?;
+        let expires = Timestamp::from_secs(
+            i64::try_from(self.expires_at)
+                .map_err(|_| Error::invalid("model_pack: expires_at does not fit a timestamp"))?,
+        );
+        if now > expires {
+            return Err(Error::denied(format!(
+                "model pack {} expired at {} and is not loaded",
+                self.artifact_digest,
+                expires.to_rfc3339()
+            )));
+        }
+        verifier.verify(
+            crate::trust::ArtefactClass::ModelPack,
+            &self.signing_payload(),
+            &self.signature,
+            now,
+        )
+    }
+
+    /// Whether `artifact` is the bytes this pack names: SHA-256 of the
+    /// artifact against [`Self::artifact_digest`]. A pack that verifies
+    /// says nothing about a file that is not the one it names.
+    pub fn names_artifact(&self, artifact: &[u8]) -> bool {
+        qip_core::hash::constant_time_eq(
+            sha256_hex(artifact).as_bytes(),
+            self.artifact_digest.as_bytes(),
+        )
+    }
     /// Refuse a pack with any empty required field, out-of-range calibration, or empty universe list.
     pub fn validate(&self) -> Result<()> {
         if self.artifact_digest.is_empty() {
@@ -1028,6 +1116,19 @@ impl PolicyPayload {
         self.signature = to_hex(&hmac_sha256(key, payload.as_bytes()));
         Ok(self)
     }
+
+    /// Sign under the `policy` key of a trust bundle (ADR 0110): the same
+    /// [`Self::signing_payload`], so the two schemes cover identical facts
+    /// and differ only in who can produce the signature.
+    pub fn signed_by(mut self, signer: &dyn crate::trust::ArtefactSigner) -> Result<Self> {
+        let payload = self.signing_payload()?;
+        self.signature = crate::trust::sign_artefact(
+            signer,
+            crate::trust::ArtefactClass::Policy,
+            payload.as_bytes(),
+        )?;
+        Ok(self)
+    }
 }
 
 /// A free-text field, made safe to join with delimiters.
@@ -1046,6 +1147,15 @@ impl PolicyPayload {
 /// where a field ends, whatever the field contains.
 fn length_prefixed(field: &str) -> String {
     format!("{}:{}", field.len(), field)
+}
+
+/// The binary counterpart of [`length_prefixed`] for the asymmetric
+/// signing payloads (ADR 0110): an eight-byte big-endian length, then the
+/// bytes. Injective for the same reason, without a decimal parse.
+pub(crate) fn length_prefixed_bytes(field: &[u8]) -> Vec<u8> {
+    let mut out = (field.len() as u64).to_be_bytes().to_vec();
+    out.extend_from_slice(field);
+    out
 }
 
 /// A halt, as a command rather than as staleness.
@@ -1114,6 +1224,19 @@ impl HaltCommand {
             ));
         }
         self.signature = to_hex(&hmac_sha256(key, self.signing_payload().as_bytes()));
+        Ok(self)
+    }
+
+    /// Sign under the `halt` key (ADR 0110). One signer, deliberately: a halt
+    /// only restricts, and the on-call operator's identity signs it without
+    /// waiting for anyone — [`crate::trust::ArtefactClass::widens`] is false
+    /// for this class and nothing here asks for a [`crate::trust::Publication`].
+    pub fn signed_by(mut self, signer: &dyn crate::trust::ArtefactSigner) -> Result<Self> {
+        self.signature = crate::trust::sign_artefact(
+            signer,
+            crate::trust::ArtefactClass::Halt,
+            self.signing_payload().as_bytes(),
+        )?;
         Ok(self)
     }
 }

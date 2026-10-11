@@ -1251,7 +1251,58 @@ const NO_FABRIC_IS_DEPLOYED_BESIDE_A_NODE: &str = "The node's spool drains to a 
      fabric broker is deployed beside the nodes, and its token is mounted as \
      a file like the envelope key.";
 
+/// ADR 0110's signing and trust-bundle variables, before the keys exist.
+const NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET: &str = "ADR 0110's order of \
+     work puts the Cloud KMS keys, the publish workflow and the committed trust \
+     bundle in Terraform after the code (step 3: plan shown, the owner \
+     applies), and none is applied. Until then there is no key version to \
+     name, no bundle to mount and no signed release pack to load, and each \
+     binary's absent value is its stated interim posture rather than a \
+     fallback: the API signs under the operator's shared key from Secret \
+     Manager and says so in its banner, refused outside `local` from \
+     `qip_transport::trust::SHARED_KEY_REMOVED_AFTER`; the node verifies \
+     under the same key until the same date; and with no release packs the \
+     API names no distillate to any cell outside `local`, which is the \
+     fail-closed reading of REFLEX-9011. `local` signing keys are refused \
+     outside a local deployment by the binary itself. The entry ends when the \
+     key ring's class keys and the bundle are applied and mounted.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-api",
+        "QIP_ARTEFACT_SIGNER",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_TRUST_BUNDLE_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_KMS_KEY_VERSIONS_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_GOOGLE_TLS_ROOTS_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_LOCAL_SIGNING_KEYS_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-api",
+        "QIP_MODEL_PACKS_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_TRUST_BUNDLE_PATH",
+        NO_KMS_KEY_OR_TRUST_BUNDLE_IS_APPLIED_YET,
+    ),
     (
         "qip-edge-node",
         "QIP_FABRIC_URL",

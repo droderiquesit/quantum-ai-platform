@@ -179,6 +179,9 @@ install -d -m 0755 "$CONF_DIR"
 cat >"$CONF_DIR/node.env" <<EOF
 QIP_CELL_ID=${node_id}
 QIP_CELL_REGION=${region}
+# ADR 0110 decision 5 and ADR 0112: the deployment, named. The binary refuses
+# to start without it, and it is never `local` on a node.
+QIP_DEPLOYMENT=${deployment}
 QIP_VENUES=${venue_ids}
 QIP_HEALTH_PORT=${health_port}
 QIP_STORAGE_TARGET=engine

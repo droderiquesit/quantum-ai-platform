@@ -187,6 +187,10 @@ pub struct ModelManifestIssue {
     /// shipping line names which version of the promoted set a cell was
     /// told about and which one it superseded.
     pack: Option<ModelPack>,
+    /// Promoted distillates left out because no verified release pack names
+    /// their artifact (ADR 0110), counted so the line says how many and why.
+    /// Always zero while no release packs are admitted.
+    unreleased: usize,
 }
 
 impl ModelManifestIssue {
@@ -203,8 +207,13 @@ impl ModelManifestIssue {
         self.pack.as_ref()
     }
 
+    /// Promoted distillates withheld for want of a verified release pack.
+    pub const fn unreleased(&self) -> usize {
+        self.unreleased
+    }
+
     pub fn describe(&self) -> String {
-        format!(
+        let line = format!(
             "trained models: shipped {} distillate(s) by digest, newest promoted {}; {} \
              promoted model(s) named to no cell because the fidelity policy admitted no \
              distillate of them; {}",
@@ -215,7 +224,16 @@ impl ModelManifestIssue {
                 || "no model pack on record".to_string(),
                 ModelPack::describe
             )
-        )
+        );
+        if self.unreleased == 0 {
+            line
+        } else {
+            format!(
+                "{line}; {} promoted distillate(s) withheld because no verified release pack \
+                 names their artifact (ADR 0110)",
+                self.unreleased
+            )
+        }
     }
 }
 
@@ -874,8 +892,20 @@ impl Platform {
         let mut models = BTreeMap::new();
         let mut produced_at: Option<Timestamp> = None;
         let mut advisory_only = 0usize;
+        let mut unreleased = 0usize;
         for promotion in self.model_promotions.values() {
             match &promotion.distilled {
+                // ADR 0110: with release packs admitted, a distillate whose
+                // artifact no verified pack names is not named to a cell —
+                // the cell runs inline only what a two-person release signed.
+                Some(_)
+                    if self
+                        .release_packs
+                        .as_ref()
+                        .is_some_and(|packs| !packs.contains_key(&promotion.artifact_digest)) =>
+                {
+                    unreleased += 1;
+                }
                 Some(entry) => {
                     models.insert(entry.name.clone(), entry.digest.clone());
                     produced_at = Some(produced_at.map_or(promotion.at, |at| at.max(promotion.at)));
@@ -889,7 +919,14 @@ impl Platform {
                 produced_at,
                 advisory_only,
                 pack: self.model_pack.clone(),
+                unreleased,
             }),
+            None if unreleased > 0 => Err(Error::not_found(format!(
+                "{unreleased} promoted distillate(s) held and no verified release pack names any \
+                 of their artifacts (ADR 0110); the trained_models slot ships unproduced and \
+                 every cell refuses a plan carrying a model inline until a two-person release \
+                 signs one under the model-pack key"
+            ))),
             None => Err(Error::not_found(format!(
                 "no distilled model has been promoted in this process ({} promotion(s) held, \
                  {advisory_only} advisory-only); the trained_models slot ships unproduced and \

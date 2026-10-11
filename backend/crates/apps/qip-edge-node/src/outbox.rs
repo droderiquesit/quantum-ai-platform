@@ -21,12 +21,15 @@ use qip_transport::breaker::BreakerPolicy;
 use qip_transport::event_fabric::auth::BearerToken;
 use qip_transport::event_fabric::producer::{Producer, ProducerConfig};
 use qip_transport::event_fabric::transport::{HttpTransport, Timeouts};
+use qip_transport::tls::LinkSecurity;
 use qip_transport::{RetryPolicy, ThreadSleeper};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The fabric endpoint, `http://host:port`. Unset: no fabric sink.
+/// The fabric endpoint, `https://host:port` over mutual TLS (ADR 0112), or
+/// `http://host:port` on a `local` deployment that chose plaintext. Unset:
+/// no fabric sink.
 pub const FABRIC_URL_VARIABLE: &str = "QIP_FABRIC_URL";
 /// The bearer token the fabric checks, directly or through `_FILE`.
 pub const FABRIC_TOKEN_VARIABLE: &str = "QIP_FABRIC_TOKEN";
@@ -102,13 +105,14 @@ pub struct FabricSettings {
 
 impl FabricSettings {
     fn read(url: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Result<Self> {
-        if !url.starts_with("http://")
+        if !(url.starts_with("http://") || url.starts_with("https://"))
             || url.trim_end_matches('/') != url
             || url.matches('/').count() > 2
         {
             return Err(Error::invalid(format!(
                 "configuration: {FABRIC_URL_VARIABLE}={url} must be a scheme and authority, \
-                 `http://host:port`, with no path; the producer appends each route"
+                 `https://host:port` (or `http://` on a local deployment), with no path; the \
+                 producer appends each route"
             )));
         }
         let partition = match lookup(FABRIC_PARTITION_VARIABLE).filter(|v| !v.trim().is_empty()) {
@@ -141,12 +145,34 @@ impl FabricSettings {
     /// The sink: a P1 producer at the quorum acknowledgement its class
     /// requires, and a P2 producer at leader-only, each with this cell as
     /// its producer id so the broker fences a second incarnation of it.
-    pub fn sink(self, cell: &str, clock: Arc<dyn Clock>) -> Result<FabricSink> {
+    ///
+    /// `link` is the security the composition root chose (ADR 0112). The
+    /// endpoint's scheme must agree with it: an `http://` endpoint on a
+    /// mutual-TLS link is refused rather than upgraded, because the
+    /// configuration that wrote it believed the link was plaintext, and an
+    /// `https://` endpoint on a plaintext link is refused rather than
+    /// downgraded.
+    pub fn sink(
+        self,
+        cell: &str,
+        clock: Arc<dyn Clock>,
+        link: &LinkSecurity,
+    ) -> Result<FabricSink> {
+        let scheme = format!("{}://", link.scheme());
+        let Some(authority) = self.url.strip_prefix(&scheme) else {
+            return Err(Error::invalid(format!(
+                "configuration: {FABRIC_URL_VARIABLE}={} and the fabric link is {}; the \
+                 endpoint's scheme must be `{scheme}` for this link",
+                self.url,
+                link.describe()
+            )));
+        };
+        let authority = authority.to_string();
         let seed = u64::from_str_radix(sha256_hex(cell.as_bytes()).get(..16).unwrap_or("0"), 16)
             .unwrap_or(0);
         let producer = |stream: &str, class: QosClass, token: BearerToken, offset: u64| {
             Producer::new(ProducerConfig {
-                transport: Box::new(HttpTransport::new(self.url.clone(), token)),
+                transport: Box::new(HttpTransport::over(link, &authority, token)?),
                 stream: stream.to_string(),
                 partition: self.partition,
                 producer_id: cell.to_string(),
@@ -204,6 +230,46 @@ mod tests {
     #[test]
     fn a_fabric_partition_without_an_endpoint_is_refused() {
         assert!(read_fabric(&lookup(&[(FABRIC_PARTITION_VARIABLE, "3")])).is_err());
+    }
+
+    /// ADR 0112: the endpoint's scheme follows the link, never the other way.
+    /// Mutation: drop the scheme check in `sink` (build the transport from
+    /// the link alone) and the plaintext endpoint on a TLS link is quietly
+    /// upgraded; this fails.
+    #[test]
+    fn a_fabric_endpoint_whose_scheme_disagrees_with_the_link_is_refused() {
+        let fake_bearer = "obviously-fake-outbox-test-bearer-0123456789";
+        let plaintext = read_fabric(&lookup(&[
+            (FABRIC_URL_VARIABLE, "http://fabricd:7100"),
+            (FABRIC_TOKEN_VARIABLE, fake_bearer),
+        ]))
+        .expect("a well-formed endpoint")
+        .expect("configured");
+        let clock: Arc<dyn Clock> = Arc::new(qip_core::ManualClock::new(
+            qip_core::Timestamp::from_secs(1_800_000_000),
+        ));
+        // Premise: the same endpoint over the link it names builds a sink.
+        assert!(
+            plaintext
+                .sink(
+                    "london-1",
+                    Arc::clone(&clock),
+                    &LinkSecurity::plaintext_for_tests()
+                )
+                .is_ok()
+        );
+        let tls_endpoint = read_fabric(&lookup(&[
+            (FABRIC_URL_VARIABLE, "https://fabricd:7100"),
+            (FABRIC_TOKEN_VARIABLE, fake_bearer),
+        ]))
+        .expect("https is accepted")
+        .expect("configured");
+        assert!(
+            tls_endpoint
+                .sink("london-1", clock, &LinkSecurity::plaintext_for_tests())
+                .is_err(),
+            "an https endpoint was downgraded onto a plaintext link"
+        );
     }
 
     #[test]

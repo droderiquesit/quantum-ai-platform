@@ -50,7 +50,10 @@ ignore = []
 # mean either a new package or a version bump that changed its declared
 # licence — either way, a reason to look rather than a reason to pass.
 [licenses]
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense"]
+# ADR 0109 widened the set: zstd and subtle are BSD-3-Clause; ring,
+# rustls-webpki and untrusted are ISC (ring is `Apache-2.0 AND ISC`, so both
+# must be admitted). Every other admitted package is MIT/Apache-2.0-dual.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Unlicense", "ISC", "BSD-3-Clause"]
 confidence-threshold = 0.8
 
 [licenses.private]
@@ -77,8 +80,8 @@ workspace-default-features = "allow"
 external-default-features = "allow"
 # The allowlist. `allow-workspace = true` admits every `qip-*` workspace
 # member without naming fifty-eight crates here; every name below is a
-# third-party package, and the list is the same eleven
-# `scripts/check-dependencies.sh` permits, spelled out again in a format
+# third-party package, and the list is the same set
+# `scripts/dependency-allowlist.txt` admits (ADR 0109), spelled out again in a format
 # `cargo deny` enforces independently rather than trusting the shell script's
 # arithmetic. A crate not named here fails the check, per cargo-deny's own
 # rule that a non-empty `allow` list makes everything else denied.
@@ -95,6 +98,44 @@ allow = [
     "itoa",
     "zmij",
     "memchr",
+    "zstd",
+    "zstd-safe",
+    "zstd-sys",
+    "cc",
+    "find-msvc-tools",
+    "jobserver",
+    "shlex",
+    "pkg-config",
+    "libc",
+    "getrandom",
+    "r-efi",
+    "cfg-if",
+    "ring",
+    "rustls",
+    "rustls-pki-types",
+    "rustls-webpki",
+    "untrusted",
+    "subtle",
+    "zeroize",
+    "once_cell",
+    "wasi",
+    "windows-sys",
+    "windows-targets",
+    "windows_aarch64_gnullvm",
+    "windows_aarch64_msvc",
+    "windows_i686_gnu",
+    "windows_i686_gnullvm",
+    "windows_i686_msvc",
+    "windows_x86_64_gnu",
+    "windows_x86_64_gnullvm",
+    "windows_x86_64_msvc",
+]
+# ring needs getrandom 0.2 and the cc/jobserver build closure takes 0.4.
+# Both are build- or OS-entropy shims with no computation the platform relies
+# on agreeing between them; the skip names the older one so a third version
+# still fails.
+skip = [
+    { crate = "getrandom@0.2.17", reason = "ring 0.17 pins getrandom 0.2 (ADR 0110)" },
 ]
 
 [bans.workspace-dependencies]

@@ -293,6 +293,10 @@ impl Fabric {
                 // batches seals one.
                 (qip_fabricd::config::SEGMENT_BYTES, "4096"),
                 (qip_fabricd::config::HOUSEKEEPING_MS, "20"),
+                // ADR 0112: an in-process broker that owns both ends of its
+                // socket, so plaintext, which only `local` admits.
+                (qip_fabricd::config::DEPLOYMENT, "local"),
+                (qip_transport::tls::TLS_MODE_VARIABLE, "plaintext"),
             ]
             .into_iter()
             .map(|(name, value)| (name.to_string(), value.to_string())),

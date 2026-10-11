@@ -19,7 +19,21 @@ variable "project_id" {
 }
 
 variable "environment" {
-  type = string
+  description = <<-EOT
+    The Terraform environment this node runs in, written to the node as
+    QIP_DEPLOYMENT. The binary refuses a shared signing key after its removal
+    date and any plaintext fabric link everywhere but a developer's machine,
+    and it learns which side of that line it is on from this value (ADR 0110
+    decision 5, ADR 0112). Substituted into the startup script, so it is held
+    to the four names here: a newline or a shell expansion in it would write a
+    line into node.env that nobody reviewed.
+  EOT
+  type        = string
+
+  validation {
+    condition     = contains(["dev", "test", "stage", "prod"], var.environment)
+    error_message = "environment must be exactly one of dev, test, stage or prod; it is written into the node's environment file as QIP_DEPLOYMENT."
+  }
 }
 
 variable "node_id" {

@@ -64,6 +64,7 @@ pub mod market_factory_stage;
 pub mod model_serving;
 pub mod model_tournament;
 pub mod now_stage;
+pub mod model_trust;
 pub mod platform;
 pub mod pre_positioning;
 pub mod precedent_declines;

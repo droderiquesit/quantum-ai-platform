@@ -70,6 +70,7 @@ pub mod seam;
 /// §56.2 rule 21: whether a leg's funding is usable when the leg fires.
 pub mod settlement;
 pub mod telemetry;
+pub mod trust;
 
 pub use arbitrage::ArbitrageDesk;
 pub use cell::{
@@ -109,3 +110,4 @@ pub use risk_gate::{CellRiskGate, GATE_RISK};
 pub use seam::{CellLiquidity, value_kind, value_type};
 pub use settlement::{GATE_SETTLEMENT, SettlementConvention, SettlementTerms};
 pub use telemetry::CellMetrics;
+pub use trust::TrustRoot;

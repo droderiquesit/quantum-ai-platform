@@ -46,6 +46,7 @@
 use qip_arbitrage::SearchSettings;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
+use qip_core::deployment::Deployment;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, Duration, SystemClock};
 use qip_edge::cell::{CellConfig, Placer, PricingPolicy};
@@ -94,6 +95,7 @@ use qip_edge_node::strategies::{
     MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
     parse_pricing,
 };
+use qip_edge_node::trust::{TRUST_BUNDLE_VARIABLE, choose_root};
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
 use qip_edge_node::{NodeAssembly, assemble_with_risk};
 use qip_feature_dag::engine::FeatureEngine;
@@ -174,7 +176,17 @@ struct NodeConfig {
     cell_id: String,
     region: String,
     venues: Vec<VenueId>,
-    envelope_key: Vec<u8>,
+    /// ADR 0110 decision 5 and ADR 0112: which deployment this node is in,
+    /// named and never inferred. Decides whether the shared key may still
+    /// stand after its removal date and whether the fabric link may be
+    /// plaintext — `local` only, for both.
+    deployment: Deployment,
+    /// The committed trust bundle, when the node verifies under ADR 0110.
+    trust_bundle: Option<String>,
+    /// The shared HMAC key, for the release that keeps it. Never both this
+    /// and `trust_bundle`; `qip_edge_node::trust::choose_root` refuses the
+    /// pair.
+    shared_key: Option<Vec<u8>>,
     /// The capital the whole cell may commit. Required, and a `RegionCapital`
     /// rather than a `Decimal` so the only value that can reach the cell is
     /// one that passed `RegionCapital::read` — see `qip_edge_node::allocation`.
@@ -266,7 +278,18 @@ impl NodeConfig {
         let mut missing = Vec::new();
         let cell_id = required("QIP_CELL_ID", &mut missing);
         let region = required("QIP_CELL_REGION", &mut missing);
-        let key = required_secret("QIP_CAPITAL_ENVELOPE_KEY", &mut missing)?;
+        // The shared key is optional now: a node verifying under the trust
+        // bundle must not hold it, and `choose_root` refuses a node with
+        // neither. Read here, through the `_FILE` indirection, so the refusal
+        // names the variable rather than a path.
+        let shared_key = qip_core::secret::from_environment("QIP_CAPITAL_ENVELOPE_KEY")
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?
+            .filter(|value| !value.trim().is_empty())
+            .map(String::into_bytes);
+        let trust_bundle = std::env::var(TRUST_BUNDLE_VARIABLE)
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let deployment_name = required("QIP_DEPLOYMENT", &mut missing);
         let venues = required("QIP_VENUES", &mut missing);
         // Spelled as a literal beside the other four rather than through
         // `allocation::ALLOCATION_VARIABLE`: the acceptance walk in
@@ -288,6 +311,8 @@ impl NodeConfig {
         // outright: a node whose allocation is unparseable or zero must never
         // reach the cell with a number it made up in place of one.
         let region_allocation = RegionCapital::read(Some(&region_allocation))?;
+        let deployment = Deployment::parse(Some(&deployment_name))
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
         let venues: Vec<VenueId> = venues
             .split(',')
@@ -407,7 +432,9 @@ impl NodeConfig {
             cell_id,
             region,
             venues,
-            envelope_key: key,
+            deployment,
+            trust_bundle,
+            shared_key,
             region_allocation,
             health_port,
             storage,
@@ -450,16 +477,6 @@ fn required(name: &str, missing: &mut Vec<String>) -> String {
 /// file that is named and unreadable is a specific fault whose message names
 /// the path. Collapsing the second into "must be set" would send an operator
 /// looking for a variable that is, in fact, already set.
-fn required_secret(name: &str, missing: &mut Vec<String>) -> Result<Vec<u8>> {
-    match qip_core::secret::from_environment(name)? {
-        Some(value) if !value.trim().is_empty() => Ok(value.into_bytes()),
-        _ => {
-            missing.push(name.to_string());
-            Ok(Vec::new())
-        }
-    }
-}
-
 fn run() -> Result<()> {
     let mut config = NodeConfig::from_env()?;
 
@@ -469,11 +486,17 @@ fn run() -> Result<()> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let started = clock.now();
 
-    if config.envelope_key.is_empty() {
-        return Err(Error::denied(
-            "configuration: the capital envelope key is empty; a cell that cannot verify a grant must not trade",
-        ));
-    }
+    // What every grant, payload and halt is verified against (ADR 0110):
+    // the trust bundle's public keys, or the shared key for its last
+    // release. Chosen before anything is bound, and refused when there is
+    // neither — a cell that cannot verify a grant must not trade.
+    let trust = choose_root(
+        config.trust_bundle.as_deref(),
+        config.shared_key.as_deref(),
+        config.deployment,
+        started,
+    )?;
+    println!("qip-edge-node: trust root {}", trust.describe());
 
     let mut cell_config = CellConfig::new(&config.cell_id, &config.region);
     for venue in &config.venues {
@@ -746,7 +769,7 @@ fn run() -> Result<()> {
     // process that reported healthy and then never spoke to the centre.
     let link = match &config.mesh {
         Some(settings) => {
-            let link = MeshLink::connect(settings, &config.envelope_key, Arc::clone(&clock))?;
+            let link = MeshLink::connect(settings, trust.clone(), Arc::clone(&clock))?;
             println!("qip-edge-node: mesh peer {}", link.peer());
             Some(link)
         }
@@ -966,8 +989,25 @@ fn run() -> Result<()> {
     )?)];
     match config.fabric.take() {
         Some(fabric) => {
-            println!("qip-edge-node: fabric at {}", fabric.url);
-            sinks.push(Box::new(fabric.sink(&config.cell_id, Arc::clone(&clock))?));
+            // ADR 0112: the fabric is a link between Compute Engine
+            // processes, so it is mutual TLS with this node's workload
+            // certificate unless the deployment is `local` and said
+            // `plaintext`. No fallback: a certificate that will not load
+            // stops the node here.
+            let link = qip_transport::tls::LinkSecurity::from_lookup(config.deployment, &|name| {
+                std::env::var(name).ok()
+            })
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+            println!(
+                "qip-edge-node: fabric at {} over {}",
+                fabric.url,
+                link.describe()
+            );
+            sinks.push(Box::new(fabric.sink(
+                &config.cell_id,
+                Arc::clone(&clock),
+                &link,
+            )?));
         }
         None => println!(
             "qip-edge-node: awaiting {FABRIC_URL_VARIABLE}: the spool drains to the tick lake \

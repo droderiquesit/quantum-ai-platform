@@ -61,6 +61,8 @@ spec:
         value: paper_trading
       - name: QIP_CAPITAL_ENVELOPE_KEY_FILE
         value: /var/run/secrets/qip/capital-envelope-key/capital-envelope-key
+      - name: QIP_DEPLOYMENT
+        value: dev
       - name: QIP_FASTBRAIN_HEALTH_ADDRESS
         value: 0.0.0.0:8080
       - name: QIP_STORAGE_TARGET
