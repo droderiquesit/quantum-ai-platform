@@ -73,7 +73,9 @@ pub mod venue_admission;
 pub mod venue_measurement;
 pub mod venue_review;
 
-pub use asset_class_registry::{AssetClassRecord, AssetClassRegistry, ValuationEngine};
+pub use asset_class_registry::{
+    AssetClassRecord, AssetClassRegistry, ValuationEngine, covered_interest_forward,
+};
 pub use central::{CellReport, CentralPlane, StrategyDna, StrategyFactory};
 pub use config::{EventLogDestination, PlatformConfig};
 pub use cycle::{CycleReport, Stage, StageOutcome};
