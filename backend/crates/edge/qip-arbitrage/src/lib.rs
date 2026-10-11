@@ -57,7 +57,8 @@ pub mod search;
 
 pub use coverage::{Coverage, Tradable, TradableRegistry};
 pub use graph::{
-    ArbitrageGraph, ConversionEdge, EdgeKind, Node, PathKind, SyntheticComponent, VenueFacts,
+    ArbitrageGraph, ConversionEdge, EdgeCosts, EdgeKind, Node, PathKind, Representation,
+    SettlementStage, SyntheticComponent, VenueFacts,
 };
 pub use liquidity::{LiquiditySource, StaticLiquidity};
 pub use netedge::{EdgeAssumptions, NetEdgeCalculator};

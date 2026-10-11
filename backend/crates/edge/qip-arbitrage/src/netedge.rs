@@ -42,6 +42,34 @@
 //!   crate sees an order book, not a subscription or a read volume, and cannot
 //!   amortise what it cannot see. The cost engine owns that figure.
 //!
+//! # Per-conversion costs, each charged by name (R12-MESH-5055 to -5057)
+//!
+//! Beyond the nine path-wide figures, every conversion carries its own
+//! [`crate::graph::EdgeCosts`], and each is charged as its own line under the
+//! kind it belongs to, appended after the nine so a reader taking the first
+//! line of a kind still reads the path-wide figure:
+//!
+//! * **Tax and duty** — a `Fees` line: a levy charged on the conversion
+//!   whatever the book did, `size × Σ tax_duty_fraction`.
+//! * **Transfer, bridge and logistics** — a `Fees` line, `size × Σ
+//!   logistics_fraction`: the toll beyond the venue fee.
+//! * **Measured borrow** — a `Funding` line, `size × Σ borrow_rate_annual ×
+//!   holding period`: the borrow on the instrument actually borrowed, on top
+//!   of the path-wide funding assumption that was the only funding figure
+//!   before.
+//! * **Settlement risk** — a `Collateral` line, `size × Σ
+//!   settlement_risk_fraction`: the expected loss on a conversion that fails
+//!   to settle, which is capital at risk until it lands.
+//! * **Fill shortfall** — a `Slippage` line, `(1 − Π p_fill) × what is left
+//!   after every cost above`: an execution that may not happen banks its edge
+//!   only with the probability that it does. Computed on the remainder, so a
+//!   path already at a loss is not charged for the chance of missing it.
+//!
+//! The uncertainty haircut is then taken on what remains after all of them.
+//! Each line is stated even at zero, with a basis saying none was
+//! estimated, for the reason compute and data cost are: a stated zero is
+//! replaced when a figure arrives, and a silence is not noticed.
+//!
 //! Every deduction is denominated in units of the instrument the cycle started
 //! from. A cost quoted as a fraction of one leg's notional converts by
 //! multiplying by the starting size, because each conversion carries the whole
@@ -162,10 +190,28 @@ impl NetEdgeCalculator {
         let latency = self.latency_deduction(size)?;
         let funding = self.funding_deduction(size)?;
         let collateral = self.collateral_deduction(size, pricing.all_atomic)?;
+        let per_edge = self.per_conversion_costs(pricing, size)?;
 
         let gross = pricing.gross_edge();
-        let before_uncertainty =
-            gross - (spread + slippage + fees + latency + funding + collateral);
+        let before_fill = gross
+            - (spread
+                + slippage
+                + fees
+                + latency
+                + funding
+                + collateral
+                + per_edge.tax_duty
+                + per_edge.logistics
+                + per_edge.borrow
+                + per_edge.settlement_risk);
+        // The fill shortfall is the share of what is left that a missed leg
+        // forfeits. Nothing is charged on a remainder that is already a loss.
+        let fill_shortfall = mul(
+            before_fill.max(Decimal::ZERO),
+            Decimal::ONE - per_edge.fill_probability,
+            "fill shortfall",
+        )?;
+        let before_uncertainty = before_fill - fill_shortfall;
         let (uncertainty, confidence_f64) =
             self.uncertainty_deduction(before_uncertainty, age, pricing.fewest_observations)?;
 
@@ -237,6 +283,49 @@ impl NetEdgeCalculator {
                 DeductionKind::DataCost,
                 Decimal::ZERO,
                 "not modelled here; a cell sees an order book, not a subscription and a read volume, and the amortised licence cost per read is owned by the cost engine",
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::Fees,
+                per_edge.tax_duty,
+                per_edge.basis("tax and duty", per_edge.tax_duty_fraction),
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::Fees,
+                per_edge.logistics,
+                per_edge.basis(
+                    "transfer, bridge and logistics",
+                    per_edge.logistics_fraction,
+                ),
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::Funding,
+                per_edge.borrow,
+                format!(
+                    "measured borrow of {} annualised summed across {} conversions, over a {:?} \
+                     commitment",
+                    per_edge.borrow_rate_annual,
+                    pricing.conversions.len(),
+                    self.assumptions.holding_period
+                ),
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::Collateral,
+                per_edge.settlement_risk,
+                per_edge.basis(
+                    "settlement risk, expected loss on failure to settle",
+                    per_edge.settlement_risk_fraction,
+                ),
+            )?)
+            .deduct(Deduction::new(
+                DeductionKind::Slippage,
+                fill_shortfall,
+                format!(
+                    "fill shortfall: the path fills with probability {} across {} conversions, \
+                     so {} of the remaining edge is not banked",
+                    per_edge.fill_probability,
+                    pricing.conversions.len(),
+                    Decimal::ONE - per_edge.fill_probability
+                ),
             )?);
 
         // The check that makes the other eight load-bearing. It cannot catch a
@@ -244,6 +333,59 @@ impl NetEdgeCalculator {
         // way this goes wrong in practice.
         edge.require_complete()?;
         Ok(edge)
+    }
+
+    /// The per-conversion costs of R12-MESH-5055 to -5057, summed over the
+    /// path and turned into amounts in units of the starting instrument.
+    fn per_conversion_costs(&self, pricing: &PathPricing, size: Decimal) -> Result<PerEdge> {
+        let mut tax_duty_fraction = Decimal::ZERO;
+        let mut logistics_fraction = Decimal::ZERO;
+        let mut settlement_risk_fraction = Decimal::ZERO;
+        let mut borrow_rate_annual = Decimal::ZERO;
+        let mut fill_probability = Decimal::ONE;
+        let mut stating = 0_usize;
+        for conversion in &pricing.conversions {
+            let costs = &conversion.costs;
+            costs.validate(&format!(
+                "{} -> {}",
+                conversion.from.label(),
+                conversion.to.label()
+            ))?;
+            if !costs.is_free() {
+                stating += 1;
+            }
+            tax_duty_fraction += costs.tax_duty_fraction;
+            logistics_fraction += costs.logistics_fraction;
+            settlement_risk_fraction += costs.settlement_risk_fraction;
+            borrow_rate_annual += costs.borrow_rate_annual;
+            fill_probability = mul(
+                fill_probability,
+                costs.fill_probability,
+                "path fill probability",
+            )?;
+        }
+        // Borrow is a rate over the commitment, so it crosses into statistics
+        // for the year fraction exactly as the path-wide funding does, and
+        // back into an exact fraction before it touches a quantity.
+        let years_f64 = self.assumptions.holding_period.as_years_f64().max(0.0);
+        let borrow_fraction = from_statistic(
+            borrow_rate_annual.to_f64() * years_f64,
+            "measured borrow cost",
+        )?
+        .max(Decimal::ZERO);
+        Ok(PerEdge {
+            tax_duty: mul(size, tax_duty_fraction, "tax and duty deduction")?,
+            logistics: mul(size, logistics_fraction, "logistics deduction")?,
+            settlement_risk: mul(size, settlement_risk_fraction, "settlement risk deduction")?,
+            borrow: mul(size, borrow_fraction, "borrow deduction")?,
+            tax_duty_fraction,
+            logistics_fraction,
+            settlement_risk_fraction,
+            borrow_rate_annual,
+            fill_probability,
+            stating,
+            conversions: pricing.conversions.len(),
+        })
     }
 
     fn latency_deduction(&self, size: Decimal) -> Result<Decimal> {
@@ -311,6 +453,42 @@ impl NetEdgeCalculator {
             mul(exposed, haircut, "uncertainty deduction")?,
             confidence_f64,
         ))
+    }
+}
+
+/// The per-conversion costs of one path, as amounts and as the fractions
+/// they came from.
+struct PerEdge {
+    tax_duty: Decimal,
+    logistics: Decimal,
+    settlement_risk: Decimal,
+    borrow: Decimal,
+    tax_duty_fraction: Decimal,
+    logistics_fraction: Decimal,
+    settlement_risk_fraction: Decimal,
+    borrow_rate_annual: Decimal,
+    fill_probability: Decimal,
+    /// How many conversions stated any cost at all.
+    stating: usize,
+    conversions: usize,
+}
+
+impl PerEdge {
+    /// The basis line for a proportional cost, saying when none was stated
+    /// rather than leaving a zero to be read as a measurement.
+    fn basis(&self, what: &str, fraction: Decimal) -> String {
+        if fraction.is_zero() {
+            format!(
+                "{what}: none stated on any of {} conversions ({} state any per-conversion \
+                 cost); a stated zero, replaced when a conversion carries one",
+                self.conversions, self.stating
+            )
+        } else {
+            format!(
+                "{what}: {fraction} of notional summed across {} conversions",
+                self.conversions
+            )
+        }
     }
 }
 

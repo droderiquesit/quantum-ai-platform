@@ -27,7 +27,9 @@
 //! quantities here deliberately differ.
 
 use crate::arith::{div, mul};
-use crate::graph::{ArbitrageGraph, EdgeKind, Node, PathKind, SyntheticComponent};
+use crate::graph::{
+    ArbitrageGraph, EdgeCosts, EdgeKind, Node, PathKind, SettlementStage, SyntheticComponent,
+};
 use crate::liquidity::LiquiditySource;
 use crate::search::PathCandidate;
 use qip_contracts::message::BookSide;
@@ -142,6 +144,10 @@ pub struct PricedConversion {
     /// gap between this and `output` is what mid pricing would have missed.
     pub indicative_output: Decimal,
     pub cost_fraction: Decimal,
+    /// The conversion's own costs beyond its fee, carried from the edge so
+    /// the net edge charges each by name (R12-MESH-5055 to -5057).
+    #[serde(default)]
+    pub costs: EdgeCosts,
     pub legs: Vec<PathLeg>,
     /// Whether every leg found the depth it asked for.
     pub fully_available: bool,
@@ -365,11 +371,19 @@ fn price_transfer(
         output,
         indicative_output: output,
         cost_fraction: edge.cost_fraction,
+        costs: edge.costs.clone(),
         legs: Vec::new(),
         // A transfer has no counterparty to disappoint: whatever arrives,
         // arrives as the same instrument.
         fully_available: true,
-        settles_atomically: from_class.settles_atomically() && to_class.settles_atomically(),
+        // A movement into or out of a holding that is still settling is not
+        // atomic whatever the venues are: settlement can fail after the
+        // movement is booked, which is the exposure R12-MESH-5053's
+        // settlement stage exists to make visible.
+        settles_atomically: from_class.settles_atomically()
+            && to_class.settles_atomically()
+            && edge.from.settlement == SettlementStage::Settled
+            && edge.to.settlement == SettlementStage::Settled,
     })
 }
 
@@ -469,6 +483,7 @@ fn price_trade(
         output,
         indicative_output: Decimal::ZERO,
         cost_fraction: edge.cost_fraction,
+        costs: edge.costs.clone(),
         legs: vec![leg],
         fully_available,
         settles_atomically: class.settles_atomically(),
@@ -680,6 +695,7 @@ fn price_synthetic(
         output,
         indicative_output: Decimal::ZERO,
         cost_fraction: edge.cost_fraction,
+        costs: edge.costs.clone(),
         legs,
         fully_available,
         settles_atomically,
