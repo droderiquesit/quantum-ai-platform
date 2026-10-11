@@ -48,12 +48,22 @@ locals {
   # Every project this root holds a budget for: the seed and each enabled
   # environment. One budget per project, never one across the account, so the
   # alert names the project that is spending.
+  #
+  # Keyed on `local.enabled`, never on `google_project.environment` itself.
+  # The keys are the same, but `terraform import` — which the bootstrap runs
+  # to adopt the seed before the first plan — evaluates this map with every
+  # project that is not yet in state as a wholly unknown value, and a `for`
+  # over an unknown collection is unknown, so the budget's `for_each` was
+  # refused as "known only after apply" on the owner's first run
+  # (2026-10-11), before anything had been applied. A map whose keys come
+  # from a variable is known in every walk; the unknown project numbers are
+  # values, which `for_each` allows.
   budgeted = merge(
     { seed = { project_number = google_project.seed.number, project_id = google_project.seed.project_id, amount = var.seed_budget_amount } },
-    { for name, project in google_project.environment : name => {
-      project_number = project.number
-      project_id     = project.project_id
-      amount         = var.environments[name].budget_amount
+    { for name, environment in local.enabled : name => {
+      project_number = google_project.environment[name].number
+      project_id     = google_project.environment[name].project_id
+      amount         = environment.budget_amount
     } },
   )
 }
