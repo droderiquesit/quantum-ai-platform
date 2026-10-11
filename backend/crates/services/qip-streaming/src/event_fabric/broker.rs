@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 
 use qip_events::event_fabric::codec::{Batch, ContentHash, LogicalTimestamp, stamp_broker};
 use qip_events::event_fabric::hlc::{HlcTimestamp, PartitionClock};
-use qip_events::event_fabric::policy::{OverloadPolicy, StreamPolicy};
+use qip_events::event_fabric::policy::StreamPolicy;
 use qip_events::event_fabric::schema_id::{Shape, check_compatible};
 
 use qip_transport::event_fabric::protocol::{FetchResponse, Metadata, ProduceAck, Refusal};
@@ -342,6 +342,13 @@ impl Broker {
     /// [`Broker::open`], for the lifetime of this instance.
     pub fn leader_epoch(&self) -> u64 {
         self.leader_epoch
+    }
+
+    /// The broker clock's reading, in nanoseconds: what consumer-group leases
+    /// are measured against, so a test advancing a manual clock expires a
+    /// member the same way wall time would.
+    pub fn now_ns(&self) -> i64 {
+        self.clock.now().as_nanos()
     }
 
     /// Fix a stream's partition count and segment log configuration.
@@ -1073,7 +1080,7 @@ impl Broker {
     /// broker); index groups by partition if that count ever grows large.
     fn refuse_when_a_group_lags(&self, stream: &str, partition: u32) -> Result<()> {
         let policy = self.stream_policy(stream)?;
-        if policy.overload_policy() != OverloadPolicy::RefuseProducer {
+        if !super::admission::refuses_for_lag(&policy) {
             return Ok(());
         }
         let high_watermark = self.partition_state(stream, partition)?.log.high_water();
@@ -1088,7 +1095,8 @@ impl Broker {
             let lag = high_watermark.saturating_sub(committed.saturating_add(1));
             if lag > policy.lag_limit() {
                 return Err(Error::denied(format!(
-                    "group '{group}' trails {stream}:{partition} by {lag} batches, past the                      stream's lag limit of {}; the producer is refused until the group catches up",
+                    "group '{group}' trails {stream}:{partition} by {lag} batches, past the \
+                     stream's lag limit of {}; the producer is refused until the group catches up",
                     policy.lag_limit()
                 )));
             }
@@ -1127,19 +1135,21 @@ impl Broker {
         if over_bytes || over_messages {
             let retry_after_ms = (window_start + QUOTA_WINDOW_NS - now) / 1_000_000;
             let error = Error::denied(format!(
-                "producer '{}' is over its quota on stream '{stream}' ({} of {} bytes, {} of {}                  messages this second, this batch adds {bytes} and {messages}); retry after                  {retry_after_ms} ms",
+                "producer '{}' is over its quota on stream '{stream}' ({} of {} bytes, {} of {} \
+                 messages this second, this batch adds {bytes} and {messages}); retry after \
+                 {retry_after_ms} ms",
                 batch.producer_id,
                 entry.1,
                 policy.byte_quota_per_producer(),
                 entry.2,
                 policy.message_quota_per_producer(),
             ));
-            return Ok(Err(ProduceRefusal::new(
-                Refusal::Quota {
-                    retry_after_ms: u64::try_from(retry_after_ms).unwrap_or(0),
-                },
-                error,
-            )));
+            // What "over quota" means is the class's decision, not this
+            // function's: a wait for everything that may not lose a record,
+            // a shed only for telemetry (FABRIC-7056).
+            let refusal =
+                super::admission::over_quota(&policy, u64::try_from(retry_after_ms).unwrap_or(0));
+            return Ok(Err(ProduceRefusal::new(refusal, error)));
         }
         entry.1 += bytes;
         entry.2 += messages;
