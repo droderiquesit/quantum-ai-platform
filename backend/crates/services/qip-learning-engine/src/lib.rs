@@ -26,12 +26,23 @@
 //! which detector, which analyst — as a bounded window with a stated
 //! estimate, refused below a minimum sample, so the REASON stage can weight a
 //! component by what it has actually got right.
+//!
+//! [`keyed_attribution`] joins the exact attribution to the seven keys §22
+//! names — strategy, model, belief, evidence source, capital policy, risk
+//! rule, execution path — and [`tournament`], [`forecast_market`] and
+//! [`verifier`] are §9.8's Model Tournament, §22.1's synthetic-credit
+//! Forecast Market and §9.11's adversarial verifier society. All of it is
+//! advisory: nothing in this crate holds a handle to an order.
 
 pub mod attribution;
 pub mod evaluation;
 pub mod feedback;
+pub mod forecast_market;
+pub mod keyed_attribution;
 pub mod research;
 pub mod self_model;
+pub mod tournament;
+pub mod verifier;
 
 pub use attribution::{Attribution, Attributor, PositionAttribution, PositionPeriod, Source};
 pub use evaluation::{

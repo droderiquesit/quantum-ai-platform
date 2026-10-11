@@ -690,6 +690,34 @@ impl Platform {
         let desk = self.require_model_desk(&artifact.reference, "promoted")?;
         let mut scratch = registry.clone();
         let published = scratch.promote_artifact(artifact, now)?;
+        // Blueprint §9.11 (R12-MODEL-7201): the verifier society attacks the
+        // candidate before the alias moves. Placed after the registry's own
+        // refusals so a card the registry refuses is refused for the
+        // registry's reason; journaled whichever way it goes, so a promotion
+        // the society let through is as visible as one it stopped. A
+        // refutation refuses the promotion — authority not added, never a
+        // path created. See `crate::model_tournament`.
+        let verification = self.tournament.verify_model(
+            card,
+            self.quarantined_datasets(),
+            self.latest_regime_crossing(),
+            now,
+        );
+        let refuted = verification
+            .verdict
+            .is_refuted()
+            .then(|| verification.verdict.summary());
+        self.journal_record(
+            crate::model_tournament::ModelVerified { verification },
+            crate::model_tournament::VERIFIER_ORIGIN,
+            now,
+        )?;
+        if let Some(summary) = refuted {
+            return Err(Error::denied(format!(
+                "{} is not promoted: {summary}",
+                artifact.reference
+            )));
+        }
         for reference in displaced {
             scratch.retire(reference, now)?;
         }

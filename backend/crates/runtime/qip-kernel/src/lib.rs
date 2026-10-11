@@ -34,6 +34,7 @@
 pub mod adaptive_cadence;
 pub mod adversary_review;
 pub mod asset_class_registry;
+pub mod attribution;
 pub mod blueprint_objectives;
 pub mod capacity_review;
 pub mod causal_review;
@@ -51,6 +52,7 @@ pub mod feature_statistics;
 pub mod federation_stage;
 pub mod hedge_review;
 pub mod model_serving;
+pub mod model_tournament;
 pub mod platform;
 pub mod pre_positioning;
 pub mod precedent_declines;
