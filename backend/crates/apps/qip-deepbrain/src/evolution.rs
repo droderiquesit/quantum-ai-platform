@@ -362,6 +362,9 @@ pub struct EvolutionEngine {
     /// own standing gate, each referenced on the platform's ledger. Empty in
     /// every shipped deployment; see [`crate::connectors`].
     connectors: Vec<ConnectorArm>,
+    /// Re-fetch the connector arms' referenced extents every this many
+    /// cycles (R12-DATA-1037). Zero, the default, never does.
+    refetch_every: u64,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -405,6 +408,7 @@ impl EvolutionEngine {
             campaign_config: CampaignConfig::standard()?,
             admission: None,
             connectors: Vec::new(),
+            refetch_every: 0,
         })
     }
 
@@ -438,6 +442,32 @@ impl EvolutionEngine {
     ) -> Self {
         self.admission = Some((admission, manifest));
         self
+    }
+
+    /// Re-fetch every arm's referenced extents every `every` cycles; zero
+    /// disables the pass.
+    pub fn with_refetch(mut self, every: u64) -> Self {
+        self.refetch_every = every;
+        self
+    }
+
+    /// Run a re-fetch pass over every connector arm if this cycle is on its
+    /// cadence; `Ok(None)` otherwise. A licence refusal stops the pass and
+    /// is returned, as a poll's does.
+    pub fn maybe_refetch(
+        &mut self,
+        platform: &mut Platform,
+        cycle: u64,
+        now: Timestamp,
+    ) -> Result<Option<Vec<qip_data_finder::refetch::ReFetchFinding>>> {
+        if self.refetch_every == 0 || !cycle.is_multiple_of(self.refetch_every) {
+            return Ok(None);
+        }
+        let mut findings = Vec::new();
+        for arm in &mut self.connectors {
+            findings.extend(arm.refetch(platform, crate::connectors::REFETCH_BUDGET, now)?);
+        }
+        Ok(Some(findings))
     }
 
     /// Attach a discovery desk (§7.4-§7.6.2). Replaces one attached before.
@@ -3036,6 +3066,122 @@ mod tests {
                 .re_fetch_instructions()
                 .is_some_and(|text| text.contains(ETAG)),
             "the re-fetch instruction does not name the version to compare against"
+        );
+        Ok(())
+    }
+
+    /// A Coinbase arm whose source answers `answers` in turn: the health
+    /// check at connect, then the poll, then whatever is asked after.
+    fn scripted_coinbase_arm(
+        at: Timestamp,
+        answers: Vec<qip_market_ingestion::connector::emulator::RecordedAnswer>,
+    ) -> Result<ConnectorArm> {
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_market_ingestion::connector::emulator::{RecordedExchange, SourceEmulator};
+        use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+        let mut manifest = CoinbaseTickerConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let connector = CoinbaseTickerConnector::new(
+            manifest.clone(),
+            "BTC-USD",
+            ObjectId::from_string("BTC-USD"),
+            CoinbaseTickerConnector::VENUE,
+        )?;
+        ConnectorArm::over_transport(
+            Box::new(connector),
+            manifest.clone(),
+            Box::new(SourceEmulator::new(vec![RecordedExchange::new(
+                manifest.endpoint.path.clone(),
+                answers,
+            )])),
+            &RegistrationRegistry::shipped(),
+            7,
+            at,
+        )
+    }
+
+    fn ticker_body(at: Timestamp) -> String {
+        format!(
+            r#"{{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"{}"}}"#,
+            at.to_rfc3339()
+        )
+    }
+
+    /// R12-DATA-1037, through the engine `main.rs` builds and the cadence
+    /// the node loop drives: an extent the platform referenced is asked for
+    /// again through the connector's own transport and the manifest's
+    /// locator; one the source still serves byte-for-byte reads unchanged,
+    /// and one it has since withdrawn is marked on the platform's ledger as
+    /// no longer re-fetchable. `ReFetchDriver` had no caller in any binary,
+    /// so a backtest resting on a withdrawn extent read exactly like one
+    /// resting on a served one.
+    ///
+    /// Mutated by making `ConnectorArm::refetch` skip
+    /// `platform.mark_unretrievable`: the ledger marker assertion fails;
+    /// and by making `maybe_refetch` return `Ok(None)` always: the on-cadence
+    /// assertion fails. Both restored.
+    #[test]
+    fn a_referenced_extent_is_refetched_on_cadence_and_a_withdrawn_one_is_marked_unretrievable()
+    -> Result<()> {
+        use qip_data_finder::reference::RevisionCheck;
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+
+        // Served unchanged.
+        let mut platform = platform()?;
+        let mut engine =
+            engine(0).with_connector(scripted_coinbase_arm(now, vec![ok(), ok(), ok()])?);
+        engine = engine.with_refetch(2);
+        engine.sense(&mut platform, now)?;
+        assert_eq!(
+            platform.reference_ledger().len(),
+            1,
+            "premise: one reference"
+        );
+        assert!(engine.maybe_refetch(&mut platform, 1, now)?.is_none());
+        let unchanged = engine
+            .maybe_refetch(&mut platform, 2, now)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert_eq!(unchanged.len(), 1, "{unchanged:?}");
+        assert_eq!(unchanged[0].check, Some(RevisionCheck::Unchanged));
+        assert!(
+            platform
+                .reference_ledger()
+                .unretrievable_extents()
+                .next()
+                .is_none()
+        );
+
+        // Withdrawn since.
+        let mut platform = self::platform()?;
+        let withdrawn = RecordedAnswer::json(404, r#"{"message":"NotFound"}"#);
+        let mut engine = engine_with_every(0)
+            .with_connector(scripted_coinbase_arm(now, vec![ok(), ok(), withdrawn])?)
+            .with_refetch(1);
+        engine.sense(&mut platform, now)?;
+        let reference = platform
+            .reference_ledger()
+            .references()
+            .next()
+            .cloned()
+            .ok_or_else(|| Error::not_found("premise: the poll was referenced"))?;
+        assert!(
+            platform
+                .reference_ledger()
+                .unretrievable(&reference)
+                .is_none()
+        );
+        let findings = engine
+            .maybe_refetch(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert_eq!(findings[0].check, Some(RevisionCheck::Unretrievable));
+        assert!(
+            platform
+                .reference_ledger()
+                .unretrievable(&reference)
+                .is_some(),
+            "the withdrawn extent is not marked on the platform's ledger"
         );
         Ok(())
     }

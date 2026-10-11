@@ -121,6 +121,9 @@ pub struct StepOutcome {
     /// pass answer different questions and a cycle line that merged them
     /// would not say which one ran.
     pub discovery: Option<qip_kernel::SourceAssessment>,
+    /// What re-fetching the connector arms' referenced extents found, on the
+    /// cycles where a pass ran (R12-DATA-1037).
+    pub refetch: Option<Vec<qip_data_finder::refetch::ReFetchFinding>>,
     /// What the research loop's sweep did, on the cycles where one ran
     /// (`research.rs`). A fourth cadence beside the three above.
     pub research: Option<crate::research::ResearchRound>,
@@ -180,6 +183,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         evolution: None,
         learning: None,
         discovery: None,
+        refetch: None,
         research: None,
         operations: None,
         tick: None,
@@ -432,6 +436,9 @@ pub fn run_with(
             // either would make "no candidates are configured" and "the
             // search happened not to run" read alike.
             outcome.discovery = engine.maybe_discover(platform, cycles, now)?;
+            // Re-verify what was referenced, on its own cadence, after the
+            // poll that referenced it.
+            outcome.refetch = engine.maybe_refetch(platform, cycles, now)?;
         }
         // Research after discovery, so a source catalogued this cycle is
         // licensed for this sweep's admissions. The bounds are the discovery
