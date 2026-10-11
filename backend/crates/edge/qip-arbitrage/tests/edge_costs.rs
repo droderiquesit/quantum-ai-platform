@@ -228,6 +228,42 @@ fn a_tax_or_duty_on_a_conversion_is_charged_by_name_and_lowers_the_net_edge() ->
     );
     assert!(with.net() < without.net(), "{}", with.summarise());
     assert!(with.unconsidered().is_empty());
+
+    // The tax is also part of the remainder a missed leg forfeits a share
+    // of: a fill shortfall charged on an untaxed remainder overstates what
+    // is forfeited. With a fill probability of one the shortfall is zero
+    // whatever `before_fill` holds, so the lines above passed with the tax
+    // left out of it (round-2 mutation audit); this half fixes a
+    // probability below one and asserts the shortfall is charged on the
+    // remainder after the tax. Mutation: drop `per_edge.tax_duty` from
+    // `before_fill` and the shortfall is 0.05 too large.
+    let partial = net_with(EdgeCosts {
+        tax_duty_fraction: d("0.001"),
+        fill_probability: d("0.995"),
+        ..EdgeCosts::default()
+    })?;
+    assert_eq!(
+        line(&partial, DeductionKind::Fees, "tax and duty"),
+        Some(d("10")),
+        "premise: the tax is charged here too"
+    );
+    let shortfall = line(&partial, DeductionKind::Slippage, "fill shortfall")
+        .ok_or_else(|| qip_core::Error::invalid("no fill-shortfall line"))?;
+    let after_tax = partial.gross_edge()
+        - partial
+            .deductions()
+            .iter()
+            .filter(|deduction| {
+                deduction.kind != DeductionKind::Uncertainty
+                    && !deduction.basis.starts_with("fill shortfall")
+            })
+            .fold(Decimal::ZERO, |sum, deduction| sum + deduction.amount);
+    assert!(
+        after_tax > Decimal::ZERO,
+        "premise: {}",
+        partial.summarise()
+    );
+    assert_eq!(shortfall, after_tax * d("0.005"), "{}", partial.summarise());
     Ok(())
 }
 
