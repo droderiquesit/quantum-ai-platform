@@ -11,6 +11,11 @@ repository.workspace = true
 serde.workspace = true
 qip-core.workspace = true
 qip-contracts.workspace = true
+# The legal-eligibility register a pass is asked against (R12-GOV-6116).
+qip-compliance.workspace = true
+# The hash-chained log the act stage's approvals and decisions are journaled
+# on (R12-GOV-6124).
+qip-events.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

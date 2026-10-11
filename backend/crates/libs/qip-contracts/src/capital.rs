@@ -37,6 +37,69 @@ pub struct CapitalEnvelope {
     /// Who approved the grant, and the signature over its contents.
     approver: String,
     signature: String,
+    /// R12-GOV-6120: leverage, product-class and regulated-function bounds,
+    /// inside the signed payload when present. Absent on an envelope issued
+    /// before the bounds existed, which still reads; such an envelope admits
+    /// nothing through [`Self::admit_bounded`], the path that must check a
+    /// product class or a leverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bounds: Option<AuthorityBounds>,
+}
+
+/// What kind of exposure a grant authorises beyond its money limits
+/// (R12-GOV-6120): how much leverage, in which product classes, and which
+/// regulated functions the grantee may perform.
+///
+/// Every list is sorted and de-duplicated on construction so the signed
+/// payload is a function of the set, not of the order somebody typed it in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityBounds {
+    /// Gross exposure over the envelope's gross limit; one is unlevered.
+    pub max_leverage: Decimal,
+    /// Product classes the grant may trade. Empty is none, never all.
+    pub product_classes: Vec<String>,
+    /// Regulated functions the grantee may perform. Empty is none.
+    pub regulated_functions: Vec<String>,
+}
+
+impl AuthorityBounds {
+    /// Refuse a leverage below one (a fraction is a smaller gross limit,
+    /// stated in the wrong field), no product class, and a blank entry.
+    pub fn new(
+        max_leverage: Decimal,
+        product_classes: Vec<String>,
+        regulated_functions: Vec<String>,
+    ) -> Result<Self> {
+        if max_leverage < Decimal::ONE {
+            return Err(Error::invalid(
+                "max_leverage below one is a smaller gross limit; state that limit instead",
+            ));
+        }
+        if product_classes.is_empty() {
+            return Err(Error::invalid(
+                "a bounded envelope names at least one product class; an empty list is none",
+            ));
+        }
+        let tidy = |field: &str, mut list: Vec<String>| -> Result<Vec<String>> {
+            if list
+                .iter()
+                .any(|s| s.trim().is_empty() || s.contains([',', '|']))
+            {
+                return Err(Error::invalid(format!(
+                    "`{field}` holds a blank entry or one containing a separator"
+                )));
+            }
+            list.sort();
+            list.dedup();
+            Ok(list)
+        };
+        Ok(Self {
+            max_leverage,
+            product_classes: tidy("product_classes", product_classes)?,
+            regulated_functions: tidy("regulated_functions", regulated_functions)?,
+        })
+    }
 }
 
 impl CapitalEnvelope {
@@ -81,7 +144,39 @@ impl CapitalEnvelope {
             expires_at,
             approver,
             signature: signature.into(),
+            bounds: None,
         })
+    }
+
+    /// This envelope with authority bounds, and its signature cleared: the
+    /// bounds enter the signed payload, so a signature taken before them is
+    /// over the wrong thing and must be taken again ([`Self::signed`]). An
+    /// envelope that already carries bounds is refused: changing a bound is
+    /// asking for a new envelope.
+    pub fn bound(mut self, bounds: AuthorityBounds) -> Result<Self> {
+        if self.bounds.is_some() {
+            return Err(Error::denied(
+                "this envelope is already bounded; a changed bound is a new envelope, signed anew",
+            ));
+        }
+        self.bounds = Some(AuthorityBounds::new(
+            bounds.max_leverage,
+            bounds.product_classes,
+            bounds.regulated_functions,
+        )?);
+        self.signature = String::new();
+        Ok(self)
+    }
+
+    /// This envelope carrying `signature`. Whether it verifies is the
+    /// verifier's question; this only attaches it.
+    pub fn signed(mut self, signature: impl Into<String>) -> Self {
+        self.signature = signature.into();
+        self
+    }
+
+    pub fn bounds(&self) -> Option<&AuthorityBounds> {
+        self.bounds.as_ref()
     }
 
     pub fn strategy(&self) -> &StrategyId {
@@ -134,9 +229,12 @@ impl CapitalEnvelope {
     ///
     /// Every field that bounds what the cell may do. A signature that does not
     /// cover a limit is a signature over the wrong thing.
+    ///
+    /// The authority bounds are appended only when present, so an envelope
+    /// issued before they existed signs and verifies exactly as it did.
     pub fn signing_payload(&self) -> String {
         let venues: Vec<&str> = self.venues.iter().map(VenueId::as_str).collect();
-        format!(
+        let base = format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.strategy.as_str(),
             self.cell,
@@ -147,7 +245,60 @@ impl CapitalEnvelope {
             self.granted_at.as_secs(),
             self.expires_at.as_secs(),
             self.approver
-        )
+        );
+        match &self.bounds {
+            None => base,
+            Some(bounds) => format!(
+                "{base}|bounds|{}|{}|{}",
+                bounds.max_leverage,
+                bounds.product_classes.join(","),
+                bounds.regulated_functions.join(",")
+            ),
+        }
+    }
+
+    /// [`Self::admit`] for an order whose product class and leverage must be
+    /// within the envelope's authority bounds (R12-GOV-6120). An envelope
+    /// with no bounds refuses: it was never signed over a product class or a
+    /// leverage, so it authorises neither.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_bounded(
+        &self,
+        venue: &VenueId,
+        notional: Decimal,
+        used: &Utilisation,
+        now: Timestamp,
+        product_class: &str,
+        leverage: Decimal,
+        regulated_function: Option<&str>,
+    ) -> CapitalAdmission {
+        let Some(bounds) = &self.bounds else {
+            return CapitalAdmission::Refused(
+                "the envelope carries no authority bounds, so it authorises no product class \
+                 and no leverage; ask for a bounded envelope"
+                    .to_string(),
+            );
+        };
+        if !bounds.product_classes.iter().any(|c| c == product_class) {
+            return CapitalAdmission::Refused(format!(
+                "product class {product_class} is outside the envelope's {}",
+                bounds.product_classes.join(", ")
+            ));
+        }
+        if leverage > bounds.max_leverage {
+            return CapitalAdmission::Refused(format!(
+                "leverage {leverage} exceeds the envelope's {}",
+                bounds.max_leverage
+            ));
+        }
+        if let Some(function) = regulated_function
+            && !bounds.regulated_functions.iter().any(|f| f == function)
+        {
+            return CapitalAdmission::Refused(format!(
+                "regulated function {function} is not one the envelope authorises"
+            ));
+        }
+        self.admit(venue, notional, used, now)
     }
 }
 

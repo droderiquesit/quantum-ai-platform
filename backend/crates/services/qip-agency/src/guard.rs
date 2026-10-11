@@ -23,6 +23,20 @@
 //! All of it runs before the first call, so a refusal sends nothing. In
 //! shadow the same checks run, read-only, and a step they would refuse is
 //! reported withheld rather than "cleared every gate".
+//!
+//! # A guard is a policy plus one pass at a time
+//!
+//! A composition root builds the guard once, from a [`GuardPolicy`] — the
+//! conduct policy and the tool registrations an operator configures — and
+//! keeps it for the life of the process, so the registry's rate, budget and
+//! revocations hold across every pass it runs. Each pass then begins with
+//! its own [`PassDecl`] (drafts, grounds, approvals, rate window) and ends
+//! with it removed: an approval is for one pass, and a guard that carried
+//! the last pass's approvals into the next would approve something nobody
+//! looked at. With no pass begun every preflight is refused. A rate window
+//! may not go backwards, and [`ActionGuard::resume`] re-applies the tool
+//! decisions a previous process journaled, so a budget is not reset by
+//! running the binary again.
 
 use crate::conduct_brain::{CommunicationDraft, ConductGate, ConductPolicy};
 use crate::goal::GoalSpec;
@@ -48,12 +62,38 @@ pub struct ApprovalDecl {
     pub execute_at: Timestamp,
 }
 
-/// The guard as a document, carried by a request.
+/// The guard as a document, carried by a request: the standing policy and
+/// one pass's declarations together.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuardDecl {
     pub conduct: ConductPolicy,
     pub tools: Vec<ToolRegistration>,
+    /// Per tool, the public face of every step that tool takes.
+    pub communications: BTreeMap<String, CommunicationDraft>,
+    pub grounds: Vec<Ground>,
+    pub approvals: ApprovalDecl,
+    /// The caller's rate window id for this pass.
+    pub rate_window: u64,
+}
+
+/// The standing half of a guard: what an operator configures once and a
+/// composition root loads at start-up — the conduct policy and the tool
+/// registrations. It holds no approvals, because an approval is for one
+/// pass and a policy file that carried one would approve every pass the
+/// process ever ran.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardPolicy {
+    pub conduct: ConductPolicy,
+    pub tools: Vec<ToolRegistration>,
+}
+
+/// The per-pass half: what this pass's steps would say, why, who approved
+/// it, and which rate window it spends in.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PassDecl {
     /// Per tool, the public face of every step that tool takes.
     pub communications: BTreeMap<String, CommunicationDraft>,
     pub grounds: Vec<Ground>,
@@ -85,29 +125,93 @@ pub(crate) struct Cleared {
 pub struct ActionGuard {
     gate: ConductGate,
     registry: ToolRegistry,
-    communications: BTreeMap<String, CommunicationDraft>,
-    grounds: Vec<Ground>,
-    approvals: ApprovalDecl,
-    rate_window: u64,
+    /// The current pass's declarations; `None` between passes, when every
+    /// preflight is refused.
+    pass: Option<PassDecl>,
+    /// The highest rate window this guard has spent or begun in. A pass may
+    /// not begin below it: the registry resets a tool's count whenever the
+    /// window changes, so a pass that named an old window would get a fresh
+    /// allowance by going back in time.
+    floor: u64,
 }
 
 impl ActionGuard {
     /// Build the gate and register every tool, refusing whatever either
-    /// refuses.
+    /// refuses, and begin the pass the document declares.
     pub fn from_decl(decl: GuardDecl) -> Result<Self, Error> {
-        let gate = ConductGate::from_policy(decl.conduct)?;
+        let mut guard = Self::from_policy(GuardPolicy {
+            conduct: decl.conduct,
+            tools: decl.tools,
+        })?;
+        guard.begin_pass(PassDecl {
+            communications: decl.communications,
+            grounds: decl.grounds,
+            approvals: decl.approvals,
+            rate_window: decl.rate_window,
+        })?;
+        Ok(guard)
+    }
+
+    /// Build the gate and register every tool, with no pass begun: every
+    /// preflight is refused until [`Self::begin_pass`]. A policy with no
+    /// tool is built, and refuses every step as unregistered; a composition
+    /// root that wants to refuse such a configuration outright says so where
+    /// it loads it.
+    pub fn from_policy(policy: GuardPolicy) -> Result<Self, Error> {
+        let gate = ConductGate::from_policy(policy.conduct)?;
         let mut registry = ToolRegistry::new();
-        for tool in decl.tools {
+        for tool in policy.tools {
             registry.register(tool)?;
         }
         Ok(Self {
             gate,
             registry,
-            communications: decl.communications,
-            grounds: decl.grounds,
-            approvals: decl.approvals,
-            rate_window: decl.rate_window,
+            pass: None,
+            floor: 0,
         })
+    }
+
+    /// Re-apply the tool decisions a previous process journaled, so the rate
+    /// and budget they spent are spent here too and the rate-window floor is
+    /// where it was left. Refused once a pass has begun: resuming under a
+    /// pass would charge history to it.
+    pub fn resume(&mut self, decisions: Vec<ToolAudit>) -> Result<(), Error> {
+        if self.pass.is_some() {
+            return Err(Error::guard(
+                "resume the guard before the first pass begins, not during one",
+            ));
+        }
+        for decision in decisions {
+            self.floor = self.floor.max(decision.window);
+            self.registry.resume(decision)?;
+        }
+        Ok(())
+    }
+
+    /// Begin a pass on its own declarations. Refuses a rate window below the
+    /// highest already spent or begun.
+    pub fn begin_pass(&mut self, pass: PassDecl) -> Result<(), Error> {
+        if pass.rate_window < self.floor {
+            return Err(Error::denied(format!(
+                "the pass names rate window {}, below window {} already spent; a window is not \
+                 reopened, because reopening one resets every tool's count",
+                pass.rate_window, self.floor
+            )));
+        }
+        self.floor = pass.rate_window;
+        self.pass = Some(pass);
+        Ok(())
+    }
+
+    /// End the current pass. Its approvals, drafts and grounds go with it:
+    /// an approval for one pass is not an approval for the next.
+    pub fn end_pass(&mut self) {
+        self.pass = None;
+    }
+
+    /// Whether a pass is begun.
+    pub fn in_pass(&self) -> bool {
+        self.pass.is_some()
     }
 
     pub fn registry(&self) -> &ToolRegistry {
@@ -120,14 +224,38 @@ impl ActionGuard {
         self.registry.revoke(tool)
     }
 
-    /// Move to a new rate window and execution instant for the next pass.
+    /// Move to a new rate window and execution instant, keeping the current
+    /// pass's drafts and grounds. With no pass begun, begins one with none,
+    /// which every preflight refuses on its grounds.
     pub fn advance(&mut self, rate_window: u64, approvals: ApprovalDecl) {
-        self.rate_window = rate_window;
-        self.approvals = approvals;
+        self.floor = self.floor.max(rate_window);
+        match self.pass.as_mut() {
+            Some(pass) => {
+                pass.rate_window = rate_window;
+                pass.approvals = approvals;
+            }
+            None => {
+                self.pass = Some(PassDecl {
+                    communications: BTreeMap::new(),
+                    grounds: Vec::new(),
+                    approvals,
+                    rate_window,
+                });
+            }
+        }
     }
 
     pub fn audit(&self) -> &[ToolAudit] {
         self.registry.audit()
+    }
+
+    fn current(&self) -> Result<&PassDecl, Error> {
+        self.pass.as_ref().ok_or_else(|| {
+            Error::denied(
+                "no pass is begun on this guard: approvals, drafts and grounds are declared per \
+                 pass, and none has been",
+            )
+        })
     }
 
     /// Every check, read-only. `priced` is each step beside its cost from
@@ -138,7 +266,8 @@ impl ActionGuard {
         goal: &GoalSpec,
         priced: &[(Step, Decimal)],
     ) -> Result<(ApprovalChain, Vec<Cleared>), Error> {
-        check_justification(&self.grounds)?;
+        let pass = self.current()?;
+        check_justification(&pass.grounds)?;
         let steps: Vec<Step> = priced.iter().map(|(step, _)| step.clone()).collect();
         let chain = self.approve(goal, &steps)?;
 
@@ -151,7 +280,7 @@ impl ActionGuard {
                     step.tool
                 ))
             })?;
-            let draft = self.communications.get(&step.tool).ok_or_else(|| {
+            let draft = pass.communications.get(&step.tool).ok_or_else(|| {
                 Error::denied(format!(
                     "step `{}` has no drafted public face; an external action nobody drafted \
                      cannot be conduct-checked, so it is not sent",
@@ -200,7 +329,7 @@ impl ActionGuard {
             .iter()
             .map(|c| (c.step.tool.as_str(), c.channel.as_str(), c.cost_units))
             .collect();
-        self.registry.admits_all(self.rate_window, &actions)?;
+        self.registry.admits_all(pass.rate_window, &actions)?;
         Ok((chain, cleared))
     }
 
@@ -215,7 +344,7 @@ impl ActionGuard {
         chain.execution = Some(ExecutionRecord::execute(
             &chain.plan,
             executor,
-            self.approvals.execute_at,
+            self.current()?.approvals.execute_at,
             &subject(steps),
         )?);
         Ok(())
@@ -224,17 +353,21 @@ impl ActionGuard {
     /// The mutating, audited admission of one step, immediately before its
     /// call.
     pub(crate) fn authorise(&mut self, cleared: &Cleared) -> Result<(), Error> {
+        let (window, at) = {
+            let pass = self.current()?;
+            (pass.rate_window, pass.approvals.execute_at)
+        };
         self.registry.authorise(
             &cleared.step.tool,
             &cleared.channel,
-            self.rate_window,
+            window,
             cleared.cost_units,
-            self.approvals.execute_at,
+            at,
         )
     }
 
     fn approve(&self, goal: &GoalSpec, steps: &[Step]) -> Result<ApprovalChain, Error> {
-        let a = &self.approvals;
+        let a = &self.current()?.approvals;
         for (role, who) in [("goal", &a.goal_approver), ("plan", &a.plan_approver)] {
             if who == &goal.acting_identity {
                 return Err(Error::denied(format!(
