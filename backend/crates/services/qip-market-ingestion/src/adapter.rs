@@ -275,12 +275,14 @@ impl SensedRecord {
                 if t.size.is_negative() {
                     issues.push(format!("negative trade size {}", t.size));
                 }
+                issues.extend(t.validate());
                 issues
             }
             Self::Tick(t) => {
                 if !t.price.is_positive() {
                     issues.push(format!("non-positive tick price {}", t.price));
                 }
+                issues.extend(t.validate());
                 issues
             }
             Self::News(n) => {

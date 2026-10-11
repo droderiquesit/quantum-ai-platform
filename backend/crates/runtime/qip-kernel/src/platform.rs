@@ -9202,7 +9202,7 @@ impl Platform {
                     // definition of `close`, and a trade is exactly that.
                     // Use capture_time for known_at to preserve bitemporal distinction:
                     // instant_true (when it happened) vs knowable_at (when we found out).
-                    let known_at = trade.capture_time.unwrap_or(trade.at);
+                    let known_at = trade.capture_time;
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
@@ -9218,7 +9218,7 @@ impl Platform {
                     self.ensure_world_object(tick.object_id.as_str(), tick.at);
                     // Use capture_time for known_at to preserve bitemporal distinction:
                     // instant_true (when it happened) vs knowable_at (when we found out).
-                    let known_at = tick.capture_time.unwrap_or(tick.at);
+                    let known_at = tick.capture_time;
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
@@ -21909,7 +21909,9 @@ mod retention_tests {
                     object_id: ObjectId::from_string("obj-AAA"),
                     venue: "XNYS".to_string(),
                     at: start().saturating_sub(Duration::from_secs((count - index) as i64)),
-                    capture_time: None,
+                    capture_time: start()
+                        .saturating_sub(Duration::from_secs((count - index) as i64)),
+                    sequence: None,
                     bid: Decimal::from_f64(100.0 - half_spread).unwrap(),
                     ask: Decimal::from_f64(100.0 + half_spread).unwrap(),
                     bid_size: Decimal::from_int(500),
