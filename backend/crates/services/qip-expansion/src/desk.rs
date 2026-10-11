@@ -180,6 +180,9 @@ pub enum CloseReason {
     Promoted,
     /// It was evaluated and failed a criterion; the null is recorded.
     NullRecorded,
+    /// The compute market retired it: its realised value per unit stayed at
+    /// or below the floor for the policy's window (`meta.rs`).
+    Unproductive,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +370,16 @@ impl ExpansionDesk {
     /// frees nothing in the round budget (which is per round), but a
     /// withdrawn item must not be started on the sweep it went quiet.
     pub fn finish_sweep(&mut self, budget: Budget) -> Result<SweepReport> {
+        self.finish_sweep_within(budget, None)
+    }
+
+    /// [`Self::finish_sweep`], starting only what `granted` names when it is
+    /// given — see `ResearchQueue::schedule_within`.
+    pub fn finish_sweep_within(
+        &mut self,
+        budget: Budget,
+        granted: Option<&BTreeSet<String>>,
+    ) -> Result<SweepReport> {
         let mut report = SweepReport::default();
         let sweep = self.sweep;
         let entries: Vec<(String, bool)> = self
@@ -426,7 +439,7 @@ impl ExpansionDesk {
             report.withdrawn.push(question);
         }
 
-        let round = self.queue.schedule(budget)?;
+        let round = self.queue.schedule_within(budget, granted)?;
         for question in &round.started {
             if let Some(seen) = self.seen.get_mut(question) {
                 seen.started_sweep = Some(sweep);
@@ -508,6 +521,43 @@ impl ExpansionDesk {
                 Err(refusal)
             }
         }
+    }
+
+    /// Every started item and its lineage, in rank order: what the research
+    /// executor carries out each sweep.
+    pub fn started(&self) -> Vec<(String, &Lineage)> {
+        self.queue
+            .ranked()
+            .into_iter()
+            .filter(|e| *e.state() == State::Started)
+            .filter_map(|e| {
+                let question = e.item().research_question.clone();
+                self.lineage.get(&question).map(|l| (question, l))
+            })
+            .collect()
+    }
+
+    /// Retire one item the compute market found unproductive: a started item
+    /// closes as [`CloseReason::Unproductive`], an unstarted one is
+    /// withdrawn. Returns whether it had started. Refuses a question not in
+    /// the queue, so a retirement of something already gone is visible.
+    pub fn retire(&mut self, question: &str) -> Result<bool> {
+        let started = self
+            .queue
+            .entry(question)
+            .map(|e| *e.state() == State::Started)
+            .ok_or_else(|| Error::not_found(format!("`{question}` is not in the queue")))?;
+        if started {
+            self.queue.close(question)?;
+            self.remember(Closed {
+                question: question.trim().to_string(),
+                reason: CloseReason::Unproductive,
+            });
+        } else {
+            self.queue.withdraw(question)?;
+        }
+        self.forget(question);
+        Ok(started)
     }
 
     fn forget(&mut self, question: &str) {

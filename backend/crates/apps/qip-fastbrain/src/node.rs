@@ -130,6 +130,11 @@ pub fn step(
     let batch = feed.poll(now, &mut |digest| {
         platform.reference_fetch(digest, now).map(|_| ())
     })?;
+    // The connector's checked evidence into the world fabric the poisoning
+    // detector reads (R12-EVID-2031..2039); counted by the kernel on
+    // `qip_evidence_absorbed_total`. Until 2026-10-11 nothing drained it and
+    // the feed dropped the oldest at its bound.
+    platform.absorb_evidence(feed.drain_evidence(), now);
     let observed = platform.observe(batch.accepted);
     let report = platform.run_cycle(now);
     let elapsed = monotonic(began);

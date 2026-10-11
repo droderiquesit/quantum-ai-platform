@@ -1663,6 +1663,34 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          this binary spends against it yet. A value is refused if it is not \
          a non-negative number.",
     ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_ACQUISITION_BP",
+        "Unset, a sweep may launch 20000 bp of information acquisitions — \
+         two at a decision's full value — in the Curiosity Engine's rank \
+         order. An acquisition is a record that a re-sweep or a class's \
+         declared acquisition is owed, not a fetch and not money; a smaller \
+         value only launches fewer, and a non-integer is refused at start-up.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_RESEARCH_QPU",
+        "Unset, the compute market grants no QPU unit, so quantum research \
+         is off until a deployment budgets it. Every QPU grant also charges \
+         its classical baseline to the CPU budget (ADR 0006), so setting it \
+         can never buy a quantum result with nothing to compare it to. \
+         Leaving it unset is the fail-closed posture; a negative value is \
+         refused.",
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_LAKE_RETENTION",
+        "Unset, no connector arm captures into the tick lake. A value is a \
+         reading of a vendor's retention terms per licensing class, and \
+         nobody has read the shipped connectors' terms for retention yet; \
+         a default here would be rights nobody evaluated. No deployment \
+         polls a connector from this binary today in any case.",
+    ),
 ];
 
 #[test]
