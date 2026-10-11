@@ -375,25 +375,27 @@ fn nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_gra
         "qip-mesh depends on the edge cell; the peer protocol can now construct or apply \
          what only the signed downward path may"
     );
-    // The protocol moved to `qip-contracts` so the edge node can speak it
-    // (W5.4); that crate links no cell either, and the same property holds
-    // of it.
-    let contracts = read("backend/crates/libs/qip-contracts/Cargo.toml");
-    assert!(
-        contracts.contains("[dependencies]")
-            && !contracts
-                .lines()
-                .any(|line| line.trim_start().starts_with("qip-edge")),
-        "qip-contracts depends on the edge cell; the peer protocol can now construct or apply \
-         what only the signed downward path may"
-    );
-    let peer = read("backend/crates/libs/qip-contracts/src/peer.rs");
+    // The protocol lives in `qip-peer` since ADR 0116 (it was in
+    // `qip-contracts` from W5.4 until then), and its link in `qip-peer-link`;
+    // neither links a cell, and the same property holds of both.
+    for crate_path in ["libs/qip-peer", "edge/qip-peer-link"] {
+        let manifest = read(&format!("backend/crates/{crate_path}/Cargo.toml"));
+        assert!(
+            manifest.contains("[dependencies]")
+                && !manifest
+                    .lines()
+                    .any(|line| line.trim_start().starts_with("qip-edge")),
+            "{crate_path} depends on the edge cell; the peer protocol can now construct or \
+             apply what only the signed downward path may"
+        );
+    }
+    let peer = read("backend/crates/libs/qip-peer/src/lib.rs");
     assert!(
         peer.contains("DOWNWARD_ONLY"),
         "premise: this is the module that refuses downward kinds from a peer"
     );
     // Code only, and `qip_edge` as a whole path segment. Round 2's move
-    // gave the module a doc line naming the transport that carries it,
+    // gave the module a doc line naming the transport that carried it,
     // `qip_edge_node::peer`, and a raw `contains("qip_edge")` is true of
     // `qip_edge_node` — the substring trap the testing rules name. The crate
     // the property is about is `qip_edge`, the cell; a lib cannot name the

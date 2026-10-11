@@ -39,6 +39,14 @@ service may not depend on the runtime; nothing may depend on an app.
   here**: a service that reads `std::env` cannot be tested and cannot be
   deployed twice with different settings.
 - `backend/crates/edge/` — the regional cell. Structurally paper-only.
+  One crate there is not on the cell's pass: `qip-peer-link` (ADR 0116), the
+  Lane 1 peer wire and session, under `edge/` because it opens sockets and so
+  cannot be a library. The node hosts it, and its decision loop reaches it
+  only through `qip_peer_link::boundary::ReflexPort`, which offers and reports
+  and cannot wait; the protocol it carries is the pure library `qip-peer`.
+  `qip-acceptance`'s `mesh_lane` suite (MESH-013) refuses any reflex crate
+  that links or names either, and any node module but `main.rs` that reaches
+  past the port.
 
 ## Composition roots
 

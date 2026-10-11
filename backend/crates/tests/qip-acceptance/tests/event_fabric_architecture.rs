@@ -166,9 +166,23 @@ fn no_crate_on_the_cells_pass_path_sleeps_spawns_a_thread_or_opens_a_socket_of_i
 
     // The pass path: every crate of the regional cell, and the two engines a
     // pass calls before an order exists.
+    //
+    // Less the peer link. ADR 0116 put `qip-peer-link` under `edge/` because
+    // it opens sockets and so cannot be a library, but it is Lane 1, off the
+    // pass by construction: no crate on the pass may depend on it or name it
+    // (`mesh_lane.rs`, MESH-013), and its threads and sockets are the whole
+    // point of it. Named, not pattern-matched, so a second exclusion is a
+    // diff a reviewer sees, and held to existing so it cannot go stale.
+    const OFF_THE_PASS: &str = "qip-peer-link";
+    assert!(
+        crates.join("edge").join(OFF_THE_PASS).join("src").is_dir(),
+        "{OFF_THE_PASS} is no longer under crates/edge; drop the exclusion"
+    );
     let mut pass_path: Vec<PathBuf> = fs::read_dir(crates.join("edge"))
         .expect("crates/edge")
-        .map(|entry| entry.expect("entry").path().join("src"))
+        .map(|entry| entry.expect("entry").path())
+        .filter(|dir| !dir.ends_with(OFF_THE_PASS))
+        .map(|dir| dir.join("src"))
         .filter(|src| src.is_dir())
         .collect();
     pass_path.push(crates.join("services/qip-risk-engine/src"));

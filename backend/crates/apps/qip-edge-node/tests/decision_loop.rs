@@ -577,32 +577,39 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     Ok(())
 }
 
-/// A peer mesh whose every peer is unreachable holds neither the decision
-/// thread nor the journal (R12-MESH-5050): the turns stay short, passes run,
-/// the journal reaches its store, and a policy the centre ships still
-/// applies — while the wire counts the peer it could not reach.
+/// A pass with a peer configured publishes through the port, and a peer mesh
+/// whose every peer is unreachable holds neither the decision thread nor the
+/// journal (R12-MESH-5050, ADR 0116): the turns stay short, passes run, the
+/// port takes the cell's offers, the journal reaches its store, and a policy
+/// the centre ships still applies — while the link counts the peer it could
+/// not reach.
 ///
-/// Mutation: make `PeerSession::turn` wait until the wire reports a frame
-/// sent — a blocking publish — and the first turn never returns, so the
-/// drive's watchdog aborts the test.
+/// Mutation: make `ReflexPort::try_publish` a blocking `send` and stop the
+/// session thread from draining the queue — the fifth turn blocks and the
+/// drive's watchdog aborts the test. Mutation: drop the `try_publish` call
+/// from `DecisionLoop::turn` — the session never turns on an offer and the
+/// wire never tries the peer, so the `send_failures` premise times out.
 #[test]
 fn an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal() -> Result<()> {
-    use qip_edge_node::peer::{PeerSession, PeerSettings};
+    use qip_peer_link::PeerSettings;
     use std::collections::BTreeMap;
     let free = || {
         std::net::TcpListener::bind("127.0.0.1:0")
             .and_then(|probe| probe.local_addr())
             .expect("a loopback port")
     };
-    let session = PeerSession::new(&PeerSettings {
-        node: CELL.to_string(),
-        listen: free(),
-        // Nothing listens here: every connect is refused.
-        peers: BTreeMap::from([("tokyo-1".to_string(), free())]),
-    })?;
+    let (port, _) = qip_peer_link::spawn(
+        &PeerSettings {
+            node: CELL.to_string(),
+            listen: free(),
+            // Nothing listens here: every connect is refused.
+            peers: BTreeMap::from([("tokyo-1".to_string(), free())]),
+        },
+        Arc::new(qip_core::SystemClock),
+    )?;
     let store = Arc::new(MemoryKeyValueStore::new());
     let rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
-    let mut decisions = rig.decisions.with_peers(session);
+    let mut decisions = rig.decisions.with_peers(port);
 
     let (longest, _, _) = drive(&mut decisions, 10, 20);
     assert!(
@@ -614,9 +621,8 @@ fn an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal() 
     let waited = std::time::Instant::now();
     while decisions
         .peers()
-        .expect("the loop holds the session")
-        .link()
-        .stats()
+        .expect("the loop holds the port")
+        .status()
         .send_failures
         == 0
     {
@@ -626,11 +632,7 @@ fn an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal() 
         );
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    let wire = decisions
-        .peers()
-        .expect("the loop holds the session")
-        .link()
-        .stats();
+    let wire = decisions.peers().expect("the loop holds the port").status();
     assert_eq!(wire.sent, 0, "premise: nothing reached a peer: {wire:?}");
     assert!(
         longest < std::time::Duration::from_millis(500),

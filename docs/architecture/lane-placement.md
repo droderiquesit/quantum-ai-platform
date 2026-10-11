@@ -10,26 +10,45 @@ ARCH-019 inspect it.
 
 * a workspace crate has no row, or a row names a crate that does not exist;
 * a row has a lane outside 0 to 4 or an empty requirement;
-* the Lane 0 set differs from the normal-dependency closure of `qip-edge-node`;
+* the Lane 0 set differs from the reflex pass's closure, defined below;
 * a Lane 0 or Lane 1 crate takes a normal dependency on a crate placed in a
   slower lane. That is a remote read or a slow computation placed in a fast lane
   by construction, which is exactly what this register exists to refuse.
 
+**Lane 0 is the reflex pass's closure** (ADR 0116): the normal-dependency closure
+of `qip-edge-node`, minus the node itself and the Lane 1 crates it hosts through the
+reflex port. That hosted set is exactly `qip-peer-link` and `qip-peer`; the
+`lane_placement` suite fixes it as a constant, and it is not to be grown casually —
+a node hosting a second coordinator is becoming one, and ADR 0116 says to reopen the
+sidecar alternative rather than widen the set. Lane 0 always contains `qip-edge` and
+its whole closure. Until ADR 0116 Lane 0 was the node's whole closure, which could
+not survive the node hosting the peer link blueprint section 16 requires: the node
+would have become Lane 1 and Lane 0 would have had no definition at all.
+
+A crate that composes slower crates is placed in the slowest lane it hosts. So
+`qip-edge-node` is Lane 1: it hosts Lane 0 (the cell) and Lane 1 (the peer link),
+and its decision loop reaches Lane 1 only through `qip_peer_link::boundary`, whose
+port can offer and report and cannot wait.
+
 Lane 1 here means the cell and centre link, the fabric daemon and the peer
-coordination protocol. The peer-to-peer reflex mesh (ARCH-011) has no transport and
-no process that runs it, but its protocol exists as `qip_mesh::peer`, and the five
-functions blueprint section 4 places in Lane 1 (peer reflex messages, opportunity
-tokens, distributed reservations, multi-leg coordination, hedge and unwind commands)
-are registered there as `MeshFunction`. `qip-acceptance`'s `mesh_lane` suite compares
-that registry with the `qip-mesh` row below and fails when a Lane 0 crate depends on
-`qip-mesh` or names a coordination type (MESH-013). A crate that composes slower
-crates is placed in the slowest lane it hosts.
+coordination protocol and its link. The five functions blueprint section 4 places in
+Lane 1 (peer reflex messages, opportunity tokens, distributed reservations,
+multi-leg coordination, hedge and unwind commands) are registered as `MeshFunction`,
+defined in `qip-peer` and re-exported as `qip_mesh::peer`. `qip-peer-link` carries
+them node to node over loopback until ADR 0112's mTLS transport exists, on a
+session thread of its own. `qip-acceptance`'s `mesh_lane` suite compares that
+registry with the `qip-mesh` and `qip-peer` rows below and fails (MESH-013) when a
+crate in `qip-edge`'s closure or at Lane 0 depends on or names `qip-mesh`,
+`qip-peer`, `qip-peer-link` or a coordination type; when the node links any other
+Lane 1-or-slower crate; when a node module other than `main.rs` reaches the link
+past `qip_peer_link::boundary`; and when the port declares a method beyond
+`try_publish` and `status`, or anything in its file can wait.
 
 | Crate | Lane | Correctness requirement the placement meets |
 |---|---|---|
 | qip-core | 0 | errors, secrets and hashing every lane shares; no I/O, so no remote dependency |
 | qip-numerics | 0 | pure arithmetic; deterministic |
-| qip-contracts | 0 | wire and policy vocabulary; pure types with replay-stable encodings |
+| qip-contracts | 0 | wire and policy vocabulary; pure types with replay-stable encodings; holds no peer coordination type (ADR 0116) |
 | qip-events | 0 | hash-chained log written locally; a write never waits on a remote store |
 | qip-observability | 0 | in-memory registry behind a mutex; recording never blocks on a scrape |
 | qip-market | 0 | canonical market types; pure |
@@ -50,8 +69,10 @@ crates is placed in the slowest lane it hosts.
 | qip-execution-engine | 0 | simulated execution against the simulator only; paper boundary |
 | qip-brokers | 0 | simulated broker and provider sandboxes only |
 | qip-edge | 0 | the reflex cell; decides from its last signed packages with the centre unreachable |
-| qip-edge-node | 0 | the cell's composition root; paper passes without any cognitive process present |
-| qip-mesh | 1 | cell and centre exchange of signed deltas and grants, and the peer coordination protocol's five functions; latency accepted, never awaited by a pass |
+| qip-edge-node | 1 | the cell's composition root. Hosts Lane 0 (the cell) and Lane 1 (the peer link), and its decision loop reaches Lane 1 only through `qip_peer_link::boundary`; paper passes without any cognitive process present |
+| qip-mesh | 1 | cell and centre exchange of signed deltas and grants, and the host of the peer coordination protocol's five functions, re-exported as `qip_mesh::peer`; latency accepted, never awaited by a pass |
+| qip-peer | 1 | the peer coordination protocol, pure: frames in, state and refusals out; depends on qip-core, serde and serde_json alone, so no warehouse client is reachable from it (DATA-058) |
+| qip-peer-link | 1 | the peer wire and session on threads of their own, with explicit connect and write timeouts; reached from the reflex node only through a port that offers with `try_send` and reports from atomics |
 | qip-streaming | 1 | stream transports with explicit bounds; a refusing port rather than a silent fallback |
 | qip-chain | 1 | signed chain records over qip-transport; bounded round trips |
 | qip-fabricd | 1 | the in-tree fabric daemon; journal appends acknowledged locally |
