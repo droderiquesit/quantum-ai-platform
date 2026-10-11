@@ -1,0 +1,65 @@
+[
+  {
+    "target": "A NOW Brain continuously estimates latent global/market/system state with uncertainty and freshness.",
+    "requirements": [
+      "R12-WORLD-7196"
+    ]
+  },
+  {
+    "target": "A Temporal Forecast Lattice produces calibrated distributions from microseconds through years.",
+    "requirements": [
+      "R12-WORLD-7197"
+    ]
+  },
+  {
+    "target": "Thousands of specialist/temporary models can compete in a scored Model Tournament and internal Forecast Market.",
+    "requirements": [
+      "R12-MODEL-7198"
+    ]
+  },
+  {
+    "target": "Synthetic future trees and digital twins continuously explore worlds not present in historical data.",
+    "requirements": [
+      "R12-TICK-7199"
+    ]
+  },
+  {
+    "target": "Active Sensing chooses new observations by expected value of information.",
+    "requirements": [
+      "R12-AMBIENT-7200"
+    ]
+  },
+  {
+    "target": "Adversarial verifier societies independently attack important predictions and models.",
+    "requirements": [
+      "R12-MODEL-7201"
+    ]
+  },
+  {
+    "target": "Meta-Intelligence allocates attention, agents and CPU/GPU/TPU/QPU compute by marginal information/economic value.",
+    "requirements": [
+      "R12-AMBIENT-7202"
+    ]
+  },
+  {
+    "target": "A Cognitive Compiler distills slow-lane discoveries into bounded specialist/reflex packages.",
+    "requirements": [
+      "R12-REASON-7203"
+    ]
+  },
+  {
+    "target": "Capital, hedge, model-risk and survival systems are independent from alpha generation and can veto/reduce exposure.",
+    "requirements": [
+      "R12-RISK-7205",
+      "R12-CAPITAL-7204"
+    ]
+  },
+  {
+    "target": "Quantum is a native asynchronous substrate in a benchmarked hybrid compute fabric, never an assumed advantage or hot-path dependency.",
+    "requirements": [
+      "R12-QUANT-7206",
+      "R12-RES-7096",
+      "R12-QUANT-7016"
+    ]
+  }
+]

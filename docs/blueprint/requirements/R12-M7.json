@@ -1,0 +1,5277 @@
+[
+  {
+    "id": "R12-GCP-7001",
+    "domain": "GCP",
+    "title": "Place workloads by lane: Google Cloud plus IBM Quantum",
+    "statement": "Workloads are placed by time lane (reflex, warm, slow/training, ledger, fabric, quantum) rather than one runtime everywhere; application/data/compute run on Google Cloud and QPU workloads on IBM Quantum.",
+    "rationale": "One runtime everywhere puts global services on the local hot path.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Terraform and the image matrix place reflex, warm and quantum workloads on distinct runtimes; a module that put the edge node on Cloud Run would fail."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": "IBM Quantum is reached via Qiskit Runtime per ADR 0006."
+  },
+  {
+    "id": "R12-GCP-7002",
+    "domain": "GCP",
+    "title": "Reflex cells run on dedicated C3/C3D-class low-latency VMs",
+    "statement": "Regional Reflex Cells run as Rust binaries on dedicated GCE C3/C3D-class (or equivalent) low-latency VMs.",
+    "rationale": "Shared or serverless runtimes add jitter the reflex lane cannot absorb.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "terraform plan for an environment with one execution node renders a c3-class instance running qip-edge-node; a non-C3 machine_type is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-7003",
+    "domain": "REFLEX",
+    "title": "CPU pinning, huge pages, mlock, busy polling as justified",
+    "statement": "Reflex nodes apply CPU pinning, huge pages, mlock and busy polling where measurement justifies them.",
+    "rationale": "Hot-path threads sharing cores with the OS miss latency budgets.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Node boot refuses without isolcpus/huge pages; process is pinned and memory-locked; removing isolcpus check lets an unpinned node boot."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-7004",
+    "domain": "EXEC",
+    "title": "Reflex cells hold direct venue connectivity",
+    "statement": "Reflex cells connect directly to venues (no central hop between cell and venue).",
+    "rationale": "A central hop adds latency and a shared failure point.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "qip-edge-node sends to a venue gateway from the node itself; removing the local gateway leaves no send path."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Paper-trading only (ADR 0003): only simulated/sandbox venues are admissible."
+  },
+  {
+    "id": "R12-GCP-7005",
+    "domain": "GCP",
+    "title": "Stateless burst warm services run on Cloud Run",
+    "statement": "Warm services that are stateless and burst-shaped run on Cloud Run where serverless economics are beneficial.",
+    "rationale": "Paying for idle capacity for bursty stateless services.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "terraform plan renders google_cloud_run_v2_service for the catalogue workloads."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-7006",
+    "domain": "GCP",
+    "title": "Stateful long-running warm services run on GKE",
+    "statement": "Stateful/long-running platform services run on GKE.",
+    "rationale": "Mis-placing stateful services on serverless runtimes.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "terraform plan renders a GKE cluster hosting the stateful services."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "Conflicts with ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes)."
+  },
+  {
+    "id": "R12-MODEL-7007",
+    "domain": "MODEL",
+    "title": "Training/AGI runs on Google Cloud GPU/TPU compute",
+    "statement": "Training and AGI workloads run on GPU/TPU compute on Google Cloud using fit-for-purpose tooling (Python/JAX/PyTorch or other).",
+    "rationale": "Training on CPU-only serving hosts starves serving and is uneconomic.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Terraform provisions an accelerator training pool; a plan without accelerators fails the check."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Python tooling conflicts with ADR 0001/0011 (Rust everywhere) unless an ADR admits it."
+  },
+  {
+    "id": "R12-MODEL-7008",
+    "domain": "MODEL",
+    "title": "Trained artifacts export to bounded inference runtimes",
+    "statement": "Training outputs are exported as artifacts into bounded inference runtimes rather than served from the training stack.",
+    "rationale": "Unbounded models on serving paths break latency and memory budgets.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A distilled artifact carries memory/latency/worst-case bounds and is refused by the reflex lane if out of bounds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-7009",
+    "domain": "LEDGER",
+    "title": "Global ledger on strongly consistent multi-region transactional store",
+    "statement": "The global ledger is held in Cloud Spanner or an equivalent strongly consistent multi-region transactional store.",
+    "rationale": "A ledger without strong consistency can double-count capital across regions.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan renders the store and the ledger daemon writes through it; disabling it makes ledger commit refuse."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-7010",
+    "domain": "EVID",
+    "title": "Append-only object/event archive holds immutable evidence",
+    "statement": "Beside the ledger store, an append-only object/event archive holds immutable evidence.",
+    "rationale": "Evidence that can be rewritten cannot support audit.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "39",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Archive objects are write-once (retention lock/hash chain); an overwrite attempt is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7011",
+    "domain": "FABRIC",
+    "title": "Fabric runs on dedicated regional GCE nodes across three zones",
+    "statement": "The Algorik Rust Event & Control Fabric runs on dedicated regional GCE broker/controller nodes spread across three zones.",
+    "rationale": "A single-zone fabric loses control plane on a zone outage.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan renders broker/controller instances in three zones per region."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7012",
+    "domain": "FABRIC",
+    "title": "No Pub/Sub or Kafka on the internal core path",
+    "statement": "Internal services use the native fabric protocol; Google Pub/Sub and Kafka do not appear on the internal core path, and optional compatibility bridges are edge adapters only.",
+    "rationale": "A generic broker dictates control semantics, replay and regional independence.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Manifest scan refuses any Kafka/PubSub client outside an edge bridge crate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Also stated as a §31 COMPLETE TARGET."
+  },
+  {
+    "id": "R12-DATA-7013",
+    "domain": "DATA",
+    "title": "Cloud Storage holds artifacts, manifests, packages, simulation outputs",
+    "statement": "Cloud Storage holds temporary/retained artifacts, manifests, model packages, simulation outputs and reproducible campaign datasets.",
+    "rationale": "Artifacts scattered over local disks are not reproducible.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Buckets exist for each named artifact class with retention set."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-7014",
+    "domain": "SEC",
+    "title": "Keys in Cloud KMS/HSM with segregated custody/signing",
+    "statement": "Secrets and keys are held in Cloud KMS/HSM plus segregated custody/signing systems.",
+    "rationale": "Keys in application hosts can be exfiltrated with the host.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan renders KMS keys; signing keys are not readable by workloads that do not sign."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-7015",
+    "domain": "SEC",
+    "title": "No browser access to keys, ledger internals or execution nodes",
+    "statement": "The browser has no access to keys, ledger internals or execution nodes.",
+    "rationale": "A browser path to keys or nodes turns an XSS into a trading incident.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Acceptance scan finds no frontend route or API surface exposing key material, ledger internals or node endpoints."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "API"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-7016",
+    "domain": "QUANT",
+    "title": "Isolated Quantum Gateway with queue-aware async jobs and fallback",
+    "statement": "IBM Quantum is reached only through an isolated Quantum Gateway/Foundry with queue-aware asynchronous job orchestration and a classical fallback.",
+    "rationale": "Synchronous QPU calls make execution depend on a queue nobody controls.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A synchronous job is refused; a queued job that times out yields the classical answer."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7017",
+    "domain": "OBS",
+    "title": "OpenTelemetry plus OpenObserve-compatible observability stack",
+    "statement": "Observability uses OpenTelemetry with OpenObserve or a compatible stack.",
+    "rationale": "Proprietary/no telemetry makes the platform unoperable.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Processes export OTel traces/metrics and an OpenObserve instance ingests them."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "An OTel SDK crate would breach ADR 0002/0009; in-tree exposition is the current approach."
+  },
+  {
+    "id": "R12-OBS-7018",
+    "domain": "OBS",
+    "title": "Trace each opportunity end to end across all stages",
+    "statement": "Each end-to-end opportunity is traceable across brain, model, risk, node, venue, ledger and learning loop under one trace.",
+    "rationale": "Without one trace a decision cannot be attributed after the fact.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cycle produces one trace id visible in brain, risk, node, venue, ledger and learning records."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-7019",
+    "domain": "TICK",
+    "title": "Tick archive in object storage with partitioning, manifests, entitlements",
+    "statement": "Tick and internal execution history are archived in Cloud Storage/object storage with compressed partitioning, manifests and entitlements.",
+    "rationale": "Unmanifested history cannot be replayed reproducibly or licensed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Archived partitions carry a manifest and entitlement; a partition without one is refused at read."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-7020",
+    "domain": "TICK",
+    "title": "Replay workers on dedicated compute with local caches/indexes",
+    "statement": "Replay workers use dedicated compute and local high-throughput caches/indexes.",
+    "rationale": "Replay contending with serving compute.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A replay worker pool is provisioned separately from serving."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-7021",
+    "domain": "DATA",
+    "title": "External world content refetched, never retained as raw corpus",
+    "statement": "External world source content is re-fetched from its origin/provider when needed and is never retained as a raw corpus.",
+    "rationale": "A raw corpus breaches licences and becomes an uncontrolled store.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      },
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§33 Final Definition of Algorik"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No store persists raw external documents; retention keeps only derived records and refetch pointers."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-7022",
+    "domain": "MODEL",
+    "title": "Microstructure outputs packaged through Model Registry",
+    "statement": "Microstructure training outputs are packaged through the Model Registry into warm/reflex-compatible artifacts.",
+    "rationale": "Unregistered artifacts reach the reflex lane without evaluation.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A trained microstructure model reaches the edge only as a registry-signed ModelPack."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-7023",
+    "domain": "WORLD",
+    "title": "No single world model on the reflex critical path",
+    "statement": "World-model services are long-running and versioned with domain-specific stores, and no single model sits on the reflex critical path.",
+    "rationale": "A model outage would stop trading.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Reflex node compile set excludes world-model crates."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-7024",
+    "domain": "REASON",
+    "title": "Symbolic reasoning in warm/slow pools; bounded predicates compiled to reflex",
+    "statement": "Graph/logic/constraint/planning runtimes run in warm/slow pools; deterministic solvers may compile bounded predicates into reflex artifacts.",
+    "rationale": "Unbounded reasoning on the hot path.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Reasoning crates are excluded from the reflex compile set; compiled predicates carry bounds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-7025",
+    "domain": "AMBIENT",
+    "title": "Ambient mesh scheduled continuously with wakeups and surprise scoring",
+    "statement": "Ambient model services are continuously scheduled/streaming with event-driven wakeups, stateful forecasts, surprise scoring and attention routing.",
+    "rationale": "Cognition that only answers prompts misses unprompted signals.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scheduled ambient service emits AmbientSignals that the attention router turns into AttentionEvents."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-7026",
+    "domain": "AMBIENT",
+    "title": "Isolated budgets stop background cognition starving trading",
+    "statement": "Ambient cognition runs under isolated resource budgets so it cannot starve trading paths.",
+    "rationale": "Background cognition starving reflex/risk/ledger.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "40",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Ambient crates are absent from order-path crates and attention spend is budget-capped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-7027",
+    "domain": "AGENCY",
+    "title": "Action orchestrator with typed adapters, identity and durable journal",
+    "statement": "The Causal Agency/Action Orchestrator runs as slow/warm services with typed tool adapters, a policy/identity service, causal simulation access and a durable action journal.",
+    "rationale": "Untyped adapters and no journal make actions unauditable.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An action passes through a typed adapter after policy/identity checks and is journaled durably."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-7028",
+    "domain": "AGENCY",
+    "title": "Public/channel adapters use segregated credentials and conduct policy",
+    "statement": "Public/channel adapters use segregated credentials and are subject to disclosure/conduct policy.",
+    "rationale": "Shared credentials let one compromised channel act as another.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each channel adapter is registered with its own identity; the conduct gate blocks a non-compliant communication."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-7029",
+    "domain": "AGENCY",
+    "title": "No direct path from ambient model to external action",
+    "statement": "No path exists from an ambient model to an external action without passing the agency/authority/conduct gates.",
+    "rationale": "Detection triggering action directly bypasses authorization.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Ambient types cannot reach an action adapter; advisory unwrap requires promotion."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": "Also a §31 COMPLETE TARGET."
+  },
+  {
+    "id": "R12-AGENCY-7030",
+    "domain": "AGENCY",
+    "title": "Effect attribution service with controls, multi-horizon, uncertainty",
+    "statement": "Effect Attribution/Experiment Service supports experiment assignment where permissible, synthetic/no-action controls, multi-horizon metrics and uncertainty-aware EffectAttribution outputs.",
+    "rationale": "Attributing effects without controls confuses correlation with causation.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26 Platform & Deployment Architecture"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Attribution without a control/counterfactual method or confidence is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7031",
+    "domain": "FABRIC",
+    "title": "Fabric is not the execution hot path",
+    "statement": "Local market-event-to-order decisions and direct peer Reflex Mesh coordination do not depend on the fabric.",
+    "rationale": "A broker outage would stop execution.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      },
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§33 Final Definition of Algorik"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Reflex decision thread never calls a blocking fabric API; edge crates do not depend on the broker crate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7032",
+    "domain": "FABRIC",
+    "title": "fabricd brokers hold append-only partition logs and subscriptions",
+    "statement": "fabricd brokers provide append-only partition logs and subscriptions.",
+    "rationale": "Without append-only logs replay is impossible.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Produce then fetch returns records in append order with dense offsets; a subscriber receives later batches."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7033",
+    "domain": "FABRIC",
+    "title": "Consumer checkpoints and consumer groups",
+    "statement": "Brokers maintain consumer checkpoints (committed offsets) and consumer groups.",
+    "rationale": "Consumers cannot resume after failure without committed offsets.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A consumer commits an offset, restarts, and resumes from it; two group members split partitions."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7034",
+    "domain": "FABRIC",
+    "title": "Brokers enforce per-stream retention",
+    "statement": "Brokers apply each stream's retention policy.",
+    "rationale": "Unbounded retention violates bounded-retention rules.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Segments older than the stream's retention are removed after archival."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7035",
+    "domain": "FABRIC",
+    "title": "Partition leaders/followers with replication",
+    "statement": "Brokers act as regional partition leaders/followers and replicate partition logs.",
+    "rationale": "A single disk loses records on host loss.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A follower holds an identical log; killing the leader loses no committed record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7036",
+    "domain": "FABRIC",
+    "title": "Brokers apply backpressure",
+    "statement": "Brokers apply backpressure to producers that exceed quotas or lag limits.",
+    "rationale": "An overloaded broker otherwise drops or stalls everything.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A producer over quota is refused/slowed and the refusal is visible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7037",
+    "domain": "FABRIC",
+    "title": "fabric-controller three-zone Raft metadata quorum",
+    "statement": "A fabric-controller runs a three-zone metadata quorum (Rust Raft) for stream definitions, partition placement, broker epochs, ACL metadata and leadership, with no cloud database required for regional operation.",
+    "rationale": "Metadata on one node or in a cloud DB makes regional operation depend on it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Losing one of three controller nodes keeps metadata writable; losing two halts control changes only."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7038",
+    "domain": "FABRIC",
+    "title": "fabric-mirror selective async cross-region replication",
+    "statement": "fabric-mirror replicates selected streams asynchronously cross-region with no global write quorum; each region stays independently writable.",
+    "rationale": "A global quorum lets a remote outage stop local operation.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Mirror copies selected streams; local writes succeed while the mirror is down."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7039",
+    "domain": "FABRIC",
+    "title": "fabric-schema: versioned descriptors, compatibility checks, schema hashes",
+    "statement": "fabric-schema maintains versioned contract descriptors, compatibility checks, schema hashes and generated Rust types.",
+    "rationale": "Incompatible producers silently corrupt consumers.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Removing/renaming a field without a version bump is refused; identical content yields identical schema id."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT"
+    ],
+    "notes": "Text says Protobuf descriptors; Protobuf/prost needs an ADR (ADR 0002/0009)."
+  },
+  {
+    "id": "R12-FABRIC-7040",
+    "domain": "FABRIC",
+    "title": "fabric-archive exports sealed segments to Cloud Storage",
+    "statement": "Sealed segments are exported to Cloud Storage/Tick Lake with manifests, hashes, entitlements and replay indexes.",
+    "rationale": "Unarchived segments are lost when retention expires.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every sealed segment of an archive-required stream lands once in the archive with manifest and hash."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7041",
+    "domain": "FABRIC",
+    "title": "fabric-bridge adapters are optional and edge-only",
+    "statement": "External Kafka/Pub/Sub/webhook bridges are optional edge-only adapters; internal services use the native protocol.",
+    "rationale": "A bridge on the core path reintroduces the generic broker.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Only a bridge crate may hold a client, it holds no durable state, and nothing depends on it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7042",
+    "domain": "FABRIC",
+    "title": "fabricctl operator CLI for health, lag, ACLs, mirroring, replay, isolation",
+    "statement": "A Rust operator CLI reports stream/partition health, lag, ACLs, mirroring and replay and performs emergency isolation.",
+    "rationale": "Operators without tooling cannot contain a bad stream.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "CLI isolates a partition and the broker refuses produce until release."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7043",
+    "domain": "FABRIC",
+    "title": "fabric-bench latency/throughput benchmark harness",
+    "statement": "A latency/throughput benchmark harness exists for the fabric.",
+    "rationale": "Unmeasured latency claims.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A bench target reports produce/fetch latency percentiles."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7044",
+    "domain": "FABRIC",
+    "title": "fabric-chaos deterministic fault/partition testing in CI and game days",
+    "statement": "Deterministic fault/partition testing of the fabric runs in CI and game days.",
+    "rationale": "Failover paths never exercised fail when needed.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A seeded fault test kills/partitions brokers and asserts no committed loss."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7045",
+    "domain": "FABRIC",
+    "title": "Rust SDK: idempotent sequencing, groups, async subscriptions, OTel hooks",
+    "statement": "The Rust SDK offers zero-copy-friendly producer/consumer APIs, idempotent producer sequencing, consumer groups, async subscriptions, local ring-buffer integration and OpenTelemetry hooks.",
+    "rationale": "Each service re-implementing producer logic gets sequencing wrong.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "41",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "SDK producer and served broker agree on sequences; duplicate producer sequence is deduplicated."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7046",
+    "domain": "FABRIC",
+    "title": "QUIC over UDP with mutual TLS for broker, client and mirror traffic",
+    "statement": "Broker/client and cross-region mirror traffic uses QUIC over UDP with mutual TLS, with long-lived streams for durable records.",
+    "rationale": "Plaintext or unauthenticated transport lets any host inject records.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A client without a valid certificate cannot connect; traffic is QUIC."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "In-tree TLS/QUIC is prohibited by ADR 0009; a QUIC/TLS crate needs a new ADR."
+  },
+  {
+    "id": "R12-FABRIC-7047",
+    "domain": "FABRIC",
+    "title": "QUIC datagrams only for explicitly lossy telemetry classes",
+    "statement": "Unreliable datagrams are used only for streams explicitly declared lossy telemetry.",
+    "rationale": "Lossy delivery for durable records loses money facts.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A durable class configured for datagram delivery is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7048",
+    "domain": "FABRIC",
+    "title": "Wire format is versioned Protobuf via prost",
+    "statement": "Contracts are encoded on the wire as versioned Protobuf via prost for compatibility.",
+    "rationale": "Ad-hoc formats break cross-version compatibility.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Encoded records decode with prost against the registered descriptor."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "CONTRACT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7049",
+    "domain": "FABRIC",
+    "title": "Records and segments carry BLAKE3/content hashes and CRC",
+    "statement": "Every record/segment carries a content hash (BLAKE3) and CRC protection.",
+    "rationale": "Silent corruption reaches consumers.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A flipped bit is refused as corruption naming its offset."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7050",
+    "domain": "FABRIC",
+    "title": "No unversioned in-memory layouts on the network",
+    "statement": "Hot in-process data structures may use zero-copy layouts but never leak unversioned memory formats onto the network.",
+    "rationale": "Unversioned layouts break across binary versions.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every encoded batch carries magic/version; a wrong version is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7051",
+    "domain": "FABRIC",
+    "title": "Strict per-partition order; no global total order promised",
+    "statement": "Ordering is strict within a partition and no total global order is promised.",
+    "rationale": "Consumers relying on a false global order misreplay.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Random produce/fetch/restart keeps offsets dense and fetches in append order."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7052",
+    "domain": "FABRIC",
+    "title": "Every record carries times, region, partition, epoch, offset, HLC",
+    "statement": "Every record carries source event time, receive time, region, partition, leader epoch, offset and hybrid logical clock metadata.",
+    "rationale": "Records without placement/time metadata cannot be replayed or ordered.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An envelope missing any of these fields is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7053",
+    "domain": "FABRIC",
+    "title": "At-least-once default; at-most-once only telemetry; effectively-once via idempotency",
+    "statement": "Durable streams default to at-least-once; at-most-once is allowed only for telemetry; idempotent producer ids/sequence numbers and deterministic event ids give effectively-once with idempotent sinks.",
+    "rationale": "Duplicate or lost financial outcomes.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A durable stream with an at-most-once profile is refused; a replayed producer sequence is not appended twice."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7054",
+    "domain": "FABRIC",
+    "title": "Durability classes: control quorum+WAL, outcomes quorum+archive, journals, telemetry",
+    "statement": "Control streams use three-zone quorum plus persistent metadata/WAL; financial outcomes use quorum replication and archival; market journals use high-throughput replicated segments; telemetry can be sampled/dropped.",
+    "rationale": "One durability level for all is either unsafe or too slow.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each class's declared ack/replication is what the broker enforces."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7055",
+    "domain": "FABRIC",
+    "title": "Every stream has byte/message quotas, lag limits and overload policy",
+    "statement": "Every stream declares explicit byte/message quotas, lag limits and an overload policy.",
+    "rationale": "Unspecified broker defaults decide overload.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A stream missing a quota, lag limit or overload policy is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7056",
+    "domain": "FABRIC",
+    "title": "Critical control/outcomes never silently dropped; telemetry may be shed",
+    "statement": "Critical control and outcome records cannot be silently dropped; telemetry and low-value ambient signals may be sampled or shed.",
+    "rationale": "A silently shed outcome is an accounting hole.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Under overload, P0/P1 producers are refused (visible) not dropped; a recorded-inputs overflow writes a gap on P1."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7057",
+    "domain": "FABRIC",
+    "title": "Cross-region mirroring is async; regional cluster never blocks on remote ack",
+    "statement": "Selected streams mirror asynchronously over Google private networking and a regional cluster never blocks on remote acknowledgement.",
+    "rationale": "A remote outage would stop local execution or control.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Cutting the inter-region link does not block local produce."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7058",
+    "domain": "FABRIC",
+    "title": "Reflex node publishes via non-blocking local ring/journal writer on a separate core",
+    "statement": "The Reflex Node publishes through a non-blocking local ring/journal writer running on a separate core.",
+    "rationale": "A blocking publish stalls the decision thread.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Decision thread hands off with try_send; a stalled writer leaves entries unshipped without blocking."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-7059",
+    "domain": "REFLEX",
+    "title": "Book, inference, risk veto and venue send never wait on broker ack",
+    "statement": "Order-book processing, model inference, risk veto and venue send never wait on a broker acknowledgement.",
+    "rationale": "Execution latency becomes broker latency.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No edge crate depends on qip-streaming/transport broker client in the pass."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7060",
+    "domain": "FABRIC",
+    "title": "Packages are signed immutable artifacts; fabric carries only digests/activation",
+    "statement": "Model and policy packages are immutable signed artifacts in object/artifact storage; the fabric carries only version/digest/availability/activation messages.",
+    "rationale": "Shipping weights over the fabric bloats it and bypasses signing.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A model manifest carries only digests and is size-bounded; unknown fields refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-7061",
+    "domain": "REFLEX",
+    "title": "Fabric outage: node continues on last valid package until TTL/risk degradation",
+    "statement": "If the fabric is unavailable a node continues under its last valid package and local journal until the package TTL or risk policy requires degradation.",
+    "rationale": "Halting on fabric loss makes the fabric a hot-path dependency.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With no new payload, the cell keeps trading at narrowing size and refuses after valid_for elapses."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7062",
+    "domain": "CONTRACT",
+    "title": "EvidencePacket contract carries its required fields",
+    "statement": "A typed EvidencePacket contract exists between brains carrying: claim, entities, time/location, source/provenance, license, confidence, contradiction links, content hash.",
+    "rationale": "Brains exchanging EvidencePacket without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a EvidencePacket missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7063",
+    "domain": "CONTRACT",
+    "title": "BeliefState contract carries its required fields",
+    "statement": "A typed BeliefState contract exists between brains carrying: proposition/distribution, evidence set, causal path, confidence, uncertainty type, TTL.",
+    "rationale": "Brains exchanging BeliefState without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a BeliefState missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7064",
+    "domain": "CONTRACT",
+    "title": "ModelPack contract carries its required fields",
+    "statement": "A typed ModelPack contract exists between brains carrying: signed model artifacts, features, calibration, allowed universes, resource budget, expiry, rollback parent.",
+    "rationale": "Brains exchanging ModelPack without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a ModelPack missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7065",
+    "domain": "CONTRACT",
+    "title": "StrategyPack contract carries its required fields",
+    "statement": "A typed StrategyPack contract exists between brains carrying: compiled strategies, dependencies, hypotheses, universes, capacity, performance envelope, retirement rules.",
+    "rationale": "Brains exchanging StrategyPack without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a StrategyPack missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7066",
+    "domain": "CONTRACT",
+    "title": "CapitalGrant contract carries its required fields",
+    "statement": "A typed CapitalGrant contract exists between brains carrying: owner/mandate, region/strategy, amount, collateral class, leverage, expiry, drawdown and liquidity constraints.",
+    "rationale": "Brains exchanging CapitalGrant without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a CapitalGrant missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7067",
+    "domain": "CONTRACT",
+    "title": "RiskEnvelope contract carries its required fields",
+    "statement": "A typed RiskEnvelope contract exists between brains carrying: hard limits, scenario limits, causal-driver limits, model/data health requirements, emergency mode.",
+    "rationale": "Brains exchanging RiskEnvelope without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a RiskEnvelope missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7068",
+    "domain": "CONTRACT",
+    "title": "OpportunityToken contract carries its required fields",
+    "statement": "A typed OpportunityToken contract exists between brains carrying: cycle/market id, legs, size, edge, TTL, reservations, execution policy, unwind/hedge policy, version lineage.",
+    "rationale": "Brains exchanging OpportunityToken without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a OpportunityToken missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7069",
+    "domain": "CONTRACT",
+    "title": "LedgerEvent contract carries its required fields",
+    "statement": "A typed LedgerEvent contract exists between brains carrying: immutable economic event, debit/credit impacts, ownership, settlement state, full attribution chain.",
+    "rationale": "Brains exchanging LedgerEvent without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a LedgerEvent missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7070",
+    "domain": "CONTRACT",
+    "title": "Episode contract carries its required fields",
+    "statement": "A typed Episode contract exists between brains carrying: world state, beliefs, actions/declines, outcome horizons, surprise, counterfactuals.",
+    "rationale": "Brains exchanging Episode without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a Episode missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7071",
+    "domain": "CONTRACT",
+    "title": "MarketEvent contract carries its required fields",
+    "statement": "A typed MarketEvent contract exists between brains carrying: venue/instrument/type, source sequence, exchange/event time, receive time, normalized time + uncertainty, payload lineage/hash, entitlement.",
+    "rationale": "Brains exchanging MarketEvent without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a MarketEvent missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7072",
+    "domain": "CONTRACT",
+    "title": "MarketStatePack contract carries its required fields",
+    "statement": "A typed MarketStatePack contract exists between brains carrying: time-bounded state/embedding, integrity flags, feature lineage, horizon.",
+    "rationale": "Brains exchanging MarketStatePack without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a MarketStatePack missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7073",
+    "domain": "CONTRACT",
+    "title": "ReplayManifest contract carries its required fields",
+    "statement": "A typed ReplayManifest contract exists between brains carrying: dataset partitions, universe, time window, clock/latency/queue/fill/impact assumptions, model versions, random seeds, reproducibility hashes.",
+    "rationale": "Brains exchanging ReplayManifest without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a ReplayManifest missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7074",
+    "domain": "CONTRACT",
+    "title": "MicrostructureDelta contract carries its required fields",
+    "statement": "A typed MicrostructureDelta contract exists between brains carrying: observed live-vs-model residuals for fills, slippage, impact, liquidity, lead/lag, venue behaviour.",
+    "rationale": "Brains exchanging MicrostructureDelta without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a MicrostructureDelta missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7075",
+    "domain": "CONTRACT",
+    "title": "WorldModelState contract carries its required fields",
+    "statement": "A typed WorldModelState contract exists between brains carrying: model identity/scope/horizon, state distributions, causal structure, evidence lineage, assumptions, calibration, branch parent, update time, expiry.",
+    "rationale": "Brains exchanging WorldModelState without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a WorldModelState missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7076",
+    "domain": "CONTRACT",
+    "title": "ModelDisagreement contract carries its required fields",
+    "statement": "A typed ModelDisagreement contract exists between brains carrying: competing model/hypothesis ids, disputed propositions, supporting evidence, calibration/history, unresolved assumptions, arbitration status.",
+    "rationale": "Brains exchanging ModelDisagreement without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a ModelDisagreement missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7077",
+    "domain": "CONTRACT",
+    "title": "SymbolicDerivation contract carries its required fields",
+    "statement": "A typed SymbolicDerivation contract exists between brains carrying: goal/conclusion, rules/constraints/graph paths, evidence refs, solver/proof result, violated assumptions, uncertainty, machine-checkable trace.",
+    "rationale": "Brains exchanging SymbolicDerivation without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a SymbolicDerivation missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7078",
+    "domain": "CONTRACT",
+    "title": "AmbientSignal contract carries its required fields",
+    "statement": "A typed AmbientSignal contract exists between brains carrying: signal class, observed deviation, expected baseline, horizon, novelty/surprise, affected entities, urgency, wake targets, evidence lineage, expiry.",
+    "rationale": "Brains exchanging AmbientSignal without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a AmbientSignal missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7079",
+    "domain": "CONTRACT",
+    "title": "AttentionEvent contract carries its required fields",
+    "statement": "A typed AttentionEvent contract exists between brains carrying: activation reason, originating models, budget, priority, authority boundary, completion/feedback link.",
+    "rationale": "Brains exchanging AttentionEvent without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a AttentionEvent missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7080",
+    "domain": "CONTRACT",
+    "title": "GoalSpec contract carries its required fields",
+    "statement": "A typed GoalSpec contract exists between brains carrying: desired state, target entities, horizon, success metric, budget, risk/side-effect constraints, identity, jurisdiction, authority class, prohibited methods, stop/rollback conditions.",
+    "rationale": "Brains exchanging GoalSpec without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a GoalSpec missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7081",
+    "domain": "CONTRACT",
+    "title": "InterventionPlan contract carries its required fields",
+    "statement": "A typed InterventionPlan contract exists between brains carrying: causal hypothesis, levers, ordered/conditional actions, tool identities, expected effect distribution, cost, timing, reversibility, simulations, no-action baseline, approvals, abort rules.",
+    "rationale": "Brains exchanging InterventionPlan without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "43",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a InterventionPlan missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7082",
+    "domain": "CONTRACT",
+    "title": "ActionIntent contract carries its required fields",
+    "statement": "A typed ActionIntent contract exists between brains carrying: acting identity, channel/tool, payload, provenance refs, disclosure requirements, policy decisions, expiry/idempotency, audit lineage.",
+    "rationale": "Brains exchanging ActionIntent without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a ActionIntent missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7083",
+    "domain": "CONTRACT",
+    "title": "EffectAttribution contract carries its required fields",
+    "statement": "A typed EffectAttribution contract exists between brains carrying: goal/intervention/action ids, multi-horizon observations, control/counterfactual method, effect distribution, confounders, side effects, identifiability, policy updates.",
+    "rationale": "Brains exchanging EffectAttribution without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a EffectAttribution missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7084",
+    "domain": "CONTRACT",
+    "title": "GapSignal contract carries its required fields",
+    "statement": "A typed GapSignal contract exists between brains carrying: observed surprise/uncertainty/failure, affected domains, evidence, severity, economic/risk value, candidate gap class.",
+    "rationale": "Brains exchanging GapSignal without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a GapSignal missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7085",
+    "domain": "CONTRACT",
+    "title": "CurriculumItem contract carries its required fields",
+    "statement": "A typed CurriculumItem contract exists between brains carrying: research question, expected information/economic value, tools/data, budget, owner, evaluation suite, stop conditions.",
+    "rationale": "Brains exchanging CurriculumItem without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a CurriculumItem missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7086",
+    "domain": "CONTRACT",
+    "title": "BrainSpec contract carries its required fields",
+    "statement": "A typed BrainSpec contract exists between brains carrying: competency domain, tools, source permissions, memory scope, model stack, evaluations, abstention rules, authority envelope.",
+    "rationale": "Brains exchanging BrainSpec without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a BrainSpec missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7087",
+    "domain": "CONTRACT",
+    "title": "ToolSpec contract carries its required fields",
+    "statement": "A typed ToolSpec contract exists between brains carrying: capability, interface, permission scope, data handling, dependency/security provenance, sandbox tests, cost/latency, allowed callers.",
+    "rationale": "Brains exchanging ToolSpec without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a ToolSpec missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7088",
+    "domain": "CONTRACT",
+    "title": "KnowledgeDelta contract carries its required fields",
+    "statement": "A typed KnowledgeDelta contract exists between brains carrying: versioned ontology/world-model/memory update, provenance, confidence, conflicts, originating brain/region, merge policy.",
+    "rationale": "Brains exchanging KnowledgeDelta without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a KnowledgeDelta missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7089",
+    "domain": "CONTRACT",
+    "title": "FabricEnvelope contract carries its required fields",
+    "statement": "A typed FabricEnvelope contract exists between brains carrying: stream namespace, schema/version hash, region, partition, producer id/sequence, leader epoch, offset, source/receive/HLC timestamps, priority/QoS, trace id, idempotency key, payload hash, auth context.",
+    "rationale": "Brains exchanging FabricEnvelope without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a FabricEnvelope missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7090",
+    "domain": "CONTRACT",
+    "title": "StreamPolicy contract carries its required fields",
+    "statement": "A typed StreamPolicy contract exists between brains carrying: partition key, replication factor, ack policy, retention, durability/QoS class, byte/message limits, lag threshold, mirroring policy, overload behaviour, entitlement.",
+    "rationale": "Brains exchanging StreamPolicy without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a StreamPolicy missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7091",
+    "domain": "CONTRACT",
+    "title": "ControlPackAnnouncement contract carries its required fields",
+    "statement": "A typed ControlPackAnnouncement contract exists between brains carrying: artifact kind, immutable URI/digest, version, signer/attestation, target regions/nodes, activation window, expiry, rollback parent, required acks.",
+    "rationale": "Brains exchanging ControlPackAnnouncement without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a ControlPackAnnouncement missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-7092",
+    "domain": "CONTRACT",
+    "title": "MirrorCheckpoint contract carries its required fields",
+    "statement": "A typed MirrorCheckpoint contract exists between brains carrying: source/destination region, stream/partition, source epoch/offset, destination offset, lag, integrity hash, last successful mirror time.",
+    "rationale": "Brains exchanging MirrorCheckpoint without the required fields lose provenance, expiry or attribution.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§27 Core Contracts Between Brains"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing/deserialising a MirrorCheckpoint missing any required field is refused; round-trip preserves every field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7093",
+    "domain": "RES",
+    "title": "Degrade by capability, never fail as one monolith",
+    "statement": "Each capability loss narrows what the platform does rather than halting the whole system.",
+    "rationale": "A monolithic failure mode creates pressure to disable safety on stale inputs.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "44",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Losing one capability changes only the sizing multiplier; absence reads as unavailable; multipliers compound."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7094",
+    "domain": "RES",
+    "title": "Global cognition unavailable: last valid packs, size narrows, no new policy",
+    "statement": "When global cognition is unavailable regional nodes continue with last valid packs until expiry, size narrows as confidence/TTL decays, and no new research/policy is issued.",
+    "rationale": "Halting cells when the centre is down.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Cut-off cell keeps trading at reduced size and stops after payload expiry."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7095",
+    "domain": "RES",
+    "title": "Peer mesh degraded: local trading continues, coordination reduced",
+    "statement": "When the peer reflex mesh is degraded local trading continues and distributed cycles needing coordination are disabled or reduced to pre-positioned directional bands.",
+    "rationale": "A peer outage stopping local trading.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With peers unreachable, single-venue strategies trade and multi-cell cycles are refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7096",
+    "domain": "RES",
+    "title": "Quantum unavailable: classical path runs without execution interruption",
+    "statement": "When quantum is unavailable the classical solver/model path runs and execution is not interrupted.",
+    "rationale": "QPU queue outages stopping trading.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Reflex compile set excludes qip-quantum; classical baseline always computed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7097",
+    "domain": "RES",
+    "title": "Poisoned/stale source: quarantine evidence, downweight dependents",
+    "statement": "A poisoned or stale data source has its evidence quarantined and dependent beliefs/models downweighted or invalidated.",
+    "rationale": "Poisoned data propagating into beliefs.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Quarantining a source downweights/invalidates beliefs citing it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID",
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7098",
+    "domain": "RES",
+    "title": "Ledger degraded: halt new money-risking actions; cancels continue",
+    "statement": "If authoritative accounting cannot be committed, new money-risking actions halt while safe cancels/flattening continue under local journal rules.",
+    "rationale": "Trading with no record.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Exhausted journal halts new exposure while withdrawals and fill confirmations continue."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7099",
+    "domain": "RES",
+    "title": "Custody/treasury unavailable: trade only settled capital",
+    "statement": "When custody/treasury is unavailable trading is constrained to available settled capital with no new transfer dependence.",
+    "rationale": "Trading on capital that cannot move.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With custody down, sizing uses settled capital only."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7100",
+    "domain": "RES",
+    "title": "Venue failure: quarantine, cancel, reroute/hedge, reconcile async",
+    "statement": "On venue failure the venue is quarantined, exposure cancelled if possible, flow rerouted/hedged elsewhere and reconciled asynchronously.",
+    "rationale": "Continuing to send to a failing venue.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A rejecting venue is quarantined until cooldown and orders reroute to a healthy venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7101",
+    "domain": "RES",
+    "title": "Model drift: fall back to baseline/deterministic, shrink capital",
+    "statement": "On model drift the system falls back to a challenger/baseline model or deterministic strategy and shrinks capital automatically.",
+    "rationale": "A drifting model keeps full capital.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Drift detection triggers fallback and reduced sizing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7102",
+    "domain": "RES",
+    "title": "Tick sequence gap/corrupt book: mark unreliable, snapshot, quarantine",
+    "statement": "On a tick-feed sequence gap or corrupt book the affected interval/instrument is marked unreliable, a snapshot/recovery requested, derived features quarantined and contaminated windows kept out of training/replay until integrity is restored.",
+    "rationale": "Training on corrupted windows.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A gap marks exactly the affected books unreliable and raises a snapshot request until it closes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7103",
+    "domain": "RES",
+    "title": "Clock sync degraded: widen uncertainty, disable precise-ordering work",
+    "statement": "When clock sync degrades raw timestamps are preserved, temporal uncertainty widened, strategies/research needing precise cross-venue ordering disabled and precision-sensitive labels/replay blocked from promotion.",
+    "rationale": "Mis-ordered events producing false lead/lag.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A degraded clock widens MarketEvent uncertainty and disables ordering-sensitive strategies."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7104",
+    "domain": "RES",
+    "title": "Replay diverges from live: reduce capital, recalibrate, re-promote",
+    "statement": "When replay diverges from live execution, confidence/capital on dependent strategies is reduced, the twin recalibrated with live telemetry, benchmarks rerun and renewed promotion required.",
+    "rationale": "Strategies promoted on a twin that no longer matches reality.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Divergence above threshold reduces dependent strategy size and blocks restoration until re-promotion."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7105",
+    "domain": "RES",
+    "title": "World models diverge: preserve branches, no false consensus",
+    "statement": "Diverging world models are not forced into consensus: branches preserved, uncertainty raised, authority reduced where appropriate, discriminating evidence requested, arbitration by calibration and outcome history.",
+    "rationale": "False consensus hides model risk.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Arbitration keeps every view, can branch/abstain/request information."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7106",
+    "domain": "RES",
+    "title": "Symbolic contradiction: infeasible, keep trace, fail closed on money",
+    "statement": "On symbolic contradiction/unsatisfied constraints the conclusion/action is marked infeasible or unresolved, the trace retained, alternates searched, and money-moving invariants fail closed.",
+    "rationale": "Acting on contradictory reasoning.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A contradictory derivation yields infeasible with trace and blocks money movement."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7107",
+    "domain": "RES",
+    "title": "Ambient storm: rate-limit attention, dedupe, penalise, quarantine",
+    "statement": "An ambient storm is handled by rate-limiting/budgeting attention, clustering duplicates, penalising low-value producers, quarantining drifting ambient models and protecting reflex/ledger resources.",
+    "rationale": "Noisy alerts consuming cognition and resources.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A storm never exceeds the attention budget; duplicates cluster; noisy producer reputation falls."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7108",
+    "domain": "RES",
+    "title": "Causal effect not identifiable: no causal claim, no autonomy scaling",
+    "statement": "When a causal effect is not identifiable the system does not claim causation, downgrades confidence, keeps competing explanations, seeks evidence or safer experiments, and never scales autonomy from correlation alone.",
+    "rationale": "Autonomy growing on spurious correlation.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "45",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "widen() refuses an unidentified attribution; weakly identified plans are never executed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7109",
+    "domain": "RES",
+    "title": "Compromised action identity: revoke, stop, preserve audit, re-authorise",
+    "statement": "On action/channel identity compromise the adapter and credentials are revoked/quarantined, pending actions stopped, audit preserved, identities/secrets rotated and explicit re-authorisation required; no unapproved identity is substituted.",
+    "rationale": "A compromised channel continuing to act.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "After revoke the next action is refused and audited."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7110",
+    "domain": "RES",
+    "title": "Conduct gate failure blocks the action; profit never overrides",
+    "statement": "If the communication/conduct gate fails the external action is blocked, the failed plan and reasons retained, and a truthful alternative sought or the action abstained; profitability never overrides conduct.",
+    "rationale": "Manipulative communications justified by profit.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A failing check blocks; a profit-only justification is refused."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7111",
+    "domain": "RES",
+    "title": "Adverse side effect: rollback, reduce authority, failure episode",
+    "statement": "An intervention causing an adverse side effect triggers plan-specific stop/rollback/hedge/mitigation, reduces the relevant action-policy authority, creates a failure episode and requires re-evaluation before reuse.",
+    "rationale": "Repeating a harmful intervention.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Observed side effect narrows authority and blocks reuse."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7112",
+    "domain": "RES",
+    "title": "Fabric broker loss: ISR failover, epoch retry, offset resume",
+    "statement": "On regional broker loss partition leadership moves to an in-sync replica in another zone, producers retry by epoch, consumers resume from committed offsets, and reflex execution does not wait for failover.",
+    "rationale": "Broker loss losing records or stalling producers.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Killing the leader promotes a replica with no committed loss."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7113",
+    "domain": "RES",
+    "title": "Fabric quorum lost: reflex continues, local queue bounded, degrade first",
+    "statement": "On fabric quorum loss local reflex nodes continue from cached signed policy and local journals, new control changes stop, durable publication queues locally within bounded disk budgets, and policy-defined degradation happens before journal exhaustion.",
+    "rationale": "Journal exhaustion with trading continuing unrecorded.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Spool pressure narrows sizing before it halts new exposure."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC",
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-7114",
+    "domain": "RES",
+    "title": "Mirror down: local streams writable, lag visible, replay on return",
+    "statement": "When the cross-region mirror is down local streams stay writable, mirror lag is visible and bounded, no synchronous cross-region quorum is attempted, and global consumers mark remote knowledge stale and replay from regional/GCS archive on return.",
+    "rationale": "A mirror outage blocking local writes.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§28 Failure and Degradation Model"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Mirror lag gauge rises while local produce continues."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7115",
+    "domain": "OBS",
+    "title": "AIOps observes infra, apps, data, models and trading as one graph",
+    "statement": "AI observes infrastructure, applications, data quality, model health and trading behaviour as one entity graph.",
+    "rationale": "Siloed telemetry hides cross-layer incidents.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Signals of all five classes attach to shared entity keys."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-7116",
+    "domain": "CICD",
+    "title": "Every deploy passes a simulation gate before promotion",
+    "statement": "Every deploy runs a simulation gate and is not promoted unless it passes.",
+    "rationale": "Promoting an unverified build.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "deploy.yml cannot promote without the simulation job succeeding; removing the job dependency fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-7117",
+    "domain": "CICD",
+    "title": "Every deploy passes a integration gate before promotion",
+    "statement": "Every deploy runs a integration gate and is not promoted unless it passes.",
+    "rationale": "Promoting an unverified build.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "deploy.yml cannot promote without the integration job succeeding; removing the job dependency fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-7118",
+    "domain": "CICD",
+    "title": "Every deploy passes a security gate before promotion",
+    "statement": "Every deploy runs a security gate and is not promoted unless it passes.",
+    "rationale": "Promoting an unverified build.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "deploy.yml cannot promote without the security job succeeding; removing the job dependency fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-7119",
+    "domain": "CICD",
+    "title": "Every deploy passes a performance gate before promotion",
+    "statement": "Every deploy runs a performance gate and is not promoted unless it passes.",
+    "rationale": "Promoting an unverified build.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "deploy.yml cannot promote without the performance job succeeding; removing the job dependency fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-7120",
+    "domain": "CICD",
+    "title": "Every deploy passes a paper-trading gate before promotion",
+    "statement": "Every deploy runs a paper-trading gate and is not promoted unless it passes.",
+    "rationale": "Promoting an unverified build.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "deploy.yml cannot promote without the paper-trading job succeeding; removing the job dependency fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7121",
+    "domain": "OBS",
+    "title": "Autonomous remediation only inside pre-approved runbooks",
+    "statement": "Autonomous remediation may restart, roll back, scale, fail over, quarantine or disable a capability only inside pre-approved runbooks.",
+    "rationale": "Free-form autonomous changes to production.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Remediator refuses an action not in a runbook and audits every action."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7122",
+    "domain": "OBS",
+    "title": "Incident agent correlates telemetry, deploys, data, venues, drift",
+    "statement": "An incident agent correlates telemetry, deployment changes, data anomalies, venue behaviour and model drift into one timeline.",
+    "rationale": "Incidents diagnosed from partial views.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "build_timeline merges all sources ordered by time."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7123",
+    "domain": "OBS",
+    "title": "SLO defined for market-data freshness",
+    "statement": "A service-level objective is defined and evaluated for market-data freshness.",
+    "rationale": "Without an SLO, market-data freshness degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for market-data freshness with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7124",
+    "domain": "OBS",
+    "title": "SLO defined for decision latency",
+    "statement": "A service-level objective is defined and evaluated for decision latency.",
+    "rationale": "Without an SLO, decision latency degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for decision latency with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7125",
+    "domain": "OBS",
+    "title": "SLO defined for order/fill integrity",
+    "statement": "A service-level objective is defined and evaluated for order/fill integrity.",
+    "rationale": "Without an SLO, order/fill integrity degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for order/fill integrity with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7126",
+    "domain": "OBS",
+    "title": "SLO defined for ledger commit",
+    "statement": "A service-level objective is defined and evaluated for ledger commit.",
+    "rationale": "Without an SLO, ledger commit degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for ledger commit with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7127",
+    "domain": "OBS",
+    "title": "SLO defined for reconciliation",
+    "statement": "A service-level objective is defined and evaluated for reconciliation.",
+    "rationale": "Without an SLO, reconciliation degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for reconciliation with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7128",
+    "domain": "OBS",
+    "title": "SLO defined for model serving",
+    "statement": "A service-level objective is defined and evaluated for model serving.",
+    "rationale": "Without an SLO, model serving degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for model serving with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7129",
+    "domain": "OBS",
+    "title": "SLO defined for data provenance",
+    "statement": "A service-level objective is defined and evaluated for data provenance.",
+    "rationale": "Without an SLO, data provenance degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for data provenance with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7130",
+    "domain": "OBS",
+    "title": "SLO defined for quantum job success",
+    "statement": "A service-level objective is defined and evaluated for quantum job success.",
+    "rationale": "Without an SLO, quantum job success degradation is unmeasured.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The SLO set contains an objective for quantum job success with a target and window; removing it fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7131",
+    "domain": "OBS",
+    "title": "Action lineage graph GoalSpec to EffectAttribution",
+    "statement": "Action observability traces GoalSpec -> InterventionPlan -> approvals -> ActionIntent -> effects -> EffectAttribution as one lineage graph.",
+    "rationale": "Actions whose cause and effect cannot be linked.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "One intervention leaves linked goal approval, plan approval and execution records."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-7132",
+    "domain": "OBS",
+    "title": "Channel health: identity integrity, reach, provenance, violations, coordination",
+    "statement": "Communications/channel health covers identity integrity, delivery/reach metrics, provenance/disclosure checks, policy violations and anomalous coordination patterns.",
+    "rationale": "Unmonitored channels drifting into misconduct.",
+    "kind": "metric",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each channel health dimension is recorded per channel."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-7133",
+    "domain": "AGENCY",
+    "title": "Causal-policy drift shrinks autonomy automatically",
+    "statement": "When observed intervention effects deviate from predicted uplift or side-effect assumptions, autonomy shrinks automatically.",
+    "rationale": "Autonomy kept after its premise failed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "46",
+        "section": "§29 Autonomous Platform Operations / AIOps"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Observed effect below prediction narrows ActionPolicy authority."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-7134",
+    "domain": "ARCH",
+    "title": "Architecture complete; implementation gated by phase exits",
+    "statement": "Implementation proceeds in gated phases; a phase's exit capability is demonstrated before the next phase's capabilities are enabled.",
+    "rationale": "Building everything at once yields an untestable system.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each phase has a recorded exit check; later-phase features stay disabled until it passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-7135",
+    "domain": "ARCH",
+    "title": "Phase 0 exit: contracts, ledger, simulation, observability, CI/CD, identity, venue SDK",
+    "statement": "Phase 0 exits with canonical types/contracts, ledger, simulation harness, observability, CI/CD/GitOps, identity/security and a venue adapter SDK.",
+    "rationale": "Later phases built on missing foundations.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named foundation exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CICD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7136",
+    "domain": "FABRIC",
+    "title": "Phase 0 includes fabric contracts, 3-zone quorum, SDK, benchmark harness",
+    "statement": "Native fabric contracts, 3-zone regional quorum, Rust SDK and benchmark harness are delivered in Phase 0.",
+    "rationale": "A later fabric retrofit changes every producer.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "All four exist and are tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-7137",
+    "domain": "REFLEX",
+    "title": "Phase 1 exit: one reflex cell, paper, deterministic risk, ledger, replay",
+    "statement": "Phase 1 exits with one asset/venue reflex cell: local fast path, deterministic risk, ledger, paper trading and replay.",
+    "rationale": "Multi-cell work on an unproven single cell.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "qip-edge-node runs passes on the simulated feed with deterministic risk and journal replay."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-7138",
+    "domain": "TICK",
+    "title": "Phase 1: canonical tick capture, book reconstruction, deterministic replay mandatory",
+    "statement": "For the first market, canonical tick capture, book reconstruction and deterministic replay are mandatory Phase 1 exits.",
+    "rationale": "Unreplayable first market.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Replaying a captured tape reproduces the same decisions byte-for-byte."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-7139",
+    "domain": "ARCH",
+    "title": "Phase 2 exit: cognitive data loop",
+    "statement": "Phase 2 exits with Scout Fabric, evidence/provenance, world model, episodic memory, Tick Learning Fabric, Tick Lake, replay/digital twin, world+market fusion, model/strategy foundry, initial World Model Federation, disagreement representation and symbolic/temporal/causal reasoning services.",
+    "rationale": "Skipping a phase leaves later capabilities without their substrate.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-7140",
+    "domain": "ARCH",
+    "title": "Phase 3 exit: multi-asset with capital and risk brains",
+    "statement": "Phase 3 exits with asset registry, Asset/Capital/Risk brains, treasury, custody corridors and multiple asset classes.",
+    "rationale": "Skipping a phase leaves later capabilities without their substrate.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-7141",
+    "domain": "MESH",
+    "title": "Phase 4 exit: multi-region reflex mesh",
+    "statement": "Phase 4 exits with Americas/Europe/APAC nodes, peer mesh, opportunity tokens, distributed reservations, 2-5 leg cycles, cross-region tick alignment, lead/lag learning and distributed opportunity replay.",
+    "rationale": "Skipping a phase leaves later capabilities without their substrate.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7142",
+    "domain": "FABRIC",
+    "title": "Phase 4: selective mirroring for outcomes/control; arbitrage on direct mesh",
+    "statement": "Phase 4 adds selective cross-region fabric mirroring for outcomes/control while latency-sensitive arbitrage state stays on direct Reflex Mesh links.",
+    "rationale": "Arbitrage state on the durable fabric adds latency.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Mirror catalogue lists only outcome/control streams; arbitrage uses mesh links."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-7143",
+    "domain": "MESH",
+    "title": "Phase 5 exit: 3-20 leg arbitrage and market making",
+    "statement": "Phase 5 exits with graph optimisation, pre-positioned inventory, saga recovery, quote engine and cross-class hedge map.",
+    "rationale": "Phases built out of order lack their prerequisites.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-7144",
+    "domain": "QUANT",
+    "title": "Phase 6: classical benchmark first, ship only measured quantum wins",
+    "statement": "Phase 6 builds the classical benchmark first, then quantum optimisation and QML plug-ins, shipping only measured wins, including benchmarked symbolic/combinatorial and scenario-ensemble experiments.",
+    "rationale": "Phases built out of order lack their prerequisites.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-7145",
+    "domain": "EVENT",
+    "title": "Phase 7 exit: prediction markets, market factory, commerce",
+    "statement": "Phase 7 exits with event markets, market creation workflows, physical product commerce and logistics adapters.",
+    "rationale": "Phases built out of order lack their prerequisites.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-7146",
+    "domain": "AMBIENT",
+    "title": "Phase 8 exit: governed autonomy with ambient mesh and attention router",
+    "statement": "Phase 8 exits with broader tool use, self-directed research, specialist-agent society and autonomous model/strategy lifecycle under authority envelopes, plus the Ambient Model Mesh and Attention Router.",
+    "rationale": "Phases built out of order lack their prerequisites.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "47",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXPAND-7147",
+    "domain": "EXPAND",
+    "title": "Phase 9 exit: open-ended intelligence expansion",
+    "statement": "Phase 9 exits with Curriculum Engine, registries, sandboxed tool/agent creation, active learning, memory consolidation, regional-to-global learning, benchmark-gated promotion, microstructure curricula and governed world-model/rule spawning.",
+    "rationale": "Phases built out of order lack their prerequisites.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every named exit capability exists and is tested."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-7148",
+    "domain": "AGENCY",
+    "title": "Phase 10: causal agency begins shadow-only, then narrow reversible actions",
+    "statement": "Phase 10 delivers GoalSpec/affordance graph, Intervention Planner, authorised adapters, conduct gate, effect attribution, no-action baselines, Action Outcome Memory and ambient-to-agency routing, beginning shadow-only and then allowing narrow reversible actions before broader authority.",
+    "rationale": "Agency granted broad authority before evidence.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§30 Build Order"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Default authority is shadow; narrow-reversible refuses an irreversible tool."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-COVERAGE-7149",
+    "domain": "COVERAGE",
+    "title": "Checklist: Fast reflex lane and slow cognitive lane are",
+    "statement": "COMPLETE TARGET: Fast reflex lane and slow cognitive lane are explicit and independently deployable.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7150",
+    "domain": "COVERAGE",
+    "title": "Checklist: Warm coordination lane connects slow and fast systems",
+    "statement": "COMPLETE TARGET: Warm coordination lane connects slow and fast systems without putting global services on the local hot path.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7151",
+    "domain": "COVERAGE",
+    "title": "Checklist: Global data discovery can autonomously find, assess, register,",
+    "statement": "COMPLETE TARGET: Global data discovery can autonomously find, assess, register, feed and retire sources.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7152",
+    "domain": "COVERAGE",
+    "title": "Checklist: World information is evidence-scored and provenance-tracked; no component",
+    "statement": "COMPLETE TARGET: World information is evidence-scored and provenance-tracked; no component treats scraping as truth by default.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7153",
+    "domain": "COVERAGE",
+    "title": "Checklist: World model, causal graph, episodic/semantic/procedural memory, counterfactuals and",
+    "statement": "COMPLETE TARGET: World model, causal graph, episodic/semantic/procedural memory, counterfactuals and self-model exist.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7154",
+    "domain": "COVERAGE",
+    "title": "Checklist: Generalist/superintelligence-style planners and specialist agents can run in",
+    "statement": "COMPLETE TARGET: Generalist/superintelligence-style planners and specialist agents can run in the slow lane and use tools under policy.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7155",
+    "domain": "COVERAGE",
+    "title": "Checklist: Model Foundry supports large models, specialist models and",
+    "statement": "COMPLETE TARGET: Model Foundry supports large models, specialist models and distilled reflex models.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7156",
+    "domain": "COVERAGE",
+    "title": "Checklist: Quantum Foundry supports optimization and experimental learning, benchmarked",
+    "statement": "COMPLETE TARGET: Quantum Foundry supports optimization and experimental learning, benchmarked against classical baselines.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANT"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7157",
+    "domain": "COVERAGE",
+    "title": "Checklist: Asset, Capital, Risk, Treasury, Ledger and Settlement brains",
+    "statement": "COMPLETE TARGET: Asset, Capital, Risk, Treasury, Ledger and Settlement brains are separate first-class domains.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7158",
+    "domain": "COVERAGE",
+    "title": "Checklist: Regional reflex nodes can operate independently and communicate",
+    "statement": "COMPLETE TARGET: Regional reflex nodes can operate independently and communicate with peers.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7159",
+    "domain": "COVERAGE",
+    "title": "Checklist: 2-20-leg arbitrage is modeled as an executable graph",
+    "statement": "COMPLETE TARGET: 2-20-leg arbitrage is modeled as an executable graph with reservations, coordination, hedging and unwind semantics.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7160",
+    "domain": "COVERAGE",
+    "title": "Checklist: Market making and governed market creation are supported.",
+    "statement": "COMPLETE TARGET: Market making and governed market creation are supported.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7161",
+    "domain": "COVERAGE",
+    "title": "Checklist: Prediction/event markets are first-class; regulated wagering is isolated",
+    "statement": "COMPLETE TARGET: Prediction/event markets are first-class; regulated wagering is isolated by eligibility/jurisdiction.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVENT"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7162",
+    "domain": "COVERAGE",
+    "title": "Checklist: Physical product purchase/resale has commerce, logistics and inventory",
+    "statement": "COMPLETE TARGET: Physical product purchase/resale has commerce, logistics and inventory capabilities, not just a price model.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "COMMERCE"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7163",
+    "domain": "COVERAGE",
+    "title": "Checklist: All major liquid, event-driven, private/illiquid, tokenized and physical",
+    "statement": "COMPLETE TARGET: All major liquid, event-driven, private/illiquid, tokenized and physical classes have an extensible registry.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "48",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7164",
+    "domain": "COVERAGE",
+    "title": "Checklist: Ledger is authoritative and double-entry across cash, positions,",
+    "statement": "COMPLETE TARGET: Ledger is authoritative and double-entry across cash, positions, obligations, collateral and physical inventory.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7165",
+    "domain": "COVERAGE",
+    "title": "Checklist: Continuous evaluation learns from actions, declines, partial fills",
+    "statement": "COMPLETE TARGET: Continuous evaluation learns from actions, declines, partial fills and failures.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7166",
+    "domain": "COVERAGE",
+    "title": "Checklist: AIOps can operate and remediate the platform autonomously",
+    "statement": "COMPLETE TARGET: AIOps can operate and remediate the platform autonomously within runbooks and safety envelopes.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7167",
+    "domain": "COVERAGE",
+    "title": "Checklist: Legal capability gates are separate from technical capability",
+    "statement": "COMPLETE TARGET: Legal capability gates are separate from technical capability so the same brain can research more broadly than it can execute.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7168",
+    "domain": "COVERAGE",
+    "title": "Checklist: Every dependency has a defined degraded mode; quantum",
+    "statement": "COMPLETE TARGET: Every dependency has a defined degraded mode; quantum and global cognition can never block the reflex path.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7169",
+    "domain": "COVERAGE",
+    "title": "Checklist: An Intelligence Expansion Engine turns novelty, uncertainty, failure",
+    "statement": "COMPLETE TARGET: An Intelligence Expansion Engine turns novelty, uncertainty, failure and unsupported requests into ranked research/capability work.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7170",
+    "domain": "COVERAGE",
+    "title": "Checklist: Source, ontology, memory, brain, tool, model, research and",
+    "statement": "COMPLETE TARGET: Source, ontology, memory, brain, tool, model, research and capability registries are versioned and extensible rather than hard-coded.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7171",
+    "domain": "COVERAGE",
+    "title": "Checklist: The platform can create new specialist brains and",
+    "statement": "COMPLETE TARGET: The platform can create new specialist brains and tool integrations in sandboxes, independently evaluate them and promote only measured improvements.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7172",
+    "domain": "COVERAGE",
+    "title": "Checklist: Self-generated curriculum/active learning determines what data, simulations, labels,",
+    "statement": "COMPLETE TARGET: Self-generated curriculum/active learning determines what data, simulations, labels, experiments and research campaigns should run next.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXPAND"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7173",
+    "domain": "COVERAGE",
+    "title": "Checklist: Regional reflex experience is merged into global learning",
+    "statement": "COMPLETE TARGET: Regional reflex experience is merged into global learning through typed episodes/knowledge deltas without adding a synchronous hot-path dependency.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7174",
+    "domain": "COVERAGE",
+    "title": "Checklist: Memory consolidation, ontology expansion and cross-domain synthesis let",
+    "statement": "COMPLETE TARGET: Memory consolidation, ontology expansion and cross-domain synthesis let intelligence compound instead of only accumulating raw data.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7175",
+    "domain": "COVERAGE",
+    "title": "Checklist: Quantum-assisted learning/search remains an expandable research path but",
+    "statement": "COMPLETE TARGET: Quantum-assisted learning/search remains an expandable research path but never bypasses classical benchmarks, evidence rules or production promotion gates.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANT"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7176",
+    "domain": "COVERAGE",
+    "title": "Checklist: Raw and canonical tick/order-book history is a governed",
+    "statement": "COMPLETE TARGET: Raw and canonical tick/order-book history is a governed training asset with reproducible manifests, entitlements and deterministic reconstruction.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7177",
+    "domain": "COVERAGE",
+    "title": "Checklist: Historical replay models latency, queues, fees, rejects, partial",
+    "statement": "COMPLETE TARGET: Historical replay models latency, queues, fees, rejects, partial fills, impact and multi-leg failure/unwind rather than assuming fills from bars.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7178",
+    "domain": "COVERAGE",
+    "title": "Checklist: World intelligence and market microstructure intelligence are time-aligned",
+    "statement": "COMPLETE TARGET: World intelligence and market microstructure intelligence are time-aligned and fused; event causality can be compared with actual market propagation.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7179",
+    "domain": "COVERAGE",
+    "title": "Checklist: Microstructure/execution models are continuously recalibrated from live Algorik",
+    "statement": "COMPLETE TARGET: Microstructure/execution models are continuously recalibrated from live Algorik telemetry and distilled into bounded reflex artifacts only after independent evaluation.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7180",
+    "domain": "COVERAGE",
+    "title": "Checklist: World intelligence is a federation of numerous domain,",
+    "statement": "COMPLETE TARGET: World intelligence is a federation of numerous domain, regional, horizon, scenario and counterfactual world models rather than one monolithic model; disagreement and branch lineage are explicit.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7181",
+    "domain": "COVERAGE",
+    "title": "Checklist: A Symbolic & Neuro-Symbolic Reasoning Fabric provides ontology,",
+    "statement": "COMPLETE TARGET: A Symbolic & Neuro-Symbolic Reasoning Fabric provides ontology, temporal, causal, rule, probabilistic, constraint, planning and proof-trace reasoning alongside neural models.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REASON"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7182",
+    "domain": "COVERAGE",
+    "title": "Checklist: Proactive ambient models run continuously, maintain forecasts and",
+    "statement": "COMPLETE TARGET: Proactive ambient models run continuously, maintain forecasts and surprise scores, monitor assumptions, search weak signals/opportunities and wake specialist/research pathways without prompts.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7183",
+    "domain": "COVERAGE",
+    "title": "Checklist: Quantum research can assist selected structured symbolic/combinatorial search",
+    "statement": "COMPLETE TARGET: Quantum research can assist selected structured symbolic/combinatorial search and world-model/scenario ensemble selection, but every result is benchmarked and independently verified.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANT"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7184",
+    "domain": "COVERAGE",
+    "title": "Checklist: Ambient cognition has explicit attention/resource budgets and cannot",
+    "statement": "COMPLETE TARGET: Ambient cognition has explicit attention/resource budgets and cannot starve the reflex, risk, ledger or custody paths.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7185",
+    "domain": "COVERAGE",
+    "title": "Checklist: Desired outcomes are explicit GoalSpec objects with success",
+    "statement": "COMPLETE TARGET: Desired outcomes are explicit GoalSpec objects with success metrics, horizons, budgets, side-effect constraints, acting identity and prohibited methods rather than free-form wishes.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "49",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7186",
+    "domain": "COVERAGE",
+    "title": "Checklist: A Causal Agency & Intervention Engine maps goals",
+    "statement": "COMPLETE TARGET: A Causal Agency & Intervention Engine maps goals to controllable causal levers, generates multiple action/no-action plans, simulates them against competing world models and executes only through typed authorized tools.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7187",
+    "domain": "COVERAGE",
+    "title": "Checklist: External communication is an audited action surface with",
+    "statement": "COMPLETE TARGET: External communication is an audited action surface with truthfulness, provenance, identity, disclosure, channel/jurisdiction and market-conduct checks; deceptive/manipulative influence methods are infeasible by policy.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7188",
+    "domain": "COVERAGE",
+    "title": "Checklist: Intervention learning estimates causal effect and uncertainty across",
+    "statement": "COMPLETE TARGET: Intervention learning estimates causal effect and uncertainty across multiple horizons using experiments or defensible observational methods; correlation alone cannot grant more autonomy.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7189",
+    "domain": "COVERAGE",
+    "title": "Checklist: Action Outcome Memory and EffectAttribution update world models,",
+    "statement": "COMPLETE TARGET: Action Outcome Memory and EffectAttribution update world models, causal graphs, ambient priors and action policies so the system learns which interventions work, where, when and with what side effects.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7190",
+    "domain": "COVERAGE",
+    "title": "Checklist: Ambient models may propose action opportunities but cannot",
+    "statement": "COMPLETE TARGET: Ambient models may propose action opportunities but cannot directly perform external actions; the Agency Brain, authority and conduct gates sit between detection and execution.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7191",
+    "domain": "COVERAGE",
+    "title": "Checklist: Quantum-assisted intervention search may rank large constrained action/scenario",
+    "statement": "COMPLETE TARGET: Quantum-assisted intervention search may rank large constrained action/scenario sets but cannot bypass classical causal validation, policy, identity, conduct or authorization gates.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "QUANT"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7192",
+    "domain": "COVERAGE",
+    "title": "Checklist: Google Pub/Sub and core Kafka are not internal",
+    "statement": "COMPLETE TARGET: Google Pub/Sub and core Kafka are not internal runtime dependencies; the Algorik Rust Event & Control Fabric provides typed publish/subscribe, replicated journals, replay, backpressure and selective mirrors.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7193",
+    "domain": "COVERAGE",
+    "title": "Checklist: A fabric outage cannot block market-event-to-order execution; Reflex",
+    "statement": "COMPLETE TARGET: A fabric outage cannot block market-event-to-order execution; Reflex Nodes use non-blocking local journal/ring writers and cached signed control packages.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7194",
+    "domain": "COVERAGE",
+    "title": "Checklist: Direct Reflex Mesh traffic remains separate from durable",
+    "statement": "COMPLETE TARGET: Direct Reflex Mesh traffic remains separate from durable event fabric traffic, so multi-leg coordination can optimize latency independently of replay/durability concerns.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-COVERAGE-7195",
+    "domain": "COVERAGE",
+    "title": "Checklist: Every durable event stream declares partitioning, ordering, retention,",
+    "statement": "COMPLETE TARGET: Every durable event stream declares partitioning, ordering, retention, replication, overload and mirroring semantics rather than relying on unspecified broker defaults.",
+    "rationale": "The checklist is the acceptance bar for calling the target architecture complete.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31 Capability Completeness Checklist"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every constituent obligation (decomposed in the owning slice) is COMPLETE and an acceptance suite proves the composite."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Aggregate acceptance target; constituent obligations are decomposed in the domain slices."
+  },
+  {
+    "id": "R12-WORLD-7196",
+    "domain": "WORLD",
+    "title": "NOW Brain estimates latent state with uncertainty and freshness",
+    "statement": "A NOW Brain continuously estimates latent global/market/system state with uncertainty and freshness.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-7197",
+    "domain": "WORLD",
+    "title": "Temporal Forecast Lattice gives calibrated distributions microseconds to years",
+    "statement": "A Temporal Forecast Lattice produces calibrated distributions from microseconds through years.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-7198",
+    "domain": "MODEL",
+    "title": "Model Tournament and internal Forecast Market for thousands of models",
+    "statement": "Thousands of specialist/temporary models can compete in a scored Model Tournament and internal Forecast Market.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-7199",
+    "domain": "TICK",
+    "title": "Synthetic future trees and digital twins explore unseen worlds",
+    "statement": "Synthetic future trees and digital twins continuously explore worlds not present in historical data.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-7200",
+    "domain": "AMBIENT",
+    "title": "Active Sensing chooses observations by expected value of information",
+    "statement": "Active Sensing chooses new observations by expected value of information.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-7201",
+    "domain": "MODEL",
+    "title": "Adversarial verifier societies attack important predictions and models",
+    "statement": "Adversarial verifier societies independently attack important predictions and models.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-7202",
+    "domain": "AMBIENT",
+    "title": "Meta-Intelligence allocates attention, agents and compute by marginal value",
+    "statement": "Meta-Intelligence allocates attention, agents and CPU/GPU/TPU/QPU compute by marginal information/economic value.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-7203",
+    "domain": "REASON",
+    "title": "Cognitive Compiler distils discoveries into bounded reflex packages",
+    "statement": "A Cognitive Compiler distills slow-lane discoveries into bounded specialist/reflex packages.",
+    "rationale": "Named in §31.1 as a completeness addition; without it v12 is not complete.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "The capability runs from a composition root and a test asserts its defining property."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-7204",
+    "domain": "CAPITAL",
+    "title": "Capital, hedge, model-risk and survival systems independent of alpha",
+    "statement": "Capital, hedge, model-risk and survival systems are independent from alpha generation: no alpha/model component can construct, relax or bypass their decisions.",
+    "rationale": "Alpha generation sizing its own risk.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Survival/risk crates do not depend on alpha/model crates and alpha crates cannot construct a permit."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-7205",
+    "domain": "RISK",
+    "title": "Veto/reduce exposure enforced by the deterministic Risk Gate",
+    "statement": "The capital/risk/survival systems can veto or reduce exposure, and that enforcement is held by the deterministic Risk Gate on the reflex path, never routed to a model.",
+    "rationale": "A veto that depends on a model can be argued away or unavailable.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      },
+      {
+        "doc": "M",
+        "page": "42",
+        "section": "§26.1 Native Rust Event & Control Fabric"
+      },
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§33 Final Definition of Algorik"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A breached limit vetoes the order deterministically; the Determinism::Required path cannot name a model rung; removing the gate lets the order through."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CAPITAL",
+      "REFLEX"
+    ],
+    "notes": "Combines §31.1 (veto/reduce) with §26.1 hot-path 'risk veto' and §33 'executes locally under deterministic controls'."
+  },
+  {
+    "id": "R12-QUANT-7206",
+    "domain": "QUANT",
+    "title": "Quantum is async, benchmarked, never assumed advantage nor hot-path dependency",
+    "statement": "Quantum is a native asynchronous substrate inside a benchmarked hybrid compute fabric, never an assumed advantage and never a hot-path dependency.",
+    "rationale": "Assuming quantum advantage or blocking on QPU queues.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "50",
+        "section": "§31.1 v12 Superintelligence Completeness Additions"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Synchronous quantum jobs are refused, every quantum answer is compared with a classical baseline, and reflex crates do not depend on qip-quantum."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-7207",
+    "domain": "QUANT",
+    "title": "Quantum Foundry is operationally benchmark-gated",
+    "statement": "The Quantum Foundry may be architecturally broad but is operationally benchmark-gated: nothing ships without a measured benefit against the classical baseline.",
+    "rationale": "Shipping quantum methods on hype.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§32 Technology Reality Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum answer that ties the classical baseline loses."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-7208",
+    "domain": "AGENCY",
+    "title": "Causal agency requires identifiable structure and measured effects",
+    "statement": "Reliable agency requires identifiable causal structure and measured effects, not merely high predictive accuracy.",
+    "rationale": "Acting on predictive accuracy mistaken for control.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§32 Technology Reality Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Predictive accuracy alone does not widen authority."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-7209",
+    "domain": "QUANT",
+    "title": "Quantum search never establishes causal truth or authorises interventions",
+    "statement": "Quantum search may explore candidate action/scenario spaces but cannot establish causal truth or authorise real-world interventions.",
+    "rationale": "A quantum ranking treated as authorisation.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§32 Technology Reality Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No quantum crate is a dependency of the agency authorisation path."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "AGENCY"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-7210",
+    "domain": "MODEL",
+    "title": "Learn from every actual, rejected and counterfactual outcome",
+    "statement": "The platform learns from every actual, rejected and counterfactual outcome.",
+    "rationale": "Learning only from executed trades biases the loop.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§33 Final Definition of Algorik"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "LEARN stage scores fills, declines and counterfactuals each cycle."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-7211",
+    "domain": "FABRIC",
+    "title": "Fabric is regionally independent, replayable, backpressure-aware, selectively mirrored",
+    "statement": "The fabric carries control, journals and outcomes and is regionally independent, replayable, backpressure-aware and selectively mirrored.",
+    "rationale": "A fabric lacking any of these is a generic queue.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "51",
+        "section": "§33 Final Definition of Algorik"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each property demonstrated by a fabricd test."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  }
+]
