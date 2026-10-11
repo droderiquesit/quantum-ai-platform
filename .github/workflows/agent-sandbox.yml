@@ -1,0 +1,136 @@
+# Run one development-agent lane's acceptance in a sandbox (R12 SEC-9068,
+# SEC-9084, CICD-9076, CICD-9082, CICD-9083).
+#
+# An agent lane is a branch an agent wrote. Its acceptance is the commands
+# the orchestrator committed for it in a lane manifest on the default
+# branch — never the lane's own opinion of whether it is done — and they run
+# here, in a job that holds nothing worth stealing:
+#
+#   * `permissions: contents: read` and nothing else. No `id-token`, so no
+#     OIDC token and no route to a cloud credential; no `environment`, so no
+#     environment secret and no deployment approval; no `secrets.` reference
+#     anywhere in this file, so GitHub injects none. `scripts/agent-guard.mjs
+#     sandbox` refuses this file if any of that changes, and ci's
+#     agent-boundary job runs it on every push.
+#   * The lane's checkout does not keep the token (`persist-credentials:
+#     false`), so code on the lane's branch cannot push with it.
+#   * A time limit taken from the lane's own budget, enforced twice: the
+#     job's `timeout-minutes`, and `agent-lanes.mjs accept`, which kills a
+#     command that runs past what the budget has left.
+#   * The lane's diff is held to the paths it owns. Two lanes owning one
+#     boundary are refused at `validate` unless one waits for the other, and
+#     `check-diff` catches a lane that edited outside its plot anyway.
+#
+# The trusted half — the scripts, the policy and the manifest — is checked
+# out from the default branch, so a lane cannot rewrite the rules it is
+# judged by. Manual dispatch only; nothing here deploys, and `deploy.yml`,
+# `infra.yml` and `fleet.yml` refuse an agent actor outright.
+name: agent sandbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: "The lane manifest, a path on the default branch (for example docs/lanes/round-2.json)."
+        required: true
+        type: string
+      lane:
+        description: "The lane id in that manifest."
+        required: true
+        type: string
+      ref:
+        description: "The lane's branch."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One run per lane at a time. Overlapping lanes are serialised by the
+# manifest's own dependency order, which `validate` enforces.
+concurrency:
+  group: agent-sandbox-${{ inputs.lane }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: the lane plan is valid
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      minutes: ${{ steps.budget.outputs.minutes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Shapes before use: each value becomes a path, an argument or a ref.
+      - name: the inputs are the shapes they claim
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          LANE: ${{ inputs.lane }}
+          LANE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          case "$MANIFEST" in
+            ''|/*|*..*|*[!A-Za-z0-9._/-]*) echo "manifest is not a repository-relative path" >&2; exit 1 ;;
+          esac
+          case "$LANE" in
+            ''|*[!a-z0-9-]*) echo "lane is not a lane id" >&2; exit 1 ;;
+          esac
+          case "$LANE_REF" in
+            ''|-*|*..*|*[!A-Za-z0-9._/-]*) echo "ref is not a branch name" >&2; exit 1 ;;
+          esac
+      - name: validate the manifest and read the lane's budget
+        id: budget
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          LANE: ${{ inputs.lane }}
+        run: |
+          set -euo pipefail
+          node scripts/agent-lanes.mjs validate --policy scripts/agent-policy.json --manifest "$MANIFEST"
+          minutes="$(node scripts/agent-lanes.mjs budget --policy scripts/agent-policy.json --manifest "$MANIFEST" --lane "$LANE")"
+          case "$minutes" in ''|*[!0-9.]*) echo "the lane's budget is not a number of minutes" >&2; exit 1 ;; esac
+          echo "minutes=$minutes" >> "$GITHUB_OUTPUT"
+
+  accept:
+    name: the lane meets its acceptance within budget
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.minutes) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: lane
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: the lane changed only what it owns
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          LANE: ${{ inputs.lane }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git -C lane diff --name-only "origin/${DEFAULT_BRANCH}...HEAD" > "$RUNNER_TEMP/changed.txt"
+          node trusted/scripts/agent-lanes.mjs check-diff --policy trusted/scripts/agent-policy.json \
+            --manifest "trusted/$MANIFEST" --lane "$LANE" --files "$RUNNER_TEMP/changed.txt"
+      - name: run the lane's acceptance commands
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          LANE: ${{ inputs.lane }}
+        run: |
+          set -euo pipefail
+          node trusted/scripts/agent-lanes.mjs accept --policy trusted/scripts/agent-policy.json \
+            --manifest "trusted/$MANIFEST" --lane "$LANE" --cwd lane

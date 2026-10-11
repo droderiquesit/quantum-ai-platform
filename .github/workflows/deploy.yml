@@ -106,7 +106,32 @@ jobs:
       contents: read
       actions: read
       checks: read
+      # Reading the pull request a commit arrived through and its reviews,
+      # for the agent boundary below. Read only.
+      pull-requests: read
     steps:
+      # No agent deploys (R12 GOV-9067). The rule and the agent identities
+      # are `scripts/agent-policy.json`, checked out from the default branch
+      # so the commit being deployed cannot loosen the rule it is judged by.
+      - name: no development agent starts this workflow
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: .agent-guard
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: refuse an agent actor
+        env:
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          for who in "$ACTOR" "$TRIGGERING_ACTOR"; do
+            node .agent-guard/scripts/agent-guard.mjs dispatch \
+              --policy .agent-guard/scripts/agent-policy.json \
+              --actor "$who" --workflow deploy.yml
+          done
+
       - name: refuse a production deployment that nobody dispatched
         if: env.TARGET_ENVIRONMENT == 'prod' && github.event_name != 'workflow_dispatch'
         run: |
@@ -276,6 +301,55 @@ jobs:
             exit 1
           fi
           echo "static analysis succeeded in ci run ${run_id} for ${DEPLOY_SHA}"
+
+      # The agent boundary held for the commit being deployed (R12
+      # GOV-9067, SEC-9068). An agent-authored change that touched a
+      # protected path — a workflow, the agents' own instructions, a gate or
+      # its policy, the paper boundary's Terraform layer — is deployable
+      # only if a person approved the head of the pull request it arrived
+      # through; a change declaring an `Agent-Role` must lie inside that
+      # role's paths. `agent-boundary.yml` says the same on the pull request
+      # itself, but a repository setting decides whether that check is
+      # required before merge and this file cannot see the setting; this
+      # step is the half that holds whatever the setting is. The change is
+      # the diff from the commit's first parent, which for a merge commit is
+      # the whole pull request.
+      - name: the agent boundary held for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/agent-boundary"
+          mkdir -p "$work"
+          parent="$(gh api "repos/${THIS_REPOSITORY}/commits/${DEPLOY_SHA}" --jq '.parents[0].sha // empty')"
+          case "$parent" in
+            *[!0-9a-f]*) echo "the first parent of ${DEPLOY_SHA} is not a commit sha" >&2; exit 1 ;;
+          esac
+          if [ -z "$parent" ]; then
+            echo "${DEPLOY_SHA} has no parent; the agent boundary has no change to judge."
+            exit 0
+          fi
+          gh api "repos/${THIS_REPOSITORY}/compare/${parent}...${DEPLOY_SHA}" --jq '[.files[].filename]' > "$work/files.json"
+          gh api "repos/${THIS_REPOSITORY}/compare/${parent}...${DEPLOY_SHA}" --jq '.commits' > "$work/commits.json"
+          pr="$(gh api "repos/${THIS_REPOSITORY}/commits/${DEPLOY_SHA}/pulls" --jq '[.[] | select(.merged_at != null)][0].number // empty')"
+          head_sha="$DEPLOY_SHA"
+          head_ref=""
+          echo '[]' > "$work/reviews.json"
+          if [ -n "$pr" ]; then
+            case "$pr" in *[!0-9]*) echo "the pull request number is not a number" >&2; exit 1 ;; esac
+            head_sha="$(gh api "repos/${THIS_REPOSITORY}/pulls/${pr}" --jq '.head.sha')"
+            head_ref="$(gh api "repos/${THIS_REPOSITORY}/pulls/${pr}" --jq '.head.ref')"
+            # Every page, flattened into one list: an approval on page two
+            # is still an approval.
+            gh api --paginate --slurp "repos/${THIS_REPOSITORY}/pulls/${pr}/reviews?per_page=100" \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).flat())))' \
+              > "$work/reviews.json"
+          fi
+          node .agent-guard/scripts/agent-guard.mjs change \
+            --policy .agent-guard/scripts/agent-policy.json \
+            --head-ref "$head_ref" --head-sha "$head_sha" \
+            --files "$work/files.json" --commits "$work/commits.json" --reviews "$work/reviews.json"
 
   # One image per deployed artefact. Four of the five are workspace binaries
   # built from the one Dockerfile, so those four cannot drift apart.

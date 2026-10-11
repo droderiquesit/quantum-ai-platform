@@ -1,0 +1,61 @@
+{
+  "comment": "Development-agent controls (R12 GOV-9067, SEC-9068, SEC-9077, SEC-9078, SEC-9084, CICD-9076, CICD-9082, CICD-9083), read by scripts/agent-guard.mjs and scripts/agent-lanes.mjs. The role table mirrors '## Paths you may change' in each .claude/agents/*.md; scripts/agent-guard.test.mjs fails when the two disagree, so a role cannot widen in one place only. Editing this file is itself a protected change: an agent-authored commit touching it needs a person's approving review.",
+
+  "agent_markers": {
+    "comment": "How a commit is recognised as agent-authored. Any one marker is enough. Matching is case-insensitive on the whole value. An agent session that pushes as its user, with none of these, is invisible to every check here; that limit is stated in docs/ops/runbooks/development-agent-controls.md rather than hidden.",
+    "author_names": ["Claude"],
+    "author_emails": ["noreply@anthropic.com"],
+    "co_author_emails": ["noreply@anthropic.com"],
+    "branch_prefixes": ["claude/", "worktree-agent-"],
+    "actor_patterns": ["*[bot]", "claude*"]
+  },
+
+  "protected_paths": {
+    "comment": "Paths an agent-authored change may touch only with an approving review from a person who is not an agent. These are the files that decide what every other check means: the workflows, the agents' own instructions and settings, the gates' scripts and policies, the paper-trading boundary's Terraform layer, and the dependency allow-list.",
+    "globs": [
+      ".github/**",
+      ".claude/**",
+      "CLAUDE.md",
+      "**/CLAUDE.md",
+      "scripts/check-*.sh",
+      "scripts/dependency-allowlist.txt",
+      "scripts/secrets-reviewed.txt",
+      "scripts/agent-policy.json",
+      "scripts/agent-guard.mjs",
+      "scripts/agent-lanes.mjs",
+      "scripts/sast-policy.json",
+      "scripts/sast-gate.mjs",
+      "infrastructure/terraform/variables.tf",
+      "infrastructure/terraform/execution-nodes-enabled.tf",
+      "infrastructure/environments/prod/**",
+      "docs/adr/**"
+    ]
+  },
+
+  "dispatch_refused_for_agents": {
+    "comment": "Workflows an agent identity may never start: each deploys, applies infrastructure or reaches a cloud credential. A planner may read and plan; no agent merges or deploys (GOV-9067). Enforced by the guard step at the top of each workflow, before anything authenticates.",
+    "workflows": ["deploy.yml", "infra.yml", "fleet.yml", "image.yml", "vendor.yml", "branch-cleanup.yml"]
+  },
+
+  "roles": {
+    "chief-orchestrator": { "kind": "planner", "may_edit": [] },
+    "product-manager": { "kind": "planner", "may_edit": ["docs/product/**", "docs/claude/**"] },
+    "solution-architect": { "kind": "planner", "may_edit": ["docs/adr/**", "docs/architecture/**", ".claude/rules/architecture/**"] },
+    "code-reviewer": { "kind": "reviewer", "may_edit": [] },
+    "security-engineer": { "kind": "reviewer", "may_edit": [] },
+    "backend-engineer": { "kind": "coder", "may_edit": ["backend/crates/libs/**", "backend/crates/services/**", "backend/crates/runtime/**", "backend/crates/edge/**", "backend/crates/agents/**", "backend/crates/quant/**"] },
+    "cloud-platform-engineer": { "kind": "coder", "may_edit": ["infrastructure/**", ".github/workflows/**", "scripts/**"] },
+    "data-ai-engineer": { "kind": "coder", "may_edit": ["backend/crates/services/qip-market-ingestion/**", "qip-data-finder/**", "qip-world-model/**", "qip-opportunity-engine/**", "qip-cost-router/**", "qip-training/**", "backend/crates/libs/qip-quantum/**"] },
+    "frontend-engineer": { "kind": "coder", "may_edit": ["frontend/**"] },
+    "sre-release-engineer": { "kind": "coder", "may_edit": [".github/workflows/**", "infrastructure/environments/**/images.tfvars", "docs/operations/**"] },
+    "technical-writer": { "kind": "coder", "may_edit": ["docs/**", "README.md", "ops/**/*.md", ".claude/**/*.md"] },
+    "test-engineer": { "kind": "coder", "may_edit": ["backend/crates/**/tests/**", "frontend/portal/tests/**"] },
+    "ux-designer": { "kind": "coder", "may_edit": ["frontend/portal/src/**", "docs/product/**"] }
+  },
+
+  "lane_limits": {
+    "comment": "Every lane an orchestrator dispatches carries a budget no larger than these, and acceptance commands. The sandbox workflow sets its job timeout from the lane's own minutes.",
+    "max_minutes": 360,
+    "max_usd": 50
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "comment": "The committed CodeQL blocking threshold (R12 CICD-9105), read by scripts/sast-gate.mjs in codeql-analysis.yml. A result whose rule carries a security-severity at or above min_security_severity fails the sast job, and deploy.yml refuses a ci run whose sast jobs did not succeed. 7.0 is the lower bound of CodeQL's 'high' band (high 7.0-8.9, critical 9.0-10.0), the same band the Trivy gates stop on (--severity CRITICAL,HIGH). Lowering it is a reviewed edit to this file, and nothing else can change it: there is no input, flag or repository variable that overrides it. Results with no security-severity are code-quality findings from the security-and-quality suite; they are printed and do not block. Suppressed results are counted like any other: a suppression comment in the code under review is a decision the code's author made about their own finding.",
+  "min_security_severity": 7.0,
+  "band": "high"
+}
