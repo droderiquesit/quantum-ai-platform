@@ -12,11 +12,96 @@
 //! contradiction is reported as uncertainty rather than hidden inside a mean.
 //!
 //! This is deliberately small: a scalar per domain over three domains the
-//! research loop already reads. It is not the §9.6 NOW Brain over economies,
-//! supply chains and policy, and the register row stays PARTIAL on that.
+//! research loop already reads. The §9.6 NOW Brain proper — eight scopes,
+//! competing estimators, fenced promotion — runs in the kernel's UNDERSTAND
+//! stage (`qip_kernel::now_stage`) on every cycle this binary runs; this
+//! file's second half is how its surprises reach the research loop's
+//! attention router ([`surprise_signals`]).
 
+use qip_contracts::ambient::{AmbientSignal, Detection, Pathway, SignalClass, Trigger};
 use qip_core::error::{Error, Result};
+use qip_core::{Decimal, Duration, Timestamp};
+use qip_kernel::now_stage::{NowSurprise, Specialist};
 use std::collections::BTreeMap;
+
+/// What every NOW surprise signal's id starts with.
+pub const NOW_SIGNAL_PREFIX: &str = "now-surprise/";
+
+/// Specialists a NOW surprise woke, by specialist.
+pub const NOW_WAKES: &str = "qip_now_specialist_wakes_total";
+
+/// The pathway each specialist is woken through, and the signal class that
+/// routes there. Forecast, adversarial and sensing specialists are
+/// specialists, so a surprise wakes them through specialist activation; the
+/// risk specialist is a risk review.
+pub const fn route_of(specialist: Specialist) -> (SignalClass, Pathway) {
+    match specialist {
+        Specialist::Forecast | Specialist::Adversarial | Specialist::Sensing => {
+            (SignalClass::Surprise, Pathway::SpecialistActivation)
+        }
+        Specialist::Risk => (SignalClass::Risk, Pathway::RiskReview),
+    }
+}
+
+/// One ambient signal per specialist a NOW surprise names (AMBIENT-3079).
+///
+/// Severity is the surprise's size, a thousand basis points per standard
+/// deviation, so the kernel's three-sigma bound lands at 3,000 — above the
+/// research loop's 1,000 bp materiality, so no NOW surprise is silently below
+/// the bar. A surprise of ten sigma or more reads as the scale's top: that is
+/// the severity scale's meaning ("as severe as it gets"), not a corrected
+/// input, and the exact size travels as the observed deviation. Evidence is the manifest the
+/// surprised state rests on, so the activation can be replayed to its
+/// readings. Nothing here acts: the signal wakes, the router decides.
+pub fn surprise_signals(
+    surprise: &NowSurprise,
+    now: Timestamp,
+    ttl: Duration,
+) -> Result<Vec<(Specialist, AmbientSignal)>> {
+    if !surprise.sigmas.is_finite() {
+        return Err(Error::numeric(format!(
+            "surprise {} states a non-finite size",
+            surprise.id
+        )));
+    }
+    // Statistic to integer: sigmas to basis points, a thousand per sigma, at
+    // most the severity scale's top.
+    let severity = (surprise.sigmas.abs() * 1_000.0).round().min(10_000.0) as u32;
+    let deviation = Decimal::from_f64(surprise.sigmas)
+        .ok_or_else(|| Error::numeric("the surprise has no decimal form"))?;
+    let evidence: Vec<String> = surprise
+        .manifests
+        .iter()
+        .map(|m| format!("{}#{}", m.source, m.reference))
+        .collect();
+    surprise
+        .wakes
+        .iter()
+        .map(|specialist| {
+            let (class, pathway) = route_of(*specialist);
+            let signal = AmbientSignal::new(
+                format!("{NOW_SIGNAL_PREFIX}{}/{}", surprise.id, specialist.as_str()),
+                class,
+                format!("{}:{}", specialist.as_str(), surprise.key),
+                severity,
+                Trigger::Event("now-surprise".to_string()),
+                now,
+                Detection {
+                    observed_deviation: deviation,
+                    expected_baseline: Decimal::ZERO,
+                    horizon: Duration::ZERO,
+                    novelty_bp: severity,
+                    affected_entities: vec![surprise.key.scope.id.clone()],
+                    urgency_bp: severity,
+                    wake_targets: vec![pathway],
+                    evidence_ids: evidence.clone(),
+                    expiry: now.saturating_add(ttl),
+                },
+            )?;
+            Ok((*specialist, signal))
+        })
+        .collect()
+}
 
 /// The domains this estimator holds, as the fixed `domain` label values.
 pub const DOMAINS: [&str; 3] = ["market", "execution", "beliefs"];

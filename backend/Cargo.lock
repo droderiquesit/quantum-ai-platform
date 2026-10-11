@@ -952,6 +952,7 @@ dependencies = [
  "qip-market",
  "qip-numerics",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

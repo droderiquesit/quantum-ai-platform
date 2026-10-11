@@ -446,3 +446,52 @@ fn only_a_job_that_resolved_this_cycle_is_an_outcome_and_one_that_did_not_run_fa
         );
     }
 }
+/// AMBIENT-3079 reached from the deep brain: a surprise the kernel's NOW
+/// Brain raises during a cycle reaches this loop's attention router as one
+/// signal per specialist, and forecast, adversarial, sensing and risk
+/// specialists are each woken. Mutation: drop the `surprises_since` read
+/// from `ResearchLoop::sweep`, and nothing wakes.
+#[test]
+fn a_now_surprise_raised_in_the_cycle_wakes_forecast_adversarial_sensing_and_risk_specialists() {
+    let mut platform = platform();
+    let calm: Vec<SensedRecord> = (0..30_i64)
+        .map(|i| {
+            let close = if i % 2 == 0 { 100.1 } else { 99.9 };
+            bar(
+                "obj-N",
+                start().saturating_sub(Duration::from_days(30 - i)),
+                close,
+            )
+        })
+        .collect();
+    platform.observe(calm);
+    platform.run_cycle(start());
+    let mut loop_ = research(BTreeMap::new());
+    let quiet = loop_
+        .sweep(&platform, start(), &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(
+        quiet.now_surprises, 0,
+        "premise: a calm tape surprises nothing"
+    );
+    assert!(quiet.now_wakes.is_empty());
+
+    platform.observe(vec![bar("obj-N", start(), 130.0)]);
+    let after = start().saturating_add(Duration::from_days(1));
+    platform.run_cycle(after);
+    let round = loop_
+        .sweep(&platform, after, &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert!(round.now_surprises >= 1, "{round:?}");
+    let woken: BTreeSet<&str> = round.now_wakes.keys().copied().collect();
+    assert_eq!(
+        woken,
+        BTreeSet::from(["adversarial", "forecast", "risk", "sensing"]),
+        "{round:?}"
+    );
+    // Read once: a second sweep with no new cycle wakes nothing again.
+    let again = loop_
+        .sweep(&platform, after, &set(&[]), &set(&["US"]))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(again.now_surprises, 0);
+}

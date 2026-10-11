@@ -269,6 +269,12 @@ pub struct ResearchRound {
     pub campaigns_opened: usize,
     pub desk: SweepReport,
     pub now: BTreeMap<&'static str, (f64, f64)>,
+    /// NOW Brain surprises read this sweep, and how many the kernel's queue
+    /// had already dropped because this loop fell behind.
+    pub now_surprises: usize,
+    pub now_surprises_lost: u64,
+    /// Specialists a NOW surprise woke, by specialist (AMBIENT-3079).
+    pub now_wakes: BTreeMap<&'static str, usize>,
 }
 
 impl ResearchRound {
@@ -276,7 +282,8 @@ impl ResearchRound {
         format!(
             "research: {} anomaly(ies), {} gap(s) raised ({} unclassifiable), admissions {:?}; \
              {} started, {} closed, {} withdrawn, {} in queue; {} info request(s) launched, {} \
-             halted; {} tick campaign(s) opened; outputs advisory, none promoted",
+             halted; {} tick campaign(s) opened; {} NOW surprise(s) woke {:?}; outputs \
+             advisory, none promoted",
             self.anomalies,
             self.raised,
             self.unclassified,
@@ -288,6 +295,8 @@ impl ResearchRound {
             self.info_launched,
             self.info_halted,
             self.campaigns_opened,
+            self.now_surprises,
+            self.now_wakes,
         )
     }
 }
@@ -306,6 +315,11 @@ pub struct ResearchLoop {
     /// router's hold queue: an entry leaves when its signal is activated,
     /// shed, expired or found below materiality.
     pending: BTreeMap<String, RaisedGap>,
+    /// NOW surprise signals routed but not yet activated, by signal id, with
+    /// the specialist each would wake. Bounded like `pending`.
+    pending_wakes: BTreeMap<String, qip_kernel::now_stage::Specialist>,
+    /// The kernel NOW queue's sequence number this loop has read through.
+    surprises_seen: u64,
     issued: u64,
     fills_read: usize,
     advisories: VecDeque<Advisory<String>>,
@@ -363,6 +377,8 @@ impl ResearchLoop {
             now_estimate: NowEstimator::new(0.001, 0.01)?,
             coverage,
             pending: BTreeMap::new(),
+            pending_wakes: BTreeMap::new(),
+            surprises_seen: 0,
             issued: 0,
             fills_read: 0,
             advisories: VecDeque::new(),
@@ -586,13 +602,38 @@ impl ResearchLoop {
             }
         }
         round.raised = raised_now.len();
+        // The NOW Brain's surprises since the last sweep (AMBIENT-3079): each
+        // becomes one signal per specialist it should wake, routed through
+        // the same router and the same budget as every gap, so a storm of
+        // surprises is deferred or shed on the record rather than waking
+        // everything at once.
+        let (surprises, newest, lost) = platform.now_brain().surprises_since(self.surprises_seen);
+        round.now_surprises = surprises.len();
+        round.now_surprises_lost = lost;
+        let mut routable: Vec<(Option<RaisedGap>, AmbientSignal)> = Vec::new();
+        for surprise in surprises {
+            for (specialist, signal) in
+                crate::now::surprise_signals(surprise, now, self.config.signal_ttl)?
+            {
+                self.pending_wakes
+                    .insert(signal.id().to_string(), specialist);
+                routable.push((None, signal));
+            }
+        }
+        self.surprises_seen = newest;
         for raised in raised_now {
             let signal = self.emit(&raised, now)?;
-            self.pending.insert(signal.id().to_string(), raised);
+            routable.push((Some(raised), signal));
+        }
+        for (raised, signal) in routable {
+            if let Some(raised) = raised {
+                self.pending.insert(signal.id().to_string(), raised);
+            }
             let events = self.router.route(&signal, now)?;
             if !events.iter().any(|e| e.signal_id == signal.id()) {
                 // Below materiality: not an activation and not a loss.
                 self.pending.remove(signal.id());
+                self.pending_wakes.remove(signal.id());
             }
             for event in events {
                 let pathway = pathway_str(event.pathway);
@@ -606,8 +647,17 @@ impl ResearchLoop {
                     Disposition::Deferred => {}
                     Disposition::Shed | Disposition::Expired => {
                         self.pending.remove(&event.signal_id);
+                        self.pending_wakes.remove(&event.signal_id);
                     }
                     Disposition::Activated => {
+                        if let Some(specialist) = self.pending_wakes.remove(&event.signal_id) {
+                            *round.now_wakes.entry(specialist.as_str()).or_default() += 1;
+                            metrics.count(
+                                crate::now::NOW_WAKES,
+                                labels([("specialist", specialist.as_str())]),
+                            );
+                            continue;
+                        }
                         let Some(gap) = self.pending.remove(&event.signal_id) else {
                             continue;
                         };
