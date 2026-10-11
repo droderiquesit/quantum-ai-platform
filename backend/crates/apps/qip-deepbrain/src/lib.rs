@@ -51,6 +51,7 @@
 
 pub mod artifacts;
 pub mod attestation;
+pub mod breadth;
 pub mod campaign;
 pub mod config;
 pub mod connectors;

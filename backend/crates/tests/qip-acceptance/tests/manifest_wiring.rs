@@ -1656,6 +1656,19 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_BREADTH_PLAN",
+        "Unset, no breadth plan is installed and the node runs exactly as it \
+         did before the plane existed: no market is created on the simulated \
+         venue, no event-market or commerce source is polled, and every \
+         breadth hook in the cycle returns at its first line. Each section a \
+         plan carries commits the platform to something — a seeded market, \
+         paper event positions, paper purchases — so the absent value is the \
+         restrictive one, and a deployment sets it when the desk has written \
+         a plan, not before. A plan that cannot be read, parsed or honoured \
+         stops the process with exit 78 (`qip_deepbrain::breadth`).",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_RESEARCH_COMPUTE",
         "Unset, a sweep may start ten compute units of research. The units \
          are the desk's declared cost model, not money and not a cloud \

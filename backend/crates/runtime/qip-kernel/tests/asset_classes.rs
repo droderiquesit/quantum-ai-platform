@@ -115,24 +115,23 @@ fn a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_cl
         "premise: the registry holds the class the good universe is in"
     );
 
-    // And the refusing half. A crypto spot is the case §16.1's engine table
-    // does not reach: continuously quoted, its mark is the quote, and none of
-    // the six paradigms unlocks `DigitalAsset`. So no record registers the
-    // class, and §17.7 says an unregistered class cannot be traded — the
-    // platform holds reference data for it and may not act on it.
+    // And the refusing half. Every `AssetClass` variant is registered since
+    // R12-COVERAGE-5098/-5103, so the shipped table no longer leaves a class
+    // out to refuse with; this used `DigitalAsset`, which is now supported.
+    // The refusal is proven on the table the platform assembles against with
+    // one record withdrawn, through the same `admit` `Platform::new` calls on
+    // every instrument — and the message an operator reads is unchanged.
+    let coin = object("obj-BTC", InstrumentType::Cryptocurrency, None)?;
+    let narrowed = good
+        .asset_class_registry()
+        .clone()
+        .without(AssetClass::DigitalAsset)?;
     assert!(
-        !good
-            .asset_class_registry()
-            .is_registered(AssetClass::DigitalAsset),
-        "premise: the registry does not hold DigitalAsset, or this proves nothing"
+        !narrowed.is_registered(AssetClass::DigitalAsset),
+        "premise: the narrowed registry does not hold DigitalAsset, or this proves nothing"
     );
-    let error = assemble(universe_of(vec![
-        object("obj-AAA", InstrumentType::CommonStock, None)?,
-        object("obj-BTC", InstrumentType::Cryptocurrency, None)?,
-    ])?)
-    .err()
-    .ok_or_else(|| {
-        qip_core::Error::invalid("a universe holding an unregistered class assembled")
+    let error = narrowed.admit(&coin).err().ok_or_else(|| {
+        qip_core::Error::invalid("an instrument in an unregistered class was admitted")
     })?;
     // The class named in its own delimited spelling and attached to the
     // instrument, rather than a bare `contains("digital_asset")` that the
@@ -150,6 +149,70 @@ fn a_universe_of_registered_classes_assembles_and_one_holding_an_unregistered_cl
             && message.contains("settlement convention")
             && message.contains("eligible strategy family"),
         "the refusal must name what registering a class requires: {message}"
+    );
+    Ok(())
+}
+
+/// R12-COVERAGE-5098 and -5103: an FX spot, a cash equivalent and a crypto
+/// spot assemble into the platform beside an equity, and an FX and a crypto
+/// order go through the full desk control path and fill at the simulated
+/// venue — paper, by the broker's own stamp.
+///
+/// Mutation: delete the `ForeignExchange` (or `DigitalAsset`, or `Cash`)
+/// record from `AssetClassRegistry::shipped` and `assemble` refuses the
+/// universe naming the instrument, so this test fails at its first `?`.
+#[test]
+fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result<()> {
+    let mut platform = assemble(universe_of(vec![
+        object("obj-AAA", InstrumentType::CommonStock, None)?,
+        object("obj-EURUSD", InstrumentType::FxSpot, Some(dec!("0.00001")))?,
+        object("obj-USD-MMF", InstrumentType::MoneyMarketInstrument, None)?,
+        object("obj-BTC", InstrumentType::Cryptocurrency, None)?,
+    ])?)?;
+    for class in [
+        AssetClass::ForeignExchange,
+        AssetClass::Cash,
+        AssetClass::DigitalAsset,
+    ] {
+        assert!(
+            platform.asset_class_registry().is_registered(class),
+            "{} is not registered",
+            class.as_str()
+        );
+    }
+    let fills_before = platform.orders().fills().len();
+    for id in ["obj-EURUSD", "obj-BTC"] {
+        let order = platform.order_for(
+            ObjectId::from_string(id),
+            qip_execution_engine::order::Side::Buy,
+            dec!("10"),
+            dec!("100"),
+            "prop-coverage",
+            vec!["hyp-coverage".to_string()],
+            start(),
+        )?;
+        platform.submit_order(order, start())?;
+    }
+    let fills = platform.orders().fills();
+    // Premise: nothing had filled before, so the fills counted are these.
+    assert_eq!(fills_before, 0);
+    // A fill names its order, not its instrument; the instrument is read off
+    // the order the fill belongs to.
+    let filled: Vec<&str> = fills
+        .iter()
+        .filter_map(|fill| {
+            platform
+                .orders()
+                .orders()
+                .find(|order| order.order_id == fill.order_id)
+                .map(|order| order.object_id.as_str())
+        })
+        .collect();
+    assert!(filled.contains(&"obj-EURUSD"), "{filled:?}");
+    assert!(filled.contains(&"obj-BTC"), "{filled:?}");
+    assert!(
+        fills.iter().all(|fill| fill.simulated),
+        "a fill on the coverage path was not stamped simulated"
     );
     Ok(())
 }

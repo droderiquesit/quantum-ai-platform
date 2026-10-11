@@ -30,26 +30,42 @@
 //!
 //! # Which classes are registered, and why exactly those
 //!
-//! Nine of `AssetClass`'s thirteen variants, and the line is the blueprint's
-//! own rather than this lane's judgement: §16.1's engine table has an
-//! "Unlocks" column naming the classes each of the six engines prices, and
-//! the nine registered here are exactly the classes that column names.
-//! Read it with
-//! `awk '/^16\.1 /{f=1} f&&/^16\.2 /{exit} f' docs/architecture/algorik-blueprint-v10.1-source.md`.
+//! **All fifteen of `AssetClass`'s variants**, and the count is not written
+//! down so that it can drift: recount with
+//! `grep -c 'add(AssetClassRecord::new(' backend/crates/runtime/qip-kernel/src/asset_class_registry.rs`
+//! and compare with `AssetClass::ALL.len()`. This paragraph said "nine of
+//! thirteen" until 2026-10-11, by which time the enum had fifteen variants
+//! and the table held twelve: `Prediction`, `Commodity` and
+//! `PhysicalProduct` had been registered and the enum had grown two arms,
+//! and the list of "four deliberately absent" classes still named
+//! `Commodity`, which was by then registered. A module doc that miscounts
+//! the table it documents is a capability claim nobody checked — the thing
+//! §17.7 exists to stop — so the figure is gone and the command stays.
 //!
-//! The four it does not name — `ForeignExchange`, `Commodity`,
-//! `DigitalAsset` and `Cash` — are **deliberately absent**, and that is a
-//! finding rather than an omission: §17.7 says the six engines "cover every
-//! pricing paradigm", and §16.1's own table does not reach four of the
-//! platform's own thirteen classes. A record invented for them would have to
-//! name one of the six engines, and the honest answer for a continuously
-//! quoted spot instrument is that its mark is the quote — a paradigm the six
-//! do not enumerate. Registering them on a guess is exactly the thing §17.7
-//! exists to stop: a list that makes a capability claim nobody checked.
+//! The original nine follow §16.1's "Unlocks" column, read with
+//! `awk '/^16\.1 /{f=1} f&&/^16\.2 /{exit} f' docs/architecture/algorik-blueprint-v10.1-source.md`.
+//! The last three — `ForeignExchange`, `Cash` and `DigitalAsset`, registered
+//! for R12-COVERAGE-5098 and -5103 — are the ones that column does not name,
+//! and this module used to argue that a continuously quoted spot
+//! instrument's mark *is* the quote, a paradigm the six engines do not
+//! enumerate. That argument was about spot alone, and the requirement is
+//! not spot alone: it is spot **and forwards, swaps, funding and
+//! conversion** for cash and FX, and spot **and derivatives and
+//! tokenized representations** for digital assets. Every one of those
+//! beyond the spot mark is priced off a curve — covered interest parity
+//! for an FX forward ([`covered_interest_forward`]), the short end of the
+//! discount curve for a cash equivalent, and the basis and funding term
+//! structure for a crypto future or perpetual — so the three register on
+//! [`ValuationEngine::TermStructure`], with the spot mark as that curve's
+//! zero-tenor point. No seventh paradigm was invented to do it, which is
+//! the line the closed enum below draws.
 //!
 //! **This is the list to change when a class becomes supported**, and the
 //! change is a reviewed one: adding a record is adding a class the platform
-//! says it can trade.
+//! says it can trade. With every variant registered, the refusal at
+//! assembly still fires for any class the table does not hold — proven
+//! against a registry with one record withdrawn ([`AssetClassRegistry::without`]),
+//! because the shipped table no longer leaves one out to prove it with.
 //!
 //! # What is held by the type system and what is checked
 //!
@@ -660,6 +676,114 @@ impl AssetClassRegistry {
             [AssetClass::Commodity].into_iter().collect(),
         )?);
 
+        // Foreign exchange — R12-COVERAGE-5098: spot, forwards and swaps.
+        // Term structure, because a forward is spot carried along two
+        // discount curves (`covered_interest_forward`) and a swap is a spot
+        // and a forward; the spot mark is the zero-tenor point. T+2 is the
+        // spot convention in most pairs. The grid is FX's own rather than
+        // `listed_grid`: a pair quotes in pipettes, a hundred-thousandth,
+        // which the listed floor would refuse as a reference-data error.
+        // Continuous because the market rolls from Sydney to New York with
+        // no session a calendar could close; the weekend gap is a venue's
+        // fact and lives on its `MarketHours`, not on the class.
+        add(AssetClassRecord::new(
+            AssetClass::ForeignExchange,
+            ValuationEngine::TermStructure,
+            ClassSettlement::Exchange(SettlementConvention::T2),
+            GridRule::Quoted {
+                // 0.00001 and 0.001 units.
+                minimum_tick: Decimal::from_raw(10_000),
+                minimum_lot: Decimal::from_raw(1_000_000),
+            },
+            TradingCalendar::Continuous,
+            MarginRegime::Portfolio,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [
+                F::Carry,
+                F::Arbitrage,
+                F::MarketMaking,
+                F::Microstructure,
+                F::MomentumAndTrend,
+                F::StatisticalArbitrage,
+                F::ExecutionAlpha,
+            ]
+            .into_iter()
+            .collect(),
+            [
+                AssetClass::ForeignExchange,
+                AssetClass::Cash,
+                AssetClass::Rates,
+            ]
+            .into_iter()
+            .collect(),
+        )?);
+
+        // Cash and cash equivalents — R12-COVERAGE-5098: fiat balances,
+        // money-market instruments, funding. Priced on the short end of the
+        // discount curve, which is a term structure at its shortest tenor.
+        // Same-day settlement. Negotiated grid: a deposit or a sweep has no
+        // book and no tick, and a floor here would refuse a balance of an
+        // odd number of cents. Carry is the one family it serves — funding
+        // and the yield on idle balances — and a desk that wanted to trade
+        // cash any other way would be trading FX.
+        add(AssetClassRecord::new(
+            AssetClass::Cash,
+            ValuationEngine::TermStructure,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            GridRule::Negotiated,
+            TradingCalendar::ExchangeSession,
+            MarginRegime::Isolated,
+            false,
+            TaxTreatment::DebtInstrument,
+            [F::Carry, F::ExecutionAlpha].into_iter().collect(),
+            [AssetClass::Rates, AssetClass::ForeignExchange]
+                .into_iter()
+                .collect(),
+        )?);
+
+        // Digital asset — R12-COVERAGE-5103: crypto spot, its derivatives and
+        // tokenized representations. Term structure for the reason above:
+        // futures basis and perpetual funding are the curve, spot its zero
+        // tenor. Settlement is instant on-chain finality as far as the class
+        // is concerned (§17.7's own example, "crypto spot instant"); the
+        // stages a transfer passes through on the way — pending, confirmed,
+        // final — are a property of the *path*, and `qip_arbitrage::graph`
+        // carries them on its nodes. The grid is a satoshi, one
+        // hundred-millionth, for tick and lot alike. Corporate actions do
+        // not apply to the class (§16.1: "crypto spot no"); a tokenized
+        // security's wrapper may carry them, and the instrument record is
+        // where that is stated, not the class.
+        add(AssetClassRecord::new(
+            AssetClass::DigitalAsset,
+            ValuationEngine::TermStructure,
+            ClassSettlement::Exchange(SettlementConvention::T0),
+            GridRule::Quoted {
+                minimum_tick: Decimal::from_raw(10),
+                minimum_lot: Decimal::from_raw(10),
+            },
+            TradingCalendar::Continuous,
+            MarginRegime::Isolated,
+            false,
+            TaxTreatment::MarketableSecurity,
+            [
+                F::Arbitrage,
+                F::MarketMaking,
+                F::Microstructure,
+                F::ShortHorizonReversion,
+                F::MomentumAndTrend,
+                F::StatisticalArbitrage,
+                F::Carry,
+                F::Volatility,
+                F::ExecutionAlpha,
+            ]
+            .into_iter()
+            .collect(),
+            [AssetClass::DigitalAsset, AssetClass::Derivative]
+                .into_iter()
+                .collect(),
+        )?);
+
         let registry = Self { records };
         registry.check_hedge_map()?;
         Ok(registry)
@@ -719,6 +843,20 @@ impl AssetClassRegistry {
             .collect()
     }
 
+    /// This registry with `class`'s record withdrawn.
+    ///
+    /// The narrowing direction only: there is no counterpart that adds a
+    /// record from outside [`Self::shipped`], because adding a class is the
+    /// reviewed change and withdrawing one is always safe. Refused when the
+    /// withdrawal would leave a sibling hedged into the withdrawn class — the
+    /// same refusal `shipped` applies to its own table — so a narrowed
+    /// registry is never one `shipped` could not have produced.
+    pub fn without(mut self, class: AssetClass) -> Result<Self> {
+        self.records.remove(&class);
+        self.check_hedge_map()?;
+        Ok(self)
+    }
+
     /// Admit one instrument, or refuse naming its class.
     ///
     /// §17.7's "an unregistered class cannot be traded", as the one sentence
@@ -742,6 +880,63 @@ impl AssetClassRegistry {
     }
 }
 
+/// An FX forward outright by covered interest parity:
+/// `spot × (1 + r_domestic × days / basis) / (1 + r_foreign × days / basis)`.
+///
+/// Why `ForeignExchange` registers on [`ValuationEngine::TermStructure`]: a
+/// forward is not quoted independently of spot, it is spot carried along the
+/// two currencies' discount curves, and a forward priced any other way is an
+/// arbitrage against the two deposits. `spot` is units of the domestic (quote)
+/// currency per unit of foreign (base); rates are simple money-market rates
+/// as fractions — exact, because they are charged against money — and
+/// `basis` is the day-count denominator (360 for most pairs, 365 for GBP and
+/// a few others), which is a convention of the pair and is therefore the
+/// caller's to state rather than this function's to assume.
+///
+/// Refused rather than clamped: a non-positive spot, a zero basis, or a
+/// growth factor at or below zero (a rate so negative the deposit is
+/// confiscated) is a caller error that a clamp would turn into a price.
+pub fn covered_interest_forward(
+    spot: Decimal,
+    domestic_rate: Decimal,
+    foreign_rate: Decimal,
+    days: u32,
+    basis: u32,
+) -> Result<Decimal> {
+    if !spot.is_positive() {
+        return Err(Error::invalid(format!(
+            "an FX spot of {spot} is not a price; a forward is carried from a positive spot"
+        )));
+    }
+    if basis == 0 {
+        return Err(Error::invalid(
+            "a day-count basis of zero divides by nothing; state the pair's convention, 360 or 365",
+        ));
+    }
+    let year_fraction = Decimal::from_int(i64::from(days))
+        .checked_div(Decimal::from_int(i64::from(basis)))
+        .ok_or_else(|| Error::numeric("the forward's year fraction overflowed"))?;
+    let growth = |rate: Decimal, leg: &str| -> Result<Decimal> {
+        let factor = rate
+            .checked_mul(year_fraction)
+            .and_then(|accrual| Decimal::ONE.checked_add(accrual))
+            .ok_or_else(|| Error::numeric(format!("the {leg} accrual overflowed")))?;
+        if !factor.is_positive() {
+            return Err(Error::invalid(format!(
+                "a {leg} rate of {rate} over {days} days on a {basis}-day basis leaves a growth \
+                 factor of {factor}; a deposit cannot be worth nothing or less at maturity, so \
+                 the rate is wrong"
+            )));
+        }
+        Ok(factor)
+    };
+    let domestic = growth(domestic_rate, "domestic")?;
+    let foreign = growth(foreign_rate, "foreign")?;
+    spot.checked_mul(domestic)
+        .and_then(|carried| carried.checked_div(foreign))
+        .ok_or_else(|| Error::numeric("the forward outright overflowed"))
+}
+
 impl Platform {
     /// The classes this platform is registered to trade (§17.7).
     pub fn asset_class_registry(&self) -> &AssetClassRegistry {
@@ -754,23 +949,129 @@ impl Platform {
 mod tests {
     use super::*;
 
+    /// R12-COVERAGE-5098 and -5103. Fails if any of the three new records is
+    /// deleted from `shipped` (the count drops and `unregistered` names it),
+    /// and the per-class assertions fail if a record is registered on a
+    /// guess — the wrong settlement, or the listed grid that would refuse a
+    /// pipette or a satoshi as a reference-data error.
     #[test]
-    fn the_shipped_registry_holds_twelve_classes_and_names_the_three_it_refuses() -> Result<()> {
-        // The premise first: `AssetClass` really does have fifteen variants,
-        // so "twelve registered" is a statement about coverage and not about a
-        // list that happens to be the whole enum.
+    fn every_asset_class_is_registered_including_fx_cash_and_digital_assets() -> Result<()> {
+        // Premise: the enum has fifteen arms, so "every one registered" is a
+        // statement about coverage and not about a short list.
         assert_eq!(AssetClass::ALL.len(), 15);
         let registry = AssetClassRegistry::shipped()?;
-        assert_eq!(registry.len(), 12);
-        // Named rather than counted: a count would pass if the three swapped
-        // for three others, and which three are unsupported is the finding.
+        assert_eq!(registry.unregistered(), Vec::<AssetClass>::new());
+        assert_eq!(registry.len(), AssetClass::ALL.len());
+
+        let fx = registry
+            .get(AssetClass::ForeignExchange)
+            .ok_or_else(|| Error::invalid("FX is not registered"))?;
+        assert_eq!(fx.valuation_engine(), ValuationEngine::TermStructure);
         assert_eq!(
-            registry.unregistered(),
-            vec![
-                AssetClass::ForeignExchange,
-                AssetClass::DigitalAsset,
-                AssetClass::Cash,
-            ]
+            fx.settlement(),
+            ClassSettlement::Exchange(SettlementConvention::T2)
+        );
+        assert!(fx.admits_family(AlphaFamily::Carry));
+        assert_eq!(
+            fx.grid(),
+            GridRule::Quoted {
+                minimum_tick: Decimal::from_raw(10_000),
+                minimum_lot: Decimal::from_raw(1_000_000),
+            }
+        );
+
+        let cash = registry
+            .get(AssetClass::Cash)
+            .ok_or_else(|| Error::invalid("cash is not registered"))?;
+        assert_eq!(
+            cash.settlement(),
+            ClassSettlement::Exchange(SettlementConvention::T0)
+        );
+        assert_eq!(cash.grid(), GridRule::Negotiated);
+
+        let digital = registry
+            .get(AssetClass::DigitalAsset)
+            .ok_or_else(|| Error::invalid("digital assets are not registered"))?;
+        assert_eq!(
+            digital.settlement(),
+            ClassSettlement::Exchange(SettlementConvention::T0)
+        );
+        assert!(!digital.corporate_actions_apply());
+        assert!(digital.admits_family(AlphaFamily::Arbitrage));
+        assert_eq!(
+            digital.grid(),
+            GridRule::Quoted {
+                minimum_tick: Decimal::from_raw(10),
+                minimum_lot: Decimal::from_raw(10),
+            }
+        );
+        Ok(())
+    }
+
+    /// The gate still fires once every class is registered: withdrawing a
+    /// record makes that class's instrument refused by the same `admit` the
+    /// platform calls at assembly. Fails if `without` stops removing the
+    /// record or `admit` stops consulting the table.
+    #[test]
+    fn withdrawing_a_class_makes_its_instruments_refused_by_the_same_admission() -> Result<()> {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::costs::LiquidityProfile;
+        use qip_financial::quality::Provenance;
+        let at = qip_core::Timestamp::from_secs(1_760_000_000);
+        let coin = FinancialObject::builder(
+            qip_core::ObjectId::from_string("obj-BTC"),
+            "obj-BTC",
+            InstrumentType::Cryptocurrency,
+            LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+        )
+        .venue("SIM")
+        .sector(Sector::Financials)
+        .price(Decimal::from_int(100))
+        .provenance(Provenance::synthetic("asset-class-test", at))
+        .build(at)?;
+        let shipped = AssetClassRegistry::shipped()?;
+        // Premise: the shipped table admits it.
+        shipped.admit(&coin)?;
+        let narrowed = shipped.without(AssetClass::DigitalAsset)?;
+        let refused = narrowed
+            .admit(&coin)
+            .expect_err("a withdrawn class's instrument was admitted");
+        assert!(
+            refused
+                .message()
+                .contains("obj-BTC is a digital_asset and no record registers"),
+            "{}",
+            refused.message()
+        );
+        // Withdrawing a class a sibling hedges into is refused, as `shipped`
+        // would refuse such a table.
+        assert!(
+            AssetClassRegistry::shipped()?
+                .without(AssetClass::Rates)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    /// Covered interest parity against a hand computation: 1.10 spot, 5%
+    /// domestic, 3% foreign, 90 days on 360 is 1.10 × 1.0125 / 1.0075. Fails
+    /// if either growth factor is dropped or the two are swapped.
+    #[test]
+    fn an_fx_forward_is_spot_carried_along_both_curves() -> Result<()> {
+        let d = |text: &str| Decimal::parse(text).ok_or_else(|| Error::invalid("literal"));
+        let forward = covered_interest_forward(d("1.10")?, d("0.05")?, d("0.03")?, 90, 360)?;
+        let expected = d("1.11375")?
+            .checked_div(d("1.0075")?)
+            .ok_or_else(|| Error::invalid("division"))?;
+        assert_eq!(forward, expected);
+        // Premise of the comparison: the forward differs from spot, so the
+        // equality is not met by a function that returns spot.
+        assert!(forward > d("1.10")?);
+        assert!(
+            covered_interest_forward(Decimal::ZERO, Decimal::ZERO, Decimal::ZERO, 90, 360).is_err()
+        );
+        assert!(
+            covered_interest_forward(Decimal::ONE, Decimal::ZERO, Decimal::ZERO, 90, 0).is_err()
         );
         Ok(())
     }

@@ -235,7 +235,9 @@ pub struct Platform {
     reasoning: ReasoningEngine,
     constructor: PortfolioConstructor,
     orders: OrderManager,
-    broker: Box<dyn Broker>,
+    /// `pub(crate)` for `crate::breadth`, which reaches the venue's listing
+    /// surface through it for the Market Factory and names no broker type.
+    pub(crate) broker: Box<dyn Broker>,
     autonomy: AutonomyController,
     monitor: RiskMonitor,
     /// Holds between a capital check and its resolution. A proposal that
@@ -797,6 +799,9 @@ pub struct Platform {
     /// admit whatever it was given, which is the capability claim §17.7
     /// exists to refuse. Read through `crate::asset_class_registry`.
     pub(crate) asset_class_registry: crate::asset_class_registry::AssetClassRegistry,
+    /// The Market Factory, event markets and commerce research, idle until a
+    /// composition root installs a breadth plan. Read through `crate::breadth`.
+    pub(crate) breadth: crate::breadth::BreadthPlane,
     /// The exposure buckets every instrument this platform was assembled to
     /// trade belongs to, keyed by object id then axis — the same projection
     /// of reference data as `asset_classes`, taken at the same moment for
@@ -4824,6 +4829,7 @@ impl Platform {
             derivative_permissions: DerivativePermissions::none(),
             derivative_desk: None,
             asset_class_registry,
+            breadth: crate::breadth::BreadthPlane::default(),
             exposure_axes,
             liquidity_reference,
             cycle_ledger: None,
@@ -9710,11 +9716,13 @@ impl Platform {
         self.finish_stage(&mut stages, sensed, &mut mark);
         let understood = self.stage_understand(now);
         self.finish_stage(&mut stages, understood, &mut mark);
-        let discovered = self.stage_discover(now);
+        let mut discovered = self.stage_discover(now);
+        self.breadth_discover(now, &mut discovered);
         self.finish_stage(&mut stages, discovered, &mut mark);
         let reasoned = self.stage_reason(now, &lineage);
         self.finish_stage(&mut stages, reasoned, &mut mark);
-        let simulated = self.stage_simulate(now);
+        let mut simulated = self.stage_simulate(now);
+        self.breadth_simulate(now, &mut simulated);
         self.finish_stage(&mut stages, simulated, &mut mark);
         let decided = self.stage_decide(now);
         self.finish_stage(&mut stages, decided, &mut mark);

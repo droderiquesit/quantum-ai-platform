@@ -22,6 +22,34 @@
 //!
 //! Every one of them is a cycle whose product exceeds one, which is why the
 //! search in [`crate::search`] needs to know about only one of them.
+//!
+//! # A node is more than an instrument at a venue (R12-MESH-5053)
+//!
+//! A node was `(object, venue)` until 2026-10-11, and three distinctions an
+//! arbitrageur pays for were invisible to it: a wrapped or tokenized
+//! representation of an asset is not the asset (redeeming it costs and takes
+//! time), a position still settling is not a settled one (it cannot be sold
+//! again until it lands, and it can fail), and the same venue's book reached
+//! from two regions is two different latencies and two different legal
+//! regimes. A graph that collapsed any of them could join the two sides with
+//! nothing between them, and the search would read the gap as free money.
+//! [`Node`] now carries [`Representation`], [`SettlementStage`] and a region,
+//! all three are part of its identity and its ordering, and
+//! [`ArbitrageGraph::add_edge`] refuses an edge that joins two nodes
+//! differing only in settlement stage or region at no cost — moving between
+//! them is never free, and an edge that says it is would be a cycle with a
+//! hole in it.
+//!
+//! # An edge carries more than its fee (R12-MESH-5055 to -5057)
+//!
+//! [`EdgeCosts`] puts on every conversion the costs that are a property of
+//! *that* conversion rather than of the whole path: a tax or duty estimate, a
+//! bridge, transfer or logistics charge, a settlement-risk expected loss, a
+//! probability of fill, and a measured borrow or funding rate. Each one
+//! reaches the search through [`ConversionEdge::effective_rate`] and the net
+//! edge through its own named deduction in [`crate::netedge`], so a cycle
+//! that is only profitable when a duty is ignored or a fill is assumed is
+//! refused rather than ranked.
 
 use crate::arith::mul;
 use qip_contracts::message::BookSide;
@@ -31,25 +59,260 @@ use qip_core::{Decimal, ObjectId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// One instrument held at one venue.
+/// How an asset is held: itself, or a claim on it.
 ///
-/// The venue is part of the identity. The same instrument at two venues is two
-/// different things to an arbitrageur, and collapsing them is how a cross-venue
-/// opportunity becomes invisible.
+/// A wrapped coin, a tokenized share or a depositary receipt tracks its
+/// underlying and is not it: converting back costs a fee and a wait, and the
+/// wrapper can fail when the underlying does not. Ordered, because it is part
+/// of a node's ordering and a replay that reorders nodes is not a replay.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Representation {
+    /// The asset itself, as the venue holds it.
+    #[default]
+    Native,
+    /// A wrapper redeemable for the asset by its issuer or contract.
+    Wrapped,
+    /// An on-chain token representing an off-chain asset.
+    Tokenized,
+    /// A receipt or depositary claim held through a custodian.
+    Receipt,
+}
+
+impl Representation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Wrapped => "wrapped",
+            Self::Tokenized => "tokenized",
+            Self::Receipt => "receipt",
+        }
+    }
+}
+
+/// How far a holding has got through settlement.
+///
+/// A holding that is still settling cannot be sold again, can fail, and is
+/// exposed to its counterparty or chain until it lands; a graph that read it
+/// as settled would let a cycle re-use inventory that does not yet exist.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementStage {
+    /// Delivered and final: free to trade again.
+    #[default]
+    Settled,
+    /// Traded, awaiting the venue's or the chain's settlement.
+    Pending,
+    /// Moving between venues, regions or representations.
+    InTransit,
+}
+
+impl SettlementStage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Settled => "settled",
+            Self::Pending => "pending",
+            Self::InTransit => "in_transit",
+        }
+    }
+}
+
+/// One instrument, in one representation and settlement stage, held at one
+/// venue in one region.
+///
+/// Every field is part of the identity. The same instrument at two venues is
+/// two different things to an arbitrageur, and so is the same instrument
+/// wrapped and unwrapped, settled and settling, or reached in two regions:
+/// collapsing any pair is how a cost becomes invisible and a cycle with a
+/// hole in it reads as profit (R12-MESH-5053).
+///
+/// `region` is `None` when the graph's builder states none — the node is the
+/// venue's own book wherever that venue is — and `Some` when the same venue
+/// is reached from more than one region. `None` and `Some` are different
+/// nodes, on purpose: a builder that names regions for some nodes and not
+/// others has two graphs, and joining them is an edge somebody must state.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Node {
     pub object: ObjectId,
     pub venue: VenueId,
+    #[serde(default)]
+    pub representation: Representation,
+    #[serde(default)]
+    pub settlement: SettlementStage,
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 impl Node {
+    /// A native, settled holding at a venue, with no region stated.
     pub fn new(object: ObjectId, venue: VenueId) -> Self {
-        Self { object, venue }
+        Self {
+            object,
+            venue,
+            representation: Representation::Native,
+            settlement: SettlementStage::Settled,
+            region: None,
+        }
+    }
+
+    /// The same holding in another representation.
+    pub fn with_representation(mut self, representation: Representation) -> Self {
+        self.representation = representation;
+        self
+    }
+
+    /// The same holding at another settlement stage.
+    pub fn with_settlement(mut self, settlement: SettlementStage) -> Self {
+        self.settlement = settlement;
+        self
+    }
+
+    /// The same holding reached in a named region.
+    pub fn in_region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
+        self
+    }
+
+    /// Whether `self` and `other` are the same asset, venue and
+    /// representation and differ only in settlement stage or region — the
+    /// pair no edge may join for nothing.
+    pub fn differs_only_in_settlement_or_region(&self, other: &Self) -> bool {
+        self.object == other.object
+            && self.venue == other.venue
+            && self.representation == other.representation
+            && (self.settlement != other.settlement || self.region != other.region)
     }
 
     /// A stable label for logs and rejection messages.
+    ///
+    /// The default representation and stage are left off so the common case
+    /// reads as it always did; anything else is spelled out, because a
+    /// rejection naming `ETH@CX` when the node was a pending wrapped holding
+    /// in another region would send the reader to the wrong book.
     pub fn label(&self) -> String {
-        format!("{}@{}", self.object.as_str(), self.venue.as_str())
+        let mut qualifiers: Vec<&str> = Vec::new();
+        if self.representation != Representation::Native {
+            qualifiers.push(self.representation.as_str());
+        }
+        if self.settlement != SettlementStage::Settled {
+            qualifiers.push(self.settlement.as_str());
+        }
+        if let Some(region) = &self.region {
+            qualifiers.push(region.as_str());
+        }
+        if qualifiers.is_empty() {
+            format!("{}@{}", self.object.as_str(), self.venue.as_str())
+        } else {
+            format!(
+                "{}@{}[{}]",
+                self.object.as_str(),
+                self.venue.as_str(),
+                qualifiers.join(",")
+            )
+        }
+    }
+}
+
+/// The costs that belong to one conversion rather than to the whole path
+/// (R12-MESH-5055 to -5057).
+///
+/// Every fraction is of the conversion's notional, exact because it is
+/// charged against money, and refused outside its range by
+/// [`EdgeCosts::validate`] rather than clamped into it. The default is the
+/// conversion that carries none of these — no duty, no logistics, no
+/// settlement risk, a certain fill, no borrow — which is what every edge was
+/// before the field existed; a builder that measures any of them states it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeCosts {
+    /// Tax or duty levied on the conversion, as a fraction in `[0, 1)`: a
+    /// stamp duty, a transaction tax, a customs duty on a physical leg.
+    pub tax_duty_fraction: Decimal,
+    /// Transfer, bridge or logistics charge beyond the venue fee, in `[0, 1)`:
+    /// a bridge's toll, a withdrawal fee, freight and insurance.
+    pub logistics_fraction: Decimal,
+    /// Expected loss from the conversion failing to settle, in `[0, 1)`:
+    /// probability of failure times loss given failure.
+    pub settlement_risk_fraction: Decimal,
+    /// Probability the conversion fills at all, in `(0, 1]`.
+    pub fill_probability: Decimal,
+    /// Measured annualised borrow or funding rate for holding this leg, as a
+    /// fraction, non-negative. Charged over the holding period on top of the
+    /// path-wide funding assumption, because a borrow is a property of the
+    /// instrument borrowed and not of the path.
+    pub borrow_rate_annual: Decimal,
+}
+
+impl Default for EdgeCosts {
+    fn default() -> Self {
+        Self {
+            tax_duty_fraction: Decimal::ZERO,
+            logistics_fraction: Decimal::ZERO,
+            settlement_risk_fraction: Decimal::ZERO,
+            fill_probability: Decimal::ONE,
+            borrow_rate_annual: Decimal::ZERO,
+        }
+    }
+}
+
+impl EdgeCosts {
+    /// Whether every cost is absent and the fill is certain.
+    pub fn is_free(&self) -> bool {
+        self.tax_duty_fraction.is_zero()
+            && self.logistics_fraction.is_zero()
+            && self.settlement_risk_fraction.is_zero()
+            && self.fill_probability == Decimal::ONE
+            && self.borrow_rate_annual.is_zero()
+    }
+
+    /// The multiplier the proportional costs and the fill probability apply
+    /// to a conversion's rate: `(1 - tax)(1 - logistics)(1 - settlement
+    /// risk) × p(fill)`. Borrow is time-based and is charged on the net edge
+    /// instead, where the holding period is known.
+    pub fn rate_multiplier(&self) -> Result<Decimal> {
+        let mut multiplier = self.fill_probability;
+        for (fraction, what) in [
+            (self.tax_duty_fraction, "tax and duty"),
+            (self.logistics_fraction, "logistics"),
+            (self.settlement_risk_fraction, "settlement risk"),
+        ] {
+            multiplier = mul(multiplier, Decimal::ONE - fraction, what)?;
+        }
+        Ok(multiplier)
+    }
+
+    /// Refuse a cost outside its range, naming it.
+    pub fn validate(&self, label: &str) -> Result<()> {
+        for (fraction, what) in [
+            (self.tax_duty_fraction, "tax and duty"),
+            (self.logistics_fraction, "logistics"),
+            (self.settlement_risk_fraction, "settlement risk"),
+        ] {
+            if fraction.is_negative() || fraction >= Decimal::ONE {
+                return Err(Error::invalid(format!(
+                    "conversion {label} has a {what} fraction of {fraction}, outside [0, 1); a \
+                     cost is a non-negative share of notional less than the whole of it"
+                )));
+            }
+        }
+        if !self.fill_probability.is_positive() || self.fill_probability > Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "conversion {label} has a fill probability of {}, outside (0, 1]; a conversion \
+                 that can never fill is removed from the graph, not priced at zero",
+                self.fill_probability
+            )));
+        }
+        if self.borrow_rate_annual.is_negative() {
+            return Err(Error::invalid(format!(
+                "conversion {label} has a borrow rate of {}; a rate earned is gross edge, not a \
+                 negative cost",
+                self.borrow_rate_annual
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -126,16 +389,26 @@ pub struct ConversionEdge {
     pub observed_at: Timestamp,
     /// How many observations back the rate.
     pub observations: u32,
+    /// Tax and duty, logistics, settlement risk, fill probability and
+    /// borrow for this conversion. Defaulted on deserialisation so a graph
+    /// written before the field existed reads as one that stated none.
+    #[serde(default)]
+    pub costs: EdgeCosts,
 }
 
 impl ConversionEdge {
-    /// The rate after the conversion's own cost. What the search searches on.
+    /// The rate after the conversion's own costs. What the search searches on.
+    ///
+    /// The venue fee and every proportional cost in [`EdgeCosts`], with the
+    /// fill probability as an expectation: a path that only clears when
+    /// every leg fills for certain and no duty is charged is not found.
     pub fn effective_rate(&self) -> Result<Decimal> {
-        mul(
+        let after_fee = mul(
             self.indicative_rate,
             Decimal::ONE - self.cost_fraction,
             "effective rate",
-        )
+        )?;
+        mul(after_fee, self.costs.rate_multiplier()?, "effective rate")
     }
 
     pub fn label(&self) -> String {
@@ -346,6 +619,31 @@ impl ArbitrageGraph {
         Ok(())
     }
 
+    /// Replace a conversion's own costs with what was measured.
+    ///
+    /// The measured half of R12-MESH-5055 to -5057: a cell that knows a
+    /// venue's borrow rate, a bridge's toll or a leg's historical fill rate
+    /// states it on the edge it belongs to, between scans, the way
+    /// [`Self::refresh_trade`] restates a rate. Refused for an index naming
+    /// no edge or for a cost outside its range — and for a cost set that
+    /// would leave a settlement-stage or region edge free, which
+    /// [`Self::add_edge`] refuses for the same reason.
+    pub fn set_costs(&mut self, index: usize, costs: EdgeCosts) -> Result<()> {
+        let Some(edge) = self.edges.get(index) else {
+            return Err(Error::not_found(format!(
+                "no conversion at index {index}; the graph holds {}",
+                self.edges.len()
+            )));
+        };
+        let mut candidate = edge.clone();
+        candidate.costs = costs;
+        Self::validate(&candidate)?;
+        if let Some(slot) = self.edges.get_mut(index) {
+            *slot = candidate;
+        }
+        Ok(())
+    }
+
     /// Add a trade against a book at one venue.
     #[allow(clippy::too_many_arguments)]
     pub fn add_trade(
@@ -367,6 +665,7 @@ impl ArbitrageGraph {
             kind: EdgeKind::Trade { market, side },
             observed_at,
             observations,
+            costs: EdgeCosts::default(),
         })
     }
 
@@ -388,6 +687,37 @@ impl ArbitrageGraph {
             kind: EdgeKind::Transfer,
             observed_at,
             observations,
+            costs: EdgeCosts::default(),
+        })
+    }
+
+    /// Add a movement of one holding between any two locations: venues,
+    /// regions, representations or settlement stages (R12-MESH-5053).
+    ///
+    /// The general form of [`Self::add_transfer`], which moves only between
+    /// venues. A wrap or unwrap, a bridge between regions, or settlement
+    /// completing (`Pending` to `Settled`) is a transfer of the same asset
+    /// that changes where or how it is held. Refused, by [`Self::add_edge`],
+    /// when it changes the asset or moves nothing, and when it joins two
+    /// nodes differing only in settlement stage or region at no cost.
+    pub fn add_movement(
+        &mut self,
+        from: Node,
+        to: Node,
+        cost_fraction: Decimal,
+        costs: EdgeCosts,
+        observed_at: Timestamp,
+        observations: u32,
+    ) -> Result<usize> {
+        self.add_edge(ConversionEdge {
+            from,
+            to,
+            indicative_rate: Decimal::ONE,
+            cost_fraction,
+            kind: EdgeKind::Transfer,
+            observed_at,
+            observations,
+            costs,
         })
     }
 
@@ -415,6 +745,7 @@ impl ArbitrageGraph {
             },
             observed_at,
             observations,
+            costs: EdgeCosts::default(),
         })
     }
 
@@ -473,6 +804,23 @@ impl ArbitrageGraph {
                 edge.cost_fraction
             )));
         }
+        edge.costs.validate(&edge.label())?;
+        // R12-MESH-5053: two nodes that differ only in settlement stage or
+        // region are distinct, and what joins them is never free — settling
+        // takes time and can fail, and a region is a different latency and a
+        // different jurisdiction. An edge stating no cost at all between
+        // them is a cycle with a hole in it.
+        if edge.from.differs_only_in_settlement_or_region(&edge.to)
+            && edge.cost_fraction.is_zero()
+            && edge.costs.is_free()
+        {
+            return Err(Error::invalid(format!(
+                "conversion {} joins two holdings differing only in settlement stage or region \
+                 at no cost; state the transfer fee, settlement risk, fill probability or \
+                 borrow it carries — moving between them is never free",
+                edge.label()
+            )));
+        }
         match &edge.kind {
             EdgeKind::Transfer => {
                 if edge.from.object != edge.to.object {
@@ -481,9 +829,17 @@ impl ArbitrageGraph {
                         edge.label()
                     )));
                 }
-                if edge.from.venue == edge.to.venue {
+                // A transfer moves the asset somewhere: another venue, region,
+                // representation or settlement stage. One that changes none
+                // of them moves nothing.
+                if edge.from.venue == edge.to.venue
+                    && edge.from.region == edge.to.region
+                    && edge.from.representation == edge.to.representation
+                    && edge.from.settlement == edge.to.settlement
+                {
                     return Err(Error::invalid(format!(
-                        "transfer {} does not leave the venue",
+                        "transfer {} does not leave the venue, region, representation or \
+                         settlement stage it started in",
                         edge.label()
                     )));
                 }

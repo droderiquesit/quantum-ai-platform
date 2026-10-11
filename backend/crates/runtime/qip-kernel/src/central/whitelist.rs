@@ -603,6 +603,7 @@ impl ArbitragePolicy {
                 to: market.base.clone(),
                 side: BookSide::Ask,
                 cost_fraction: terms.taker_cost,
+                costs: None,
             });
             conversions.push(WhitelistedConversion {
                 venue: market.venue.clone(),
@@ -612,6 +613,7 @@ impl ArbitragePolicy {
                 to: market.quote.clone(),
                 side: BookSide::Bid,
                 cost_fraction: terms.taker_cost,
+                costs: None,
             });
         }
         let mut start_sizes = self.start_sizes.clone();

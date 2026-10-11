@@ -512,6 +512,35 @@ pub struct WhitelistedConversion {
     /// Proportional cost of taking the conversion, as a fraction in `[0, 1)`.
     /// Exact, because it is charged against money.
     pub cost_fraction: Decimal,
+    /// The conversion's own costs beyond its fee (R12-MESH-5055 to -5057),
+    /// when the centre states them.
+    ///
+    /// Additive to the signed shape on the same terms as `conversions`:
+    /// skipped when absent, so a payload signed before the field existed
+    /// serialises to the bytes — and the digest — it always did. Absent is
+    /// "none stated", which the cell prices as no duty, no logistics, no
+    /// settlement risk, a certain fill and no borrow, exactly as every
+    /// conversion was priced before; present, every figure is stated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub costs: Option<WhitelistedCosts>,
+}
+
+/// Per-conversion costs as the centre ships them. Every field is required
+/// once the block is present, so a half-stated block is refused by
+/// deserialisation rather than read as zeros the centre never measured.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WhitelistedCosts {
+    /// Tax or duty on the conversion, a fraction of notional in `[0, 1)`.
+    pub tax_duty_fraction: Decimal,
+    /// Transfer, bridge or logistics charge beyond the venue fee, in `[0, 1)`.
+    pub logistics_fraction: Decimal,
+    /// Expected loss from a failure to settle, in `[0, 1)`.
+    pub settlement_risk_fraction: Decimal,
+    /// Probability the conversion fills, in `(0, 1]`.
+    pub fill_probability: Decimal,
+    /// Measured annualised borrow or funding rate, non-negative.
+    pub borrow_rate_annual: Decimal,
 }
 
 /// Which cycles may run and which of the eight mechanisms each is assigned.

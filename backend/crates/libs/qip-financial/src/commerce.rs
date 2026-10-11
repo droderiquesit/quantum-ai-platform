@@ -915,6 +915,27 @@ impl CommercePlane {
         self.settlements.contains_key(sale)
     }
 
+    /// Record a custody fact — a unit received, moved, reserved or released —
+    /// into the plane's ledger.
+    ///
+    /// A sale and a return are refused here: each changes the marketplace's
+    /// side too, and only [`Self::sell`] and [`Self::return_unit`] keep the
+    /// two consistent. Without this the plane's ledger was fixed at
+    /// construction, so a running plane could not receive the next purchase
+    /// without being rebuilt and losing every settlement it held.
+    pub fn receive(&mut self, event: LedgerEvent) -> Result<()> {
+        if matches!(
+            event,
+            LedgerEvent::Sold { .. } | LedgerEvent::Returned { .. }
+        ) {
+            return Err(Error::invalid(
+                "a sale or a return goes through sell or return_unit, which settle the \
+                 marketplace side too",
+            ));
+        }
+        self.ledger.apply(event)
+    }
+
     pub fn sell(
         &mut self,
         sale: &str,
