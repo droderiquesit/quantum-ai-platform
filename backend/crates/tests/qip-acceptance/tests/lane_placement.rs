@@ -326,3 +326,151 @@ fn every_world_model_arbitration_reasoner_planner_and_specialist_agent_crate_run
         );
     }
 }
+// --- below the crate: what the Lane 0 pass actually reaches ------------------
+
+/// Every body of a function named `name` in `sources`, brace-matched.
+/// Several types may share a method name; all of their bodies are returned,
+/// which over-approximates what a call reaches and so errs towards a finding.
+fn bodies_of<'a>(sources: &'a [String], name: &str) -> Vec<&'a str> {
+    let mut found = Vec::new();
+    for text in sources {
+        for opening in [format!("fn {name}("), format!("fn {name}<")] {
+            let mut from = 0;
+            while let Some(offset) = text[from..].find(&opening) {
+                let start = from + offset;
+                from = start + opening.len();
+                // Not a longer name ending in this one: `fn re_flush(` is not
+                // `fn flush(`.
+                let preceded = text[..start].chars().next_back();
+                if preceded.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                    continue;
+                }
+                let Some(brace) = text[start..].find(['{', ';']) else {
+                    continue;
+                };
+                if text[start + brace..].starts_with(';') {
+                    continue; // a trait declaration with no body
+                }
+                let mut depth = 0usize;
+                let mut end = start + brace;
+                for (index, c) in text[start + brace..].char_indices() {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = start + brace + index + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                found.push(&text[start..end]);
+            }
+        }
+    }
+    found
+}
+
+/// The names of the `self.<name>(` calls in `body`.
+fn self_calls(body: &str) -> BTreeSet<String> {
+    let mut calls = BTreeSet::new();
+    let mut rest = body;
+    while let Some(at) = rest.find("self.") {
+        rest = &rest[at + "self.".len()..];
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() && rest[name.len()..].starts_with('(') {
+            calls.insert(name);
+        }
+    }
+    calls
+}
+
+/// ARCH-013 below the crate. The four tests above place crates in lanes; a
+/// Lane 0 crate can still hold a slow function, and nothing at crate level
+/// sees it. `qip-edge` is Lane 0 *and* holds the mesh client and the journal
+/// flush, both of which leave the process. This test follows `Cell::work`,
+/// the reflex pass, through every `self.` method it reaches inside
+/// `qip-edge/src`, and asserts none of those bodies is the journal flush or
+/// names a socket, a sleep, a file or the mesh publisher.
+///
+/// What it cannot see: calls through a field (`self.journal.record(..)`) or a
+/// free function are not followed, so it is a floor, not a proof. It does
+/// catch the change most likely to happen — the pass calling a cell method
+/// that does I/O.
+///
+/// Mutation: add `let _ = self.flush(mirror, now);` (any call to `Cell::flush`,
+/// with a `&mut dyn Mirror` threaded in) inside
+/// `Cell::work` — `flush` joins the reached set and the assertion fires.
+/// Mutation: add `std::thread::sleep(std::time::Duration::from_millis(1));`
+/// inside any method `work` reaches (e.g. `review_venues`) — the token
+/// assertion fires.
+#[test]
+fn the_reflex_pass_reaches_no_journal_flush_socket_sleep_or_file_through_the_cells_own_methods() {
+    let sources: Vec<String> =
+        qip_acceptance::files_with_extension("backend/crates/edge/qip-edge/src", "rs")
+            .iter()
+            .map(|path| {
+                qip_acceptance::production_text(
+                    &std::fs::read_to_string(path).expect("a readable source file"),
+                )
+            })
+            .collect();
+    // Premise: the pass is where this test thinks it is.
+    let work = bodies_of(&sources, "work");
+    assert!(
+        work.iter()
+            .any(|body| body.contains("gateway: &mut dyn Placer")),
+        "premise: Cell::work was found"
+    );
+
+    let mut reached = BTreeSet::from(["work".to_string()]);
+    let mut pending = vec!["work".to_string()];
+    while let Some(name) = pending.pop() {
+        for body in bodies_of(&sources, &name) {
+            for call in self_calls(body) {
+                if reached.insert(call.clone()) {
+                    pending.push(call);
+                }
+            }
+        }
+    }
+    // Premise: the walk is a walk, not the one body it started from.
+    assert!(
+        reached.len() > 20,
+        "only {} methods reached: {reached:?}",
+        reached.len()
+    );
+    assert!(
+        reached.contains("refuse"),
+        "premise: the walk follows the pass's own calls"
+    );
+
+    assert!(
+        !reached.contains("flush"),
+        "the reflex pass reaches the journal flush, which ships off-process"
+    );
+    let forbidden = [
+        "TcpStream",
+        "UdpSocket",
+        "thread::sleep",
+        "MeshPublisher",
+        "std::fs::",
+        "File::",
+        "HttpClient",
+    ];
+    for name in &reached {
+        for body in bodies_of(&sources, name) {
+            for token in forbidden {
+                assert!(
+                    !body.contains(token),
+                    "`{name}`, reached from the reflex pass, names `{token}`"
+                );
+            }
+        }
+    }
+}

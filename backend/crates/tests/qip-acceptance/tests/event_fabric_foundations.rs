@@ -3,79 +3,42 @@
 //! Tests for Reflex Mesh independence from the fabric, selective regional mirroring configuration,
 //! and regional fabric operational autonomy without cloud database dependencies.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum ComponentType {
-    Fabric,
-    RefexMesh,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComponentState {
-    Healthy,
-    Stalled,
-    Severed,
-}
-
 #[test]
 fn fabric_005_reflex_mesh_coordination_stays_off_the_fabric() {
-    // FABRIC-005: Latency-sensitive peer coordination between Reflex Nodes (the Reflex Mesh)
-    // must travel directly peer-to-peer and must not be broker-mediated through the fabric.
-    // A fabric outage must not stop mesh coordination, and a mesh outage must not prevent
-    // durable journaling or control distribution.
-
-    #[derive(Debug, Clone)]
-    struct PaperTopology {
-        _cells: Vec<String>,
-        _mesh_links: Vec<(String, String)>,
-        _fabric_subscriptions: Vec<String>,
+    // FABRIC-005: peer coordination between reflex nodes travels directly
+    // peer-to-peer and is never broker-mediated. The previous test put
+    // `Stalled` and `Healthy` into a map and read them back. This one reads
+    // the two files the mesh is built from — the cell's uplink and downlink
+    // (`qip-edge/src/mesh.rs`) and the transport's mesh publisher
+    // (`qip-transport/src/mesh.rs`) — and asserts they name the mesh's own
+    // HTTP publisher and no fabric client, so a fabric outage has no code
+    // path by which to stop mesh coordination.
+    //
+    // Mutation: in `qip-edge/src/mesh.rs`, replace `MeshPublisher` in the
+    // uplink with `qip_transport::event_fabric::producer::Producer` — the
+    // forbidden-token assertion fires (and the premise, if the publisher
+    // import goes).
+    let forbidden = [
+        "event_fabric::producer",
+        "event_fabric::consumer",
+        "event_fabric::batching_producer",
+        "event_fabric::transport",
+        "FabricTransport",
+        "qip_streaming",
+    ];
+    for (file, premise) in [
+        ("backend/crates/edge/qip-edge/src/mesh.rs", "MeshPublisher"),
+        (
+            "backend/crates/libs/qip-transport/src/mesh.rs",
+            "pub struct MeshPublisher",
+        ),
+    ] {
+        let text = qip_acceptance::production_text(&qip_acceptance::read(file));
+        assert!(text.contains(premise), "premise: {file} holds `{premise}`");
+        for token in forbidden {
+            assert!(!text.contains(token), "{file} names `{token}`");
+        }
     }
-
-    let topology = PaperTopology {
-        _cells: vec!["cell-us-west".to_string(), "cell-us-east".to_string()],
-        _mesh_links: vec![
-            ("cell-us-west".to_string(), "cell-us-east".to_string()),
-            ("cell-us-east".to_string(), "cell-us-west".to_string()),
-        ],
-        _fabric_subscriptions: vec!["p0_control".to_string(), "p1_outcomes".to_string()],
-    };
-
-    // Two-cell paper topology with direct mesh links
-    assert_eq!(topology._cells.len(), 2);
-    assert_eq!(topology._mesh_links.len(), 2);
-
-    // Scenario 1: Stop the fabric, assert mesh continues
-    let mut component_state: std::collections::BTreeMap<ComponentType, ComponentState> =
-        std::collections::BTreeMap::new();
-    component_state.insert(ComponentType::Fabric, ComponentState::Stalled);
-    component_state.insert(ComponentType::RefexMesh, ComponentState::Healthy);
-
-    // With fabric stalled, mesh coordination must remain healthy
-    assert_eq!(
-        component_state.get(&ComponentType::Fabric),
-        Some(&ComponentState::Stalled)
-    );
-    assert_eq!(
-        component_state.get(&ComponentType::RefexMesh),
-        Some(&ComponentState::Healthy)
-    );
-
-    // Mesh opportunity/reservation exchange continues despite fabric stall
-    let mesh_messages_sent = 100usize;
-    assert!(mesh_messages_sent > 0);
-
-    // Scenario 2: Sever mesh links, assert fabric journaling continues
-    component_state.insert(ComponentType::Fabric, ComponentState::Healthy);
-    component_state.insert(ComponentType::RefexMesh, ComponentState::Severed);
-
-    // With mesh severed, fabric journaling and control must remain healthy
-    assert_eq!(
-        component_state.get(&ComponentType::Fabric),
-        Some(&ComponentState::Healthy)
-    );
-    assert_eq!(
-        component_state.get(&ComponentType::RefexMesh),
-        Some(&ComponentState::Severed)
-    );
 }
 
 #[test]

@@ -143,12 +143,49 @@ fn no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridg
     );
 }
 
-/// If a bridge crate ever exists it holds no durable state of its own: its
-/// source must not name the storage crate's durable types. The bridge
-/// commits fabric consumer offsets, which live in the fabric, not here.
+/// The names that would give a bridge durable state of its own, found in
+/// `text` with comment lines dropped.
 ///
-/// Mutation: create `crates/services/qip-fabric-bridge/src/lib.rs` containing
-/// `use qip_storage::DurableStore;` — fails naming the file.
+/// Matched as call shapes rather than as one fully qualified path: the
+/// previous scan looked for `std::fs::write` and so passed a file that wrote
+/// `use std::fs;` and then `fs::write(...)` — the ordinary way to write it.
+fn durable_state_names(text: &str) -> Vec<&'static str> {
+    const DURABLE: [&str; 8] = [
+        "DurableStore",
+        "SegmentLog",
+        "ChainArchive",
+        "fs::write(",
+        "File::create(",
+        "OpenOptions",
+        "fs::rename(",
+        "fs::copy(",
+    ];
+    let code: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    DURABLE
+        .iter()
+        .copied()
+        .filter(|token| code.contains(token))
+        .collect()
+}
+
+/// If a bridge crate ever exists it holds no durable state of its own: its
+/// source must not name the storage crate's durable types or write a file.
+/// The bridge commits fabric consumer offsets, which live in the fabric.
+///
+/// **This scan is empty today**: no workspace crate is named
+/// `qip-fabric-bridge`, so the loop below visits nothing. The previous
+/// version of this test said nothing about that and read as a pass on a
+/// bridge it had never seen. It now asserts the walk itself happened, and the
+/// scanner it applies is proven on fixtures by
+/// `the_durable_state_scan_catches_fs_write_after_use_std_fs_and_passes_clean_source`.
+///
+/// Mutation: create `crates/services/qip-fabric-bridge/src/lib.rs` (with a
+/// manifest naming the package) containing `use std::fs; fn f() {
+/// fs::write("o", b"x").ok(); }` — fails naming the file.
 #[test]
 fn a_bridge_crate_if_one_exists_holds_no_durable_state() {
     fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -162,30 +199,44 @@ fn a_bridge_crate_if_one_exists_holds_no_durable_state() {
             }
         }
     }
+    let all = manifests();
+    // Premise: the walk found the workspace, so "no bridge" is a finding
+    // about the tree and not a walk that read nothing.
+    assert!(all.len() > 50, "found only {} manifests", all.len());
     let mut bridge_sources = Vec::new();
-    for manifest in manifests() {
+    for manifest in all {
         let (name, _) = parse(&fs::read_to_string(&manifest).unwrap());
         if name.as_deref() == Some(BRIDGE) {
             rust_files(&manifest.parent().unwrap().join("src"), &mut bridge_sources);
         }
     }
-    let durable = [
-        "DurableStore",
-        "SegmentLog",
-        "ChainArchive",
-        "std::fs::write",
-        "File::create",
-    ];
     for source in &bridge_sources {
-        let text = fs::read_to_string(source).unwrap();
-        for token in durable {
-            assert!(
-                !text.contains(token),
-                "{} names {token}: the bridge must hold no durable state of its own",
-                source.display()
-            );
-        }
+        let found = durable_state_names(&fs::read_to_string(source).unwrap());
+        assert!(
+            found.is_empty(),
+            "{} names {found:?}: the bridge must hold no durable state of its own",
+            source.display()
+        );
     }
+}
+
+/// The durable-state scan on fixtures: it fires on the idiomatic
+/// `use std::fs;` + `fs::write(..)` the old token list missed, on a durable
+/// type, and not on clean source or on a comment that merely names one.
+///
+/// Mutation: shrink `durable_state_names`' list back to `"std::fs::write"`
+/// alone — the first assertion fires.
+#[test]
+fn the_durable_state_scan_catches_fs_write_after_use_std_fs_and_passes_clean_source() {
+    let imported =
+        "use std::fs;\nfn spill(bytes: &[u8]) {\n    fs::write(\"offsets\", bytes).ok();\n}\n";
+    assert_eq!(durable_state_names(imported), vec!["fs::write("]);
+    let typed = "use qip_storage::DurableStore;\n";
+    assert_eq!(durable_state_names(typed), vec!["DurableStore"]);
+    let clean = "pub fn commit(offset: u64) -> u64 {\n    offset + 1\n}\n";
+    assert!(durable_state_names(clean).is_empty());
+    let prose = "// never call fs::write( here; offsets live in the fabric\npub fn f() {}\n";
+    assert!(durable_state_names(prose).is_empty());
 }
 
 /// The scan itself on fixtures, so a clean tree is evidence and not blindness.

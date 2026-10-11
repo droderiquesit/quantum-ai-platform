@@ -313,96 +313,43 @@ fn fabric_009_fabric_sessions_use_quic_with_mutual_tls() {
 }
 
 #[test]
-fn fabric_010_durable_partitions_replicate_rf3_across_three_zones() {
-    // FABRIC-010: Durable partitions replicate RF3 across three zones: every partition
-    // must have three replicas on three separate zones, a write acknowledges only after
-    // two of three have persisted, and loss of one zone does not lose acknowledged data.
-
-    #[derive(Debug, Clone)]
-    struct Partition {
-        _partition_id: u32,
-        replication_factor: ReplicationFactor,
-        replicas: Vec<BrokerNode>,
-    }
-
-    // Create a partition with RF3 replication
-    let partition = Partition {
-        _partition_id: 0,
-        replication_factor: ReplicationFactor::RF3,
-        replicas: vec![
-            BrokerNode {
-                zone: Zone::ZoneA,
-                is_leader: true,
-                has_persistent_log: true,
-            },
-            BrokerNode {
-                zone: Zone::ZoneB,
-                is_leader: false,
-                has_persistent_log: true,
-            },
-            BrokerNode {
-                zone: Zone::ZoneC,
-                is_leader: false,
-                has_persistent_log: true,
-            },
-        ],
+fn fabric_010_gap_a_durable_partition_cannot_be_declared_at_rf3() {
+    // GAP PIN. FABRIC-010 asks for RF3 across three zones with a two-of-three
+    // write quorum. The previous test built a `Partition` with three
+    // `BrokerNode`s in three zones and asserted it had three. The production
+    // decision is the opposite and is code: `StreamPolicy::new` refuses a
+    // replication factor of three for every class (ADR 0100 §3, blocked on
+    // C2), and the broker module creates at most one broker template. This
+    // test asserts the refusal for the two durable classes the requirement is
+    // about, so the gap is evidence and RF3 arriving is noticed.
+    //
+    // Mutation: delete the replication-factor refusal in `StreamPolicy::new` —
+    // RF3 is admitted and the assertion fires.
+    use qip_events::event_fabric::policy::{
+        Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy, StreamPolicySpec,
     };
-
-    // Scenario 1: Partition has exactly 3 replicas
-    assert_eq!(partition.replicas.len(), 3);
-
-    // Scenario 2: Replicas are on three distinct zones
-    let zones: Vec<Zone> = partition.replicas.iter().map(|r| r.zone).collect();
-    assert!(zones.contains(&Zone::ZoneA));
-    assert!(zones.contains(&Zone::ZoneB));
-    assert!(zones.contains(&Zone::ZoneC));
-
-    // Scenario 3: All replicas have persistent logs
-    assert!(partition.replicas.iter().all(|r| r.has_persistent_log));
-
-    // Scenario 4: Write acknowledges after quorum (2 of 3)
-    let persisted_count = partition
-        .replicas
-        .iter()
-        .filter(|r| r.has_persistent_log)
-        .count();
-    assert!(persisted_count >= 2);
-
-    // Scenario 5: Loss of one zone does not lose acknowledged data
-    // (2 persisted + 1 lost still leaves 2 persisted = quorum)
-    let remaining_after_zone_loss = 2;
-    assert!(remaining_after_zone_loss >= 2);
-
-    // Scenario 6: Multiple partitions maintain RF3
-    let mut partitions = vec![partition];
-    for i in 1..4 {
-        let p = Partition {
-            _partition_id: i,
-            replication_factor: ReplicationFactor::RF3,
-            replicas: vec![
-                BrokerNode {
-                    zone: Zone::ZoneA,
-                    is_leader: i == 1,
-                    has_persistent_log: true,
-                },
-                BrokerNode {
-                    zone: Zone::ZoneB,
-                    is_leader: false,
-                    has_persistent_log: true,
-                },
-                BrokerNode {
-                    zone: Zone::ZoneC,
-                    is_leader: false,
-                    has_persistent_log: true,
-                },
-            ],
+    for class in [QosClass::P0Control, QosClass::P1Outcomes] {
+        let spec = |replication_factor| StreamPolicySpec {
+            qos_class: class,
+            partition_key: "key".to_string(),
+            ordering: Ordering::PerPartition,
+            retention: qip_events::retention::RetentionClass::Irreplaceable,
+            replication_factor,
+            mirroring: Mirroring::None,
+            overload_policy: OverloadPolicy::RefuseProducer,
+            ack_profile: class.ack_floor(),
+            byte_quota_per_producer: 1 << 20,
+            message_quota_per_producer: 1_000,
+            lag_limit: 10_000,
+            entitlement: Entitlement::new("control", "trade").expect("valid"),
+            seal_age_ms: 60_000,
+            peak_bytes_per_second: 1 << 16,
         };
-        partitions.push(p);
+        assert!(
+            StreamPolicy::new(spec(1)).is_ok(),
+            "premise: RF1 is admitted"
+        );
+        let refused = StreamPolicy::new(spec(3)).expect_err("RF3 was admitted");
+        assert!(refused.to_string().contains("(C2)"), "{refused}");
     }
-
-    assert!(
-        partitions
-            .iter()
-            .all(|p| p.replicas.len() == 3 && p.replication_factor == ReplicationFactor::RF3)
-    );
 }

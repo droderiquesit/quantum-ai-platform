@@ -1,442 +1,398 @@
-//! Event Fabric delivery semantics and overload policies: FABRIC-043 through FABRIC-050.
+//! Event Fabric delivery semantics: FABRIC-043 through FABRIC-050, driven
+//! through the broker library (`qip_streaming::event_fabric::broker::Broker`),
+//! its ledger sink, and `qip_events`' stream policy.
 //!
-//! Processing contracts covering effectively-once via idempotency (never claiming
-//! magical exactly-once), financial consumer idempotency, durability classes (P0-P4
-//! specifications), and backpressure/quota mechanisms.
+//! The previous version of this file built `DeliverySemantics`,
+//! `ReplicationConfig` and `LedgerSinkState` structs in each test body and
+//! asserted the values it had put in them. It imported nothing from the
+//! platform and passed with the broker deleted. Several of the requirements
+//! name RF3 quorums the fabric cannot run; those tests pin the refusal that
+//! says so, labelled as gaps.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
+use qip_core::{Clock, ManualClock, Timestamp};
+use qip_events::event_fabric::codec::{Batch, MessageType, PayloadCodec, Record, stamp_drain};
+use qip_events::event_fabric::policy::{
+    AckProfile, Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy,
+    StreamPolicySpec,
+};
+use qip_events::event_fabric::schema_id::Shape;
+use qip_events::retention::RetentionClass;
+use qip_storage::segment::log::SegmentLogConfig;
+use qip_streaming::event_fabric::broker::Broker;
+use qip_streaming::event_fabric::sink::{LedgerSink, OutcomeWriter, SinkStep};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
-#[test]
-fn fabric_043_no_global_exactly_once_claim_effectively_once_from_idempotency_and_fencing() {
-    // FABRIC-043: Neither the fabric nor any documentation or API built on it may claim
-    // global exactly-once delivery; effectively-once processing must be achieved only as
-    // at-least-once transport plus idempotent producers, deterministic event IDs,
-    // idempotent state transitions and sinks, and fencing.
+const STREAM: &str = "fills";
 
-    // SDK API contract: no exactly-once delivery claim
-    #[derive(Debug)]
-    enum DeliveryGuarantee {
-        AtLeastOnce,
-        AtMostOnce,
-        // Note: ExactlyOnce is deliberately NOT an option
+fn spec(class: QosClass) -> StreamPolicySpec {
+    StreamPolicySpec {
+        qos_class: class,
+        partition_key: "account".to_string(),
+        ordering: Ordering::PerPartition,
+        retention: RetentionClass::Irreplaceable,
+        replication_factor: 1,
+        mirroring: Mirroring::None,
+        overload_policy: OverloadPolicy::RefuseProducer,
+        ack_profile: class.ack_floor(),
+        byte_quota_per_producer: 1_000_000,
+        message_quota_per_producer: 1_000,
+        lag_limit: 1_000,
+        entitlement: Entitlement::new("ledger", "trade").expect("valid"),
+        seal_age_ms: 60_000,
+        peak_bytes_per_second: 1 << 20,
     }
-
-    // Supported guarantees only
-    let p0_guarantee = DeliveryGuarantee::AtLeastOnce;
-    let _p4_guarantee = DeliveryGuarantee::AtMostOnce;
-
-    match p0_guarantee {
-        DeliveryGuarantee::AtLeastOnce => {
-            // Effectively-once through idempotent sinks (see FABRIC-044)
-        }
-        DeliveryGuarantee::AtMostOnce => {
-            // Telemetry only
-        }
-    }
-
-    // Idempotent sink contract: state change and offset commit are atomic
-    struct IdempotentSink {
-        delivered_event_ids: BTreeSet<u64>,
-        last_committed_offset: u64,
-    }
-
-    impl IdempotentSink {
-        fn process_event(&mut self, event_id: u64, offset: u64) -> bool {
-            if self.delivered_event_ids.contains(&event_id) {
-                // Already processed; skip
-                false
-            } else {
-                // First time; mark delivered and commit atomically
-                self.delivered_event_ids.insert(event_id);
-                self.last_committed_offset = offset;
-                true
-            }
-        }
-    }
-
-    let mut sink = IdempotentSink {
-        delivered_event_ids: BTreeSet::new(),
-        last_committed_offset: 0,
-    };
-
-    // First delivery
-    assert!(sink.process_event(42, 1));
-    assert_eq!(sink.last_committed_offset, 1);
-
-    // Redelivery
-    assert!(!sink.process_event(42, 1));
-    assert_eq!(sink.last_committed_offset, 1); // Not advanced
 }
 
+/// A broker in a fresh directory with one single-partition P1 stream.
+fn broker(message_quota: u64) -> Broker {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "qip-acceptance-delivery-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 4)));
+    let broker = Broker::open(dir, Arc::clone(&clock)).unwrap();
+    let policy = StreamPolicy::new(StreamPolicySpec {
+        message_quota_per_producer: message_quota,
+        ..spec(QosClass::P1Outcomes)
+    })
+    .unwrap();
+    broker
+        .declare_stream(
+            STREAM,
+            1,
+            policy,
+            SegmentLogConfig::new(clock).with_roll_after_bytes(10_000_000),
+        )
+        .unwrap();
+    broker
+        .register_schema(STREAM, 1, 1, Shape::of(&1u32).unwrap())
+        .unwrap();
+    broker
+}
+
+/// A batch of `ids`, stamped as `producer` at `epoch` from `sequence`.
+fn batch(producer: &str, epoch: u64, sequence: u64, ids: &[&str]) -> Batch {
+    let records = ids
+        .iter()
+        .map(|id| Record {
+            event_id: (*id).to_string(),
+            trace_id: None,
+            source_timestamp_ns: 1,
+            payload: b"{\"qty\":1}".to_vec(),
+        })
+        .collect();
+    let mut batch = Batch::new(
+        MessageType::Data,
+        1,
+        1,
+        PayloadCodec::CanonicalJson,
+        records,
+    )
+    .expect("a batch");
+    stamp_drain(&mut batch, producer, epoch, sequence);
+    batch
+}
+
+/// FABRIC-043: effectively-once is at-least-once transport plus an
+/// idempotent producer and fencing — never a delivery guarantee. A retried
+/// batch (same producer, epoch, sequence, bytes) is acknowledged at its first
+/// offset without a second append; a producer whose successor has initialised
+/// is fenced.
+///
+/// Mutation: in `ProducerTable::admit`, return `Admission::Appended` for a
+/// verified duplicate instead of `Admission::Duplicate` — the retry is
+/// appended and the high-watermark assertion fires. Mutation: delete the
+/// `epoch < current_epoch` fence — the old incarnation's write is admitted
+/// and the fenced assertion fires.
 #[test]
-fn fabric_044_financial_outcome_consumers_commit_each_event_once_in_effect_transactionally() {
-    // FABRIC-044: Every consumer that writes financial state — the ledger writer/sink above
-    // all — must be idempotent, enforcing uniqueness of the event ID transactionally in the
-    // same commit as the state change, so a financial outcome delivered any number of times
-    // is committed exactly once in effect.
-
-    #[derive(Clone, Debug, PartialEq)]
-    struct LedgerPosition {
-        quantity: i64,
-        cash: i64,
-    }
-
-    struct LedgerSink {
-        positions: BTreeMap<String, LedgerPosition>,
-        event_ids_processed: BTreeSet<u64>,
-        transaction_boundary: bool, // Atomic commit
-    }
-
-    impl LedgerSink {
-        fn new() -> Self {
-            Self {
-                positions: BTreeMap::new(),
-                event_ids_processed: BTreeSet::new(),
-                transaction_boundary: false,
-            }
-        }
-
-        // Atomic transaction: update state + record offset in same commit
-        fn commit_fill(
-            &mut self,
-            event_id: u64,
-            position: &str,
-            qty: i64,
-            price: i64,
-        ) -> Result<(), String> {
-            // Check idempotency
-            if self.event_ids_processed.contains(&event_id) {
-                return Ok(()); // Already applied; no-op
-            }
-
-            // Begin transaction
-            self.transaction_boundary = true;
-
-            // Update ledger state
-            let entry = self
-                .positions
-                .entry(position.to_string())
-                .or_insert(LedgerPosition {
-                    quantity: 0,
-                    cash: 0,
-                });
-            entry.quantity += qty;
-            entry.cash -= qty * price;
-
-            // Record event as processed (same transaction)
-            self.event_ids_processed.insert(event_id);
-
-            // Commit transaction atomically
-            self.transaction_boundary = false;
-
-            Ok(())
-        }
-    }
-
-    let mut ledger = LedgerSink::new();
-
-    // First fill delivery
-    ledger.commit_fill(101, "AAPL", 100, 150).unwrap();
-    assert_eq!(ledger.positions.get("AAPL").unwrap().quantity, 100);
-    assert_eq!(ledger.positions.get("AAPL").unwrap().cash, -15000);
-
-    // Redelivered fill with same event ID: no effect on ledger
-    ledger.commit_fill(101, "AAPL", 100, 150).unwrap();
+fn fabric_043_a_retried_batch_is_appended_once_and_a_superseded_producer_is_fenced() {
+    let broker = broker(1_000);
+    let epoch = broker.init_producer(STREAM, 0, "ledger-writer").unwrap();
+    let first = broker
+        .produce(
+            STREAM,
+            "acct-1",
+            batch("ledger-writer", epoch, 0, &["fill-1"]),
+        )
+        .unwrap();
+    let retry = broker
+        .produce(
+            STREAM,
+            "acct-1",
+            batch("ledger-writer", epoch, 0, &["fill-1"]),
+        )
+        .expect("a verified retry is acknowledged, not refused");
+    assert_eq!(retry.base_offset(), first.base_offset());
     assert_eq!(
-        ledger.positions.get("AAPL").unwrap().quantity,
-        100 // Unchanged
+        broker.metadata(STREAM, 0).unwrap().high_watermark(),
+        1,
+        "the retry was appended a second time"
     );
-    assert_eq!(
-        ledger.positions.get("AAPL").unwrap().cash,
-        -15000 // Unchanged
-    );
+
+    let successor = broker.init_producer(STREAM, 0, "ledger-writer").unwrap();
+    assert!(successor > epoch, "premise: a new incarnation");
+    let fenced = broker
+        .produce(
+            STREAM,
+            "acct-1",
+            batch("ledger-writer", epoch, 1, &["fill-2"]),
+        )
+        .expect_err("the superseded incarnation wrote");
+    assert!(fenced.to_string().contains("fenced"), "{fenced}");
+    assert_eq!(broker.metadata(STREAM, 0).unwrap().high_watermark(), 1);
 }
 
-#[test]
-fn fabric_045_p0_critical_control_topics_rf3_quorum_persistent_wal_long_retention_archive() {
-    // FABRIC-045: Topics of class P0 Critical Control — risk envelopes, model activation,
-    // kill/fence commands and capital grants — must acknowledge a write only after an RF3
-    // three-zone quorum has persisted it, with control metadata and the log held in a
-    // persistent write-ahead log, and must be retained long-term with every sealed segment
-    // archived to Cloud Storage.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct P0TopicPolicy {
-        class: String,
-        replication_factor: usize,
-        quorum_size: usize,
-        wal_persistent: bool,
-        retention_days: u32,
-        archive_required: bool,
-        zones: Vec<String>,
-    }
-
-    let p0_policy = P0TopicPolicy {
-        class: "P0CriticalControl".to_string(),
-        replication_factor: 3,
-        quorum_size: 2, // RF3: 2 out of 3 confirms quorum
-        wal_persistent: true,
-        retention_days: 90,
-        archive_required: true,
-        zones: vec![
-            "us-central1-a".to_string(),
-            "us-central1-b".to_string(),
-            "us-central1-c".to_string(),
-        ],
-    };
-
-    // Verify durability properties
-    assert_eq!(p0_policy.replication_factor, 3);
-    assert_eq!(p0_policy.quorum_size, 2);
-    assert!(p0_policy.wal_persistent);
-    assert_eq!(p0_policy.retention_days, 90);
-    assert!(p0_policy.archive_required);
-
-    // Verify three zones
-    assert_eq!(p0_policy.zones.len(), 3);
-
-    // No acknowledged write without quorum persistence
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug, Clone)]
-    struct WriteRequest {
-        event_id: u64,
-        wal_persisted: bool,
-        replicated_zones: usize,
-    }
-
-    let write = WriteRequest {
-        event_id: 1,
-        wal_persisted: true,
-        replicated_zones: 2, // Quorum achieved
-    };
-
-    let can_acknowledge = write.wal_persisted && write.replicated_zones >= p0_policy.quorum_size;
-    assert!(can_acknowledge);
+/// An idempotent-by-event-id writer that can be told to refuse once.
+#[derive(Debug, Default)]
+struct Ledger {
+    committed: BTreeSet<String>,
+    /// How many times an apply changed the ledger's state.
+    state_changes: u32,
+    deliveries: BTreeMap<String, u32>,
+    refuse_next: Option<String>,
 }
 
-#[test]
-fn fabric_046_p1_financial_outcomes_topics_rf3_quorum_idempotent_ids_long_hot_retention_immutable_archive()
- {
-    // FABRIC-046: Topics of class P1 Financial Outcomes — fills, cancels, position deltas
-    // and settlement events — must acknowledge only on an RF3 quorum, carry idempotent
-    // (deterministic) event IDs, keep long hot retention and archive every sealed segment
-    // immutably.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct P1TopicPolicy {
-        class: String,
-        replication_factor: usize,
-        quorum_size: usize,
-        deterministic_event_ids: bool,
-        hot_retention_days: u32,
-        archive_immutable: bool,
-    }
-
-    let p1_policy = P1TopicPolicy {
-        class: "P1FinancialOutcomes".to_string(),
-        replication_factor: 3,
-        quorum_size: 2,
-        deterministic_event_ids: true,
-        hot_retention_days: 30,
-        archive_immutable: true,
-    };
-
-    // Verify RF3 quorum
-    assert_eq!(p1_policy.replication_factor, 3);
-    assert_eq!(p1_policy.quorum_size, 2);
-
-    // Deterministic event IDs
-    assert!(p1_policy.deterministic_event_ids);
-
-    // Hot and archive retention
-    assert_eq!(p1_policy.hot_retention_days, 30);
-    assert!(p1_policy.archive_immutable);
-}
-
-#[test]
-fn fabric_047_p2_market_journal_topics_rf3_regional_quorum_batch_producers_tiered_hot_retention_gcs_archive()
- {
-    // FABRIC-047: Topics of class P2 Market Journal — ticks, books, features and decision
-    // traces — must replicate on an RF3 regional quorum with batching producers as
-    // high-throughput replicated segments, keep hours to days of hot retention set by
-    // instrument tier, and archive sealed segments to Cloud Storage.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug, Clone)]
-    struct P2TopicPolicy {
-        class: String,
-        replication_factor: usize,
-        batching_enabled: bool,
-        retention_by_tier: BTreeMap<String, u32>, // tier -> days
-        archive_gcs: bool,
-    }
-
-    let mut retention_map = BTreeMap::new();
-    retention_map.insert("high_liquidity".to_string(), 7);
-    retention_map.insert("medium_liquidity".to_string(), 3);
-    retention_map.insert("low_liquidity".to_string(), 1);
-
-    let p2_policy = P2TopicPolicy {
-        class: "P2MarketJournal".to_string(),
-        replication_factor: 3,
-        batching_enabled: true,
-        retention_by_tier: retention_map,
-        archive_gcs: true,
-    };
-
-    // Verify RF3
-    assert_eq!(p2_policy.replication_factor, 3);
-
-    // Batching enabled for high throughput
-    assert!(p2_policy.batching_enabled);
-
-    // Tiered retention
-    assert_eq!(p2_policy.retention_by_tier.get("high_liquidity"), Some(&7));
-    assert_eq!(
-        p2_policy.retention_by_tier.get("medium_liquidity"),
-        Some(&3)
-    );
-    assert_eq!(p2_policy.retention_by_tier.get("low_liquidity"), Some(&1));
-
-    // Archive to GCS
-    assert!(p2_policy.archive_gcs);
-}
-
-#[test]
-fn fabric_048_p4_telemetry_topics_best_effort_or_rf2_sampled_or_dropped_oldest_first_under_pressure()
- {
-    // FABRIC-048: Topics of class P4 Telemetry — metrics-derived events and debug traces —
-    // may be acknowledged best-effort or on RF2, and under pressure must be sampled or
-    // drop their oldest records first, with every drop counted.
-
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct P4TopicPolicy {
-        class: String,
-        replication_factor: usize,
-        best_effort_allowed: bool,
-        backpressure_policy: String,
-        drop_count_metric: u64,
-    }
-
-    let p4_policy = P4TopicPolicy {
-        class: "P4Telemetry".to_string(),
-        replication_factor: 2,
-        best_effort_allowed: true,
-        backpressure_policy: "drop_oldest".to_string(),
-        drop_count_metric: 0,
-    };
-
-    assert_eq!(p4_policy.replication_factor, 2);
-    assert!(p4_policy.best_effort_allowed);
-    assert_eq!(p4_policy.backpressure_policy, "drop_oldest");
-
-    // Simulate pressure and drops
-    let mut policy = p4_policy;
-    policy.drop_count_metric = 100; // Drops counted
-    assert_eq!(policy.drop_count_metric, 100);
-}
-
-#[test]
-fn fabric_049_every_stream_has_explicit_byte_and_message_quotas_lag_limits_and_overload_policy() {
-    // FABRIC-049: Every stream must be configured with explicit byte and message quotas
-    // (including per-producer quotas), consumer lag limits and a declared overload policy,
-    // and the brokers must enforce them.
-
-    #[derive(Debug, Clone)]
-    struct StreamQuotas {
-        total_byte_quota: u64,
-        total_message_quota: u64,
-        per_producer_byte_quota: u64,
-        per_producer_message_quota: u64,
-        consumer_lag_limit_records: u64,
-        overload_policy: String,
-    }
-
-    let quotas = StreamQuotas {
-        total_byte_quota: 1_000_000_000, // 1 GB
-        total_message_quota: 10_000_000,
-        per_producer_byte_quota: 100_000_000, // 100 MB
-        per_producer_message_quota: 1_000_000,
-        consumer_lag_limit_records: 100_000,
-        overload_policy: "backpressure".to_string(),
-    };
-
-    // All quotas explicitly configured
-    assert!(quotas.total_byte_quota > 0);
-    assert!(quotas.total_message_quota > 0);
-    assert!(quotas.per_producer_byte_quota > 0);
-    assert!(quotas.per_producer_message_quota > 0);
-    assert!(quotas.consumer_lag_limit_records > 0);
-    assert!(!quotas.overload_policy.is_empty());
-
-    // Per-producer quotas are bounded by total quotas
-    assert!(quotas.per_producer_byte_quota <= quotas.total_byte_quota);
-    assert!(quotas.per_producer_message_quota <= quotas.total_message_quota);
-}
-
-#[test]
-fn fabric_050_critical_control_and_outcome_records_are_never_silently_dropped() {
-    // FABRIC-050: Under backpressure or overload, P0 control and P1 outcome records must
-    // never be silently dropped: when the fabric cannot accept one, the producer must
-    // receive an explicit refusal it can act on, and nothing already acknowledged may be
-    // discarded.
-
-    #[derive(Debug, Clone)]
-    enum PublishResult {
-        Acknowledged,
-        Refused(String),
-    }
-
-    // P0 and P1 never silently drop: explicit refusal or acknowledgement only
-    fn publish_to_broker(class: &str, quota_available: bool) -> PublishResult {
-        match class {
-            "P0CriticalControl" | "P1FinancialOutcomes" => {
-                if quota_available {
-                    PublishResult::Acknowledged
-                } else {
-                    // Explicit refusal, not silent drop
-                    PublishResult::Refused("broker quota exceeded".to_string())
-                }
-            }
-            "P4Telemetry" => {
-                if quota_available {
-                    PublishResult::Acknowledged
-                } else {
-                    // P4 may be sampled or dropped; P0/P1 get refusal
-                    PublishResult::Refused("sampled".to_string())
-                }
-            }
-            _ => PublishResult::Refused("unknown class".to_string()),
+impl OutcomeWriter for Ledger {
+    fn apply(&mut self, record: &Record) -> qip_core::error::Result<()> {
+        *self.deliveries.entry(record.event_id.clone()).or_default() += 1;
+        if self.refuse_next.as_deref() == Some(record.event_id.as_str()) {
+            self.refuse_next = None;
+            return Err(qip_core::error::Error::io("the ledger store is down"));
         }
+        if self.committed.insert(record.event_id.clone()) {
+            self.state_changes += 1;
+        }
+        Ok(())
     }
+}
 
-    // P0 with no quota: explicit refusal
-    let result_p0 = publish_to_broker("P0CriticalControl", false);
-    match result_p0 {
-        PublishResult::Acknowledged => panic!("Should not acknowledge without quota"),
-        PublishResult::Refused(msg) => assert!(!msg.is_empty()),
-    }
-
-    // P1 with quota: acknowledged
-    let result_p1 = publish_to_broker("P1FinancialOutcomes", true);
-    assert!(matches!(result_p1, PublishResult::Acknowledged));
-
-    // Already acknowledged records are never discarded under pressure
-    #[allow(dead_code)] // fixture fields describe the record; the test asserts on a subset
-    #[derive(Debug)]
-    struct AcknowledgedRecord {
-        event_id: u64,
-        acknowledged_at_us: i64,
-    }
-
-    let acknowledged = AcknowledgedRecord {
-        event_id: 42,
-        acknowledged_at_us: 1000,
+/// FABRIC-044: a financial outcome delivered more than once is committed
+/// once in effect. The sink re-delivers a whole batch after a partial
+/// failure (the first record twice), and the checkpoint moves only after
+/// every record in the batch is applied.
+///
+/// **What is not here:** "uniqueness enforced transactionally in the same
+/// commit as the state change" is the writer's contract (`qip-capital`'s
+/// ledger), not the sink's; this test's writer is idempotent by
+/// construction. The sink half — checkpoint after write, re-delivery rather
+/// than skip — is what is driven.
+///
+/// Mutation: in `LedgerSink::step`, move `broker.commit_offset(..)` above the
+/// record loop — the checkpoint moves before the failed record is applied,
+/// the next step finds nothing, and `fill-b` is never committed.
+#[test]
+fn fabric_044_a_redelivered_outcome_commits_once_and_the_checkpoint_waits_for_every_record() {
+    let broker = broker(1_000);
+    broker
+        .produce(
+            STREAM,
+            "acct-1",
+            batch("venue", 1, 0, &["fill-a", "fill-b"]),
+        )
+        .unwrap();
+    let ledger = Ledger {
+        refuse_next: Some("fill-b".to_string()),
+        ..Ledger::default()
     };
+    let mut sink = LedgerSink::new("ledger", STREAM, 0, ledger, 10, 1_000).unwrap();
 
-    // This record exists in persistent storage and cannot vanish
-    assert!(acknowledged.acknowledged_at_us > 0);
+    let first = sink.step(&broker).unwrap();
+    assert!(
+        matches!(first, SinkStep::Retrying { offset: 0, .. }),
+        "{first:?}"
+    );
+    assert_eq!(broker.committed_offset("ledger", STREAM, 0).unwrap(), None);
+
+    assert_eq!(
+        sink.step(&broker).unwrap(),
+        SinkStep::Committed { offset: 0 }
+    );
+    assert_eq!(sink.step(&broker).unwrap(), SinkStep::Idle);
+
+    let ledger = sink.writer();
+    // Premise: the first outcome really was delivered twice.
+    assert_eq!(ledger.deliveries.get("fill-a"), Some(&2));
+    let delivered: u32 = ledger.deliveries.values().sum();
+    // fill-a twice (applied, then re-delivered with its batch); fill-b twice
+    // (refused, then applied).
+    assert_eq!(delivered, 4, "{:?}", ledger.deliveries);
+    assert_eq!(ledger.deliveries.get("fill-b"), Some(&2));
+    assert_eq!(ledger.committed.len(), 2, "{:?}", ledger.committed);
+    assert_eq!(
+        ledger.state_changes, 2,
+        "a redelivery changed the ledger twice"
+    );
+}
+
+/// Build a policy for `class` at `replication_factor`.
+fn at_rf(class: QosClass, replication_factor: u32) -> qip_core::error::Result<StreamPolicy> {
+    StreamPolicy::new(StreamPolicySpec {
+        replication_factor,
+        ..spec(class)
+    })
+}
+
+/// FABRIC-045, what exists and what does not. A P0 control stream admits
+/// only the strongest acknowledgement and, at an irreplaceable retention, must
+/// reach the archive before release. **Gap:** RF3 three-zone quorum is
+/// refused (C2); the "quorum" acknowledgement is one broker's fsync.
+///
+/// Mutation: change `QosClass::ack_floor`'s P0 arm to `LeaderOnly` — a
+/// leader-only P0 policy is admitted and the first assertion fires.
+#[test]
+fn fabric_045_a_p0_stream_requires_the_strongest_ack_and_archiving_and_cannot_declare_rf3() {
+    let weaker = StreamPolicy::new(StreamPolicySpec {
+        ack_profile: AckProfile::LeaderOnly,
+        ..spec(QosClass::P0Control)
+    });
+    assert!(weaker.is_err(), "a P0 stream accepted a leader-only ack");
+    let admitted = at_rf(QosClass::P0Control, 1).expect("premise: the floor is admitted");
+    assert!(admitted.archive_required());
+    let rf3 = at_rf(QosClass::P0Control, 3).expect_err("GAP: RF3 is refused today");
+    assert!(rf3.to_string().contains("(C2)"), "{rf3}");
+}
+
+/// FABRIC-046: P1 has the same floor as P0, carries deterministic event ids
+/// (the producer sequence, verified on retry — see fabric_043), and archives.
+/// **Gap:** RF3 refused.
+///
+/// Mutation: change `QosClass::ack_floor`'s P1 arm to `LeaderOnly` — the
+/// equality with P0's floor fires.
+#[test]
+fn fabric_046_a_p1_stream_shares_p0s_floor_archives_and_cannot_declare_rf3() {
+    assert_eq!(
+        QosClass::P1Outcomes.ack_floor(),
+        QosClass::P0Control.ack_floor()
+    );
+    let admitted = at_rf(QosClass::P1Outcomes, 1).expect("premise: admitted");
+    assert!(admitted.archive_required());
+    assert!(
+        at_rf(QosClass::P1Outcomes, 3).is_err(),
+        "GAP: RF3 is refused today"
+    );
+}
+
+/// FABRIC-047: P2 commits to the leader before acknowledging, and a P2
+/// stream may still be archive-required by its retention class. **Gap:** RF3
+/// regional quorum refused.
+///
+/// Mutation: change `QosClass::ack_floor`'s P2 arm to `None` — the floor
+/// assertion fires.
+#[test]
+fn fabric_047_a_p2_stream_acknowledges_on_the_leader_and_cannot_declare_rf3() {
+    assert_eq!(
+        QosClass::P2MarketJournal.ack_floor(),
+        AckProfile::LeaderOnly
+    );
+    let none = StreamPolicy::new(StreamPolicySpec {
+        ack_profile: AckProfile::None,
+        ..spec(QosClass::P2MarketJournal)
+    });
+    assert!(none.is_err(), "a P2 stream accepted no acknowledgement");
+    assert!(
+        at_rf(QosClass::P2MarketJournal, 3).is_err(),
+        "GAP: RF3 is refused today"
+    );
+}
+
+/// FABRIC-048: P4 telemetry alone may run with no acknowledgement and a
+/// sample-or-shed overload policy. **Gap:** "every drop counted" is not
+/// implemented in the policy and is not asserted.
+///
+/// Mutation: change `QosClass::ack_floor`'s P4 arm to `LeaderOnly` — the
+/// best-effort P4 policy is refused and the `expect` fails.
+#[test]
+fn fabric_048_only_telemetry_may_run_best_effort_and_shed_first() {
+    let best_effort = StreamPolicy::new(StreamPolicySpec {
+        ack_profile: AckProfile::None,
+        overload_policy: OverloadPolicy::SampleOrShed,
+        retention: RetentionClass::Transient,
+        ..spec(QosClass::P4Telemetry)
+    })
+    .expect("telemetry may run best-effort");
+    assert_eq!(best_effort.ack_profile(), AckProfile::None);
+    assert!(!best_effort.archive_required());
+    for class in [
+        QosClass::P0Control,
+        QosClass::P1Outcomes,
+        QosClass::P3Research,
+    ] {
+        let refused = StreamPolicy::new(StreamPolicySpec {
+            ack_profile: AckProfile::None,
+            ..spec(class)
+        });
+        assert!(
+            refused.is_err(),
+            "{} accepted no acknowledgement",
+            class.as_str()
+        );
+    }
+}
+
+/// FABRIC-049: quotas are declared on every stream (the spec has no default)
+/// and the broker enforces them per producer.
+///
+/// Mutation: delete `self.charge_quota(stream, &batch)?` in
+/// `Broker::produce_to` — the second message is admitted and the
+/// `expect_err` fails.
+#[test]
+fn fabric_049_the_broker_enforces_the_declared_message_quota_per_producer() {
+    let broker = broker(1);
+    assert_eq!(
+        broker
+            .stream_policy(STREAM)
+            .unwrap()
+            .message_quota_per_producer(),
+        1,
+        "premise: the declared quota is the one the broker holds"
+    );
+    broker
+        .produce(STREAM, "acct-1", batch("venue-a", 1, 0, &["f-1"]))
+        .unwrap();
+    let refused = broker
+        .produce(STREAM, "acct-1", batch("venue-a", 1, 1, &["f-2"]))
+        .expect_err("a second message within the window exceeds a quota of one");
+    assert!(refused.to_string().contains("quota"), "{refused}");
+    broker
+        .produce(STREAM, "acct-1", batch("venue-b", 1, 0, &["f-3"]))
+        .expect("another producer's budget is its own");
+}
+
+/// FABRIC-050: under overload a P1 record is refused explicitly — the
+/// producer gets an error it can act on — and nothing already acknowledged is
+/// discarded.
+///
+/// Mutation: make `Broker::produce` return `Ok` with the previous ack when
+/// over quota (a silent drop) — the `expect_err` fails.
+#[test]
+fn fabric_050_an_overloaded_p1_stream_refuses_explicitly_and_keeps_what_it_acknowledged() {
+    let broker = broker(1);
+    let acknowledged = broker
+        .produce(STREAM, "acct-1", batch("venue-a", 1, 0, &["kept"]))
+        .unwrap();
+    let refused = broker
+        .produce(STREAM, "acct-1", batch("venue-a", 1, 1, &["refused"]))
+        .expect_err("an over-quota P1 record must be refused, not dropped");
+    assert!(!refused.to_string().is_empty());
+
+    let fetched = broker
+        .fetch(STREAM, 0, acknowledged.base_offset(), 1_048_576)
+        .unwrap();
+    assert_eq!(
+        fetched.high_watermark(),
+        1,
+        "exactly the acknowledged record"
+    );
+    let bytes = qip_core::hash::from_hex(fetched.batches()).expect("hex");
+    let batch = match Batch::decode(&bytes).unwrap() {
+        qip_events::event_fabric::codec::DecodeOutcome::Complete(batch) => batch,
+        qip_events::event_fabric::codec::DecodeOutcome::Torn => panic!("torn"),
+    };
+    assert_eq!(batch.records[0].event_id, "kept");
 }

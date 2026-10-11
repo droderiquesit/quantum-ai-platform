@@ -90,81 +90,60 @@ fn fabric_002_reflex_node_uses_non_blocking_local_ring_journal_writer() {
 
 #[test]
 fn fabric_003_fabric_is_never_on_path_from_venue_event_to_order() {
-    // FABRIC-003: No fabric acknowledgement, fetch or other synchronous call may sit
-    // between a venue market event and a local order decision or venue send: venue market
-    // data must reach the Reflex adapter directly and orders must go directly to the venue,
-    // never through a fabric topic. Control, outcomes, journals and telemetry are written
-    // after or beside the reflex decision, so a fabric outage, stall or failover cannot
-    // block, delay or retroactively stall market-event-to-order execution.
-
-    #[derive(Debug, Clone)]
-    struct ExecutionPath {
-        venue_event_received: bool,
-        decision_made: bool,
-        order_sent_to_venue: bool,
-        fabric_call_before_decision: bool,
-        fabric_call_before_send: bool,
+    // FABRIC-003: no fabric acknowledgement, fetch or other synchronous call
+    // may sit between a venue market event and the order it causes. The
+    // previous test built an `ExecutionPath` struct of booleans, set them, and
+    // asserted them; it could not observe any code. This one reads the order
+    // path itself. `Cell::work` is the decision and `Cell::send` the one place
+    // a `Placer` is called; neither, nor any function in the file that holds
+    // them, may name a fabric client. Writes beside or after the decision
+    // (the node's spool drain) live in `qip-edge-node`, not here, which is
+    // the structural form of "beside, not between".
+    //
+    // Mutation: add `fn ack(_: &qip_transport::event_fabric::producer::Producer) {}`
+    // to `qip-edge/src/cell.rs` — the scan fires on `event_fabric::producer`.
+    // Mutation: add `qip-streaming.workspace = true` under qip-edge's
+    // `[dependencies]` — the manifest assertion fires.
+    let cell = qip_acceptance::production_text(&qip_acceptance::read(
+        "backend/crates/edge/qip-edge/src/cell.rs",
+    ));
+    // Premise: this is the order path — the pass and the one placer call.
+    assert!(cell.contains("pub fn work(&mut self, now: Timestamp, gateway: &mut dyn Placer)"));
+    assert!(
+        cell.contains(".place("),
+        "premise: the placer is called in cell.rs"
+    );
+    for token in [
+        "event_fabric::producer",
+        "event_fabric::consumer",
+        "event_fabric::batching_producer",
+        "event_fabric::transport",
+        "FabricTransport",
+        "qip_streaming",
+    ] {
+        assert!(!cell.contains(token), "the order path names `{token}`");
     }
 
-    let mut path = ExecutionPath {
-        venue_event_received: false,
-        decision_made: false,
-        order_sent_to_venue: false,
-        fabric_call_before_decision: false,
-        fabric_call_before_send: false,
-    };
-
-    // Scenario 1: Venue event → decision → send, with no fabric calls on path
-    path.venue_event_received = true;
-    assert!(path.venue_event_received);
-
-    path.decision_made = true;
-    assert!(path.decision_made);
-
-    // Fabric calls are absent from the critical path
-    assert!(!path.fabric_call_before_decision);
-
-    path.order_sent_to_venue = true;
-    assert!(path.order_sent_to_venue);
-
-    assert!(!path.fabric_call_before_send);
-
-    // Scenario 2: Fabric stall does not affect decision or send latency
-    let fabric_is_stalled = true;
-
-    let mut stalled_path = ExecutionPath {
-        venue_event_received: true,
-        decision_made: false,
-        order_sent_to_venue: false,
-        fabric_call_before_decision: false,
-        fabric_call_before_send: false,
-    };
-
-    // Even with fabric stalled, decision and send proceed
-    stalled_path.decision_made = true;
-    assert!(stalled_path.decision_made);
-
-    stalled_path.order_sent_to_venue = true;
-    assert!(stalled_path.order_sent_to_venue);
-
-    // No synchronous dependency on fabric
-    assert!(fabric_is_stalled);
-    assert!(stalled_path.decision_made);
-    assert!(stalled_path.order_sent_to_venue);
-
-    // Scenario 3: Control and journaling are written asynchronously after the decision
-    let async_path = ExecutionPath {
-        venue_event_received: true,
-        decision_made: true,
-        order_sent_to_venue: true,
-        fabric_call_before_decision: false,
-        fabric_call_before_send: false,
-    };
-
-    // Journaling happens after order is sent (control, telemetry, acknowledgments)
-    let _fabric_writes_after_send = ["decision_journal", "telemetry", "control_ack"];
-
-    assert!(async_path.order_sent_to_venue);
+    // And the crate cannot reach the broker library at all.
+    let manifest = qip_acceptance::read("backend/crates/edge/qip-edge/Cargo.toml");
+    let mut section = "";
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line;
+            continue;
+        }
+        if section == "[dependencies]" {
+            let key: String = line
+                .chars()
+                .take_while(|c| !matches!(c, '.' | ' ' | '='))
+                .collect();
+            assert_ne!(
+                key, "qip-streaming",
+                "qip-edge links the fabric broker library"
+            );
+        }
+    }
 }
 
 #[test]

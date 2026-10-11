@@ -497,25 +497,34 @@ fn the_replay_carries_the_abandoned_gap_out_as_an_integrity_flag_and_a_lost_mess
     Ok(())
 }
 
-/// **A statement of what is wrong today, kept as a test so that it is
-/// evidence rather than a sentence in a register.**
+/// A hole one packet wide degrades the replay: the step after it is flagged
+/// unreliable and a `Gap { 11, 11 }` period is reported.
 ///
-/// Lose one packet instead of two and the replay reports nothing. The
-/// sequencer abandons the hole and emits its reset stamped with the missing
-/// sequence; `qip_orderbook::replay` reads every reset as a venue's completed
-/// rebuild and resynchronises on the spot; the next packet is contiguous with
-/// the reset, so no period opens. Every step is flagged reliable, and a
-/// simulated order fills against a book that holds only what arrived after
-/// the hole. What decides whether a lost packet is flagged is how many were
-/// lost beside it.
+/// This test was named `a_hole_one_packet_wide_is_replayed_as_wholly_reliable_
+/// which_is_the_open_gap_and_not_the_intent` and its doc said it was "meant to
+/// fail". It was written while the defect stood: the sequencer's reset for the
+/// hole was read by `qip_orderbook::replay` as a completed rebuild, the next
+/// packet was contiguous with it, no period opened, and every step read
+/// reliable. `6bf4d300` (TICK-040) changed `replay` so a gap is measured
+/// against the last *real* sequence rather than the reset's, and the body was
+/// updated to assert the fix, but the name still claimed the opposite. The
+/// name now says what the body asserts.
 ///
-/// This test asserts that behaviour, and it is meant to fail. When the seam is
-/// closed, by a reset that says who declared it or by a replay that does not
-/// take a reset with no snapshot behind it for a rebuild, the assertion marked
-/// below stops holding: replace it with the flag it should have been
-/// asserting, and close the gap on TICK-017 and TICK-040 in the register.
+/// Mutation: in `qip_orderbook::replay::replay`, in the
+/// `sequence > previous + 1` arm, replace `open = Some(period);` with
+/// `let _ = period;`. No period opens, `is_clean()` is true and the first
+/// assertion after the premises fires. Equally: make the reset arm update
+/// `last.insert(stream.clone(), sequence)`. The next packet is then
+/// contiguous with the reset and the replay reads wholly reliable again,
+/// which is the original defect.
+///
+/// Known oddity, recorded rather than asserted: the period's `until` is the
+/// *reset's* venue time, which precedes the period's `from`, and the period is
+/// never taken out of `open`, so every later step stays flagged unreliable
+/// while `periods[0].until` says it ended. The per-step flags are the
+/// conservative half and are what this test pins.
 #[test]
-fn a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_and_not_the_intent()
+fn a_hole_one_packet_wide_is_replayed_as_degraded_with_the_step_after_it_flagged_unreliable()
 -> Result<()> {
     let mut session = recorded_session();
     // Sequence twelve arrives after all, so only eleven is lost.
@@ -539,7 +548,16 @@ fn a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_a
         .expect("premise: the book was usable before the hole");
     assert_eq!(before.filled, order_size());
 
-    // THE GAP IS NOW FIXED. A one-packet hole is flagged as an unreliable period.
+    // Premise: before the hole the replay was clean, so the flags below are
+    // about the hole and not a replay that flags everything.
+    assert!(
+        record.integrity.steps[..reset_at]
+            .iter()
+            .all(|step| !step.unreliable),
+        "premise: nothing before the hole is flagged"
+    );
+
+    // Degraded reliability: the hole opens a period.
     assert!(
         !record.integrity.is_clean(),
         "one-packet hole should be flagged, but is_clean() returned true: {:?}",
@@ -562,16 +580,21 @@ fn a_hole_one_packet_wide_is_replayed_as_wholly_reliable_which_is_the_open_gap_a
         "period should close at the reset"
     );
 
-    // After the reset, the book edit that follows is now correctly flagged as unreliable,
-    // because we're still in the period from the gap through the reset.
+    // The book edit after the hole is still applied (the period is closed at
+    // the reset) but carries the unreliable flag downstream.
     let after = record.fills[reset_at + 1]
         .buy
         .expect("the book should still be evaluated after reset");
     assert_eq!(after.filled, Decimal::from_int(111));
-    // The key fix: this step is now correctly marked unreliable.
     assert!(
         record.integrity.steps[reset_at + 1].unreliable,
-        "step after reset should be unreliable"
+        "the first step after a one-packet hole was replayed as reliable"
+    );
+    assert!(
+        record.integrity.steps[reset_at + 1..]
+            .iter()
+            .all(|step| step.unreliable),
+        "a step after the hole was replayed as reliable"
     );
     Ok(())
 }
