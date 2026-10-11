@@ -69,6 +69,7 @@ use crate::health::HealthSnapshot;
 use crate::mesh::{MeshHealth, MeshWorker, apply_inbound};
 use crate::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
 use crate::reprice::Requoter;
+use crate::rollback::{RollbackOutcome, RollbackWire};
 use crate::share::RegionShareStatus;
 use crate::strategies::StrategyInstaller;
 use qip_contracts::market_event::MarketEvent;
@@ -259,6 +260,7 @@ pub struct DecisionLoop {
     telemetry: Arc<OutboxTelemetry>,
     marker: MarkerFacts,
     poller: Option<Poller>,
+    rollback: Option<RollbackWire>,
     mesh: Option<MeshWorker>,
     mesh_health: Option<MeshHealth>,
     peers: Option<ReflexPort>,
@@ -319,6 +321,7 @@ impl DecisionLoop {
             telemetry,
             marker,
             poller: None,
+            rollback: None,
             mesh: None,
             mesh_health: None,
             peers: None,
@@ -371,6 +374,15 @@ impl DecisionLoop {
     #[must_use]
     pub fn with_poller(mut self, poller: Poller) -> Self {
         self.poller = Some(poller);
+        self
+    }
+
+    /// Honour the operator's rollback request (REFLEX-8071) at the start of
+    /// every turn, before the pass, so a pass never decides under a payload
+    /// the operator has already asked the cell to leave.
+    #[must_use]
+    pub fn with_rollback(mut self, wire: RollbackWire) -> Self {
+        self.rollback = Some(wire);
         self
     }
 
@@ -449,6 +461,7 @@ impl DecisionLoop {
     pub fn turn(&mut self, now: Timestamp) -> Result<Turn> {
         self.turns = self.turns.saturating_add(1);
         let readings = self.apply_wires(now);
+        self.apply_rollback(now);
         self.apply_mesh(now);
         self.apply_plan(now);
         let pressure = self.apply_pressure(now)?;
@@ -556,6 +569,22 @@ impl DecisionLoop {
             retained,
             captured,
         })
+    }
+
+    fn apply_rollback(&mut self, now: Timestamp) {
+        let Some(wire) = self.rollback.as_mut() else {
+            return;
+        };
+        match wire.apply(&mut self.cell, now) {
+            Some(RollbackOutcome::RolledBack { from, to }) => eprintln!(
+                "qip-edge-node: rolled the policy back from sequence {from} to {to} at the \
+                 operator's request; the centre must ship a sequence above {from} to move on"
+            ),
+            Some(RollbackOutcome::Refused { from, reason }) => eprintln!(
+                "qip-edge-node: the cell refused to roll back from sequence {from}: {reason}"
+            ),
+            None => {}
+        }
     }
 
     fn apply_wires(&mut self, now: Timestamp) -> Option<Readings> {
