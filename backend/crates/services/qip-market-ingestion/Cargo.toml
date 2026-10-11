@@ -32,6 +32,13 @@ qip-transport.workspace = true
 qip-contracts.workspace = true
 qip-orderbook.workspace = true
 qip-sequencing.workspace = true
+# The evidence-check stage (R12-DATA-2012): every admitted event becomes a
+# `qip_world_model::EvidenceRecord` and is checked by its `EvidenceFabric`
+# before it is released. A service depending on a service, in the direction
+# nothing reverses — `qip-world-model` depends on no ingestion crate — and
+# the alternative was a second evidence type here, which is how the reasoning
+# engine came to hold a thinner one the world model's checks never see.
+qip-world-model.workspace = true
 
 [dev-dependencies]
 # `StreamJournal` persists through `qip_core::kv::KeyValueStore` — the port,

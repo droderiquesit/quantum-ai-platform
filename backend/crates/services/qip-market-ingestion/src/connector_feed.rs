@@ -21,6 +21,7 @@
 use crate::adapter::{DataAdapter, SensedRecord, SourceDescriptor};
 use crate::connector::checkpoint::Checkpoint;
 use crate::connector::digest::FetchDigest;
+use crate::connector::evidence::CheckedEvidence;
 use crate::connector::journal::{StreamJournal, StreamLedger};
 use crate::connector::runtime::{ConnectorRuntime, RuntimeConfig};
 use crate::connector::transport::{HttpSourceTransport, SourceTransport};
@@ -33,7 +34,7 @@ use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_core::{ObjectId, Timestamp};
 use qip_events::Topic;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 
 /// The sources this build can open by name.
@@ -163,7 +164,18 @@ pub struct ConnectorFeed {
     /// process — the correct shape for a contract test driving an emulator,
     /// and the wrong one for anything measuring a source *sustained*.
     journal: Option<StreamJournal>,
+    /// Evidence for records this feed has released and nobody has yet
+    /// collected, oldest first, bounded at [`PENDING_EVIDENCE_CAPACITY`].
+    pending_evidence: VecDeque<CheckedEvidence>,
+    /// Evidence dropped because nobody collected it before the bound.
+    evidence_dropped: u64,
 }
+
+/// Checked evidence a feed holds for its caller before dropping the oldest.
+/// One poll's worth at the largest shipped batch cap, several times over: a
+/// root that collects every cycle never reaches it, and one that never
+/// collects cannot grow this without bound.
+pub const PENDING_EVIDENCE_CAPACITY: usize = 4_096;
 
 impl ConnectorFeed {
     /// Open a named source through the egress proxy at `base_url`.
@@ -272,6 +284,8 @@ impl ConnectorFeed {
             runtime,
             descriptor,
             journal: None,
+            pending_evidence: VecDeque::new(),
+            evidence_dropped: 0,
         })
     }
 
@@ -471,11 +485,36 @@ impl ConnectorFeed {
             self.runtime.unwind(before);
             return Err(failure);
         }
+        // The evidence travels with the records it describes, released only
+        // when they are: a refused or unrecorded poll above returned before
+        // this line, so the evidence for records nobody received is never
+        // handed up.
+        for checked in report.evidence {
+            if self.pending_evidence.len() >= PENDING_EVIDENCE_CAPACITY {
+                self.pending_evidence.pop_front();
+                self.evidence_dropped = self.evidence_dropped.saturating_add(1);
+            }
+            self.pending_evidence.push_back(checked);
+        }
         Ok(report
             .admitted
             .into_iter()
             .map(|envelope| envelope.into_record())
             .collect())
+    }
+
+    /// Take the checked evidence for every record released since the last
+    /// call, oldest first, for the world model's
+    /// `WorldModel::absorb_evidence` (R12-EVID-2031). The poll path cannot
+    /// return it — `DataAdapter` speaks only in records — so it waits here,
+    /// bounded, for the composition root to collect.
+    pub fn drain_evidence(&mut self) -> Vec<CheckedEvidence> {
+        self.pending_evidence.drain(..).collect()
+    }
+
+    /// Evidence dropped at the bound because nobody collected it.
+    pub const fn evidence_dropped(&self) -> u64 {
+        self.evidence_dropped
     }
 }
 

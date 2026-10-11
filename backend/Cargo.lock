@@ -630,6 +630,7 @@ dependencies = [
  "qip-sequencing",
  "qip-storage",
  "qip-transport",
+ "qip-world-model",
  "serde",
  "serde_json",
 ]
