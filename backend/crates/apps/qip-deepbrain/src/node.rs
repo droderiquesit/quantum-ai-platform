@@ -337,6 +337,10 @@ pub struct Loops<'a> {
     /// (`breadth.rs`, R12-EXEC-5081). A refused register is a side failure
     /// on the cycle line — after it has revoked every permission.
     pub permissions: Option<&'a mut crate::breadth::PermissionWatch>,
+    /// Where each research sweep's signals and attention events are
+    /// journaled (`ambient_journal.rs`). A sweep whose record cannot be
+    /// written is a side failure on the cycle line, never a stopped node.
+    pub ambient: Option<&'a mut crate::ambient_journal::AmbientJournal>,
 }
 
 /// [`run_with`] and no research or operations loop.
@@ -508,6 +512,14 @@ pub fn run_with(
                 Err(error) => outcome
                     .side_failures
                     .push(format!("research: {}", error.message())),
+            }
+            if let (Some(round), Some(journal)) =
+                (outcome.research.as_ref(), loops.ambient.as_deref_mut())
+                && let Err(error) = journal.record(cycles, round, now)
+            {
+                outcome
+                    .side_failures
+                    .push(format!("ambient journal: {}", error.message()));
             }
         }
         if let Some(desk) = loops.tick.as_deref_mut() {
