@@ -223,5 +223,22 @@ mod tests {
             fence.grant(1, t(20)).is_err(),
             "an epoch never goes backwards"
         );
+
+        // The refusal above is also explained by the fence (1 is at or below
+        // the 2 seen elsewhere), so it never reached the own-epoch arm: the
+        // round-2 mutation audit deleted `epoch < held` and this test still
+        // passed. A fence that has never seen another holder isolates it.
+        // Mutation: `epoch < held && false` grants 4 after 5 and this fails.
+        let own = Fence::new();
+        own.grant(5, t(10)).expect("a first grant");
+        assert!(
+            !matches!(own.status(t(1)), FenceStatus::Fenced { .. }),
+            "premise: no other holder has been seen"
+        );
+        assert!(
+            own.grant(4, t(20)).is_err(),
+            "a process's own epoch never goes backwards"
+        );
+        assert_eq!(own.admits(t(1)), Ok(5), "the refused grant left the hold");
     }
 }
