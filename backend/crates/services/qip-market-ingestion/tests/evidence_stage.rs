@@ -16,7 +16,9 @@ use qip_market_ingestion::adapter::SensedRecord;
 use qip_market_ingestion::connector::emulator::{RecordedAnswer, RecordedExchange, SourceEmulator};
 use qip_market_ingestion::connector::runtime::ConnectorRuntime;
 use qip_market_ingestion::connector::transport::SourceTransport;
-use qip_market_ingestion::connector::{RuntimeConfig, SourceManifest};
+use qip_market_ingestion::connector::{
+    MAX_RAW_PAYLOAD_BYTES, RawPayload, RuntimeConfig, SourceManifest,
+};
 use std::sync::{Arc, Mutex};
 
 fn now() -> Timestamp {
@@ -77,11 +79,18 @@ fn every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_
         );
         assert_eq!(checked.record.license, "public");
         assert!(checked.verdict.admissible);
-        assert_eq!(
-            checked.verdict.authenticity.credited.len(),
-            1,
-            "the hash signal names the fetched body and is credited: {:?}",
+        // The body's hash is provenance, not authenticity: this assertion
+        // read `credited.len() == 1` until 2026-10-11, which was the
+        // self-confirming credit R12-EVID-2034 found — the body's hash
+        // checked against itself.
+        assert!(
+            checked.verdict.authenticity.credited.is_empty(),
+            "a claim earned authenticity from its own document's hash: {:?}",
             checked.verdict.authenticity
+        );
+        assert_eq!(
+            checked.verdict.authenticity.score,
+            qip_evidence::fabric::UNSIGNED_AUTHENTICITY
         );
         assert!(checked.verdict.belief_weight > 0.0);
     }
@@ -280,5 +289,53 @@ fn a_digest_carries_the_sources_etag_its_parser_and_the_cursor_the_poll_left() -
     );
     let expected = format!("event_time_ns:{}", at("2026-08-24T14:59:00Z").as_nanos());
     assert_eq!(digest.cursor(), Some(expected.as_str()));
+    Ok(())
+}
+
+/// R12-DATA-1039: the capture path set the raw bytes and their hash to `None`
+/// for every event, so the lake held canonical records nobody could check
+/// against what the source sent. Each released envelope now carries its
+/// event's payload and hash, and `captured_of` hands both to the lake;
+/// a payload past the bound keeps its hash and drops its bytes.
+///
+/// Mutation: put `raw_sha256: None, raw: None` back in `captured_of` — the
+/// captured hash assertion fails.
+#[test]
+fn a_released_tick_reaches_the_lake_with_its_raw_payload_and_hash() -> Result<()> {
+    let text = body(&[("e1", "2026-08-24T14:59:00Z", "101.25")]);
+    let mut runtime = runtime(manifest(), None)?;
+    let mut connector = TestConnector::new(manifest());
+    let report = runtime.poll(&mut connector, &mut serving(&text), now())?;
+    assert_eq!(report.admitted.len(), 1, "premise: one released");
+    let envelope = &report.admitted[0];
+
+    let payload: serde_json::Value = serde_json::from_str(&text)?;
+    let expected = serde_json::to_vec(&payload["events"][0])?;
+    let raw = envelope
+        .raw_payload()
+        .expect("a released envelope carries its payload");
+    assert_eq!(raw.bytes.as_deref(), Some(expected.as_slice()));
+    assert_eq!(raw.sha256, qip_core::sha256_hex(&expected));
+
+    let captured = qip_market_ingestion::connector::evidence::captured_of(
+        envelope.record(),
+        "test-source",
+        "public",
+        envelope.raw_payload(),
+    )?
+    .expect("a tick is a market-class event");
+    assert_eq!(captured.raw_sha256.as_deref(), Some(raw.sha256.as_str()));
+    assert_eq!(captured.raw.as_deref(), Some(expected.as_slice()));
+
+    let huge = serde_json::json!({ "blob": "x".repeat(MAX_RAW_PAYLOAD_BYTES + 1) });
+    let bounded = RawPayload::of(&huge)?;
+    assert!(
+        bounded.bytes.is_none(),
+        "an oversized payload was kept whole"
+    );
+    assert_eq!(
+        bounded.sha256,
+        qip_core::sha256_hex(&serde_json::to_vec(&huge)?)
+    );
     Ok(())
 }

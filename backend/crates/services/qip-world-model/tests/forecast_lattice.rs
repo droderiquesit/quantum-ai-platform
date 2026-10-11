@@ -78,43 +78,64 @@ fn a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admiss
             })
             .unwrap();
     }
-    for (horizon, wrong) in [
+    // Every row against every target it does not promote to. This tried
+    // wrong targets for the microsecond and seconds rows only until
+    // 2026-10-11, so a check that admitted anything for hours-days,
+    // weeks-months or quarters-years — the rows that reach capital and
+    // strategic allocation — passed it.
+    let targets = [
+        PromotionTarget::LocalReflexOnly,
+        PromotionTarget::ReflexWarmPackages,
+        PromotionTarget::StrategyCapitalRisk,
+        PromotionTarget::PortfolioTreasury,
+        PromotionTarget::StrategicAllocationResearch,
+    ];
+    let mut tried = 0;
+    for horizon in LatticeHorizon::ALL {
+        for wrong in targets {
+            if wrong == horizon.promotion_target() {
+                continue;
+            }
+            tried += 1;
+            let refused = population.admit(LatticeModel {
+                id: format!("{}/wrong/{}", horizon.as_str(), wrong.as_str()),
+                horizon,
+                target: wrong,
+                uses_drift: false,
+            });
+            assert!(
+                refused.is_err(),
+                "{horizon:?} admitted a model aimed at {wrong:?}"
+            );
+        }
+    }
+    assert_eq!(tried, 20, "premise: five rows, four wrong targets each");
+    // Each row's one right target, pinned, so a row whose target moved is a
+    // decision made here rather than a test that followed it.
+    for (horizon, right) in [
         (
             LatticeHorizon::MicrosecondsMs,
-            PromotionTarget::StrategyCapitalRisk,
-        ),
-        (
-            LatticeHorizon::MicrosecondsMs,
-            PromotionTarget::ReflexWarmPackages,
-        ),
-        (
-            LatticeHorizon::SecondsMinutes,
             PromotionTarget::LocalReflexOnly,
         ),
         (
             LatticeHorizon::SecondsMinutes,
+            PromotionTarget::ReflexWarmPackages,
+        ),
+        (
+            LatticeHorizon::HoursDays,
+            PromotionTarget::StrategyCapitalRisk,
+        ),
+        (
+            LatticeHorizon::WeeksMonths,
             PromotionTarget::PortfolioTreasury,
         ),
+        (
+            LatticeHorizon::QuartersYears,
+            PromotionTarget::StrategicAllocationResearch,
+        ),
     ] {
-        let refused = population.admit(LatticeModel {
-            id: format!("{}/wrong", horizon.as_str()),
-            horizon,
-            target: wrong,
-            uses_drift: false,
-        });
-        assert!(
-            refused.is_err(),
-            "{horizon:?} admitted a model aimed at {wrong:?}"
-        );
+        assert_eq!(horizon.promotion_target(), right, "{horizon:?}");
     }
-    assert_eq!(
-        LatticeHorizon::MicrosecondsMs.promotion_target(),
-        PromotionTarget::LocalReflexOnly
-    );
-    assert_eq!(
-        LatticeHorizon::SecondsMinutes.promotion_target(),
-        PromotionTarget::ReflexWarmPackages
-    );
 }
 
 /// WORLD-3084: the central lane may not issue the microsecond row, and the

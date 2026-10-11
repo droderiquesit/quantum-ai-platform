@@ -101,7 +101,15 @@ pub struct NowInputs {
 
 /// The pass, as the log keeps it. Compact by construction: deltas and
 /// manifest references, never the readings themselves (DATA-3080).
+///
+/// Unknown fields are refused. Every nested type already refused them, but
+/// this record did not, so a raw payload smuggled in beside the deltas
+/// decoded without complaint and "only deltas" was a property of the
+/// writer, not of the schema. The field set is unchanged, so every version-1
+/// record ever journaled decodes exactly as before and the schema version
+/// stays 1. What tightens is what a record may *add*.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NowReview {
     pub cycle: u64,
     pub at: Timestamp,

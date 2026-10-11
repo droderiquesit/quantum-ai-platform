@@ -12,10 +12,12 @@
 //! 1. refuse a claim with incomplete provenance;
 //! 2. the temporal check against what is held;
 //! 3. the geographic check against what is held;
-//! 4. authenticity, from the signals the claim carries *and that the
-//!    fabric can verify* — a hash is credited only if it matches the
-//!    document the claim was derived from, a TLS domain only if it is the
-//!    source's own host, a signature never (this platform verifies none);
+//! 4. authenticity, from evidence *independent of the claim itself* — a
+//!    hash is credited only if an independent channel pinned it and it
+//!    matches the document the claim was derived from, a TLS domain only if
+//!    it is the source's own host, and agreement from other sources only
+//!    when they are independent origins; see [`assess_authenticity`] and
+//!    [`CORROBORATION_CREDIT`];
 //! 5. linking: a claim agreeing with a held claim about the same subject,
 //!    attribute and instant from an *independent origin* corroborates it,
 //!    one disagreeing contradicts it, and both are kept as competing
@@ -54,6 +56,24 @@ pub const DEFAULT_SOURCE_CAPACITY: usize = 512;
 pub const UNSIGNED_AUTHENTICITY: f64 = 0.2;
 /// Authenticity at or above which a later claim may resolve a contest.
 pub const RESOLVING_AUTHENTICITY: f64 = 0.6;
+/// Authenticity one independent origin at *another* source adds when it
+/// agrees with a claim (R12-EVID-2034).
+///
+/// Until 2026-10-11 the only signal production evidence carried was a
+/// `HashVerified` naming the fetched body, compared against the hash of that
+/// same body: it could not fail, so it credited every claim, and production
+/// authenticity topped out at 0.5 — below [`RESOLVING_AUTHENTICITY`], so no
+/// contest a connector opened could ever resolve and no source could ever
+/// be found poisoned by losing one. Agreement from an origin this platform
+/// fetched separately, from a source that is not the claimant, is evidence
+/// the claimant did not write; two such origins reach the resolving bar
+/// from the unsigned floor, one does not.
+pub const CORROBORATION_CREDIT: f64 = 0.2;
+/// Independent corroborating origins credited at most. A third agreeing
+/// venue says nothing about authenticity the second did not, and an
+/// uncapped credit would let a crowd of admitted sources outvote a pinned
+/// hash.
+pub const MAX_CORROBORATING_ORIGINS: usize = 2;
 
 /// A node of the provenance graph.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -180,11 +200,22 @@ fn host_of(identity: &str) -> Option<String> {
 /// Assess the signals a claim carries against what the fabric can verify.
 ///
 /// `document_hash` is the SHA-256 the ingestion path took over the fetched
-/// body; `registries` the identity registries this deployment trusts.
+/// body; `registries` the identity registries this deployment trusts;
+/// `pinned` the document hashes an independent channel vouched for.
+///
+/// **Nothing here credits a comparison of the claim with itself.** A hash
+/// signal naming the fetched body, checked against the hash of that same
+/// body, proves the copy is the copy; it says nothing about who wrote it,
+/// and crediting it is how every production claim used to earn authenticity
+/// it had not shown (R12-EVID-2034). Such a hash is credited only when it is
+/// also in `pinned`; a hash that does *not* match the fetched document is
+/// still spoofing, because then the body is not what its own declaration
+/// says it is.
 pub fn assess_authenticity(
     record: &EvidenceRecord,
     document_hash: Option<&str>,
     registries: &BTreeSet<String>,
+    pinned: &BTreeSet<String>,
 ) -> Authenticity {
     let mut score = UNSIGNED_AUTHENTICITY;
     let mut credited = Vec::new();
@@ -200,65 +231,89 @@ pub fn assess_authenticity(
     }
     for signal in &record.authenticity_signals {
         match signal {
-            AuthenticitySignal::HashVerified { algorithm, hash } => {
-                match document_hash {
-                    Some(document) if algorithm.eq_ignore_ascii_case("sha256") && hash == document => {
-                        score += 0.3;
-                        credited.push(format!("sha256 {} matches the fetched document", short(hash)));
-                    }
-                    Some(_) => {
-                        spoofed = true;
-                        refused.push(format!(
-                            "{algorithm} {} does not match the fetched document",
-                            short(hash)
-                        ));
-                    }
-                    None => refused.push(format!(
-                        "{algorithm} {} names no document this fabric holds",
+            AuthenticitySignal::HashVerified { algorithm, hash } => match document_hash {
+                Some(document)
+                    if algorithm.eq_ignore_ascii_case("sha256")
+                        && hash == document
+                        && pinned.contains(hash) =>
+                {
+                    score += 0.3;
+                    credited.push(format!(
+                        "sha256 {} matches the fetched document and a hash pinned by an \
+                             independent channel",
                         short(hash)
-                    )),
+                    ));
                 }
-            }
-            AuthenticitySignal::TlsVerified { domain } => {
-                match host_of(&record.source_identity) {
-                    Some(host) if host == domain.to_ascii_lowercase() || host.ends_with(&format!(".{}", domain.to_ascii_lowercase())) => {
-                        score += 0.2;
-                        credited.push(format!("tls domain {domain} is the source's host"));
-                    }
-                    Some(host) => {
-                        spoofed = true;
-                        refused.push(format!(
-                            "tls domain {domain} is not the source's host {host}"
-                        ));
-                    }
-                    None => refused.push(format!(
-                        "tls domain {domain} cannot be compared: the source identity names no host"
-                    )),
+                Some(document) if algorithm.eq_ignore_ascii_case("sha256") && hash == document => {
+                    refused.push(format!(
+                        "sha256 {} matches the fetched document and nothing else: a hash \
+                             checked against the body it was taken from shows the copy is \
+                             intact, not who wrote it",
+                        short(hash)
+                    ));
                 }
-            }
+                Some(_) => {
+                    spoofed = true;
+                    refused.push(format!(
+                        "{algorithm} {} does not match the fetched document",
+                        short(hash)
+                    ));
+                }
+                None => refused.push(format!(
+                    "{algorithm} {} names no document this fabric holds",
+                    short(hash)
+                )),
+            },
+            AuthenticitySignal::TlsVerified { domain } => match host_of(&record.source_identity) {
+                Some(host)
+                    if host == domain.to_ascii_lowercase()
+                        || host.ends_with(&format!(".{}", domain.to_ascii_lowercase())) =>
+                {
+                    score += 0.2;
+                    credited.push(format!("tls domain {domain} is the source's host"));
+                }
+                Some(host) => {
+                    spoofed = true;
+                    refused.push(format!(
+                        "tls domain {domain} is not the source's host {host}"
+                    ));
+                }
+                None => refused.push(format!(
+                    "tls domain {domain} cannot be compared: the source identity names no host"
+                )),
+            },
             AuthenticitySignal::IdentityRegistered { registry } => {
                 if registries.contains(registry) {
                     score += 0.25;
                     credited.push(format!("identity registered with {registry}"));
                 } else {
-                    refused.push(format!("registry {registry} is not one this deployment trusts"));
+                    refused.push(format!(
+                        "registry {registry} is not one this deployment trusts"
+                    ));
                 }
             }
             AuthenticitySignal::OfficialRelease { channel } => {
                 if identity_registered {
                     score += 0.1;
-                    credited.push(format!("official release on {channel} from a registered identity"));
+                    credited.push(format!(
+                        "official release on {channel} from a registered identity"
+                    ));
                 } else {
                     refused.push(format!(
                         "official-release channel {channel} claimed by an unregistered identity"
                     ));
                 }
             }
-            // This platform verifies no asymmetric signature (no in-tree
-            // signing, ADR 0043), so a signature claim is recorded and never
-            // credited: crediting it would be believing the claim's own word.
+            // The signal carries a signer's name and no signature bytes, so
+            // there is nothing here to verify: it is the claim saying that
+            // somebody once checked something. The platform does verify
+            // ECDSA P-256 (`qip_transport::trust`, ADR 0110), but over its
+            // own artefact classes under its own trust bundle; no source in
+            // the catalogue serves a signature over its documents, and
+            // crediting this signal would be believing the claim's own word.
             AuthenticitySignal::SignatureVerified { signer } => refused.push(format!(
-                "signature by {signer} carried and not verified: this platform verifies no signature"
+                "signature by {signer} asserted and not verifiable: the signal carries no \
+                 signature this fabric can check"
             )),
         }
     }
@@ -473,12 +528,54 @@ pub struct HeldEvidence {
     pub statement_fingerprint: String,
 }
 
+/// [`EvidenceFabric::independent_origins`] over `held`, so `admit` can count
+/// origins while it holds a contest mutably.
+fn independent_origins_of<'a>(
+    held: &VecDeque<HeldEvidence>,
+    claims: impl IntoIterator<Item = &'a str>,
+) -> usize {
+    // Union-find over claims, joined when they share a document or a
+    // statement fingerprint.
+    let held: Vec<&HeldEvidence> = claims
+        .into_iter()
+        .filter_map(|id| held.iter().find(|h| h.record.id == id))
+        .collect();
+
+    let mut parent: Vec<usize> = (0..held.len()).collect();
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        i
+    }
+    for i in 0..held.len() {
+        for j in (i + 1)..held.len() {
+            let shared_document =
+                held[i].document_hash.is_some() && held[i].document_hash == held[j].document_hash;
+            let shared_text = held[i].statement_fingerprint == held[j].statement_fingerprint;
+            if shared_document || shared_text {
+                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                parent[a] = b;
+            }
+        }
+    }
+    (0..held.len())
+        .map(|i| find(&mut parent, i))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
 /// The bounded evidence store with its graph, contests and source records.
 #[derive(Clone, Debug)]
 pub struct EvidenceFabric {
     capacity: usize,
     source_capacity: usize,
     registries: BTreeSet<String>,
+    /// Document hashes an independent channel vouched for — a vendor's
+    /// published checksum, a hash a second fetch path agreed on. The only
+    /// way a hash signal earns authenticity.
+    pinned: BTreeSet<String>,
     held: VecDeque<HeldEvidence>,
     graph: ProvenanceGraph,
     contests: BTreeMap<ClaimKey, Contest>,
@@ -494,6 +591,7 @@ impl Default for EvidenceFabric {
             capacity: DEFAULT_EVIDENCE_CAPACITY,
             source_capacity: DEFAULT_SOURCE_CAPACITY,
             registries: BTreeSet::new(),
+            pinned: BTreeSet::new(),
             held: VecDeque::new(),
             graph: ProvenanceGraph::default(),
             contests: BTreeMap::new(),
@@ -547,6 +645,23 @@ impl EvidenceFabric {
         self
     }
 
+    /// Pin `hash` as a document hash an independent channel vouched for,
+    /// so a claim derived from that document and naming it is credited.
+    /// Bounded like everything else here: past the claim capacity the
+    /// smallest pin is dropped, which loses a credit and never grants one.
+    pub fn pin_document_hash(&mut self, hash: impl Into<String>) {
+        self.pinned.insert(hash.into());
+        while self.pinned.len() > self.capacity {
+            self.pinned.pop_first();
+        }
+    }
+
+    /// [`Self::pin_document_hash`], by value.
+    pub fn pinning_document_hash(mut self, hash: impl Into<String>) -> Self {
+        self.pin_document_hash(hash);
+        self
+    }
+
     pub fn len(&self) -> usize {
         self.held.len()
     }
@@ -593,32 +708,7 @@ impl EvidenceFabric {
     /// however many sources repeat them (R12-EVID-2035). Ten copies of one
     /// press release are one origin.
     pub fn independent_origins<'a>(&self, claims: impl IntoIterator<Item = &'a str>) -> usize {
-        // Union-find over claims, joined when they share a document or a
-        // statement fingerprint.
-        let held: Vec<&HeldEvidence> = claims.into_iter().filter_map(|id| self.get(id)).collect();
-        let mut parent: Vec<usize> = (0..held.len()).collect();
-        fn find(parent: &mut [usize], mut i: usize) -> usize {
-            while parent[i] != i {
-                parent[i] = parent[parent[i]];
-                i = parent[i];
-            }
-            i
-        }
-        for i in 0..held.len() {
-            for j in (i + 1)..held.len() {
-                let shared_document = held[i].document_hash.is_some()
-                    && held[i].document_hash == held[j].document_hash;
-                let shared_text = held[i].statement_fingerprint == held[j].statement_fingerprint;
-                if shared_document || shared_text {
-                    let (a, b) = (find(&mut parent, i), find(&mut parent, j));
-                    parent[a] = b;
-                }
-            }
-        }
-        (0..held.len())
-            .map(|i| find(&mut parent, i))
-            .collect::<BTreeSet<_>>()
-            .len()
+        independent_origins_of(&self.held, claims)
     }
 
     /// Check, link, weigh and hold one claim. See the module doc for the
@@ -646,7 +736,8 @@ impl EvidenceFabric {
         }
         let temporal = record.check_temporal_consistency(self.held.iter().map(|h| &h.record));
         let geographic = record.check_geographic_consistency(self.held.iter().map(|h| &h.record));
-        let authenticity = assess_authenticity(&record, document_hash, &self.registries);
+        let mut authenticity =
+            assess_authenticity(&record, document_hash, &self.registries, &self.pinned);
         let admissible = !matches!(
             temporal,
             TemporalConsistency::ViolatesPhysicalTimeline { .. }
@@ -690,6 +781,30 @@ impl EvidenceFabric {
                 .insert(record.id.clone());
             if !was_contested && contest.hypotheses.len() > 1 {
                 outcome = KeyOutcome::BecameContested;
+            }
+            // Corroboration from other sources, counted by independent
+            // origin, is the authenticity production evidence can actually
+            // earn: see [`CORROBORATION_CREDIT`]. Taken before the resolution
+            // check below, so a genuinely corroborated value can settle a
+            // contest and a self-confirming one cannot.
+            let others: Vec<&str> = corroborates
+                .iter()
+                .filter(|id| {
+                    self.held.iter().any(|held| {
+                        &held.record.id == *id
+                            && held.record.source_identity != record.source_identity
+                    })
+                })
+                .map(String::as_str)
+                .collect();
+            let origins = independent_origins_of(&self.held, others.iter().copied())
+                .min(MAX_CORROBORATING_ORIGINS);
+            if origins > 0 {
+                authenticity.score =
+                    (authenticity.score + CORROBORATION_CREDIT * origins as f64).min(1.0);
+                authenticity.credited.push(format!(
+                    "corroborated by {origins} independent origin(s) at other sources"
+                ));
             }
             // A later, authentic claim resolves a live contest in favour of
             // its value; the losing hypotheses stay on the record.

@@ -64,3 +64,92 @@ pub fn install(
     })?;
     Ok(Some(lines))
 }
+
+/// The plan's permission register, re-read on every iteration of the run
+/// loop so a revocation reaches the Market Factory's validity monitor
+/// (R12-EXEC-5081).
+///
+/// Until 2026-10-11 the register was fixed when the plan was installed at
+/// start-up: `FactoryStage::set_permissions` had no caller outside a test,
+/// so a venue rulebook withdrawn, a product approval lapsed or a legal
+/// opinion retracted could be recorded nowhere a running node would see,
+/// and the monitor's legal check — which withdraws a market whose
+/// permission lapsed — could not fire in any binary. The operator's act is
+/// now the ordinary one: edit the plan file the node was started with and
+/// delete the entry. Only the factory's `permissions` are re-read; markets,
+/// event markets and commerce stay as installed, because adding a market
+/// is a decision made at start-up and removing a permission is not.
+///
+/// Fails closed. A plan file that cannot be read or parsed, that no longer
+/// holds a factory section, or whose register the factory refuses, revokes
+/// **every** permission — each live market is withdrawn at the next review
+/// — and the reason is returned for the cycle line. A register nobody can
+/// read is not one a market may keep trading under.
+#[derive(Debug)]
+pub struct PermissionWatch {
+    path: String,
+    applied: Option<Vec<qip_kernel::market_factory_stage::PermissionEntry>>,
+}
+
+impl PermissionWatch {
+    /// A watch over the plan [`PLAN_VARIABLE`] names, or `None` when it is
+    /// unset or blank — no plan, no factory, nothing to revoke.
+    pub fn from_lookup(lookup: &dyn Fn(&str) -> Option<String>) -> Option<Self> {
+        let path = lookup(PLAN_VARIABLE).filter(|value| !value.trim().is_empty())?;
+        Some(Self {
+            path: path.trim().to_string(),
+            applied: None,
+        })
+    }
+
+    /// Re-read the register and apply it if it changed. `Ok(Some(n))` is a
+    /// register of `n` entries newly applied, `Ok(None)` an unchanged one or
+    /// a platform with no factory, `Err` a register refused — after which
+    /// every permission has been revoked.
+    pub fn refresh(&mut self, platform: &mut Platform) -> Result<Option<usize>> {
+        if platform.market_factory().is_none() {
+            return Ok(None);
+        }
+        let read = std::fs::read_to_string(&self.path)
+            .map_err(|error| {
+                Error::invalid(format!(
+                    "{PLAN_VARIABLE}={} cannot be re-read: {error}",
+                    self.path
+                ))
+            })
+            .and_then(|text| BreadthPlan::from_json(&text))
+            .and_then(|plan| {
+                plan.market_factory
+                    .map(|factory| factory.permissions)
+                    .ok_or_else(|| {
+                        Error::invalid(format!(
+                            "{PLAN_VARIABLE}={} no longer holds a market_factory section",
+                            self.path
+                        ))
+                    })
+            });
+        let entries = match read {
+            Ok(entries) => entries,
+            Err(error) => return Err(self.revoke_all(platform, error)),
+        };
+        if self.applied.as_ref() == Some(&entries) {
+            return Ok(None);
+        }
+        match platform.revise_market_permissions(&entries) {
+            Ok(count) => {
+                self.applied = Some(entries);
+                Ok(Some(count))
+            }
+            Err(error) => Err(self.revoke_all(platform, error)),
+        }
+    }
+
+    fn revoke_all(&mut self, platform: &mut Platform, error: Error) -> Error {
+        platform.revoke_market_permissions();
+        self.applied = Some(Vec::new());
+        Error::denied(format!(
+            "market permissions revoked, every created market will be withdrawn: {}",
+            error.message()
+        ))
+    }
+}

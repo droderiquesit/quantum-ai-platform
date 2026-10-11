@@ -510,6 +510,7 @@ impl ConnectorFeed {
                     envelope.record(),
                     &self.descriptor.name,
                     &entitlement,
+                    envelope.raw_payload(),
                 );
                 let outcome = match captured {
                     Ok(Some(event)) => lake.capture(event).map(|_| ()),
@@ -522,7 +523,9 @@ impl ConnectorFeed {
                 }
             }
         }
-        for checked in report.evidence {
+        // Refused evidence goes up with the released: its records stay in
+        // quarantine, but the world fabric's detectors read the claims.
+        for checked in report.evidence.into_iter().chain(report.refused_evidence) {
             if self.pending_evidence.len() >= PENDING_EVIDENCE_CAPACITY {
                 self.pending_evidence.pop_front();
                 self.evidence_dropped = self.evidence_dropped.saturating_add(1);

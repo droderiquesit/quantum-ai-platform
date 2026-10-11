@@ -104,10 +104,16 @@ resource "google_privileged_access_manager_entitlement" "this" {
 # control: leaf certificates only (never a CA), client and server auth only,
 # at most thirty days, EC P-256 or RSA 3072+. The CA's key is HSM-backed.
 #
-# What this does not do, said here because the requirement names it: the
-# in-tree transport speaks plaintext HTTP/1.1 behind the egress proxy, so
-# no Fabric link presents a certificate yet. The pool is what mTLS on those
-# links would be issued from; wiring it is the transport's work.
+# The transport side is built: since ADR 0112 `qip-transport::tls` speaks
+# TLS 1.3 through rustls, its server *requires* a client certificate (there
+# is no optional-client-auth path), its client presents one, and a link is
+# mutual TLS by default everywhere but a `local` deployment — plaintext
+# outside `local` stops the process. `qip-fabricd`, `qip-ledgerd` and
+# `qip-edge-node` load their workload identity from files. This comment said
+# until 2026-10-11 that the transport could not do mTLS, which had stopped
+# being true. What remains is issuance: nothing in this root yet requests a
+# leaf from this pool and delivers it to those files, so no deployed link
+# has presented one — nothing those binaries run on is applied.
 resource "google_privateca_ca_pool" "internal" {
   count = local.cas_on ? 1 : 0
 

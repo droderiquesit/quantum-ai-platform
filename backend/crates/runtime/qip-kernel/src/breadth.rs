@@ -42,6 +42,11 @@ use crate::cycle::StageOutcome;
 use crate::event_markets::EventMarketPlane;
 use crate::market_factory_stage::{FactoryPlan, FactoryStage};
 use crate::platform::Platform;
+use qip_observability::metrics::labels;
+
+/// Market Factory permission-register revisions, by `outcome`: `applied` or
+/// `revoked_all` (the fail-closed answer to an unreadable register).
+pub const MARKET_PERMISSIONS_REVISED: &str = "qip_market_permissions_revised_total";
 
 /// The only source name this build can open for either plane.
 pub const SYNTHETIC_SOURCE: &str = "synthetic";
@@ -312,6 +317,57 @@ impl Platform {
     /// The Market Factory, for an operator replacing its permission register.
     pub fn market_factory_mut(&mut self) -> Option<&mut FactoryStage> {
         self.breadth.factory.as_mut()
+    }
+
+    /// The book the desk's simulated venue lists for `object_id`, as the
+    /// venue holds it, not as the factory computed it (R12-EXEC-5080).
+    ///
+    /// A copy, and `&mut self` only because the broker exposes its listing
+    /// venue mutably. A test of seeding that read the factory's own record
+    /// passed with the venue holding nothing.
+    pub fn listed_book(&mut self, object_id: &str) -> Option<qip_market::book::OrderBook> {
+        self.broker
+            .listing_venue()
+            .and_then(|venue| venue.listed_book(object_id).cloned())
+    }
+
+    /// Replace the Market Factory's permission register with `entries`, as
+    /// the deep brain does each cycle from its plan file (R12-EXEC-5081).
+    ///
+    /// The next SIMULATE review judges every live market against the new
+    /// register, and one whose create, list or seed permission is gone is
+    /// flagged and withdrawn. That is the only path from an operator's
+    /// revocation to a withdrawn market; before it the register was fixed
+    /// at install. Refuses with no factory installed, and refuses a
+    /// register that does not parse, leaving the old one in place, so the
+    /// caller decides how to fail; the deep brain revokes everything.
+    /// Returns the number of entries applied.
+    pub fn revise_market_permissions(
+        &mut self,
+        entries: &[crate::market_factory_stage::PermissionEntry],
+    ) -> Result<usize> {
+        let register = crate::market_factory_stage::register(entries)?;
+        let stage = self.breadth.factory.as_mut().ok_or_else(|| {
+            Error::invalid("no market factory is installed, so there is no register to revise")
+        })?;
+        stage.set_permissions(register);
+        self.telemetry
+            .metrics
+            .count(MARKET_PERMISSIONS_REVISED, labels([("outcome", "applied")]));
+        Ok(entries.len())
+    }
+
+    /// Revoke every Market Factory permission. Every live market lapses and
+    /// is withdrawn at the next review. This is the fail-closed answer to a
+    /// register nobody can read. A no-op without a factory.
+    pub fn revoke_market_permissions(&mut self) {
+        if let Some(stage) = self.breadth.factory.as_mut() {
+            stage.set_permissions(qip_execution_engine::creation::CreationPermissions::new());
+            self.telemetry.metrics.count(
+                MARKET_PERMISSIONS_REVISED,
+                labels([("outcome", "revoked_all")]),
+            );
+        }
     }
 
     /// The event-market plane, when a plan installed one.

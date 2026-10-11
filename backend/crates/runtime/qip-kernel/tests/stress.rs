@@ -369,6 +369,63 @@ fn noise(seed: u64, count: usize, scale: f64) -> Vec<f64> {
         .collect()
 }
 
+/// R12-RISK-4116..4120, 4123, 4124: the six survival worlds and the
+/// generated ones reach the stress report a real cycle produces, priced
+/// against the book. Their call in `stress_the_book` could be deleted until
+/// 2026-10-11 without failing a test: the unit tests called
+/// `tail::survival_worlds` directly, and the only cycle-level test looked for
+/// the counterparty and model-failure worlds alone.
+///
+/// Mutation: delete the `tail_worlds.extend(crate::tail::survival_worlds(..))`
+/// call — every name below is missing and the first assertion fails.
+#[test]
+fn the_survival_tail_worlds_reach_the_stress_report_a_cycle_produces() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(observations("AAA", 120, 0.0));
+    platform.observe(observations("BBB", 120, 0.31));
+    buy(&mut platform, "AAA", dec!("40000"), start())?;
+    buy(&mut platform, "BBB", dec!("40000"), start())?;
+    platform.run_cycle(start().saturating_add(Duration::from_days(1)));
+    let stress = platform
+        .stress_report()
+        .expect("premise: an open book with history is stressed");
+    assert!(
+        !stress.tail_worlds.is_empty(),
+        "premise: the cycle applied tail worlds"
+    );
+    let mut expected = vec![
+        qip_kernel::tail::LIQUIDITY_FREEZE_DEPTH,
+        qip_kernel::tail::VENUE_OUTAGE,
+        qip_kernel::tail::GAP_MOVE,
+        qip_kernel::tail::CORRELATION_INVERSION,
+        qip_kernel::tail::DATA_POISONING,
+        qip_kernel::tail::MULTI_MARKET_SHOCK,
+    ];
+    expected.extend(qip_kernel::tail::SYNTHETIC_WORLDS);
+    for name in expected {
+        let world = stress
+            .tail_worlds
+            .iter()
+            .find(|world| world.scenario == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {name} world never reached the stress report: {:?}",
+                    stress
+                        .tail_worlds
+                        .iter()
+                        .map(|w| &w.scenario)
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            world.loss_fraction.is_finite() && world.loss_fraction > 0.0,
+            "{name} priced a two-position book at {}",
+            world.loss_fraction
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn decayed_calibration_shrinks_allocation_through_the_gate() -> Result<()> {
     // RISK-036 / R12-RISK-4111, and R12-RISK-4117..4124's "failure to survive

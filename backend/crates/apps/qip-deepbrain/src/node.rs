@@ -303,6 +303,11 @@ pub struct Loops<'a> {
     /// The tick desk (`tick_desk.rs`). Advisory like research: a round that
     /// fails is a side failure on the cycle line, never a stopped node.
     pub tick: Option<&'a mut crate::tick_desk::TickDesk>,
+    /// The breadth plan's permission register, re-read before each cycle so
+    /// a revocation withdraws a created market at that cycle's review
+    /// (`breadth.rs`, R12-EXEC-5081). A refused register is a side failure
+    /// on the cycle line — after it has revoked every permission.
+    pub permissions: Option<&'a mut crate::breadth::PermissionWatch>,
 }
 
 /// [`run_with`] and no research or operations loop.
@@ -394,8 +399,18 @@ pub fn run_with(
             None => 0,
         };
 
+        let revised = loops
+            .permissions
+            .as_deref_mut()
+            .map(|watch| watch.refresh(platform));
+
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
+        if let Some(Err(error)) = revised {
+            outcome
+                .side_failures
+                .push(format!("breadth permissions: {}", error.message()));
+        }
 
         // A failed cycle is the one this loop already counts as failed: a
         // stage that did not run. An overrun is not one — on this node it is

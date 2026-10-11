@@ -89,7 +89,7 @@ pub use checkpoint::{Checkpoint, Cursor, CursorPosition};
 pub use dedup::{DedupWindow, EventFingerprint, Novelty};
 pub use digest::FetchDigest;
 pub use emulator::{RecordedExchange, SourceEmulator};
-pub use envelope::{MarketEventEnvelope, RawEvent};
+pub use envelope::{MAX_RAW_PAYLOAD_BYTES, MarketEventEnvelope, RawEvent, RawPayload};
 pub use harness::{ContractCheck, ContractHarness, ContractReport};
 pub use heartbeat::{FeedHeartbeat, Liveness};
 pub use journal::{InstantSpan, StreamJournal, StreamLedger};
@@ -104,7 +104,8 @@ pub use runtime::{
     ConnectorHealth, ConnectorRuntime, PollOutcome, PollReport, RuntimeConfig, RuntimeStats,
 };
 pub use transport::{
-    HttpSourceTransport, RequestPurpose, SourceRequest, SourceResponse, SourceTransport,
+    ContentDigest, HttpSourceTransport, RequestPurpose, SourceRequest, SourceResponse,
+    SourceTransport,
 };
 pub use validate::{SchemaGuard, SchemaOutcome, SchemaViolation};
 

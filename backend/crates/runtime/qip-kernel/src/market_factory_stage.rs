@@ -142,6 +142,22 @@ fn action(name: &str) -> Result<CreationAction> {
         })
 }
 
+/// A permission register from a plan's entries, refused whole on the first
+/// entry naming an unknown action or authority or recording nothing.
+pub fn register(entries: &[PermissionEntry]) -> Result<CreationPermissions> {
+    let mut permissions = CreationPermissions::new();
+    for entry in entries {
+        let request = CreationRequest::new(
+            action(&entry.action)?,
+            entry.venue.as_str(),
+            entry.product.as_str(),
+            entry.jurisdiction.as_str(),
+        );
+        permissions.record(authority(&entry.authority)?, &request, &entry.reference)?;
+    }
+    Ok(permissions)
+}
+
 impl FactoryStage {
     /// Record the plan's permissions and take every planned market through
     /// create, list and seed on `venue`. Refused whole on the first step any
@@ -158,16 +174,7 @@ impl FactoryStage {
         ladders: &mut dyn FnMut(&str, &str, &PricingRule) -> Result<LadderAdmission>,
         now: Timestamp,
     ) -> Result<Self> {
-        let mut permissions = CreationPermissions::new();
-        for entry in &plan.permissions {
-            let request = CreationRequest::new(
-                action(&entry.action)?,
-                entry.venue.as_str(),
-                entry.product.as_str(),
-                entry.jurisdiction.as_str(),
-            );
-            permissions.record(authority(&entry.authority)?, &request, &entry.reference)?;
-        }
+        let permissions = register(&plan.permissions)?;
         let mut factory = MarketFactory::for_venue(venue)?;
         let mut mark_sources = BTreeMap::new();
         for market in &plan.markets {
