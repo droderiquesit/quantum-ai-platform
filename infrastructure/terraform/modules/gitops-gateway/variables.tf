@@ -60,4 +60,18 @@ variable "iap_members" {
     ])
     error_message = "iap_members may not contain allUsers or allAuthenticatedUsers; that admits the internet, or every Google account, to a controller that can reconcile arbitrary manifests into the cluster."
   }
+
+  # Workforce access is a Cloud Identity user or group, and nothing else
+  # (R12-SEC-10002). `domain:` admits every account a domain will ever mint,
+  # `serviceAccount:` is a workload rather than a person, and a bare address
+  # is a member IAM would read as whatever it guessed. The prefix is checked
+  # rather than the account because the account is a managed identity this
+  # repository never carries.
+  validation {
+    condition = alltrue([
+      for member in var.iap_members :
+      can(regex("^(user|group):[^@:[:space:]]+@[^@:[:space:]]+$", member))
+    ])
+    error_message = "iap_members admits only Cloud Identity principals written user:<address> or group:<address>. A domain:, serviceAccount:, allUsers or bare address is refused: workforce access to Argo CD and Kargo is a managed person or a managed group, never a domain-wide or shared grant."
+  }
 }

@@ -1601,6 +1601,20 @@ variable "gitops_iap_members" {
     never defaulted to something convenient.
   EOT
   default     = []
+
+  # Workforce access is a Cloud Identity user or group, and nothing else
+  # (R12-SEC-10002). `domain:` admits every account a domain will ever mint,
+  # `serviceAccount:` is a workload rather than a person, and a bare address
+  # is a member IAM would read as whatever it guessed. The prefix is checked
+  # rather than the account because the account is a managed identity this
+  # repository never carries.
+  validation {
+    condition = alltrue([
+      for member in var.gitops_iap_members :
+      can(regex("^(user|group):[^@:[:space:]]+@[^@:[:space:]]+$", member))
+    ])
+    error_message = "gitops_iap_members admits only Cloud Identity principals written user:<address> or group:<address>; a domain:, serviceAccount:, allUsers or bare address is refused at the root, before the module is reached."
+  }
 }
 
 # --- The domain ---------------------------------------------------------------
