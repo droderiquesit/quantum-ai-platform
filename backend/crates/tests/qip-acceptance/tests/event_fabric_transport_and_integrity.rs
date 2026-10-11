@@ -1,41 +1,9 @@
 //! Event Fabric transport and integrity: FABRIC-036, FABRIC-037, FABRIC-038, FABRIC-039, FABRIC-040, FABRIC-041.
 //!
-//! Tests for QUIC streams, integrity protection, versioning, ordering, metadata,
-//! and delivery semantics.
+//! FABRIC-036 is pinned as a gap (there is no QUIC); 037-041 drive the batch
+//! codec, the broker and the stream policy.
 
-#[derive(Debug, Clone)]
-struct RecordWithIntegrity {
-    _content: String,
-    _crc: String,
-    _content_hash: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecordLayout {
-    _Versioned,
-    Unversioned,
-}
-
-#[derive(Debug, Clone)]
-struct PartitionOrdering {
-    _partition_id: u32,
-    _is_strictly_ordered: bool,
-    _is_globally_ordered: bool,
-}
-
-#[derive(Debug, Clone)]
-struct RecordMetadata {
-    _timestamp: u64,
-    _placement: String,
-    _epoch: u32,
-    _hlc: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeliverySemantics {
-    _AtLeastOnce,
-    AtMostOnce,
-}
+#![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report
 
 #[test]
 fn fabric_036_gap_every_fabric_record_crosses_the_one_tcp_http_transport_and_no_datagram_path_exists()
@@ -92,214 +60,243 @@ fn fabric_036_gap_every_fabric_record_crosses_the_one_tcp_http_transport_and_no_
     assert_eq!(implementations, ["HttpTransport"]);
 }
 
-#[test]
-fn fabric_037_records_and_segments_carry_crc_and_content_hash_integrity_protection() {
-    // FABRIC-037: Records and segments must carry both CRC (fast check) and content hash
-    // (cryptographic verification) for integrity protection.
+// --- FABRIC-037 to FABRIC-041, through the codec, the broker and the policy ----
+//
+// Each of these was a struct built in the test body and read back: a
+// `RecordWithIntegrity` holding the strings "crc32:abcd1234" and
+// "blake3:xyz789", a `RecordLayout::Unversioned` that was asserted to be
+// unversioned, and so on. They now drive `qip_events`' batch codec and the
+// `qip-streaming` broker.
 
-    // Scenario 1: Record carries CRC
-    let record_crc = RecordWithIntegrity {
-        _content: "message-data".to_string(),
-        _crc: "crc32:abcd1234".to_string(),
-        _content_hash: "blake3:xyz789".to_string(),
-    };
+use qip_core::{Clock, ManualClock, Timestamp};
+use qip_events::event_fabric::codec::{
+    Batch, DecodeOutcome, FORMAT_VERSION, MessageType, PayloadCodec, Record, stamp_drain,
+};
+use qip_events::event_fabric::crc32c::crc32c;
+use qip_events::event_fabric::policy::{
+    AckProfile, Entitlement, Mirroring, Ordering, OverloadPolicy, QosClass, StreamPolicy,
+    StreamPolicySpec,
+};
+use qip_events::event_fabric::schema_id::Shape;
+use qip_storage::segment::log::SegmentLogConfig;
+use qip_streaming::event_fabric::broker::Broker;
+use std::sync::Arc;
 
-    assert!(!record_crc._crc.is_empty());
+fn one_record_batch(event_id: &str, payload: &[u8]) -> Batch {
+    Batch::new(
+        MessageType::Data,
+        1,
+        1,
+        PayloadCodec::CanonicalJson,
+        vec![Record {
+            event_id: event_id.to_string(),
+            trace_id: None,
+            source_timestamp_ns: 42,
+            payload: payload.to_vec(),
+        }],
+    )
+    .expect("a batch")
+}
 
-    // Scenario 2: Record carries content hash
-    assert!(!record_crc._content_hash.is_empty());
-    assert!(record_crc._content_hash.starts_with("blake3:"));
-
-    // Scenario 3: Multiple records have integrity protection
-    let records = [
-        RecordWithIntegrity {
-            _content: "msg-1".to_string(),
-            _crc: "crc32:1111".to_string(),
-            _content_hash: "blake3:hash1".to_string(),
-        },
-        RecordWithIntegrity {
-            _content: "msg-2".to_string(),
-            _crc: "crc32:2222".to_string(),
-            _content_hash: "blake3:hash2".to_string(),
-        },
-    ];
-
-    assert!(
-        records
-            .iter()
-            .all(|r| !r._crc.is_empty() && !r._content_hash.is_empty())
-    );
-
-    // Scenario 4: Both CRC and hash present for verification
-    for record in &records {
-        assert!(record._crc.contains("crc32"));
-        assert!(record._content_hash.contains("blake3"));
+fn spec(class: QosClass) -> StreamPolicySpec {
+    StreamPolicySpec {
+        qos_class: class,
+        partition_key: "account".to_string(),
+        ordering: Ordering::PerPartition,
+        retention: qip_events::retention::RetentionClass::Irreplaceable,
+        replication_factor: 1,
+        mirroring: Mirroring::None,
+        overload_policy: OverloadPolicy::RefuseProducer,
+        ack_profile: class.ack_floor(),
+        byte_quota_per_producer: 1_000_000,
+        message_quota_per_producer: 1_000,
+        lag_limit: 1_000,
+        entitlement: Entitlement::new("ledger", "trade").expect("valid"),
+        seal_age_ms: 60_000,
+        peak_bytes_per_second: 1 << 20,
     }
 }
 
-#[test]
-fn fabric_038_unversioned_in_memory_layouts_never_reach_the_network() {
-    // FABRIC-038: Unversioned in-memory layouts must never reach the network.
-    // All network messages must carry a schema version identifier.
-
-    // Scenario 1: In-memory layout is unversioned
-    let in_memory = RecordLayout::Unversioned;
-    assert_eq!(in_memory, RecordLayout::Unversioned);
-
-    // Scenario 2: Network records are versioned
-    let network_record = RecordLayout::_Versioned;
-    assert_eq!(network_record, RecordLayout::_Versioned);
-
-    // Scenario 3: No unversioned layouts on network
-    let network_messages = [
-        RecordLayout::_Versioned,
-        RecordLayout::_Versioned,
-        RecordLayout::_Versioned,
-    ];
-
-    let has_unversioned = network_messages.contains(&RecordLayout::Unversioned);
-    assert!(!has_unversioned);
-
-    // Scenario 4: In-memory can be unversioned, but not when sent
-    let in_mem = RecordLayout::Unversioned;
-    let on_network = RecordLayout::_Versioned;
-    assert_ne!(in_mem, on_network);
+fn broker() -> Broker {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "qip-acceptance-transport-{}-{unique}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 4)));
+    let broker = Broker::open(dir, Arc::clone(&clock)).expect("opens");
+    broker
+        .declare_stream(
+            "fills",
+            1,
+            StreamPolicy::new(spec(QosClass::P1Outcomes)).expect("admitted"),
+            SegmentLogConfig::new(clock).with_roll_after_bytes(10_000_000),
+        )
+        .expect("declared");
+    broker
+        .register_schema("fills", 1, 1, Shape::of(&1u32).expect("a shape"))
+        .expect("registered");
+    broker
 }
 
+/// FABRIC-037: a batch on the wire carries a checksum over its body, and a
+/// single flipped byte anywhere in a record's payload is refused rather than
+/// decoded as different data. (Segment-level content hashing is driven by
+/// `event_fabric_infrastructure.rs`'s fabric_090.)
+///
+/// Mutation: delete the per-record CRC comparison in the record decoder
+/// (`actual_crc` in `codec.rs`) — the flipped payload decodes `Complete`
+/// with altered bytes and the assertion fires.
 #[test]
-fn fabric_039_order_is_strict_within_a_partition_and_never_promised_globally() {
-    // FABRIC-039: Order must be strictly maintained within a partition but never
-    // promised globally across partitions.
-
-    // Scenario 1: Partition maintains strict order
-    let partition = PartitionOrdering {
-        _partition_id: 0,
-        _is_strictly_ordered: true,
-        _is_globally_ordered: false,
-    };
-
-    assert!(partition._is_strictly_ordered);
-    assert!(!partition._is_globally_ordered);
-
-    // Scenario 2: Multiple partitions have independent order
-    let partitions = [
-        PartitionOrdering {
-            _partition_id: 0,
-            _is_strictly_ordered: true,
-            _is_globally_ordered: false,
-        },
-        PartitionOrdering {
-            _partition_id: 1,
-            _is_strictly_ordered: true,
-            _is_globally_ordered: false,
-        },
-        PartitionOrdering {
-            _partition_id: 2,
-            _is_strictly_ordered: true,
-            _is_globally_ordered: false,
-        },
-    ];
-
-    assert_eq!(partitions.len(), 3);
-    assert!(partitions.iter().all(|p| p._is_strictly_ordered));
-
-    // Scenario 3: No partition promises global order
-    for partition in &partitions {
-        assert!(!partition._is_globally_ordered);
+fn fabric_037_one_flipped_payload_byte_is_refused_rather_than_decoded_as_different_data() {
+    let payload = b"{\"qty\":17,\"px\":\"101.25\"}";
+    let encoded = one_record_batch("evt-37", payload)
+        .encode()
+        .expect("encodes");
+    // Premise: the untouched frame decodes to exactly the payload.
+    match Batch::decode(&encoded).expect("decodes") {
+        DecodeOutcome::Complete(batch) => assert_eq!(batch.records[0].payload, payload),
+        DecodeOutcome::Torn => panic!("premise: a whole frame"),
     }
-
-    // Scenario 4: Order within partition is strict
-    let records_per_partition: Vec<u32> = vec![0, 1, 2, 3, 4];
-    for (i, _record) in records_per_partition.iter().enumerate() {
-        if i > 0 {
-            assert!(i > i - 1);
-        }
+    let at = encoded
+        .windows(payload.len())
+        .position(|window| window == payload)
+        .expect("premise: the payload is carried verbatim in the frame");
+    for offset in [at, at + payload.len() / 2, at + payload.len() - 1] {
+        let mut flipped = encoded.clone();
+        flipped[offset] ^= 0x01;
+        let decoded = Batch::decode(&flipped);
+        assert!(
+            decoded.is_err(),
+            "a flipped byte at {offset} decoded as {decoded:?}"
+        );
     }
 }
 
+/// FABRIC-038: nothing reaches the wire without a format version, and a
+/// frame declaring any version this build does not write is refused — even
+/// with a valid prefix checksum, so only the version check can refuse it.
+///
+/// Mutation: delete the `version != FORMAT_VERSION` refusal in
+/// `Batch::decode` — the re-versioned frame decodes and the assertion fires.
 #[test]
-fn fabric_040_every_record_carries_time_placement_epoch_and_hybrid_logical_clock_metadata() {
-    // FABRIC-040: Every record must carry metadata including timestamp, placement,
-    // epoch, and hybrid-logical-clock value for causal consistency.
+fn fabric_038_a_frame_declaring_an_unknown_format_version_is_refused() {
+    let encoded = one_record_batch("evt-38", b"{}").encode().expect("encodes");
+    assert_eq!(
+        u16::from_le_bytes([encoded[4], encoded[5]]),
+        FORMAT_VERSION,
+        "premise: the version sits at bytes 4..6"
+    );
+    let mut future = encoded;
+    future[4..6].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
+    let crc = crc32c(&future[..10]);
+    future[10..14].copy_from_slice(&crc.to_le_bytes());
+    let refused = Batch::decode(&future).expect_err("an unknown format version decoded");
+    assert!(refused.to_string().contains("format version"), "{refused}");
+}
 
-    // Scenario 1: Record has timestamp metadata
-    let record = RecordMetadata {
-        _timestamp: 1000000,
-        _placement: "zone-a".to_string(),
-        _epoch: 1,
-        _hlc: 100,
-    };
-
-    assert!(record._timestamp > 0);
-
-    // Scenario 2: Record has placement metadata
-    assert!(!record._placement.is_empty());
-
-    // Scenario 3: Record has epoch and HLC
-    assert!(record._epoch > 0);
-    assert!(record._hlc > 0);
-
-    // Scenario 4: Multiple records carry complete metadata
-    let records = [
-        RecordMetadata {
-            _timestamp: 1000000,
-            _placement: "zone-a".to_string(),
-            _epoch: 1,
-            _hlc: 100,
-        },
-        RecordMetadata {
-            _timestamp: 1000001,
-            _placement: "zone-b".to_string(),
-            _epoch: 1,
-            _hlc: 101,
-        },
-        RecordMetadata {
-            _timestamp: 1000002,
-            _placement: "zone-c".to_string(),
-            _epoch: 1,
-            _hlc: 102,
-        },
-    ];
-
-    assert!(
-        records
-            .iter()
-            .all(|r| r._timestamp > 0 && !r._placement.is_empty())
+/// FABRIC-039: order is strict within a partition — a producer's batches are
+/// admitted only in sequence, and offsets follow admission order. A batch
+/// that skips ahead is refused naming the sequence expected.
+///
+/// Mutation: in `ProducerTable::admit`, treat `base_sequence > expected` as
+/// an append — the skipped-ahead batch is admitted and the `expect_err`
+/// fails.
+#[test]
+fn fabric_039_a_producer_batch_out_of_sequence_is_refused_and_offsets_follow_admission_order() {
+    let broker = broker();
+    let mut offsets = Vec::new();
+    for sequence in 0..3u64 {
+        let mut batch = one_record_batch(&format!("evt-{sequence}"), b"{}");
+        stamp_drain(&mut batch, "venue", 1, sequence);
+        offsets.push(
+            broker
+                .produce("fills", "acct", batch)
+                .expect("in order")
+                .base_offset(),
+        );
+    }
+    assert_eq!(offsets, [0, 1, 2]);
+    let mut ahead = one_record_batch("evt-5", b"{}");
+    stamp_drain(&mut ahead, "venue", 1, 5);
+    let refused = broker
+        .produce("fills", "acct", ahead)
+        .expect_err("a batch that skipped sequences 3 and 4 was admitted");
+    assert!(!refused.to_string().is_empty());
+    assert_eq!(
+        broker
+            .metadata("fills", 0)
+            .expect("metadata")
+            .high_watermark(),
+        3
     );
 }
 
+/// FABRIC-040: a record as served carries its placement (offset), the
+/// broker's leader epoch, the producer's epoch, a hybrid logical timestamp
+/// the broker stamped, and the writer's own source time — none of them
+/// supplied by the test.
+///
+/// Mutation: in `Broker::produce_to`, stamp `LogicalTimestamp::default()`
+/// instead of the partition clock's reading — the timestamp assertion fires.
 #[test]
-fn fabric_041_durable_streams_deliver_at_least_once_at_most_once_is_for_telemetry_only() {
-    // FABRIC-041: Durable streams must deliver at least once. At-most-once delivery
-    // is only for telemetry where drops are acceptable.
+fn fabric_040_a_served_batch_carries_offset_epochs_logical_time_and_source_time() {
+    let broker = broker();
+    let mut batch = one_record_batch("evt-40", b"{}");
+    // Premise: the broker-owned fields start unset.
+    assert_eq!(batch.logical_timestamp, Default::default());
+    stamp_drain(&mut batch, "venue", 3, 0);
+    let ack = broker.produce("fills", "acct", batch).expect("admitted");
 
-    // Scenario 1: Durable stream delivers at least once
-    let durable_delivery = DeliverySemantics::_AtLeastOnce;
-    assert_eq!(durable_delivery, DeliverySemantics::_AtLeastOnce);
+    let fetched = broker
+        .fetch("fills", 0, ack.base_offset(), 1 << 20)
+        .expect("fetch");
+    let bytes = qip_core::hash::from_hex(fetched.batches()).expect("hex");
+    let served = match Batch::decode(&bytes).expect("decodes") {
+        DecodeOutcome::Complete(batch) => batch,
+        DecodeOutcome::Torn => panic!("torn"),
+    };
+    assert_eq!(served.base_offset, ack.base_offset());
+    assert_eq!(served.leader_epoch, broker.leader_epoch());
+    assert!(served.leader_epoch > 0, "premise: an epoch was assigned");
+    assert_eq!(served.producer_epoch, 3);
+    assert_ne!(served.logical_timestamp, Default::default());
+    assert!(served.logical_timestamp.physical_ns > 0);
+    assert_eq!(served.records[0].source_timestamp_ns, 42);
+}
 
-    // Scenario 2: Telemetry uses at-most-once
-    let telemetry_delivery = DeliverySemantics::AtMostOnce;
-    assert_eq!(telemetry_delivery, DeliverySemantics::AtMostOnce);
-
-    // Scenario 3: All durable streams guarantee at least once
-    let durable_streams = [
-        DeliverySemantics::_AtLeastOnce,
-        DeliverySemantics::_AtLeastOnce,
-        DeliverySemantics::_AtLeastOnce,
-    ];
-
-    assert!(
-        durable_streams
-            .iter()
-            .all(|d| *d == DeliverySemantics::_AtLeastOnce)
+/// FABRIC-041: durable classes deliver at least once — they refuse to run
+/// with no acknowledgement — and at-most-once is telemetry's alone. A
+/// consumer that has not committed reads the same batch again.
+///
+/// Mutation: change `QosClass::ack_floor`'s P3 arm to `None` — a P3 stream
+/// with no acknowledgement is admitted and the loop fires.
+#[test]
+fn fabric_041_only_telemetry_may_be_at_most_once_and_an_uncommitted_read_is_served_again() {
+    for class in QosClass::ALL {
+        let none = StreamPolicy::new(StreamPolicySpec {
+            ack_profile: AckProfile::None,
+            ..spec(class)
+        });
+        assert_eq!(
+            none.is_ok(),
+            class == QosClass::P4Telemetry,
+            "{} with no acknowledgement",
+            class.as_str()
+        );
+    }
+    let broker = broker();
+    let mut batch = one_record_batch("evt-41", b"{}");
+    stamp_drain(&mut batch, "venue", 1, 0);
+    broker.produce("fills", "acct", batch).expect("admitted");
+    let first = broker.fetch("fills", 0, 0, 1 << 20).expect("fetch");
+    assert_eq!(
+        broker.committed_offset("risk", "fills", 0).expect("read"),
+        None
     );
-
-    // Scenario 4: Telemetry never uses durable semantics
-    let telemetry_signals = [DeliverySemantics::AtMostOnce, DeliverySemantics::AtMostOnce];
-
-    assert!(
-        telemetry_signals
-            .iter()
-            .all(|d| *d == DeliverySemantics::AtMostOnce)
-    );
+    let again = broker.fetch("fills", 0, 0, 1 << 20).expect("fetch");
+    assert!(!first.batches().is_empty(), "premise: something was served");
+    assert_eq!(first.batches(), again.batches());
 }
