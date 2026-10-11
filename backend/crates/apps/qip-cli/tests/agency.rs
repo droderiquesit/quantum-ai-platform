@@ -226,8 +226,12 @@ fn records(journal: &Path) -> Vec<AgencyRecord> {
 /// R12-AGENCY-1056..1069: no conduct policy, no pass; no journal, no pass;
 /// and the policy may come from the variable `main` reads.
 ///
-/// Mutation: in `agency::paths`, default a missing policy to an empty one
-/// (or drop the journal requirement) — the refusal cases exit zero.
+/// Mutations, each verified: in `agency::paths`, drop the journal
+/// requirement — the no-journal case runs the pass and exits zero; default a
+/// missing policy to an empty path — the process still exits 1 (the path
+/// does not read), so it is the assertion on the refusal's own wording that
+/// fires, not the exit code; ignore `QIP_AGENCY_POLICY_FILE` — the
+/// variable-only case exits 1.
 #[test]
 fn the_binary_refuses_to_run_a_pass_without_a_conduct_policy_or_a_journal() {
     let scratch = Scratch::new("refuses");
