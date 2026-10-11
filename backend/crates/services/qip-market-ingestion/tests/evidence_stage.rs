@@ -88,9 +88,14 @@ fn every_admitted_record_carries_checked_evidence_naming_its_parser_licence_and_
             "a claim earned authenticity from its own document's hash: {:?}",
             checked.verdict.authenticity
         );
-        assert_eq!(
-            checked.verdict.authenticity.score,
-            qip_evidence::fabric::UNSIGNED_AUTHENTICITY
+        // Exactly the unsigned floor is meant; a tolerance only because float
+        // equality is linted (clippy::float_cmp).
+        assert!(
+            (checked.verdict.authenticity.score - qip_evidence::fabric::UNSIGNED_AUTHENTICITY)
+                .abs()
+                < 1e-12,
+            "an uncredited claim scored {} rather than the unsigned floor",
+            checked.verdict.authenticity.score
         );
         assert!(checked.verdict.belief_weight > 0.0);
     }
