@@ -1,0 +1,19 @@
+# Every third-party package permitted in backend/Cargo.lock — direct and transitive.
+# ADR 0109 (Accepted 2026-10-11): crates are admitted from this committed list,
+# one package per line, `name  # ADR NNNN — reason`. A package not listed here
+# fails ./scripts/check-dependencies.sh, so every admission appears in a diff.
+# Transitive packages are listed too, so a crate that quietly widens its own
+# dependency tree shows up here rather than nowhere.
+
+# The decision core (ADR 0002, 0009): serde, serde_json and their closure.
+serde            # ADR 0002 — serialisation of every contract
+serde_json       # ADR 0002 — the wire and journal format
+serde_derive     # ADR 0002 — serde's derive macro
+proc-macro2      # ADR 0002 — serde_derive's proc-macro support
+quote            # ADR 0002 — serde_derive's proc-macro support
+syn              # ADR 0002 — serde_derive's proc-macro support
+unicode-ident    # ADR 0002 — syn's identifier tables
+serde_core       # ADR 0002 — serde 1.0.229 split its core traits into this crate
+itoa             # ADR 0002 — serde_json integer formatting
+zmij             # ADR 0002 — serde_json float formatting
+memchr           # ADR 0002 — serde_json byte search

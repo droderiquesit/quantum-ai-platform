@@ -1,46 +1,37 @@
 #!/usr/bin/env bash
-# The dependency policy, enforced.
+# The dependency policy, enforced (ADR 0109).
 #
-# The platform depends on serde and serde_json and nothing else. Every
-# numeric routine, the HTTP server, the hash functions, the RNG, the quantum
-# simulator and the HMM are written in-tree.
-#
-# That is a deliberate trade: more code to maintain, in exchange for a supply
-# chain small enough to audit, a build that works offline, and no transitive
-# dependency that can change what the platform computes. A pull request adding
-# a third dependency has to change this script, which puts the decision in the
-# diff where a reviewer will see it.
+# Until 2026-10-11 the platform depended on serde and serde_json and nothing
+# else (ADR 0002, 0009). The owner then accepted ADR 0109: third-party crates
+# are admitted from a committed allow-list, scripts/dependency-allowlist.txt,
+# each line naming the record that admitted it. What has not changed is the
+# point of this script: adding a dependency must change a committed file, so
+# the decision is in the diff where a reviewer will see it, and a package that
+# arrives transitively without anyone choosing it fails here.
 set -euo pipefail
 
-# serde and serde_json, plus their own transitive closure. Each is listed
-# explicitly rather than resolved from the graph, so that when serde changes
-# what it depends on the change appears here — which is exactly the event
-# worth seeing in a diff.
-readonly PERMITTED=(
-  # Declared directly.
-  "serde"
-  "serde_json"
-  # serde's derive macro and the proc-macro crates it needs.
-  "serde_derive"
-  "proc-macro2"
-  "quote"
-  "syn"
-  "unicode-ident"
-  # serde 1.0.229 split its core traits into their own crate.
-  "serde_core"
-  # serde_json's integer and float formatting, and its byte search.
-  "itoa"
-  "zmij"
-  "memchr"
-)
-
-# The Rust workspace lives under backend/ (ADR 0016); resolve it from the
-# script's own location so the gate passes or fails identically from any cwd.
-LOCKFILE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/backend/Cargo.lock"
-readonly LOCKFILE
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT
+LOCKFILE="$ROOT/backend/Cargo.lock"
+ALLOWLIST="$ROOT/scripts/dependency-allowlist.txt"
+readonly LOCKFILE ALLOWLIST
 
 if [[ ! -f "$LOCKFILE" ]]; then
   echo "backend/Cargo.lock is missing; the build is not reproducible without it" >&2
+  exit 1
+fi
+if [[ ! -f "$ALLOWLIST" ]]; then
+  echo "scripts/dependency-allowlist.txt is missing; without it nothing is permitted" >&2
+  exit 1
+fi
+
+# The allow-list: the first word of every line that is not blank or a comment.
+mapfile -t permitted < <(sed 's/#.*//' "$ALLOWLIST" | awk 'NF { print $1 }' | sort -u)
+# A line with no reason is refused: an admission nobody can explain is the
+# supply-chain failure this file exists to make visible.
+unexplained=$(grep -Ev '^[[:space:]]*(#|$)' "$ALLOWLIST" | grep -vc '#' || true)
+if [[ "$unexplained" -gt 0 ]]; then
+  echo "dependency-allowlist.txt has $unexplained line(s) with no '# ADR — reason' comment" >&2
   exit 1
 fi
 
@@ -51,26 +42,24 @@ mapfile -t locked < <(
 
 violations=()
 for package in "${locked[@]}"; do
-  permitted=false
-  for allowed in "${PERMITTED[@]}"; do
+  found=false
+  for allowed in "${permitted[@]}"; do
     if [[ "$package" == "$allowed" ]]; then
-      permitted=true
+      found=true
       break
     fi
   done
-  if [[ "$permitted" == false ]]; then
+  if [[ "$found" == false ]]; then
     violations+=("$package")
   fi
 done
 
 if [[ ${#violations[@]} -gt 0 ]]; then
-  echo "the dependency policy permits only serde and serde_json." >&2
-  echo "these are in the lockfile and are not permitted:" >&2
+  echo "these packages are in backend/Cargo.lock and not in scripts/dependency-allowlist.txt:" >&2
   printf '  %s\n' "${violations[@]}" >&2
   echo >&2
-  echo "if a dependency is genuinely warranted, add it to PERMITTED in this" >&2
-  echo "script with a comment saying why. The point is that the decision" >&2
-  echo "appears in a diff." >&2
+  echo "if a crate is warranted, add it — and every package it brings — to the allow-list" >&2
+  echo "with the ADR that admits it and why (ADR 0109)." >&2
   exit 1
 fi
 

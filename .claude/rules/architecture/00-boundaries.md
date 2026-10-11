@@ -61,27 +61,21 @@ is the point:
   it opens sockets in both directions. That exception is the whole of it: it
   is not a precedent for a second lib opening a socket, and ADR 0100's "What
   would make this wrong" says so.
-- No new async runtime. Blocking I/O with explicit timeouts is a decision
-  (ADR 0001, ADR 0011), not an omission.
-- No hand-rolled protocol stack or asymmetric primitive. ADR 0009's actual
-  prohibition is on **clients** — "a gRPC implementation, a TLS stack and a
-  Google auth flow written in-tree, guarding real money, reviewed by nobody who
-  writes TLS for a living". ADR 0002's Decision section authorises the in-tree
-  hashing by name: "SHA-256 and HMAC, the random number generator". Both are
-  proven against published vectors (`qip-core/tests/hashing.rs` — FIPS 180-4
-  and RFC 4231, 6 tests; check with
-  `grep -c '#\[test\]' backend/crates/libs/qip-core/tests/hashing.rs`, which
-  printed `6` on 2026-09-06, and `cargo test -p qip-core --test hashing` for
-  the pass, since a count of declarations is not a count of passes and this
-  line previously conflated the two), which is what makes that narrow case defensible and
-  is exactly what a TLS or JWT implementation could never claim: those fail
-  silently against a live adversary and never against a fixture.
-  This line used to read "No in-tree cryptography. ADR 0009 forbids hand-rolled
-  crypto." It was a mis-citation, it contradicted ADR 0002 in the file agents
-  read first, and ADR 0043 found it. Do not read the correction as permission:
-  asymmetric signing, a CSPRNG, and anchoring the event-log chain are three
-  gaps no in-tree code may close — see ADR 0043 (proposed).
-- No crate added without an ADR (ADR 0002, ADR 0009).
+- One async runtime, `tokio` (ADR 0109, Amendment 2, accepted 2026-10-11,
+  superseding the blocking-only decision of ADR 0001/0011). It stays off the
+  decision core and `Cell::work` unless a committed measurement justifies it;
+  every call that leaves the process keeps an explicit timeout.
+- Prefer an audited crate for TLS, consensus and signing (`rustls`, `ring`,
+  and the records ADR 0110-0113 accept). Hand-rolled protocol or
+  cryptographic code is no longer forbidden (ADR 0109, Amendment 2), but it
+  must be tested against published vectors and its specification, and the
+  ADR records a dissent worth reading: hand-written TLS, consensus or
+  signature verification should not be what guards capital. The in-tree
+  SHA-256 and HMAC remain proven against FIPS 180-4 and RFC 4231
+  (`cargo test -p qip-core --test hashing`).
+- No crate outside `scripts/dependency-allowlist.txt`; crypto, consensus,
+  TLS, storage-client and persisted-codec crates each need their own ADR
+  (ADR 0109).
 - No second source of truth for a fact the event log already holds.
 
 ## Recording a decision

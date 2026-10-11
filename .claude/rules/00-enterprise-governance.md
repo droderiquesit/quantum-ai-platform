@@ -33,10 +33,13 @@ system, not an optimistic one.
 
 ## Dependencies and licensing
 
-This workspace permits **`serde` and `serde_json` only**, enforced by
-`./scripts/check-dependencies.sh` and argued in `docs/adr/0002` and
-`docs/adr/0009`. Adding a crate is an architecture decision requiring a new ADR,
-not a convenience during implementation. The same applies to the frontend's
+Third-party crates are admitted from a committed allow-list,
+`scripts/dependency-allowlist.txt`, enforced by `./scripts/check-dependencies.sh`
+and argued in `docs/adr/0109` (accepted 2026-10-11, superseding the
+serde/serde_json-only rule of ADR 0002 and 0009). Every package in the
+lockfile, transitive ones included, needs a line naming the ADR that admitted
+it and why. Prefer an audited crate; pin it exactly; enable only the features
+used. The same applies to the frontend's
 `package.json`: every addition is reviewed, and a transitive dependency tree is
 part of the change.
 

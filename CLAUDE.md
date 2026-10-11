@@ -31,8 +31,12 @@ being able to say precisely why it did what it did is.
 - **Rust 2024**, resolver 3, one workspace, 60 crates. `unsafe_code = "forbid"`;
   `todo!`/`unimplemented!`/`panic_in_result_fn` denied; no `unwrap()` outside
   tests.
-- **Two dependencies only** — `serde`, `serde_json` (ADR 0002, ADR 0009).
-  No async runtime: blocking I/O with explicit timeouts, deliberately.
+- **Dependencies by allow-list** (ADR 0109, accepted 2026-10-11). Crates come
+  from `scripts/dependency-allowlist.txt`, pinned, each line naming the ADR that
+  admitted it; until a lane adds one the lockfile still holds only `serde`,
+  `serde_json` and their closure. `tokio` is the one async runtime, kept off the
+  decision core and the cell's pass unless a committed measurement justifies it;
+  explicit timeouts on every call that leaves the process.
 - **Next.js + TypeScript** in `frontend/portal/` and `frontend/landing/`
   (their own toolchains — see `frontend/CLAUDE.md`).
 - **Google Cloud**: Cloud Run for every warm binary and one Compute Engine
