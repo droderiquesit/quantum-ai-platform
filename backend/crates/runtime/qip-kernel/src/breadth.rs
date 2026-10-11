@@ -267,6 +267,17 @@ impl Platform {
         Ok(lines)
     }
 
+    /// The book the desk's simulated venue rests for `object_id`, as the
+    /// Market Factory listed it — `None` when nothing is listed there or the
+    /// broker is not one a factory may list on. A copy, so nothing reaches
+    /// the venue through it. Without it no caller could see whether a market
+    /// the factory journaled as seeded was ever put on the venue.
+    pub fn listed_book(&mut self, object_id: &str) -> Option<qip_market::book::OrderBook> {
+        self.broker
+            .listing_venue()
+            .and_then(|venue| venue.listed_book(object_id).cloned())
+    }
+
     /// The Market Factory, when a plan installed one.
     pub fn market_factory(&self) -> Option<&FactoryStage> {
         self.breadth.factory.as_ref()
