@@ -1474,7 +1474,14 @@ fn one_pass(
 /// measured on a funded node rather than restated as a literal: the
 /// degradation floor scales every size, and a literal here would be a number
 /// this file believed and the cell did not.
-fn spent_by_one_marketable_pass() -> Result<Decimal> {
+///
+/// Returns what the pass held of the region and the notional of the order it
+/// sent. The hold is taken at the mid; the marketable order goes out at the
+/// touch; and since round 2 the node's Risk Gate measures the sent notional
+/// against the gross the cell's grants sum to (`cell-survival-gross`). A
+/// grant of exactly the hold therefore refuses its own first order by half a
+/// spread, so a caller sizing a grant to "one pass" sizes it to `sent`.
+fn spent_by_one_marketable_pass() -> Result<(Decimal, Decimal)> {
     let (mut node, mut gateway, mut feed) = node_with_feed(PricingPolicy::Marketable)?;
     gateway.seed_touch(&object(), Side::Buy, dec!("99"), dec!("500"), t(1))?;
     gateway.seed_touch(&object(), Side::Sell, dec!("101"), dec!("400"), t(1))?;
@@ -1504,7 +1511,13 @@ fn spent_by_one_marketable_pass() -> Result<Decimal> {
         spent.is_positive(),
         "the probe premise failed: one pass charged nothing"
     );
-    Ok(spent)
+    let sent = report.orders[0].quantity * report.orders[0].price;
+    assert!(
+        sent >= spent,
+        "the probe premise failed: the order went out below the mid it was held at \
+         (sent {sent}, held {spent})"
+    );
+    Ok((spent, sent))
 }
 
 #[test]
@@ -1611,8 +1624,11 @@ fn a_second_node_under_the_same_regions_grant_cannot_exceed_it_with_the_first() 
     // worth. The centre partitions the grant before shipping: the whole of
     // it to the first cell, nothing to the second, so the second's payload
     // names no grant. Both nodes' strategies fire; only the first sends,
-    // and what the two send together is at most the grant.
-    let grant = spent_by_one_marketable_pass()?;
+    // and what the two send together is at most the grant. "One pass's
+    // worth" is the order's sent notional, which the Risk Gate's survival
+    // ceiling measures against the grant; sized to the hold alone it refuses
+    // the first node's own order (see `spent_by_one_marketable_pass`).
+    let (held, grant) = spent_by_one_marketable_pass()?;
     let (mut first, mut first_gateway, mut first_feed) = unfunded_node_for(CELL, grant)?;
     let (mut second, mut second_gateway, mut second_feed) = unfunded_node_for(SECOND_CELL, grant)?;
     let first_named = grant_for(CELL, grant, grant, grant)?
@@ -1708,8 +1724,17 @@ fn a_second_node_under_the_same_regions_grant_cannot_exceed_it_with_the_first() 
         bound - free
     };
     assert_eq!(
-        charged(&first) + charged(&second),
-        grant,
+        charged(&second),
+        Decimal::ZERO,
+        "the second node committed something against a share of nothing"
+    );
+    assert_eq!(
+        charged(&first),
+        held,
+        "the first node's hold is not the one pass the probe measured"
+    );
+    assert!(
+        charged(&first) + charged(&second) <= grant,
         "the two nodes together committed more than the region's grant"
     );
     Ok(())

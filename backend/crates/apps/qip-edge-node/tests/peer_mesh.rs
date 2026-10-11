@@ -141,11 +141,14 @@ fn two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_
     // Each reserves its own leg; the participant's reservation crosses.
     let mut americas_book = ReservationBook::new(Decimal::from_int(1000));
     let mut europe_book = ReservationBook::new(Decimal::from_int(1000));
-    let own =
+    let ReservationOutcome::Reserved(own_frames) =
         americas
             .endpoint_mut()
-            .reserve_own_legs("opp-1", at(2), &mut americas_book, &open_gate)?;
-    assert!(matches!(own, ReservationOutcome::Reserved(_)));
+            .reserve_own_legs("opp-1", at(2), &mut americas_book, &open_gate)?
+    else {
+        panic!("the coordinator declined an open gate");
+    };
+    assert_eq!(own_frames.len(), 1, "one leg, one reservation frame");
     let ReservationOutcome::Reserved(frames) =
         europe
             .endpoint_mut()
@@ -168,6 +171,21 @@ fn two_nodes_carry_a_cycle_through_token_reserved_fire_fill_and_unwind_over_the_
     assert_eq!(
         americas.endpoint().reserved("opp-1", "b"),
         Some(Decimal::from_int(100))
+    );
+    // And the coordinator's reservation crosses the other way. A participant
+    // admits FIRE only once it has seen every leg held — its own view, not
+    // the coordinator's word — so until this frame crossed, the FIRE below
+    // was refused at the participant as "before every leg is reserved",
+    // which is the protocol working and was this test's fixture omitting
+    // the coordinator's half of the exchange.
+    for frame in own_frames {
+        assert!(americas.send(frame));
+    }
+    deliver(&mut europe, at(4));
+    assert_eq!(
+        europe.endpoint().reserved("opp-1", "a"),
+        Some(Decimal::from_int(100)),
+        "the coordinator's reservation did not reach the participant"
     );
 
     // FIRE, only now that every leg is held, and it crosses.

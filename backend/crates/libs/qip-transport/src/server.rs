@@ -689,6 +689,15 @@ fn serve_tls_connection(
         // refused rather than assumed: a session with no peer certificate is
         // not an authenticated one.
         None | Some(Err(_)) => {
+            // Read the request — bounded by the same limits and socket
+            // timeouts as any other, and handed to no handler — before
+            // answering. Answering first and closing with the client's
+            // request still unread in the receive buffer makes the kernel
+            // reset the connection, and a reset discards the 403 the client
+            // had not yet read: the refused workload saw a dropped socket,
+            // not a refusal, in more than half of loopback runs. Whatever
+            // the read returns, the answer is the same 403.
+            let _ = read_request(&mut stream, peer, limits);
             let response = Response::json(
                 403,
                 r#"{"error":"the client certificate does not name a workload this server admits"}"#,

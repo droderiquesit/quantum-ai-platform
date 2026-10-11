@@ -72,6 +72,16 @@ impl LedgerEnvironment {
     pub fn is_deployed(self) -> bool {
         !matches!(self, Self::Workstation)
     }
+
+    /// The value [`ENVIRONMENT`] spells this as.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Workstation => "workstation",
+            Self::Dev => "dev",
+            Self::Staging => "staging",
+            Self::Prod => "prod",
+        }
+    }
 }
 
 /// Where the ledger's rows live.
@@ -198,6 +208,25 @@ impl LedgerConfig {
         // on a plaintext link is not downgraded. The transport appends each
         // route's own path, so a path here would be doubled.
         let deployment = Deployment::parse(variables.get(DEPLOYMENT).map(String::as_str))?;
+        // Two settings now describe one fact — whether this is a workstation
+        // — and two claims about the same fact will disagree. Each relaxes a
+        // different guard: `workstation` admits the local disk store, `local`
+        // admits a plaintext fabric link and a reproducible key. Left
+        // independent, `prod` + `local` is a ledger of record reading
+        // outcomes over plaintext, and `workstation` + `prod` is a deployed
+        // process posting to a machine's disk. Neither is guessed at; both
+        // are refused, naming the pair.
+        if environment.is_deployed() == (deployment == Deployment::Local) {
+            return Err(Error::invalid(format!(
+                "{ENVIRONMENT} is `{}` but {DEPLOYMENT} is `{}`; they must agree on whether this \
+                 is a workstation — `workstation` goes with `local`, and every deployed \
+                 environment with the deployment it runs in — because one relaxes the store \
+                 and the other relaxes the fabric link, and a mismatch would relax one in a \
+                 deployment",
+                environment.as_str(),
+                deployment.as_str()
+            )));
+        }
         let fabric_tls = link_mode(
             deployment,
             variables.get(TLS_MODE_VARIABLE).map(String::as_str),
@@ -398,7 +427,74 @@ mod tests {
         variables.insert(SPANNER_PROJECT.to_string(), "qip-dev".to_string());
         variables.insert(SPANNER_INSTANCE.to_string(), "ledger".to_string());
         variables.insert(SPANNER_DATABASE.to_string(), "positions".to_string());
+        // A deployed ledger runs in the deployment of the same name and so
+        // reaches the fabric over mutual TLS; `complete`'s `local` plaintext
+        // link is the contradiction `parse` refuses.
+        let deployment = match environment {
+            "staging" => "stage",
+            other => other,
+        };
+        variables.insert(DEPLOYMENT.to_string(), deployment.to_string());
+        variables.remove(TLS_MODE_VARIABLE);
+        for (name, value) in [
+            (
+                qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+                "/etc/qip/tls/chain.pem",
+            ),
+            (
+                qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+                "/run/qip/tls/key.pem",
+            ),
+            (
+                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+                "/etc/qip/tls/roots.pem",
+            ),
+        ] {
+            variables.insert(name.to_string(), value.to_string());
+        }
+        variables.insert(
+            FABRIC_URL.to_string(),
+            "https://fabricd.internal:7100".to_string(),
+        );
         variables
+    }
+
+    /// ADR 0113 and ADR 0112 read two settings for one fact. The failure
+    /// this prevents: `QIP_LEDGER_ENVIRONMENT=prod` with `QIP_DEPLOYMENT=local`
+    /// loaded — the ledger of record taking outcomes over a plaintext link —
+    /// and `workstation` with `prod` would put a deployed ledger on a disk.
+    /// The premise half: each agreeing pair loads, so the refusals are about
+    /// the pair and not a broken fixture.
+    ///
+    /// Mutation: delete the agreement check in `parse` — `prod` + `local`
+    /// loads and the first refusal's `expect_err` fires.
+    #[test]
+    fn a_ledger_refuses_an_environment_and_a_deployment_that_disagree_about_a_workstation() {
+        LedgerConfig::parse(&complete()).expect("premise: workstation + local loads");
+        LedgerConfig::parse(&deployed("prod")).expect("premise: prod + prod loads");
+
+        let mut plaintext_record = deployed("prod");
+        plaintext_record.insert(DEPLOYMENT.to_string(), "local".to_string());
+        plaintext_record.insert(TLS_MODE_VARIABLE.to_string(), "plaintext".to_string());
+        plaintext_record.insert(
+            FABRIC_URL.to_string(),
+            "http://fabricd.internal:7100".to_string(),
+        );
+        let error = LedgerConfig::parse(&plaintext_record)
+            .expect_err("a prod ledger on a local deployment is refused");
+        assert!(
+            error.to_string().contains("they must agree"),
+            "refused for the wrong reason: {error}"
+        );
+
+        let mut disk_in_prod = deployed("prod");
+        disk_in_prod.insert(ENVIRONMENT.to_string(), "workstation".to_string());
+        let error = LedgerConfig::parse(&disk_in_prod)
+            .expect_err("a workstation ledger in the prod deployment is refused");
+        assert!(
+            error.to_string().contains("they must agree"),
+            "refused for the wrong reason: {error}"
+        );
     }
 
     /// R12-LEDGER-8007's check: a deployed ledger pointed at a non-Spanner
@@ -461,33 +557,34 @@ mod tests {
     /// the link, and one of these parses; this fails.
     #[test]
     fn a_ledger_reaches_the_fabric_in_plaintext_only_where_a_local_deployment_chose_it() {
-        let mut deployed = complete();
-        deployed.insert(DEPLOYMENT.to_string(), "stage".to_string());
+        // Built on a `staging` ledger in the `stage` deployment so that the
+        // environment and the deployment agree, and every refusal below is
+        // about the link rather than the pair.
+        let mut plaintext = deployed("staging");
+        for name in [
+            qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+            qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+            qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+        ] {
+            plaintext.remove(name);
+        }
+        plaintext.insert(TLS_MODE_VARIABLE.to_string(), "plaintext".to_string());
+        plaintext.insert(
+            FABRIC_URL.to_string(),
+            "http://fabricd.internal:7100".to_string(),
+        );
+        let error = LedgerConfig::parse(&plaintext).expect_err("plaintext in stage");
         assert!(
-            LedgerConfig::parse(&deployed).is_err(),
-            "plaintext in stage"
+            !error.to_string().contains("they must agree"),
+            "refused for the pair, not the link: {error}"
         );
 
-        let mut tls = complete();
-        tls.remove(TLS_MODE_VARIABLE);
-        tls.insert(DEPLOYMENT.to_string(), "stage".to_string());
-        for (name, value) in [
-            (
-                qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
-                "/etc/qip/tls/chain.pem",
-            ),
-            (
-                qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
-                "/run/qip/tls/key.pem",
-            ),
-            (
-                qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
-                "/etc/qip/tls/roots.pem",
-            ),
-        ] {
-            tls.insert(name.to_string(), value.to_string());
-        }
+        let mut tls = deployed("staging");
         // An http address on a TLS link is refused, not upgraded.
+        tls.insert(
+            FABRIC_URL.to_string(),
+            "http://fabricd.internal:7100".to_string(),
+        );
         assert!(LedgerConfig::parse(&tls).is_err(), "http on a TLS link");
         tls.insert(
             FABRIC_URL.to_string(),

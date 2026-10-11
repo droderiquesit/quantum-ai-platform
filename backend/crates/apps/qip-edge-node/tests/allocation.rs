@@ -142,12 +142,20 @@ fn refused_under<'a>(report: &'a WorkReport, gate: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// What one pass of one strategy actually spends of the region.
+/// What one pass of one strategy actually spends: what it holds of the
+/// region, and the notional of the order it sends.
 ///
 /// Measured against an allocation far larger than a pass could need rather
 /// than restated as a literal: the degradation floor scales every size, so a
 /// literal here would be a number this file believed and the cell did not.
-fn spent_by_one_strategy() -> Result<Decimal> {
+///
+/// The two differ, and since round 2 installed the cell's Risk Gate in every
+/// node this root assembles both matter. The region hold is taken at the mid
+/// the intent is reasoned at; a marketable order is sent at the touch, and the
+/// gate's `cell-leverage` measures that sent notional against the allocation.
+/// An allocation of exactly the hold leaves the first strategy's own order
+/// half a spread over the gate.
+fn spent_by_one_strategy() -> Result<(Decimal, Decimal)> {
     let opening = "100000000";
     let (mut node, mut gateway, mut feed) = node_with(opening, &["alpha"])?;
     let mut stats = PassStats::default();
@@ -168,6 +176,7 @@ fn spent_by_one_strategy() -> Result<Decimal> {
         "the probe premise failed: the pass placed no order: {:?}",
         report.refusals
     );
+    let sent = report.orders[0].quantity * report.orders[0].price;
     // Against the bound the share set — the grant's gross, under a ceiling
     // far above it — not the ceiling: the ceiling funds nothing.
     let bound = node
@@ -182,7 +191,13 @@ fn spent_by_one_strategy() -> Result<Decimal> {
         bound < Decimal::parse(opening).expect("a decimal literal"),
         "the probe premise failed: the share did not bound the node below its ceiling ({bound})"
     );
-    Ok(bound - free)
+    let held = bound - free;
+    assert!(
+        sent >= held,
+        "the probe premise failed: the order went out below the mid it was held at \
+         (sent {sent}, held {held})"
+    );
+    Ok((held, sent))
 }
 
 #[test]
@@ -257,20 +272,30 @@ fn a_node_built_by_this_root_refuses_to_start_without_a_region_allocation() {
 
 #[test]
 fn a_node_built_with_the_allocation_refuses_a_second_strategy_once_it_is_spent() -> Result<()> {
-    // Sized to exactly what one strategy spends, so the first strategy takes
-    // the whole region and the second finds nothing. Both hold a grant of a
-    // million, so nothing per-strategy is what stops the second: only the
-    // bound this root now installs.
-    let one = spent_by_one_strategy()?;
+    // Sized to exactly what one strategy's order sends, so the first
+    // strategy fits — under the region hold and under the Risk Gate, which
+    // measures the sent notional against the allocation — and what its hold
+    // leaves (`left`, half a spread) is far short of a second strategy's
+    // hold. Both hold a grant of a million, so nothing per-strategy is what
+    // stops the second: only the bound this root now installs. Until round 2
+    // this was sized to the hold alone and the remainder was zero; with the
+    // gate installed, that size refuses the first strategy's own order —
+    // the gate working, not the region.
+    let (held, one) = spent_by_one_strategy()?;
     assert!(
-        one.is_positive(),
-        "the probe premise failed: one pass spent nothing of the region ({one})"
+        held.is_positive(),
+        "the probe premise failed: one pass spent nothing of the region ({held})"
+    );
+    let left = one - held;
+    assert!(
+        left < held,
+        "the premise failed: what one order leaves ({left}) would fund a second hold ({held})"
     );
     let (mut node, mut gateway, mut feed) = node_with(&one.to_string(), &["alpha", "beta"])?;
     assert_eq!(
         node.cell.region_allocation_free(),
         Some(one),
-        "the premise is a node holding exactly one strategy's worth"
+        "the premise is a node holding exactly one strategy's order"
     );
 
     let mut stats = PassStats::default();
@@ -323,14 +348,14 @@ fn a_node_built_with_the_allocation_refuses_a_second_strategy_once_it_is_spent()
         report.refusals
     );
     assert!(
-        refusals[0].contains("the 0 the region allocation has left"),
+        refusals[0].contains(&format!("the {left} the region allocation has left")),
         "the refusal did not name what the allocation had left: {}",
         refusals[0]
     );
     assert_eq!(
         node.cell.region_allocation_free(),
-        Some(Decimal::ZERO),
-        "the region was not spent to zero by the strategy it admitted"
+        Some(left),
+        "the region was not spent down to the remainder by the strategy it admitted"
     );
 
     // And the refusal reached the registry the scrape serves, under its own

@@ -455,12 +455,34 @@ fn a_second_writer_claiming_the_spanner_ledger_fences_the_first_out() {
     ));
 }
 
+/// A deployed ledger's configuration: the deployment of the same name, so
+/// the fabric link is mutual TLS (ADR 0112) — the agreement `parse` requires.
+/// The certificate paths are only recorded here; `main` loads them, and the
+/// broker below is reached through `unreachable_broker`, so nothing reads
+/// them in this file.
 fn spanner_config(environment: &str) -> LedgerConfig {
+    let deployment = match environment {
+        "staging" => "stage",
+        other => other,
+    };
     let variables: BTreeMap<String, String> = [
         (qip_ledgerd::config::ENVIRONMENT, environment),
+        (qip_ledgerd::config::DEPLOYMENT, deployment),
+        (
+            qip_transport::tls::TLS_CERTIFICATE_CHAIN_VARIABLE,
+            "/etc/qip/tls/chain.pem",
+        ),
+        (
+            qip_transport::tls::TLS_PRIVATE_KEY_VARIABLE,
+            "/run/qip/tls/key.pem",
+        ),
+        (
+            qip_transport::tls::TLS_TRUST_ROOTS_VARIABLE,
+            "/etc/qip/tls/roots.pem",
+        ),
         (qip_ledgerd::config::LISTEN, "127.0.0.1:0"),
         (qip_ledgerd::config::CONSUMER_GROUP, "ledger"),
-        (qip_ledgerd::config::FABRIC_URL, "http://127.0.0.1:9"),
+        (qip_ledgerd::config::FABRIC_URL, "https://127.0.0.1:9"),
         (qip_ledgerd::config::FABRIC_STREAM, "reflex-outcomes"),
         (qip_ledgerd::config::FABRIC_PARTITIONS, "1"),
         (qip_ledgerd::config::POLL_MS, "20"),

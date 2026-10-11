@@ -169,6 +169,15 @@ pub fn run(root: &Path, spec: BenchSpec) -> Result<BenchReport> {
         (config::LISTEN, "127.0.0.1:0".to_string()),
         (config::HEALTH_LISTEN, "127.0.0.1:0".to_string()),
         (config::PARTITIONS, "1".to_string()),
+        // ADR 0112: the harness owns both ends of a loopback socket and holds
+        // no workload certificate, so the broker it starts is a `local`
+        // plaintext one by construction. It is a measurement tool run on a
+        // workstation, not a deployment.
+        (config::DEPLOYMENT, "local".to_string()),
+        (
+            qip_transport::tls::TLS_MODE_VARIABLE,
+            "plaintext".to_string(),
+        ),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_string(), value))

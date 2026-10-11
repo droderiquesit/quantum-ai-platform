@@ -139,6 +139,15 @@ fn start(
         (config::HEALTH_LISTEN, "127.0.0.1:0".to_string()),
         (config::PARTITIONS, "1".to_string()),
         (config::HOUSEKEEPING_MS, "20".to_string()),
+        // ADR 0112: an in-process broker that owns both ends of its socket,
+        // so plaintext, which only `local` admits. The managed seam is an
+        // in-memory log, never a deployed Spanner, so `local` is the honest
+        // answer for every instance this file starts.
+        (config::DEPLOYMENT, "local".to_string()),
+        (
+            qip_transport::tls::TLS_MODE_VARIABLE,
+            "plaintext".to_string(),
+        ),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_string(), value))

@@ -303,14 +303,24 @@ impl Session {
         journal: &mut EventLog,
         now: Timestamp,
     ) -> Result<(Vec<String>, u8)> {
-        let document: PassDocument = serde_json::from_str(document)
-            .map_err(|error| Error::invalid(format!("the request document is refused: {error}")))?;
-        if document.request.guards.is_some() {
+        let refused_document = |error: serde_json::Error| {
+            Error::invalid(format!("the request document is refused: {error}"))
+        };
+        // Refused on the key, not on a `guards` that happens to parse. Checked
+        // only after the typed parse, a smuggled guard missing one per-pass
+        // field was refused as "missing field `communications`" — an answer
+        // that tells the caller how to complete the smuggled guard rather
+        // than that a request may not bring one at all.
+        let raw: serde_json::Value = serde_json::from_str(document).map_err(refused_document)?;
+        if raw.get("guards").is_some() {
             return Err(Error::invalid(
                 "the request carries its own `guards`; this binary's guard is the configured \
                  policy, and a request does not bring its own",
             ));
         }
+        // A present key — `null` included — has been refused above, so the
+        // typed `request.guards` is `None` from here on.
+        let document: PassDocument = serde_json::from_value(raw).map_err(refused_document)?;
         if document.request.pass.is_none() {
             return Err(Error::invalid(
                 "the request declares no `pass`: its drafts, grounds, approvals and rate window \
