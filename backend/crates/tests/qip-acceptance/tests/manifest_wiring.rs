@@ -579,8 +579,89 @@ fn sources_under(relative: &str) -> Vec<String> {
 
 /// Every `const NAME: &str = "QIP_…";` in the workspace, by identifier.
 fn variables_by_constant() -> BTreeMap<String, BTreeSet<String>> {
+    let declarations = constants_declared_under("backend/crates");
+    assert!(
+        declarations.len() >= 10,
+        "only {} environment-variable constants were found; the declaration \
+         walk has stopped matching the form these are written in",
+        declarations.len()
+    );
+    declarations
+}
+
+/// `text` with the contents of every string and char literal blanked.
+///
+/// For the delegation rule's identifier test, which asks whether a source
+/// *uses* a constant. A word inside a message is not a use: round 2's
+/// `qip-api/src/signing.rs` says "SHARED HMAC KEY" in a banner, `KEY` is the
+/// fast brain's constant for `QIP_MARKET_DATA_KEY`, and the API was reported
+/// as reading a vendor key it has never heard of.
+fn without_string_literals(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                out.push('"');
+                let mut escaped = false;
+                for inner in chars.by_ref() {
+                    if escaped {
+                        escaped = false;
+                    } else if inner == '\\' {
+                        escaped = true;
+                    } else if inner == '"' {
+                        break;
+                    }
+                    out.push(if inner == '\n' { '\n' } else { ' ' });
+                }
+                out.push('"');
+            }
+            // `'"'` — the one char literal that would open a phantom string.
+            '\'' if chars.peek() == Some(&'"') => {
+                out.push('\'');
+                chars.next();
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// The crate directory (`backend/crates/<group>/<crate>`) a path is in.
+fn crate_directory_of(path: &str) -> Option<String> {
+    let start = path.find("backend/crates/")?;
+    let rest = &path[start..];
+    let parts: Vec<&str> = rest.splitn(5, '/').collect();
+    (parts.len() >= 4).then(|| parts[..4].join("/"))
+}
+
+/// [`constants_declared_under`] one crate directory, walked once per test
+/// binary: the delegation rule asks it for every delegate of every
+/// deployment, and this suite was already the slowest in the crate.
+fn constants_declared_in_crate(directory: &str) -> BTreeMap<String, BTreeSet<String>> {
+    type Cache = std::sync::Mutex<BTreeMap<String, BTreeMap<String, BTreeSet<String>>>>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()));
+    if let Some(found) = cache
+        .lock()
+        .expect("the cache lock is not poisoned")
+        .get(directory)
+    {
+        return found.clone();
+    }
+    let found = constants_declared_under(directory);
+    cache
+        .lock()
+        .expect("the cache lock is not poisoned")
+        .insert(directory.to_string(), found.clone());
+    found
+}
+
+/// The `const NAME: &str = "QIP_…";` declarations under one directory.
+fn constants_declared_under(directory: &str) -> BTreeMap<String, BTreeSet<String>> {
     let mut declarations: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for path in files_with_extension("backend/crates", "rs") {
+    for path in files_with_extension(directory, "rs") {
         if !path.to_string_lossy().contains("/src/") {
             continue;
         }
@@ -603,12 +684,6 @@ fn variables_by_constant() -> BTreeMap<String, BTreeSet<String>> {
             }
         }
     }
-    assert!(
-        declarations.len() >= 10,
-        "only {} environment-variable constants were found; the declaration \
-         walk has stopped matching the form these are written in",
-        declarations.len()
-    );
     declarations
 }
 
@@ -746,11 +821,26 @@ fn variables_read_by(
             .copied()
             .collect();
         let chosen = if own.is_empty() { defining } else { own };
-        for (_, content) in chosen {
+        for (path, content) in chosen {
             by_delegation.extend(variable_literals(content));
+            // A constant is resolved the way rustc resolves it, as far as a
+            // text scan can: a name the delegate's own crate declares means
+            // that crate's declaration, not every same-named constant in the
+            // workspace. Round 2's deep brain declared a second
+            // `PLAN_VARIABLE` (`QIP_DEEPBRAIN_BREADTH_PLAN`), and the edge
+            // node — whose `main.rs` uses its own `PLAN_VARIABLE`,
+            // `QIP_STRATEGY_PLAN_PATH` — was reported as reading the deep
+            // brain's breadth plan. A name declared nowhere in the crate
+            // still resolves workspace-wide, so an imported constant is not
+            // lost. And only a use in code counts, not a word in a message.
+            let local = crate_directory_of(path)
+                .map(|directory| constants_declared_in_crate(&directory))
+                .unwrap_or_default();
+            let code = without_string_literals(content);
             for (identifier, variables) in constants {
-                if mentions_identifier(content, identifier) {
-                    by_delegation.extend(variables.iter().cloned());
+                if mentions_identifier(&code, identifier) {
+                    let resolved = local.get(identifier).unwrap_or(variables);
+                    by_delegation.extend(resolved.iter().cloned());
                 }
             }
         }
@@ -1755,7 +1845,134 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
          a default here would be rights nobody evaluated. No deployment \
          polls a connector from this binary today in any case.",
     ),
+    // Round 2's tick learning desk (R12-TICK; `qip-deepbrain/src/tick_desk.rs`).
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_EVERY",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_ENTITLEMENTS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_ENTITLEMENT_REGIONS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_MAP_REGIONS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_LOOKBACK_DAYS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_LATENCY_MS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_FEE_BPS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_IMPACT_BPS",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    (
+        "qip-deepbrain",
+        "QIP_DEEPBRAIN_TICK_MEASURE_CODEC",
+        THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED,
+    ),
+    // Round 2's node-local settings, each read by `qip-edge-node` and set by
+    // no `node.env`. No execution node is deployed (`execution_nodes = {}`
+    // in every environment), so each is argued on what its absence does.
+    (
+        "qip-edge-node",
+        "QIP_CELL_RISK_LIMITS",
+        "Unset, the cell's Risk Gate runs the shipped limit set \
+         (`qip-edge-node/src/risk.rs`), which is the restrictive default and \
+         not an absence. A value is a per-desk document that may move a bound \
+         and may not remove a shipped limit; nobody has written one, and an \
+         environment-wide default would be a limit nobody calibrated.",
+    ),
+    ("qip-edge-node", "QIP_FENCING_LEASE", NO_STANDBY_PAIR_EXISTS),
+    ("qip-edge-node", "QIP_NODE_ROLE", NO_STANDBY_PAIR_EXISTS),
+    ("qip-edge-node", "QIP_NODE_NAME", NO_STANDBY_PAIR_EXISTS),
+    (
+        "qip-edge-node",
+        "QIP_PEER_MESH_LISTEN",
+        THE_PEER_MESH_IS_LOOPBACK_ONLY,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_PEER_MESH_PEERS",
+        THE_PEER_MESH_IS_LOOPBACK_ONLY,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_SPOOL_WRITER_CPU",
+        "Unset, the spool writer is left to the scheduler and its placement \
+         is read from the kernel and announced at start \
+         (`event_fabric/placement.rs`). A value names one core of one machine \
+         shape and stops the process if the kernel will not honour it, so it \
+         belongs to a node whose shape and isolated cores someone has \
+         measured — and no node is deployed.",
+    ),
+    (
+        "qip-edge-node",
+        "QIP_TICK_LAKE_CODEC",
+        "Unset is `identity`. ADR 0113 §3 keeps zstd off the sealing path \
+         until a measurement on a deployed node says the saving is worth the \
+         CPU beside the decision thread; the deep brain's tick desk measures \
+         it without writing a byte. Setting it everywhere would be the \
+         decision the ADR deferred.",
+    ),
+    (
+        "qip-edge-node",
+        "QIP_TICK_RETENTION",
+        "Unset, the lake keeps the simulator's own canonical depth and \
+         nothing else (`event_fabric/drain.rs`): the simulated dataset is \
+         generated in-process and breaches no venue's terms. A value names \
+         what a licensed dataset's terms allow to be kept, which is a reading \
+         of a contract nobody has made; a default here would be rights nobody \
+         evaluated.",
+    ),
 ];
+
+/// Round 2's tick learning desk, all nine of its variables.
+const THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED: &str = "`QIP_DEEPBRAIN_TICK_EVERY` \
+     unset or 0 leaves the desk off, and every other variable of the desk is \
+     read only once it is on. Turning it on requires \
+     `QIP_DEEPBRAIN_TICK_ENTITLEMENTS` — which licensed datasets the desk may \
+     replay — and an entitlement with no regions leaves its card unissued \
+     and its map unshipped. Those are licensing decisions per dataset, and \
+     nobody has made one for a deployment: a default here would let the \
+     desk read data under terms nobody granted it.";
+
+/// The fencing lease and the two names that go with it.
+const NO_STANDBY_PAIR_EXISTS: &str = "Unset is a node with no standby, \
+     announced at start (`qip-edge-node/src/standby.rs`). The only lease \
+     store in the tree is a compare-and-swap over one file on one host — \
+     not a cross-zone store, and the module says so — and no environment \
+     deploys a node, let alone a primary and its standby. Setting it would \
+     claim a failover the deployment cannot provide.";
+
+/// The node-to-node coordination mesh.
+const THE_PEER_MESH_IS_LOOPBACK_ONLY: &str = "The peer transport speaks \
+     plaintext frames and `PeerSettings::read` refuses any address that is \
+     not loopback, because a cross-region link in plaintext would carry \
+     reservations and fills unauthenticated (`qip-edge-node/src/peer.rs`). \
+     A deployed node's peers are on other hosts, so no value a deployment \
+     could set would start; the entry ends when the mTLS transport replaces \
+     the stream type.";
 
 #[test]
 fn every_variable_a_deployed_binary_reads_is_set_by_the_deployment_or_argued_to_be_unset() {

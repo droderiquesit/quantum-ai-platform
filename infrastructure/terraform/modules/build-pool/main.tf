@@ -111,6 +111,49 @@ resource "google_project_iam_member" "build_writes_logs" {
 # it holds is a copy of a commit that is in git, aged out after a week, and
 # a teardown that could not delete it would leave a bucket standing for no
 # record anybody needs.
+#
+# Encrypted under a key from the environment ring (SEC-046), not one Google
+# holds: what is staged here is the full source tree of a commit, and the
+# saved image the build hands back under `out/` is what the pipeline then
+# signs. A store of either under a key nobody here can disable or audit is
+# the gap `security_controls.rs` refuses for every other bucket.
+resource "google_kms_crypto_key" "staging" {
+  name     = "qip-${var.environment}-build-source"
+  key_ring = var.key_ring_id
+  purpose  = "ENCRYPT_DECRYPT"
+
+  # Ninety days, matching the platform's other keys.
+  rotation_period = "7776000s"
+
+  version_template {
+    algorithm        = "GOOGLE_SYMMETRIC_ENCRYPTION"
+    protection_level = var.kms_protection_level
+  }
+
+  # Like every key in this tree. A Cloud KMS key cannot be deleted, only
+  # have its versions destroyed, and a key of the same name cannot then be
+  # created again — so a plan that destroyed this one would make the pool
+  # impossible to turn back on. Turning the pool off is a `terraform state
+  # rm` of this key, read and done by a person.
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  labels = var.labels
+}
+
+# Cloud Storage encrypts with the key as its own service agent, not as the
+# caller, so the agent needs the key rather than the build identity.
+data "google_storage_project_service_account" "storage" {
+  project = var.project_id
+}
+
+resource "google_kms_crypto_key_iam_member" "storage_agent" {
+  crypto_key_id = google_kms_crypto_key.staging.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:${data.google_storage_project_service_account.storage.email_address}"
+}
+
 resource "google_storage_bucket" "staging" {
   project                     = var.project_id
   name                        = local.staging_bucket
@@ -119,6 +162,14 @@ resource "google_storage_bucket" "staging" {
   public_access_prevention    = "enforced"
   force_destroy               = true
   labels                      = var.labels
+
+  encryption {
+    default_kms_key_name = google_kms_crypto_key.staging.id
+  }
+
+  # The bucket is created only once the agent can use its key; otherwise the
+  # first upload fails on a permission the plan already granted.
+  depends_on = [google_kms_crypto_key_iam_member.storage_agent]
 
   lifecycle_rule {
     condition {

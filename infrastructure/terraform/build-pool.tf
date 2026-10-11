@@ -45,6 +45,11 @@ module "build_pool" {
   peered_network_id = "projects/${var.project_id}/global/networks/${module.network.engineering_vpc_name}"
 
   ci_service_account = module.cicd.service_account_email
+
+  # The staging bucket's key (SEC-046), in the environment ring every other
+  # store's key lives in.
+  key_ring_id          = module.secrets.key_ring_id
+  kms_protection_level = var.kms_protection_level
 }
 
 output "build_pool" {

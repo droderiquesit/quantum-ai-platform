@@ -144,15 +144,23 @@ fn no_fabric_source_writes_a_native_layout_where_a_format_belongs() {
 fn every_fabric_socket_write_carries_bytes_from_the_versioned_encoders() {
     // The SDK's send path: one request built, from the protocol's encoder.
     let transport = code_at("backend/crates/libs/qip-transport/src/event_fabric/transport.rs");
+    // ADR 0112 put mutual TLS on the fabric, so the one request is now
+    // built by one of two constructors — `json` for a plaintext link,
+    // `json_tls` for an `https` one — and both must carry the same
+    // `body`, the encoder's output. Two sites, pinned by their exact
+    // expression, so a third construction, or either arm building its body
+    // from anything but `encode_request`, still fails here.
     assert_eq!(
         transport.matches("HttpRequest::").count(),
-        1,
-        "the SDK builds exactly one kind of request"
+        2,
+        "the SDK builds exactly one kind of request, over a plaintext or a mutual-TLS link"
     );
     assert!(
         transport.contains("let body = encode_request(&request)?;")
-            && transport.contains("HttpRequest::json(Method::Post, &url, body)"),
-        "the SDK's request body is the protocol encoder's output and nothing else"
+            && transport.contains("HttpRequest::json(Method::Post, &url, body)")
+            && transport.contains("HttpRequest::json_tls(Method::Post, &url, body)"),
+        "the SDK's request body, on either link, is the protocol encoder's output and nothing \
+         else"
     );
 
     // What that encoder is, and the batch it carries.

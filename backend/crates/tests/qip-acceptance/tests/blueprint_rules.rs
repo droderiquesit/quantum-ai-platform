@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 17] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 26] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -138,6 +138,22 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 17] = [
     // is exercised only when somebody runs it by hand.
     ".claude/hooks/test_guard_dangerous_command.py",
     ".claude/hooks/test_hooks.py",
+    // The development-agent boundary (round 2's CI/CD lane, R12 GOV-9067,
+    // SEC-9068, CICD-9076/9082/9083). `agent-guard.mjs` IS on workflow
+    // paths: every deploying workflow sparse-checks `scripts/` out of the
+    // default branch and runs it as its first step, before anything
+    // authenticates and before any toolchain is installed, so a branch
+    // cannot loosen the rule it is judged by. Rust could not do that job
+    // there — a guard that first had to compile the workspace would run
+    // after the steps it exists to precede — and Node is on every hosted
+    // runner, built-ins only, nothing installed. `agent-lanes.mjs` reads the
+    // same `agent-policy.json` and is written in the guard's language.
+    // No ADR records either yet; the rule this list enforces says one is
+    // owed for a file on a workflow path, as for terraform-undeletable.py.
+    "scripts/agent-guard.mjs",
+    "scripts/agent-guard.test.mjs",
+    "scripts/agent-lanes.mjs",
+    "scripts/agent-lanes.test.mjs",
     "scripts/audit-dead-code.py",
     "scripts/check-manifests.py",
     // The ADR 0102 fleet: the worker runs as a Cloud Run Job task in a
@@ -149,8 +165,27 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 17] = [
     "scripts/fleet/dispatch.test.mjs",
     "scripts/fleet/worker.mjs",
     "scripts/fleet/worker.test.mjs",
+    // The game-day harness (R12 RES-10186): drives the real Rust binaries
+    // as child processes, injects SIGKILL/SIGSTOP and times recovery over
+    // their HTTP probes. Written in the scripts job's one runtime rather
+    // than as a crate because it is a driver *of* the binaries, not part of
+    // them, and a harness linked into the workspace would be the thing it
+    // measures. On a workflow path only as `node --test` in ci.yml's
+    // `scripts` job. The fixture is its test double and models no binary.
+    "scripts/game-day/fixtures/fake-service.mjs",
+    "scripts/game-day/harness.mjs",
+    "scripts/game-day/harness.test.mjs",
     "scripts/model-gateway.mjs",
     "scripts/model-gateway.test.mjs",
+    // The CodeQL blocking gate (R12 CICD-9105), on `codeql-analysis.yml`'s
+    // path: it reads the SARIF the analysis wrote and fails the `sast` job
+    // on a finding at or above `sast-policy.json`'s threshold. That job
+    // installs Node and no Rust toolchain, and the gate must judge the
+    // analysis in the job that ran it, so it is in Node, built-ins only.
+    // On a workflow path, so it owes an ADR on the same terms as the agent
+    // guard above; none is written yet.
+    "scripts/sast-gate.mjs",
+    "scripts/sast-gate.test.mjs",
     // Sends the owner a text through a carrier email gateway over SMTP with
     // STARTTLS. Rust cannot do the job here: TLS in-tree is what ADR 0009
     // forbids, and a dependency needs an ADR. Not on a workflow path.

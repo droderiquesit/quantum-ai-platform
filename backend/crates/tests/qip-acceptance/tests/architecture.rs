@@ -918,13 +918,49 @@ fn every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_tran
         cell_scanned >= 20,
         "only {cell_scanned} sources of qip-edge were read; the walk is not reaching the crate"
     );
+    //
+    // `trust.rs` (ADR 0110) is the third, and it names the transport crate
+    // for its `trust` module alone: `BundleVerifier`, whose `verify` is a
+    // pure `ring` signature check over bytes already in memory, and the
+    // shared-key removal date. Neither opens a socket or a file — the
+    // module's own doc says a cell that cannot reach Google must still
+    // accept a halt. That exemption is narrower than the other two, so it is
+    // held narrower: every line of `trust.rs` that the scan flags must name
+    // `qip_transport::trust::` and nothing else on the scan's list, so a
+    // `std::fs` read or a client creeping into the verification path fails
+    // here rather than riding in under the file's name.
     assert_eq!(
         cell_io,
-        BTreeSet::from(["journal.rs".to_string(), "mesh.rs".to_string()]),
-        "a source of qip-edge other than the mesh client and the journal's file mirror names \
-         a socket or a file (or one of those two no longer does); the cell's risk gate, \
-         netting, inventory and order generation must stay arithmetic and memory"
+        BTreeSet::from([
+            "journal.rs".to_string(),
+            "mesh.rs".to_string(),
+            "trust.rs".to_string(),
+        ]),
+        "a source of qip-edge other than the mesh client, the journal's file mirror and the \
+         trust root's pure verifier names a socket or a file (or one of those three no longer \
+         does); the cell's risk gate, netting, inventory and order generation must stay \
+         arithmetic and memory"
     );
+    let trust_path = repository_root().join("backend/crates/edge/qip-edge/src/trust.rs");
+    let trust = std::fs::read_to_string(&trust_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", trust_path.display()));
+    let flagged: Vec<&str> = trust
+        .lines()
+        .filter(|line| names_out_of_process_io(line))
+        .collect();
+    assert!(
+        !flagged.is_empty(),
+        "premise: trust.rs was expected to name qip_transport::trust and the scan saw nothing"
+    );
+    for line in flagged {
+        let without_trust = line.replace("qip_transport::trust::", "");
+        assert!(
+            line.contains("qip_transport::trust::") && !names_out_of_process_io(&without_trust),
+            "qip-edge's trust.rs names out-of-process I/O beyond the transport's pure `trust` \
+             module: `{}` — signature verification on the cell must not leave memory",
+            line.trim()
+        );
+    }
 
     // The adapters: the simulated exchange the node's passes place against
     // is in-process, and only the REST adapter names the transport.

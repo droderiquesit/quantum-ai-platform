@@ -5378,6 +5378,24 @@ impl Platform {
         &mut self.central
     }
 
+    /// Sign every capital envelope from now on under ADR 0110's `envelope`
+    /// key — [`CentralPlane::install_envelope_signer`], and nothing else on
+    /// the plane.
+    ///
+    /// Exists so a composition root that must install the signer is not
+    /// handed [`Self::central_mut`], which reaches every mutator the plane
+    /// has — the capital issue, the factory, the halt ledger. `qip-api`'s
+    /// boundary test refuses `central_mut` from that layer; this is the one
+    /// seam it needs, proven against the verifier before it is installed.
+    pub fn install_envelope_signer(
+        &mut self,
+        signer: std::sync::Arc<dyn qip_contracts::trust::ArtefactSigner>,
+        verifier: std::sync::Arc<dyn qip_contracts::trust::ArtefactVerifier>,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.central.install_envelope_signer(signer, verifier, now)
+    }
+
     /// Policy slot 11 for every cell this cycle: the venues this platform
     /// has withdrawn, and nothing else.
     ///

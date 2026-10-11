@@ -26,6 +26,9 @@ const REGISTER: &str = "docs/architecture/lane-placement.md";
 const HOST_CRATE: &str = "qip-mesh";
 const HOST_PATH: &str = "qip_mesh";
 
+/// The file the coordination types are defined in since round 2.
+const DEFINING_FILE: &str = "backend/crates/libs/qip-contracts/src/peer.rs";
+
 /// The types a coordination message is built from or handled by. A Lane 0
 /// crate naming one has either reached the host crate or copied its
 /// protocol, and either way holds a coordination function in the wrong lane.
@@ -203,11 +206,23 @@ fn the_five_coordination_functions_are_lane_one_and_no_lane_zero_crate_can_name_
             .any(|(_, text)| names(text, HOST_PATH)),
         "premise: the scan finds `{HOST_PATH}` in qip-kernel, which imports it"
     );
+    // Where the types are *defined* moved in round 2 (`215138c2`): the
+    // protocol was `git mv`ed to `qip_contracts::peer` and `qip_mesh::peer`
+    // became a re-export, so the definitions are read there and the host
+    // crate is held to still re-exporting them. This premise is only about
+    // the scanner seeing the definitions; it moves nothing in or out of the
+    // Lane 0 scan below, which still reads every Lane 0 crate — including
+    // `qip-contracts`, which the register places in Lane 0.
+    let defining = without_comments(&qip_acceptance::read(DEFINING_FILE));
+    assert!(
+        COORDINATION_TYPES.iter().all(|name| names(&defining, name)),
+        "premise: the scan finds every coordination type where it is defined, {DEFINING_FILE}"
+    );
     assert!(
         sources(directories.get(HOST_CRATE).expect("the host crate exists"))
             .iter()
-            .any(|(_, text)| COORDINATION_TYPES.iter().all(|name| names(text, name))),
-        "premise: the scan finds every coordination type where it is defined"
+            .any(|(_, text)| text.contains("pub use qip_contracts::peer;")),
+        "premise: {HOST_CRATE} re-exports the protocol it is registered as hosting"
     );
 
     let mut scanned = 0;
