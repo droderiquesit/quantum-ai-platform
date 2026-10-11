@@ -61,6 +61,12 @@ variable "enable_gitops" {
   default     = false
 }
 
+variable "enable_cloud_build_private_pool" {
+  description = "Mirrors the root's cloud_build_private_pool_enabled. Enables cloudbuild.googleapis.com and servicenetworking.googleapis.com, which the private pool and its peering need (R12 CICD-9097)."
+  type        = bool
+  default     = false
+}
+
 variable "disable_services_on_destroy" {
   description = <<-EOT
     Whether `terraform destroy` turns these APIs back off.

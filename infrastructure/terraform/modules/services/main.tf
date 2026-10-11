@@ -94,6 +94,13 @@ locals {
     # this enables the project's half of a service whose activation is an
     # organisation-level act.
     var.enable_security_command_center ? { "securitycenter.googleapis.com" = "modules/scc" } : {},
+    # The private build pool (R12 CICD-9097) and the Service Networking
+    # peering its workers reach the Engineering VPC through. `merge` keeps
+    # one key if AlloyDB or Memorystore also asked for servicenetworking.
+    var.enable_cloud_build_private_pool ? {
+      "cloudbuild.googleapis.com"        = "the private worker pool in modules/build-pool"
+      "servicenetworking.googleapis.com" = "the private build pool's peering in modules/build-pool"
+    } : {},
     # The control-plane cluster (ADR 0036) and the two APIs a workflow reaches
     # its private endpoint through: the fleet it is registered to, and the
     # Connect gateway that proxies a kubectl call to it as an authenticated
