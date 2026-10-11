@@ -66,107 +66,106 @@ impl Agent for PoisoningDetector {
 
 #[cfg(test)]
 mod tests {
+    //! The detector these tests used to describe does not exist. `analyse` is
+    //! a placeholder that reads the market and returns a no-view finding;
+    //! nothing constructs a `PoisoningFinding`, and no manifest in
+    //! `manifests.rs` or agent in the roster runs it. The three tests that
+    //! stood here built `PoisoningFinding` values by hand and asserted the
+    //! fields they had just set — they passed with `analyse` deleted. These
+    //! drive `analyse` through `AgentHost`, the way the organisation would,
+    //! and assert what it actually does. **Production gap**: coordinated-
+    //! campaign and contradicted-source detection (EVID-012 follow-on).
     use super::*;
+    use crate::manifests;
+    use qip_agents::finding::{AgentBrief, FindingStatus};
+    use qip_agents::runtime::{AgentHost, RunStatus};
+    use qip_core::ids::AgentRunId;
+    use qip_core::lineage::{CorrelationId, Lineage};
+    use qip_core::time::{Duration, Timestamp};
 
-    #[test]
-    fn a_coordinated_manipulation_campaign_across_sources_is_detected() {
-        // When multiple sources publish contradicting claims in a coordinated
-        // pattern (same timing, near-identical text, shared upstream), the
-        // detector identifies them as CoordinatedManipulation rather than
-        // independent disagreement.
-        let findings = vec![
-            PoisoningFinding {
-                source_id: "reuters_feed_a".to_string(),
-                poisoning_class: PoisoningClass::CoordinatedManipulation,
-                evidence: "published at 14:32:00 UTC with 96.8% text match to source B".to_string(),
-            },
-            PoisoningFinding {
-                source_id: "bloomberg_feed_b".to_string(),
-                poisoning_class: PoisoningClass::CoordinatedManipulation,
-                evidence: "published at 14:32:02 UTC with 96.8% text match to source A".to_string(),
-            },
-        ];
+    /// The exact reason `analyse` gives. Compared by equality, not by a
+    /// substring, so a placeholder that changed its wording is noticed.
+    const REASON: &str =
+        "source poisoning detection requires evidence scoring infrastructure (EVID-012)";
 
-        // Assert we identified coordinated timing
-        assert!(
-            findings
-                .iter()
-                .all(|f| f.poisoning_class == PoisoningClass::CoordinatedManipulation),
-            "all sources in coordination campaign should be marked CoordinatedManipulation"
-        );
-
-        // Assert multiple sources identified
-        assert_eq!(
-            findings.len(),
-            2,
-            "coordinated campaign must involve multiple sources"
-        );
-
-        // Assert evidence mentions coordination signals
-        for finding in &findings {
-            assert!(
-                finding.evidence.contains("published at")
-                    || finding.evidence.contains("text match"),
-                "evidence must name coordination signal (timing or text similarity)"
-            );
-        }
+    fn now() -> Timestamp {
+        Timestamp::from_secs(1_760_000_000)
     }
 
-    #[test]
-    fn a_source_that_is_repeatedly_contradicted_by_events_is_flagged() {
-        // A source consistently publishing false claims is identified as
-        // poisoned when: corroboration tracking shows its claims never survive
-        // market resolution, drift to false over time, or are contradicted by
-        // authoritative sources.
-        let finding = PoisoningFinding {
-            source_id: "speculative_rumors_inc".to_string(),
-            poisoning_class: PoisoningClass::SourcePoisoning,
-            evidence:
-                "claims contradicted by authoritative sources in 12 of 13 recent predictions; \
-                      predicted $TECH earnings up 25%, actual down 8%; corroboration rate 2.3%"
-                    .to_string(),
-        };
-
-        // Assert source flagged as poisoned (not coordination)
-        assert_eq!(
-            finding.poisoning_class,
-            PoisoningClass::SourcePoisoning,
-            "repeatedly contradicted source must be flagged as SourcePoisoning"
+    fn run(detector: &PoisoningDetector) -> qip_agents::runtime::AgentRunRecord {
+        let brief = AgentBrief::new(
+            "is any source feeding the desk a coordinated campaign",
+            now(),
+            Duration::from_days(1),
         );
-
-        // Assert evidence cites corroboration failure
-        assert!(
-            finding.evidence.contains("corroboration")
-                || finding.evidence.contains("contradicted")
-                || finding.evidence.contains("predicted"),
-            "evidence must name contradiction pattern or low corroboration rate"
-        );
-
-        // Assert we tracked multiple false predictions
-        assert!(
-            finding.evidence.contains("recent"),
-            "evidence must span time range"
-        );
+        AgentHost::new(1).run(
+            detector,
+            &brief,
+            now(),
+            Lineage::root(CorrelationId::from_string("cor-poison"), "test"),
+            AgentRunId::from_string("run-poison"),
+        )
     }
 
+    /// GAP PIN. Run through the host with a manifest that may read the
+    /// market, the detector succeeds and says it has no view, naming the
+    /// missing layer, with zero conviction. It never claims to have looked
+    /// for a campaign and found none.
+    ///
+    /// Mutation: replace `no_data(...)` in `analyse` with
+    /// `crate::support::out_of_scope(...)` — the status becomes `Deferred`
+    /// and the `NoView` assertion fires. Changing the reason text fails the
+    /// claim equality. Implementing real detection that returns a view also
+    /// fails it, which is intended: rewrite this test to the requirement.
     #[test]
-    fn a_clean_episode_with_no_poisoning_injected_produces_no_findings() {
-        // Mutation test: verify no false positives on clean episodes without
-        // poisoning. Sources with normal disagreement, independent timing,
-        // and reasonable corroboration should produce no PoisoningFinding.
-        let findings: Vec<PoisoningFinding> = vec![];
-
-        // Assert no findings on clean episode
-        assert!(
-            findings.is_empty(),
-            "clean episode with no poisoning must produce zero findings"
+    fn the_poisoning_detector_reports_no_view_naming_its_missing_evidence_layer() {
+        let detector = PoisoningDetector::new(
+            manifests::macro_analyst(now()),
+            Arc::new(Desk::empty(now())),
         );
+        let record = run(&detector);
+        assert!(
+            matches!(record.status, RunStatus::Succeeded),
+            "premise: the run was admitted and completed: {:?}",
+            record.status
+        );
+        let finding = record.finding.expect("a completed run carries a finding");
+        assert_eq!(finding.status, FindingStatus::NoView);
+        assert_eq!(finding.claim, REASON);
+        assert!(qip_core::testing::is_exactly_zero(
+            finding.effective_conviction()
+        ));
+    }
 
-        // Verify the assertion actually fires by checking explicit empty state
-        assert_eq!(
-            findings.len(),
-            0,
-            "finding count must be zero on uncontaminated episode"
+    /// The placeholder's one live line is the market read, which goes through
+    /// the desk's capability gate. A manifest without `ReadMarketData` must
+    /// therefore not complete — proving the detector is a governed agent and
+    /// not a constant, and that the gate is not bypassed.
+    ///
+    /// Mutation: delete `let _market = self.desk.market.get(ctx)?;` from
+    /// `analyse` — the ungranted run then succeeds and the assertion fires.
+    #[test]
+    fn the_poisoning_detector_cannot_run_without_the_market_read_grant() {
+        let granted = manifests::macro_analyst(now());
+        // Premise: the granted manifest really holds the capability, so the
+        // ungranted one below differs in exactly that respect.
+        assert!(
+            granted
+                .capabilities
+                .contains(qip_agents::capability::Capability::ReadMarketData)
+        );
+        let ungranted =
+            granted
+                .clone()
+                .with_capabilities(qip_agents::capability::CapabilitySet::of([
+                    qip_agents::capability::Capability::PublishHypothesis,
+                ]));
+        let detector = PoisoningDetector::new(ungranted, Arc::new(Desk::empty(now())));
+        let record = run(&detector);
+        assert!(
+            !matches!(record.status, RunStatus::Succeeded),
+            "a detector without the market grant completed: {:?}",
+            record.status
         );
     }
 }

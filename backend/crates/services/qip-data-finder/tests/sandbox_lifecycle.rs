@@ -1,77 +1,109 @@
-//! Integration tests for source sandbox lifecycle (DATA-034).
+//! Source sandbox lifecycle (DATA-034) — what the finder actually does.
 //!
-//! A newly registered source's adapter runs only in sandbox before promotion
-//! to production. Its output reaches knowledge stores only after a recorded
-//! promotion event.
+//! DATA-034 asks that a newly registered source's adapter run only in a
+//! sandbox before promotion, and that its output reach knowledge stores only
+//! after a recorded promotion event. **That behaviour does not exist.**
+//! `LifecycleStage::Sandbox` and `LifecycleStage::Promote` are declared in
+//! `decision.rs` and recorded by nothing in `src/`: `DataFinder::assess`
+//! goes from `Register` straight to a `RegisteredSource` in the registry, and
+//! the one automatic promotion it performs (§7.6.3, a deep-web adapter in an
+//! approved category) is recorded under `Route`. This is a production gap.
+//!
+//! The previous version of this file recorded `Sandbox` and `Promote` into a
+//! `Reasoning` by hand and asserted they had been recorded — it tested a
+//! `Vec`, and passed with the finder deleted. The first test below drives the
+//! real finder and pins what it does today, so that the day a sandbox stage
+//! lands this test fails and is rewritten to the requirement rather than
+//! silently continuing to describe an absence.
 
+mod common;
+
+use common::{AGENT, candidate, licensed_for, now, permissive_robots, probe_for};
+use qip_contracts::governance::Usage;
 use qip_data_finder::decision::{LifecycleStage, Reasoning};
+use qip_data_finder::finder::{DataFinder, FinderConfig};
 
-/// A newly registered source enters sandbox stage before promotion.
+const URL: &str = "https://example.com/data/prices.json";
+
+/// GAP PIN (DATA-034). A source that passes legality and scoring is
+/// registered — present in the finder's registry, where ingestion reads it —
+/// with no sandbox stage and no promotion stage in its reasoning.
+///
+/// Mutation that makes this fail: in `DataFinder::assess_one` (finder.rs),
+/// add `reasoning.record(LifecycleStage::Sandbox, ...)` before the final
+/// `Register` record — the `!reached(Sandbox)` assertion fires. That is the
+/// intended failure: it means the gap has been closed and this test must be
+/// rewritten to assert the sandbox-before-registry ordering instead.
 #[test]
-fn a_newly_registered_source_enters_sandbox_after_registration() {
-    let mut reasoning = Reasoning::new();
-    reasoning.record(LifecycleStage::Register, "source registered for testing");
-    reasoning.record(
-        LifecycleStage::Sandbox,
-        "adapter instantiated in sandbox environment only",
+fn a_registered_source_reaches_the_registry_with_no_sandbox_or_promotion_stage_recorded() {
+    let config = FinderConfig::new(AGENT, Usage::Derive, "market-data", 7).expect("config");
+    let mut finder = DataFinder::new(config);
+    let mut probe = probe_for(URL, "example.com", permissive_robots());
+    let decisions = finder
+        .assess(
+            vec![
+                candidate(
+                    "sandbox-feed",
+                    URL,
+                    licensed_for(&[Usage::Research, Usage::Derive]).expect("posture"),
+                    &["EU0001"],
+                )
+                .expect("candidate"),
+            ],
+            &mut probe,
+            now(),
+        )
+        .expect("assess");
+
+    // Premise: the source really was registered, through the stages that do
+    // exist. A rejected source would pass the absence checks for free.
+    assert_eq!(decisions.len(), 1);
+    let decision = &decisions[0];
+    assert!(
+        decision.is_registered(),
+        "premise: the candidate must register: {}",
+        decision.reasoning().describe()
     );
-
+    assert!(finder.registered("sandbox-feed").is_some());
+    let reasoning = decision.reasoning();
+    assert!(reasoning.reached(LifecycleStage::AssessLegality));
     assert!(reasoning.reached(LifecycleStage::Register));
-    assert!(reasoning.reached(LifecycleStage::Sandbox));
-    assert!(!reasoning.reached(LifecycleStage::Promote));
 
-    let register_findings = reasoning.at(LifecycleStage::Register);
-    assert_eq!(register_findings.len(), 1);
-    assert_eq!(register_findings[0], "source registered for testing");
-
-    let sandbox_findings = reasoning.at(LifecycleStage::Sandbox);
-    assert_eq!(sandbox_findings.len(), 1);
-    assert_eq!(
-        sandbox_findings[0],
-        "adapter instantiated in sandbox environment only"
+    // The current behaviour, stated as the gap it is.
+    assert!(
+        !reasoning.reached(LifecycleStage::Sandbox),
+        "a sandbox stage is now recorded — DATA-034 may be closing; rewrite this test to the \
+         requirement: {}",
+        reasoning.describe()
+    );
+    assert!(
+        !reasoning.reached(LifecycleStage::Promote),
+        "a promote stage is now recorded — DATA-034 may be closing; rewrite this test to the \
+         requirement: {}",
+        reasoning.describe()
     );
 }
 
-/// A source moves from sandbox to production only through a recorded promote stage.
+/// `reached` answers from what was recorded and nothing else: a reasoning that
+/// recorded `Register` has not thereby reached `Sandbox`. This is the property
+/// a future sandbox gate would read, so it is worth pinning on its own.
+///
+/// Mutation: make `Reasoning::reached` compare stage *position* (`>=`) rather
+/// than equality — `reached(Sandbox)` after `Register` alone would then be
+/// false still, but `reached(Register)` after only `Sandbox` would be true and
+/// the second assertion fires.
 #[test]
-fn a_source_moves_from_sandbox_to_production_through_promotion() {
-    let mut reasoning = Reasoning::new();
-    reasoning.record(LifecycleStage::Register, "source registered");
-    reasoning.record(LifecycleStage::Sandbox, "adapter running in sandbox");
-    reasoning.record(
-        LifecycleStage::Promote,
-        "sandbox verification passed; adapter approved for production",
-    );
+fn reaching_one_lifecycle_stage_does_not_imply_reaching_its_neighbours() {
+    let mut only_register = Reasoning::new();
+    only_register.record(LifecycleStage::Register, "registered");
+    assert!(only_register.reached(LifecycleStage::Register), "premise");
+    assert!(!only_register.reached(LifecycleStage::Sandbox));
+    assert!(!only_register.reached(LifecycleStage::Promote));
 
-    assert!(reasoning.reached(LifecycleStage::Register));
-    assert!(reasoning.reached(LifecycleStage::Sandbox));
-    assert!(reasoning.reached(LifecycleStage::Promote));
-
-    let promote_findings = reasoning.at(LifecycleStage::Promote);
-    assert_eq!(promote_findings.len(), 1);
-    assert_eq!(
-        promote_findings[0],
-        "sandbox verification passed; adapter approved for production"
-    );
-}
-
-/// A source without a promote stage has not reached production.
-#[test]
-fn a_source_without_promotion_is_still_in_sandbox() {
-    let mut reasoning = Reasoning::new();
-    reasoning.record(LifecycleStage::Register, "source registered");
-    reasoning.record(LifecycleStage::Sandbox, "running tests in sandbox");
-
-    assert!(reasoning.reached(LifecycleStage::Sandbox));
-    assert!(!reasoning.reached(LifecycleStage::Promote));
-
-    let stages_seen = LifecycleStage::ORDER
-        .iter()
-        .filter(|s| reasoning.reached(**s))
-        .map(|s| s.as_str())
-        .collect::<Vec<_>>();
-
-    assert_eq!(stages_seen, vec!["register", "sandbox"]);
+    let mut only_sandbox = Reasoning::new();
+    only_sandbox.record(LifecycleStage::Sandbox, "sandboxed");
+    assert!(only_sandbox.reached(LifecycleStage::Sandbox), "premise");
+    assert!(!only_sandbox.reached(LifecycleStage::Register));
 }
 
 /// The lifecycle order enforces sandbox before promotion.

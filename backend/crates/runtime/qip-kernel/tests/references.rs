@@ -621,8 +621,21 @@ fn a_restored_reference_without_a_live_admission_is_not_vendor_backing() -> Resu
     Ok(())
 }
 
+/// GAP PIN (R12-DATA-1031, R12-DATA-1033). This test was named
+/// `every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions`
+/// and asserted all six were `None` — a name that claimed the fields are
+/// carried over a body that proved they never are. Its name now says what it
+/// asserts: `DataReference::from_digest`, the door every connector fetch goes
+/// through, populates none of the six. That is a production gap, not the
+/// intent. The test beside it proves the fields are carried once something
+/// sets them.
+///
+/// Mutation: in `DataReference::from_digest` (qip-data-finder
+/// `reference.rs`), pass `Some(digest.content_hash.clone())` (or any value)
+/// for `etag` instead of `None` — the first assertion fires, which is the
+/// signal to rewrite this test to the populated value.
 #[test]
-fn every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions()
+fn a_reference_built_from_a_fetch_digest_leaves_etag_cursor_entitlement_geography_expiry_and_re_fetch_unset()
 -> Result<()> {
     let admitted = admitted_frankfurter()?;
     let digest = frankfurter_digest(TABLE, Timestamp::from_secs(1_760_100_000))?;
@@ -632,40 +645,83 @@ fn every_data_reference_carries_and_exposes_etag_cursor_entitlement_geography_ex
         qip_core::Decimal::ZERO,
         0.95,
     )?;
-
     assert_eq!(
         reference.source_id(),
         SOURCE,
         "premise: a reference was built for the test source"
     );
 
-    // Verify all six new fields are accessible and present (currently None, but
-    // the accessors exist and work). When re-fetch paths wire the field
-    // population, these assertions will update to verify populated values.
-    assert!(
-        reference.etag().is_none(),
-        "etag field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.cursor().is_none(),
-        "cursor field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.entitlement().is_none(),
-        "entitlement field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.geography().is_none(),
-        "geography field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.expiry().is_none(),
-        "expiry field is accessible (currently unpopulated)"
-    );
-    assert!(
-        reference.re_fetch_instructions().is_none(),
-        "re_fetch_instructions field is accessible (currently unpopulated)"
+    assert_eq!(reference.etag(), None);
+    assert_eq!(reference.cursor(), None);
+    assert_eq!(reference.entitlement(), None);
+    assert_eq!(reference.geography(), None);
+    assert_eq!(reference.expiry(), None);
+    assert_eq!(reference.re_fetch_instructions(), None);
+    Ok(())
+}
+
+/// What the old name claimed, now actually asserted: when the six fields are
+/// set — today only a record read back off the event log can set them — the
+/// reference carries every one through its validated wire path and back out,
+/// each under its own accessor, none dropped and none swapped.
+///
+/// Mutation: in `TryFrom<DataReferenceWire> for DataReference`, pass `None`
+/// instead of `wire.etag` (or any one of the six) — the matching accessor
+/// assertion fires. Mutation: add `#[serde(skip)]` to `DataReference::cursor`
+/// — the second round trip loses it and the final equality fires.
+#[test]
+fn a_data_reference_carries_etag_cursor_entitlement_geography_expiry_and_re_fetch_instructions_through_its_wire_form()
+-> Result<()> {
+    let admitted = admitted_frankfurter()?;
+    let digest = frankfurter_digest(TABLE, Timestamp::from_secs(1_760_100_000))?;
+    let built = qip_data_finder::reference::DataReference::from_digest(
+        &admitted,
+        &digest,
+        qip_core::Decimal::ZERO,
+        0.95,
+    )?;
+    let mut json = serde_json::to_value(&built).expect("a reference serialises");
+    // A timestamp in exactly the form the type writes, taken from the record
+    // itself rather than guessed.
+    let retrieved = json
+        .get("retrieved_at")
+        .cloned()
+        .expect("premise: the record carries retrieved_at");
+    let object = json.as_object_mut().expect("a reference is a JSON object");
+    object.insert("etag".into(), serde_json::json!("W/\"etag-7\""));
+    object.insert("cursor".into(), serde_json::json!("page-3"));
+    object.insert("entitlement".into(), serde_json::json!("licensed"));
+    object.insert("geography".into(), serde_json::json!("europe"));
+    object.insert("expiry".into(), retrieved);
+    object.insert(
+        "re_fetch_instructions".into(),
+        serde_json::json!("GET the same locator with If-None-Match"),
     );
 
+    let carried: qip_data_finder::reference::DataReference =
+        serde_json::from_value(json).expect("the wire form admits the populated fields");
+    // Premise: the rest of the reference survived, so this is the same record.
+    assert_eq!(carried.content_hash(), built.content_hash());
+
+    assert_eq!(carried.etag(), Some("W/\"etag-7\""));
+    assert_eq!(carried.cursor(), Some("page-3"));
+    assert_eq!(
+        carried.entitlement(),
+        Some(qip_financial::quality::LicensingClass::Licensed)
+    );
+    assert_eq!(
+        carried.geography(),
+        Some(qip_market_ingestion::connector::manifest::Region::Europe)
+    );
+    assert_eq!(carried.expiry(), Some(built.retrieved_at()));
+    assert_eq!(
+        carried.re_fetch_instructions(),
+        Some("GET the same locator with If-None-Match")
+    );
+
+    let again: qip_data_finder::reference::DataReference =
+        serde_json::from_value(serde_json::to_value(&carried).expect("serialises"))
+            .expect("decodes");
+    assert_eq!(again, carried, "a second round trip dropped a field");
     Ok(())
 }
