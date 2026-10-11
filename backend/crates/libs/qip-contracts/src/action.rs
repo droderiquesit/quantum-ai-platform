@@ -17,10 +17,119 @@
 //!   so each approval can be attributed alone.
 //!
 //! Nothing here submits anything. `ActionIntent` is a value, not a call.
+//!
+//! This module is also the one home of three things that used to exist twice:
+//! the action [`Method`] vocabulary, the [`ToolRegistry`] (`qip-agency` had a
+//! second, unaudited one, and `engine::execute` consulted neither), and the
+//! whole-word matcher [`contains_phrase`] every conduct check uses. Two
+//! registries meant a tool revoked in one was still admitted by the other;
+//! two matchers meant one of them was a substring test that read "unwashed"
+//! as wash trading.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_core::{Error, Result, Timestamp, sha256_hex};
+use serde::{Deserialize, Serialize};
+
+/// How a tool moves what it acts on. The first six are the lawful action
+/// domains; every other variant is a deceptive or manipulative method the
+/// platform may *record* (pretending a lever does not exist is how it gets
+/// used unreviewed) and may never plan or send.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Method {
+    Communication,
+    Capital,
+    Product,
+    Operational,
+    Research,
+    Market,
+    FabricatedIdentity,
+    Sockpuppet,
+    FakeConsensus,
+    MisleadingClaim,
+    UndisclosedPromotion,
+    RumourManufacture,
+    WashTrading,
+    Spoofing,
+    PumpAndDump,
+}
+
+impl Method {
+    /// Deceptive or manipulative. Written as "not one of the lawful six" so a
+    /// variant added later is prohibited until somebody argues it is not.
+    pub fn is_deceptive(self) -> bool {
+        !matches!(
+            self,
+            Self::Communication
+                | Self::Capital
+                | Self::Product
+                | Self::Operational
+                | Self::Research
+                | Self::Market
+        )
+    }
+
+    /// Changes a system or product, so its target must be one Algorik owns.
+    pub fn needs_ownership(self) -> bool {
+        matches!(self, Self::Operational | Self::Product)
+    }
+}
+
+/// The lower-cased words of `text`, split on anything that is not a letter or
+/// digit. Apostrophes are dropped first so "can't" is the one word `cant`
+/// rather than `can` followed by a stray `t`.
+pub fn words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .replace(['\'', '\u{2019}'], "")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `phrase` occurs in `text` as whole, consecutive words.
+///
+/// The failure this replaces: `text.contains("wash")` is true of "unwashed",
+/// "dishwasher" and "Washington", so a substring conduct check either refuses
+/// honest copy or, once somebody notices, gets loosened until it refuses
+/// nothing. A phrase with no words in it matches nothing, so a blank rule is
+/// not a rule that fires everywhere; callers refuse one at construction.
+pub fn contains_phrase(text: &str, phrase: &str) -> bool {
+    let needle = words(phrase);
+    if needle.is_empty() {
+        return false;
+    }
+    words(text)
+        .windows(needle.len())
+        .any(|window| window == needle.as_slice())
+}
+
+/// Market-manipulation phrases, matched as whole words by [`contains_phrase`].
+/// [`PreActionGate`]'s check 6 and `qip-agency`'s conduct gate both read this
+/// one list, so the two cannot drift into disagreeing about what spoofing is.
+pub const MANIPULATION_PHRASES: &[&str] = &[
+    "wash trade",
+    "wash trades",
+    "wash traded",
+    "wash trading",
+    "spoof",
+    "spoofs",
+    "spoofed",
+    "spoofing",
+    "layering",
+    "pump and dump",
+    "pump and dumps",
+    "paint the tape",
+    "painting the tape",
+    "mark the close",
+    "marking the close",
+    "corner the market",
+    "cornering the market",
+    "front run",
+    "front running",
+    "bear raid",
+];
 
 /// Action classes, each with distinct blast radius and authority requirements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -246,7 +355,11 @@ pub fn check_authority(intent: &ActionIntent, authority: AuthorityLevel) -> Resu
 }
 
 /// The six declarations a tool must make before it can act.
-#[derive(Clone, Debug)]
+///
+/// Deserialisable so a composition root can take registrations from a
+/// document; [`ToolRegistry::register`] still refuses an incomplete one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolRegistration {
     pub tool: String,
     pub acting_identity: String,
@@ -267,7 +380,7 @@ pub struct ToolAudit {
     pub reason: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Slot {
     reg: ToolRegistration,
     revoked: bool,
@@ -311,6 +424,15 @@ impl ToolRegistry {
                 "action tool registration lacks its {name}; declare all six of identity, scope, disclosure, channels, limits and revocation path"
             )));
         }
+        // A second registration under the same name used to replace the
+        // first, and the replacement started un-revoked: re-registering was a
+        // way round the revocation path. Refused instead.
+        if self.tools.contains_key(&reg.tool) {
+            return Err(Error::invalid(format!(
+                "tool {} is already registered; revoke it and register the replacement under a new name",
+                reg.tool
+            )));
+        }
         self.tools.insert(
             reg.tool.clone(),
             Slot {
@@ -334,6 +456,73 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// The registration a tool was admitted under, if it was.
+    pub fn registration(&self, tool: &str) -> Option<&ToolRegistration> {
+        self.tools.get(tool).map(|slot| &slot.reg)
+    }
+
+    /// Whether [`Self::authorise`] would admit this action, changing nothing
+    /// and auditing nothing. A shadow pass asks this so it can report a step
+    /// the registry would refuse without spending the tool's rate or budget
+    /// on a call that was never made.
+    pub fn admits(&self, tool: &str, channel: &str, window: u64, cost: u64) -> Result<()> {
+        Self::verdict(self.tools.get(tool), channel, window, cost)
+            .map_err(|why| Error::denied(format!("action refused: {why}")))
+    }
+
+    /// Whether every action in `actions`, taken in order in `window`, would
+    /// be admitted — each one charged against the rate and budget the ones
+    /// before it spent. Changes nothing and audits nothing.
+    ///
+    /// A plan is checked with this before its first step is sent. Checking
+    /// each step alone with [`Self::admits`] admits three steps of a tool that
+    /// may act twice per window, and the third is then refused after two
+    /// have already gone out: half a plan, sent.
+    pub fn admits_all(&self, window: u64, actions: &[(&str, &str, u64)]) -> Result<()> {
+        let mut scratch: BTreeMap<&str, Option<Slot>> = BTreeMap::new();
+        for (tool, channel, cost) in actions {
+            let slot = scratch
+                .entry(tool)
+                .or_insert_with(|| self.tools.get(*tool).cloned());
+            Self::verdict(slot.as_ref(), channel, window, *cost)
+                .map_err(|why| Error::denied(format!("action refused: {tool}: {why}")))?;
+            if let Some(s) = slot.as_mut() {
+                if s.window != window {
+                    s.window = window;
+                    s.in_window = 0;
+                }
+                s.in_window += 1;
+                s.spent = s.spent.saturating_add(*cost);
+            }
+        }
+        Ok(())
+    }
+
+    fn verdict(
+        slot: Option<&Slot>,
+        channel: &str,
+        window: u64,
+        cost: u64,
+    ) -> std::result::Result<(), String> {
+        let Some(s) = slot else {
+            return Err("tool is not registered".to_string());
+        };
+        if s.revoked {
+            return Err("tool is revoked".to_string());
+        }
+        if !s.reg.channels.contains(channel) {
+            return Err(format!("channel {channel} is outside the tool's channels"));
+        }
+        let in_window = if s.window == window { s.in_window } else { 0 };
+        if in_window >= s.reg.max_actions_per_window {
+            return Err("rate limit reached for this window".to_string());
+        }
+        if s.spent.saturating_add(cost) > s.reg.budget_units {
+            return Err("budget would be exceeded".to_string());
+        }
+        Ok(())
+    }
+
     /// Admit or refuse one action. `window` is the caller's rate window id;
     /// the count resets when it changes. Every outcome is audited.
     pub fn authorise(
@@ -344,28 +533,17 @@ impl ToolRegistry {
         cost: u64,
         at: Timestamp,
     ) -> Result<()> {
-        let verdict = match self.tools.get_mut(tool) {
-            None => Err("tool is not registered".to_string()),
-            Some(s) if s.revoked => Err("tool is revoked".to_string()),
-            Some(s) if !s.reg.channels.contains(channel) => {
-                Err(format!("channel {channel} is outside the tool's channels"))
+        let verdict = Self::verdict(self.tools.get(tool), channel, window, cost);
+        if verdict.is_ok()
+            && let Some(s) = self.tools.get_mut(tool)
+        {
+            if s.window != window {
+                s.window = window;
+                s.in_window = 0;
             }
-            Some(s) => {
-                if s.window != window {
-                    s.window = window;
-                    s.in_window = 0;
-                }
-                if s.in_window >= s.reg.max_actions_per_window {
-                    Err("rate limit reached for this window".to_string())
-                } else if s.spent.saturating_add(cost) > s.reg.budget_units {
-                    Err("budget would be exceeded".to_string())
-                } else {
-                    s.in_window += 1;
-                    s.spent += cost;
-                    Ok(())
-                }
-            }
-        };
+            s.in_window += 1;
+            s.spent = s.spent.saturating_add(cost);
+        }
         self.audit.push(ToolAudit {
             tool: tool.to_string(),
             at,
@@ -381,7 +559,8 @@ impl ToolRegistry {
 }
 
 /// One stated ground for a market-facing action.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Ground {
     ExpectedProfit,
     DesiredPriceImpact,
@@ -604,11 +783,12 @@ impl PreActionGate {
             ));
         }
 
-        // Check 6: Market-conduct rules — detect prohibited patterns.
-        // Conservative: refuse any action with "wash" or "spoof" in description.
-        if claimed_effect.to_lowercase().contains("wash")
-            || claimed_effect.to_lowercase().contains("spoof")
-            || claimed_effect.to_lowercase().contains("pump-and-dump")
+        // Check 6: Market-conduct rules — a manipulation phrase, matched as
+        // whole words. This was three `contains` calls, which refused
+        // "unwashed inventory" as wash trading.
+        if MANIPULATION_PHRASES
+            .iter()
+            .any(|phrase| contains_phrase(claimed_effect, phrase))
         {
             return Err(Error::denied(
                 "check 6 failed: action violates market-conduct rules",
@@ -1277,6 +1457,133 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().message().contains("check 6 failed"));
+    }
+
+    /// The substring check this replaced refused every one of these as wash
+    /// trading or spoofing; none of them is either.
+    #[test]
+    fn check_6_matches_whole_words_so_a_word_containing_wash_or_spoof_is_not_manipulation() {
+        let gate = PreActionGate::new(vec!["operator_1".into()], vec![], vec!["US".into()]);
+        let check = |claim: &str| {
+            gate.check(
+                "operator_1",
+                "research",
+                claim,
+                1,
+                "origin",
+                "api",
+                "US",
+                true,
+                false,
+            )
+        };
+        // Premise: the same gate does refuse the delimited phrase, in any case
+        // and with hyphens, so the passes below are the matcher and not a gate
+        // that refuses nothing.
+        for manipulative in ["Wash-Trading the close", "SPOOFING bids", "a pump and dump"] {
+            let err = check(manipulative).unwrap_err();
+            assert!(err.message().contains("check 6 failed"), "{manipulative}");
+        }
+        for honest in [
+            "rebalance unwashed inventory",
+            "hedge the dishwasher maker",
+            "Washington municipal bonds",
+            "a spoofproof feed handler",
+        ] {
+            assert!(check(honest).is_ok(), "{honest} was read as manipulation");
+        }
+    }
+
+    #[test]
+    fn a_phrase_matches_only_as_consecutive_whole_words_and_a_blank_phrase_matches_nothing() {
+        assert!(contains_phrase("they will Front-Run it", "front run"));
+        assert!(!contains_phrase("run in front of it", "front run"));
+        assert!(!contains_phrase("storefront running costs", "front run"));
+        assert!(contains_phrase("you can't lose", "cant lose"));
+        assert!(!contains_phrase("anything at all", "  "));
+        assert!(!contains_phrase("anything at all", "-- !"));
+    }
+
+    #[test]
+    fn a_second_registration_under_a_revoked_name_is_refused_and_the_tool_stays_revoked() {
+        let reg = ToolRegistration {
+            tool: "t".into(),
+            acting_identity: "agent".into(),
+            permission_scope: ["s".to_string()].into(),
+            disclosure_policy: "internal".into(),
+            channels: ["desk".to_string()].into(),
+            max_actions_per_window: 5,
+            budget_units: 5,
+            revocation_path: "ops".into(),
+        };
+        let mut registry = ToolRegistry::new();
+        registry.register(reg.clone()).unwrap();
+        assert!(registry.admits("t", "desk", 1, 1).is_ok(), "premise");
+        registry.revoke("t").unwrap();
+        assert!(registry.register(reg).is_err());
+        let err = registry.admits("t", "desk", 1, 1).unwrap_err();
+        assert!(err.message().contains("revoked"), "{err}");
+    }
+
+    #[test]
+    fn admits_answers_as_authorise_would_and_spends_nothing() {
+        let reg = ToolRegistration {
+            tool: "t".into(),
+            acting_identity: "agent".into(),
+            permission_scope: ["s".to_string()].into(),
+            disclosure_policy: "internal".into(),
+            channels: ["desk".to_string()].into(),
+            max_actions_per_window: 1,
+            budget_units: 3,
+            revocation_path: "ops".into(),
+        };
+        let mut registry = ToolRegistry::new();
+        registry.register(reg).unwrap();
+        for _ in 0..5 {
+            assert!(registry.admits("t", "desk", 1, 3).is_ok());
+        }
+        assert!(
+            registry.audit().is_empty(),
+            "a preview is not an audited act"
+        );
+        registry
+            .authorise("t", "desk", 1, 3, Timestamp::from_secs(1))
+            .unwrap();
+        assert!(registry.admits("t", "desk", 1, 0).is_err(), "rate spent");
+        assert!(registry.admits("t", "desk", 2, 1).is_err(), "budget spent");
+        assert!(registry.admits("t", "desk", 2, 0).is_ok());
+    }
+
+    #[test]
+    fn a_plan_whose_later_step_would_exceed_the_rate_is_refused_whole_before_any_step() {
+        let reg = ToolRegistration {
+            tool: "t".into(),
+            acting_identity: "agent".into(),
+            permission_scope: ["s".to_string()].into(),
+            disclosure_policy: "internal".into(),
+            channels: ["desk".to_string()].into(),
+            max_actions_per_window: 2,
+            budget_units: 10,
+            revocation_path: "ops".into(),
+        };
+        let mut registry = ToolRegistry::new();
+        registry.register(reg).unwrap();
+        let step = ("t", "desk", 1);
+        assert!(
+            registry.admits_all(1, &[step, step]).is_ok(),
+            "premise: two fit"
+        );
+        // Each step alone is admitted; together the third is over the rate.
+        assert!(registry.admits("t", "desk", 1, 1).is_ok());
+        let err = registry.admits_all(1, &[step, step, step]).unwrap_err();
+        assert!(err.message().contains("rate limit"), "{err}");
+        // Budget is cumulative too: 6 + 6 exceeds 10.
+        assert!(
+            registry
+                .admits_all(1, &[("t", "desk", 6), ("t", "desk", 6)])
+                .is_err()
+        );
+        assert!(registry.audit().is_empty(), "a preview audits nothing");
     }
 
     #[test]

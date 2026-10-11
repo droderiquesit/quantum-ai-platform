@@ -94,6 +94,11 @@ impl ActionPolicy {
                 "no authority above narrow-reversible exists; broader agency needs an ADR",
             ));
         }
+        // The attribution is a contracts record with public fields, so it can
+        // exist unvalidated. Widening on one whose chain is empty, or whose
+        // correlation has been written up as identified, would be widening on
+        // a claim nobody checked.
+        evidence.validate()?;
         if evidence.action_class != self.class {
             return Err(Error::denied(format!(
                 "the attribution measures {:?}, not this policy's {:?}; evidence for one class \

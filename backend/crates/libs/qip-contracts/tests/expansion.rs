@@ -12,11 +12,12 @@ use std::collections::BTreeSet;
 
 fn goal() -> Value {
     json!({
-        "desired_state": "drawdown below 4 percent", "target_entities": ["book-a"],
-        "horizon_ms": 86_400_000u64, "success_metric": "max drawdown", "budget": "1000",
-        "risk_constraints": ["no new venue"], "identity": "desk-1", "jurisdiction": "US",
-        "authority_class": "shadow", "prohibited_methods": ["live orders"],
-        "stop_rollback_conditions": ["drawdown above 6 percent"]
+        "class": "risk_reduction", "target_state": "drawdown below 4 percent",
+        "entities_affected": ["book-a"], "time_horizon_secs": 86_400u64,
+        "success_metric": "max drawdown", "acceptable_uncertainty": "0.2", "budget": "1000",
+        "risk_envelope": "50", "jurisdictions": ["US"], "acting_identity": "desk-1",
+        "prohibited_side_effects": ["public statement"], "prohibited_methods": ["live orders"],
+        "stop_conditions": ["drawdown above 6 percent"]
     })
 }
 
@@ -34,9 +35,11 @@ fn plan() -> Value {
 fn attribution() -> Value {
     json!({
         "goal_id": "g1", "intervention_id": "i1", "action_id": "a1",
-        "observations": [{"horizon_ms": 1000, "value": 0.4}],
+        "action_class": "market", "identification": "experiment",
+        "observations": [{"horizon_ms": 1000, "value": 0.4}, {"horizon_ms": 60000, "value": 0.3}],
         "counterfactual_method": "synthetic control", "effect": {"mean": 0.4, "std_dev": 0.2},
-        "confounders": ["regime shift"], "side_effects": ["none observed in window"],
+        "causal_chain": ["quote width", "fill rate"], "confounders": ["regime shift"],
+        "competing_explanations": ["seasonal volume"], "side_effects": ["none observed in window"],
         "identifiability": 0.6, "resulting_updates": ["raise width prior"]
     })
 }
@@ -103,7 +106,22 @@ fn a_blank_or_empty_listed_field_is_refused_naming_the_field() {
                 _ => continue,
             };
             // Enum arms are refused by serde with their own variant list.
-            if ["authority_class", "gap_class", "reversibility"].contains(&key.as_str()) {
+            if [
+                "class",
+                "action_class",
+                "identification",
+                "gap_class",
+                "reversibility",
+            ]
+            .contains(&key.as_str())
+            {
+                continue;
+            }
+            // A goal's prohibition lists may be declared empty ("none beyond
+            // the platform's own");
+            // `a_goal_must_declare_its_prohibitions_even_when_it_declares_none`
+            // holds them to being declared.
+            if name == "goal" && key.starts_with("prohibited_") {
                 continue;
             }
             let mut v = valid.clone();
@@ -121,12 +139,16 @@ fn a_blank_or_empty_listed_field_is_refused_naming_the_field() {
 }
 
 #[test]
-fn a_goal_with_no_stop_or_rollback_condition_or_a_zero_horizon_or_budget_is_refused() {
+fn a_goal_with_no_stop_condition_or_a_zero_horizon_or_budget_is_refused() {
+    assert!(
+        GoalSpec::decode(&serde_json::to_vec(&goal()).expect("e")).is_ok(),
+        "premise: the complete goal decodes"
+    );
     let mut g = goal();
-    g["stop_rollback_conditions"] = json!([]);
+    g["stop_conditions"] = json!([]);
     assert!(GoalSpec::decode(&serde_json::to_vec(&g).expect("e")).is_err());
     let mut g = goal();
-    g["horizon_ms"] = json!(0);
+    g["time_horizon_secs"] = json!(0);
     assert!(GoalSpec::decode(&serde_json::to_vec(&g).expect("e")).is_err());
     let mut g = goal();
     g["budget"] = json!("0");
@@ -134,10 +156,39 @@ fn a_goal_with_no_stop_or_rollback_condition_or_a_zero_horizon_or_budget_is_refu
 }
 
 #[test]
-fn an_authority_class_has_no_live_arm() {
-    let mut g = goal();
-    g["authority_class"] = json!("live");
-    assert!(GoalSpec::decode(&serde_json::to_vec(&g).expect("e")).is_err());
+fn a_goal_must_declare_its_prohibitions_even_when_it_declares_none() {
+    for key in ["prohibited_side_effects", "prohibited_methods"] {
+        let mut g = goal();
+        g[key] = json!([]);
+        assert!(
+            GoalSpec::decode(&serde_json::to_vec(&g).expect("e")).is_ok(),
+            "{key} declared empty is a declaration"
+        );
+        g[key] = json!(["  "]);
+        assert!(GoalSpec::decode(&serde_json::to_vec(&g).expect("e")).is_err());
+        g.as_object_mut().expect("object").remove(key);
+        let err = GoalSpec::decode(&serde_json::to_vec(&g).expect("e")).expect_err(key);
+        assert!(err.to_string().contains(key), "{err}");
+    }
+}
+
+#[test]
+fn a_goal_carries_no_authority_and_a_document_asking_for_one_at_any_level_is_refused() {
+    // The goal used to carry an `authority_class` with no live arm. It now
+    // carries no authority at all (authority is the action policy's, and that
+    // starts at shadow), so a document asking for one is refused rather than
+    // having the field quietly ignored — including at the harmless levels,
+    // because an ignored field is a field its author believes was read.
+    assert!(
+        GoalSpec::decode(&serde_json::to_vec(&goal()).expect("e")).is_ok(),
+        "premise"
+    );
+    for asked in ["live", "paper_trading", "shadow"] {
+        let mut g = goal();
+        g["authority_class"] = json!(asked);
+        let err = GoalSpec::decode(&serde_json::to_vec(&g).expect("e")).expect_err(asked);
+        assert!(err.to_string().contains("authority_class"), "{err}");
+    }
 }
 
 #[test]
@@ -219,4 +270,55 @@ fn a_curriculum_item_without_budget_owner_or_stop_conditions_is_refused() {
     let mut v = item();
     v["stop_conditions"] = json!([]);
     assert!(CurriculumItem::decode(&serde_json::to_vec(&v).expect("e")).is_err());
+}
+
+/// R12-AGENCY-6104: one attribution carries both halves. Each half was once
+/// absent from one of two types, so each is checked here by removing it.
+#[test]
+fn an_attribution_without_a_causal_chain_or_rival_explanation_or_distinct_horizons_is_refused() {
+    let decode = |v: Value| serde_json::from_value::<EffectAttribution>(v).expect("decodes");
+    assert!(decode(attribution()).validate().is_ok(), "premise");
+    for key in ["causal_chain", "competing_explanations"] {
+        let mut v = attribution();
+        v[key] = json!([]);
+        let err = decode(v).validate().expect_err(key);
+        assert!(err.to_string().contains(key), "{err}");
+    }
+    let mut v = attribution();
+    v["observations"] = json!([]);
+    assert!(decode(v).validate().is_err());
+    let mut v = attribution();
+    v["observations"] = json!([
+        {"horizon_ms": 1000, "value": 0.4},
+        {"horizon_ms": 1000, "value": 0.1}
+    ]);
+    let err = decode(v).validate().expect_err("one horizon twice");
+    assert!(err.to_string().contains("twice"), "{err}");
+}
+
+/// R12-AGENCY-6103: correlation is never upgraded to causal certainty by a
+/// number written beside it.
+#[test]
+fn an_unidentified_effect_recorded_with_any_identifiability_above_zero_is_refused() {
+    let decode = |v: Value| serde_json::from_value::<EffectAttribution>(v).expect("decodes");
+    let mut v = attribution();
+    v["identification"] = json!("not_identified");
+    v["identifiability"] = json!(0.0);
+    assert!(
+        decode(v.clone()).validate().is_ok(),
+        "premise: a correlation recorded as one is admitted"
+    );
+    v["identifiability"] = json!(0.05);
+    let err = decode(v).validate().expect_err("upgraded correlation");
+    assert!(err.to_string().contains("not identified"), "{err}");
+    // The same figure under a named strategy is a claim with a basis.
+    let mut v = attribution();
+    v["identification"] = json!({"observational": {"strategy": "difference in differences"}});
+    v["identifiability"] = json!(0.05);
+    assert!(decode(v.clone()).validate().is_ok());
+    v["identification"] = json!({"observational": {"strategy": " "}});
+    assert!(
+        decode(v).validate().is_err(),
+        "a blank strategy is no strategy"
+    );
 }

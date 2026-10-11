@@ -4,12 +4,18 @@
 //!
 //! These are shadow-only records. Nothing here executes an action; an action
 //! a plan names goes through the intent path where the paper-trading boundary
-//! binds, and `AuthorityClass` has no live arm so a goal cannot even ask.
+//! binds. A goal carries no authority at all, so it cannot even ask for a
+//! live one: authority is the action policy's, and that starts at shadow.
 //!
 //! Every list a record must carry is refused when empty. A blank list reads as
 //! "considered and found nothing" when it usually means "not considered", so a
-//! writer who means the former must say so in words.
+//! writer who means the former must say so in words. The one exception is a
+//! goal's two prohibition lists, which may be declared empty but never
+//! omitted: the shipped `qip agency shadow` request document declares them
+//! empty, and "nothing beyond the platform's own prohibitions" is a real
+//! declaration there.
 
+use crate::action::Method;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -66,58 +72,268 @@ impl Effect {
     }
 }
 
-/// What a goal may drive. No live arm exists: ADR 0003.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthorityClass {
-    Observe,
-    Shadow,
-    PaperTrading,
+/// A required text declaration: present and not blank, else a refusal naming
+/// it. The wording matches what `qip-agency` returned before the goal moved
+/// here, because operators and tests read these messages.
+fn declared_text(field: &str, value: Option<String>) -> Result<String> {
+    match value {
+        Some(v) if !v.trim().is_empty() => Ok(v),
+        Some(_) => Err(Error::invalid(format!(
+            "`{field}` is blank; state it explicitly"
+        ))),
+        None => Err(Error::invalid(format!(
+            "`{field}` is not declared; it is required"
+        ))),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+fn declared<T>(field: &str, value: Option<T>) -> Result<T> {
+    value.ok_or_else(|| Error::invalid(format!("`{field}` is not declared; it is required")))
+}
+
+fn declared_list(field: &str, value: Option<Vec<String>>) -> Result<Vec<String>> {
+    let list = declared(field, value)?;
+    if list.is_empty() || list.iter().any(|s| s.trim().is_empty()) {
+        return Err(Error::invalid(format!(
+            "`{field}` must list at least one non-blank entry"
+        )));
+    }
+    Ok(list)
+}
+
+/// The eight classes of objective a goal may express (AGENCY-041).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalClass {
+    Financial,
+    Operational,
+    Research,
+    Product,
+    Liquidity,
+    RiskReduction,
+    InformationAcquisition,
+    Communications,
+}
+
+/// Every declaration optional, so absence is a refusal naming the field and
+/// not a deserialisation error naming nothing useful. Unknown fields are
+/// refused: a goal document carrying a field nothing reads (an
+/// `authority_class: "live"`, say) would otherwise be silently accepted, and
+/// its author would believe the platform had read it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct GoalSpecDraft {
+    pub class: Option<GoalClass>,
+    pub target_state: Option<String>,
+    pub entities_affected: Option<Vec<String>>,
+    pub time_horizon_secs: Option<u64>,
+    pub success_metric: Option<String>,
+    /// Largest acceptable uncertainty on the outcome, in `(0, 1]`.
+    pub acceptable_uncertainty: Option<Decimal>,
+    /// Strictly positive.
+    pub budget: Option<Decimal>,
+    /// Largest summed exposure a plan may carry.
+    pub risk_envelope: Option<Decimal>,
+    pub jurisdictions: Option<Vec<String>>,
+    pub acting_identity: Option<String>,
+    /// May be declared empty ("none"), but must be declared.
+    pub prohibited_side_effects: Option<Vec<String>>,
+    /// May be declared empty ("none"), but must be declared.
+    pub prohibited_methods: Option<Vec<String>>,
+    pub stop_conditions: Option<Vec<String>>,
+}
+
+/// CONTRACT-027 / AGENCY-003 / R12-AGENCY-6079: the one `GoalSpec`.
+///
+/// There were two: this crate's, with an `authority_class` and a single
+/// jurisdiction but no acceptable uncertainty, risk envelope or prohibited
+/// side effects, and `qip-agency`'s, which the engine actually planned
+/// against. A goal validated by one was not a goal the other had checked.
+/// This is `qip-agency`'s shape, moved here so both crates name one type, and
+/// `qip_agency::goal` re-exports it.
+///
+/// `authority_class` is gone rather than merged. What a goal may drive is not
+/// the goal's to declare: authority lives on `qip-agency`'s `ActionPolicy`,
+/// which starts at shadow and has no live rung, and a document that still
+/// carries the field is refused as unknown rather than read as a request.
+///
+/// `non_exhaustive`: outside this crate it comes only from
+/// [`GoalSpecDraft::build`] or deserialisation, both validated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "GoalSpecDraft")]
+#[non_exhaustive]
 pub struct GoalSpec {
-    pub desired_state: String,
-    pub target_entities: Vec<String>,
-    pub horizon_ms: u64,
+    pub class: GoalClass,
+    pub target_state: String,
+    pub entities_affected: Vec<String>,
+    pub time_horizon_secs: u64,
     pub success_metric: String,
+    pub acceptable_uncertainty: Decimal,
     pub budget: Decimal,
-    pub risk_constraints: Vec<String>,
-    pub identity: String,
-    pub jurisdiction: String,
-    pub authority_class: AuthorityClass,
+    pub risk_envelope: Decimal,
+    pub jurisdictions: Vec<String>,
+    pub acting_identity: String,
+    pub prohibited_side_effects: Vec<String>,
     pub prohibited_methods: Vec<String>,
-    pub stop_rollback_conditions: Vec<String>,
+    pub stop_conditions: Vec<String>,
+}
+
+impl GoalSpecDraft {
+    /// Refuse, naming the first missing or malformed field.
+    pub fn build(self) -> Result<GoalSpec> {
+        let class = declared("class", self.class)?;
+        let target_state = declared_text("target_state", self.target_state)?;
+        let entities_affected = declared_list("entities_affected", self.entities_affected)?;
+        let horizon = declared("time_horizon_secs", self.time_horizon_secs)?;
+        if horizon == 0 {
+            return Err(Error::invalid(
+                "`time_horizon_secs` is zero; a goal with no horizon cannot be planned",
+            ));
+        }
+        let success_metric = declared_text("success_metric", self.success_metric)?;
+        let uncertainty = declared("acceptable_uncertainty", self.acceptable_uncertainty)?;
+        if uncertainty <= Decimal::ZERO || uncertainty > Decimal::ONE {
+            return Err(Error::invalid(
+                "`acceptable_uncertainty` must lie in (0, 1]; it is refused, not clamped",
+            ));
+        }
+        let budget = declared("budget", self.budget)?;
+        // Positive, as this crate's goal always required: a zero budget is a
+        // goal that may spend nothing, which is a misdeclaration rather than
+        // a constraint, and the agency shape had let it through.
+        if !budget.is_positive() {
+            return Err(Error::invalid(
+                "`budget` must be greater than zero; a goal that may spend nothing plans nothing",
+            ));
+        }
+        let risk_envelope = declared("risk_envelope", self.risk_envelope)?;
+        if risk_envelope.is_negative() {
+            return Err(Error::invalid("`risk_envelope` must not be negative"));
+        }
+        let jurisdictions = declared_list("jurisdictions", self.jurisdictions)?;
+        let acting_identity = declared_text("acting_identity", self.acting_identity)?;
+        let prohibited_side_effects =
+            declared("prohibited_side_effects", self.prohibited_side_effects)?;
+        let prohibited_methods = declared("prohibited_methods", self.prohibited_methods)?;
+        if let Some(blank) = prohibited_side_effects
+            .iter()
+            .chain(prohibited_methods.iter())
+            .find(|s| s.trim().is_empty())
+        {
+            return Err(Error::invalid(format!(
+                "a prohibition is blank ({blank:?}); name what is prohibited"
+            )));
+        }
+        let stop_conditions = declared_list("stop_conditions", self.stop_conditions)?;
+        Ok(GoalSpec {
+            class,
+            target_state,
+            entities_affected,
+            time_horizon_secs: horizon,
+            success_metric,
+            acceptable_uncertainty: uncertainty,
+            budget,
+            risk_envelope,
+            jurisdictions,
+            acting_identity,
+            prohibited_side_effects,
+            prohibited_methods,
+            stop_conditions,
+        })
+    }
 }
 
 impl GoalSpec {
-    pub fn validate(&self) -> Result<()> {
-        const R: &str = "GoalSpec";
-        text(R, "desired_state", &self.desired_state)?;
-        list(R, "target_entities", &self.target_entities)?;
-        if self.horizon_ms == 0 {
-            return Err(Error::invalid("GoalSpec.horizon_ms must be above zero"));
-        }
-        text(R, "success_metric", &self.success_metric)?;
-        positive(R, "budget", self.budget)?;
-        list(R, "risk_constraints", &self.risk_constraints)?;
-        text(R, "identity", &self.identity)?;
-        text(R, "jurisdiction", &self.jurisdiction)?;
-        list(R, "prohibited_methods", &self.prohibited_methods)?;
-        list(
-            R,
-            "stop_rollback_conditions",
-            &self.stop_rollback_conditions,
-        )
+    /// Strict decode: unknown or missing fields are refused, then every
+    /// declaration is validated by [`GoalSpecDraft::build`].
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        let draft: GoalSpecDraft = serde_json::from_slice(bytes)
+            .map_err(|e| Error::schema(format!("not a GoalSpec: {e}; supply every field")))?;
+        draft.build()
     }
 
-    /// Strict decode: unknown or missing fields, then `validate`.
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let v: Self = serde_json::from_slice(bytes)
-            .map_err(|e| Error::schema(format!("not a GoalSpec: {e}; supply every field")))?;
-        v.validate()?;
-        Ok(v)
+    /// AGENCY-035: split this goal into sub-goals, each a `GoalSpec` that
+    /// sits inside it.
+    ///
+    /// The failure prevented is a decomposition that launders authority: two
+    /// children each "within budget" that together spend it twice, or a child
+    /// acting as somebody the parent never named. A child inherits the
+    /// parent's acting identity when it declares none and the parent's
+    /// prohibitions always (it may add to them, never drop one); its budget
+    /// and envelope are its own declarations, and the sums over the children
+    /// must fit the parent's. Refused, never scaled down to fit.
+    pub fn decompose(&self, parts: Vec<GoalSpecDraft>) -> Result<Vec<GoalSpec>> {
+        if parts.len() < 2 {
+            return Err(Error::invalid(
+                "a decomposition needs at least two sub-goals; one is the goal itself",
+            ));
+        }
+        let mut budget = Decimal::ZERO;
+        let mut envelope = Decimal::ZERO;
+        let mut children = Vec::with_capacity(parts.len());
+        for mut part in parts {
+            if part.acting_identity.is_none() {
+                part.acting_identity = Some(self.acting_identity.clone());
+            }
+            let mut child = part.build()?;
+            if child.acting_identity != self.acting_identity {
+                return Err(Error::denied(format!(
+                    "sub-goal acts as `{}`, outside its parent's identity `{}`",
+                    child.acting_identity, self.acting_identity
+                )));
+            }
+            if child.time_horizon_secs > self.time_horizon_secs {
+                return Err(Error::guard(
+                    "sub-goal horizon runs past its parent's; shorten it",
+                ));
+            }
+            if let Some(outside) = child
+                .jurisdictions
+                .iter()
+                .find(|j| !self.jurisdictions.contains(j))
+            {
+                return Err(Error::denied(format!(
+                    "sub-goal names jurisdiction `{outside}`, which its parent does not"
+                )));
+            }
+            for inherited in &self.prohibited_methods {
+                if !child.prohibited_methods.contains(inherited) {
+                    child.prohibited_methods.push(inherited.clone());
+                }
+            }
+            for inherited in &self.prohibited_side_effects {
+                if !child.prohibited_side_effects.contains(inherited) {
+                    child.prohibited_side_effects.push(inherited.clone());
+                }
+            }
+            budget = budget
+                .checked_add(child.budget)
+                .ok_or_else(|| Error::numeric("sub-goal budgets overflowed"))?;
+            envelope = envelope
+                .checked_add(child.risk_envelope)
+                .ok_or_else(|| Error::numeric("sub-goal risk envelopes overflowed"))?;
+            children.push(child);
+        }
+        if budget > self.budget {
+            return Err(Error::guard(format!(
+                "sub-goal budgets sum to {budget}, outside the parent's {}; lower one",
+                self.budget
+            )));
+        }
+        if envelope > self.risk_envelope {
+            return Err(Error::guard(format!(
+                "sub-goal risk envelopes sum to {envelope}, outside the parent's {}; lower one",
+                self.risk_envelope
+            )));
+        }
+        Ok(children)
+    }
+}
+
+impl TryFrom<GoalSpecDraft> for GoalSpec {
+    type Error = Error;
+    fn try_from(draft: GoalSpecDraft) -> Result<Self> {
+        draft.build()
     }
 }
 
@@ -185,18 +401,63 @@ pub struct HorizonObservation {
     pub value: f64,
 }
 
+/// How an effect was told apart from what would have happened anyway.
+///
+/// AGENCY-056 reads this: predictive accuracy and correlation are both
+/// `NotIdentified`, however good the fit, and nothing widens on them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Identification {
+    /// A randomised or staged experiment assigned the treatment.
+    Experiment,
+    /// An observational estimate with a named identifying strategy.
+    Observational { strategy: String },
+    /// A correlation, a forecast that came true, or anything else with no
+    /// identifying strategy.
+    NotIdentified,
+}
+
+impl Identification {
+    pub fn is_identified(&self) -> bool {
+        !matches!(self, Self::NotIdentified)
+    }
+}
+
+/// CONTRACT-030 / AGENCY-048 / R12-AGENCY-6104: the one effect attribution.
+///
+/// There were two, each holding half of what an auditable attribution needs.
+/// This crate's had per-horizon observations, a counterfactual method and
+/// identifiability, but no causal chain and no rival explanation, so "the KPI
+/// moved at three horizons" passed with no mechanism named. `qip-agency`'s had
+/// the chain, confounders, rivals and an identification strategy, but one
+/// number and no horizon, so an effect that appeared at a minute and reversed
+/// by a day was one figure. Both halves are required here, and
+/// `qip_agency::attribution` re-exports this type.
+///
+/// Every list is refused empty: an attribution that considered no rival says
+/// so in words ("none considered"), which a reviewer can challenge, rather
+/// than by omission, which a reviewer cannot see.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectAttribution {
     pub goal_id: String,
     pub intervention_id: String,
     pub action_id: String,
+    /// The class of action whose effect this is; evidence for one class
+    /// widens no other.
+    pub action_class: Method,
+    pub identification: Identification,
+    /// Distinct horizons, each observed once.
     pub observations: Vec<HorizonObservation>,
     pub counterfactual_method: String,
     pub effect: Effect,
+    /// The mechanism, cause first.
+    pub causal_chain: Vec<String>,
     pub confounders: Vec<String>,
+    pub competing_explanations: Vec<String>,
     pub side_effects: Vec<String>,
-    /// Identifiability in `[0, 1]`.
+    /// Identifiability in `[0, 1]`: 1 an effect established by experiment, 0
+    /// a bare correlation.
     pub identifiability: f64,
     pub resulting_updates: Vec<String>,
 }
@@ -207,23 +468,46 @@ impl EffectAttribution {
         text(R, "goal_id", &self.goal_id)?;
         text(R, "intervention_id", &self.intervention_id)?;
         text(R, "action_id", &self.action_id)?;
+        if let Identification::Observational { strategy } = &self.identification {
+            text(R, "identification strategy", strategy)?;
+        }
         if self.observations.is_empty() {
             return Err(Error::invalid(
                 "EffectAttribution.observations is empty; an effect needs at least one horizon observed",
             ));
         }
+        let mut horizons = BTreeSet::new();
         for o in &self.observations {
             if o.horizon_ms == 0 || !o.value.is_finite() {
                 return Err(Error::invalid(
                     "EffectAttribution.observations holds a zero horizon or non-finite value",
                 ));
             }
+            if !horizons.insert(o.horizon_ms) {
+                return Err(Error::invalid(format!(
+                    "EffectAttribution.observations names horizon {}ms twice; one value per horizon",
+                    o.horizon_ms
+                )));
+            }
         }
         text(R, "counterfactual_method", &self.counterfactual_method)?;
         self.effect.validate(R, "effect")?;
+        list(R, "causal_chain", &self.causal_chain)?;
         list(R, "confounders", &self.confounders)?;
+        list(R, "competing_explanations", &self.competing_explanations)?;
         list(R, "side_effects", &self.side_effects)?;
         finite(R, "identifiability", self.identifiability, 0.0, 1.0)?;
+        // R12-AGENCY-6103: a correlation is not upgraded to a causal claim by
+        // writing a high number beside it. With no identifying strategy the
+        // only honest identifiability is zero; anything above it is a causal
+        // certainty the record has no evidence for.
+        if !self.identification.is_identified() && self.identifiability > 0.0 {
+            return Err(Error::invalid(format!(
+                "EffectAttribution.identifiability is {} on an effect that is not identified; \
+                 a correlation is recorded at 0, name the experiment or strategy to claim more",
+                self.identifiability
+            )));
+        }
         list(R, "resulting_updates", &self.resulting_updates)
     }
 
