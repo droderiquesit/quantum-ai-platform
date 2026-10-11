@@ -106,7 +106,10 @@ impl Criteria {
     /// Novelty multiplies and never adds: a candidate with nothing but novelty
     /// has a priority of zero, below any candidate with economic value or
     /// information gain (EXPAND-042).
-    // ponytail: equal weights on the additive terms; fit a weights table once
+    ///
+    /// Economic value per unit of cost and uncertainty reduction multiply
+    /// (§9.10): a candidate with either at zero has a priority of zero.
+    // ponytail: equal weights on the `1 + x` boosts; fit a weights table once
     // closed items have outcomes to fit it to.
     pub fn score(&self) -> Result<Score> {
         let expected_economic_value =
@@ -145,15 +148,28 @@ impl Criteria {
         // Money meets statistics here. Value per unit of cost is a ratio used
         // only to order candidates; it never moves or accounts for money.
         let value_per_cost = expected_economic_value.to_f64() / compute_data_cost.to_f64();
-        let merit = value_per_cost
-            + uncertainty_reduction
-            + strategic_coverage
-            + risk_reduction
-            + information_gain
-            + reuse_across_domains
-            + failure_frequency
-            + urgency;
-        let priority = feasibility * merit * (1.0 + novelty);
+        // §9.10 (R12-AMBIENT-3106): economic significance and uncertainty
+        // reduction multiply, with cost as the divisor above. A sum let a
+        // question that would teach nothing rank on its economic value alone,
+        // and one worth nothing rank on how much it would teach — both are
+        // spending on a question whose answer cannot pay. The reduction term
+        // is the measured information gain plus the stated reduction share:
+        // the two inputs that say how much uncertainty the work removes.
+        //
+        // Urgency and the remaining terms boost rather than gate, each as
+        // `1 + x`. A zero urgency must not zero a task here: EXPAND-6063
+        // ranks a question with economic value and information gain and
+        // nothing else above pure novelty, and an unhurried, valuable
+        // question is still worth asking. The Curiosity Engine's own rank
+        // (`qip_contracts::ambient::AcquisitionCriteria::net_value_bp`) is
+        // where §9.10's urgency factor gates.
+        let curiosity = value_per_cost * (information_gain + uncertainty_reduction);
+        let boost = (1.0 + urgency)
+            * (1.0 + strategic_coverage)
+            * (1.0 + risk_reduction)
+            * (1.0 + reuse_across_domains)
+            * (1.0 + failure_frequency);
+        let priority = feasibility * curiosity * boost * (1.0 + novelty);
         if !priority.is_finite() {
             return Err(Error::numeric(
                 "the priority is not finite; restate the economic value and cost in the same currency",

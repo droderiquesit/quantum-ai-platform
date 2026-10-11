@@ -512,46 +512,97 @@ fn acquisition_criteria_refuses_basis_points_above_the_maximum() {
     assert!(cost.is_err(), "cost > 10000 is refused");
 }
 
+/// R12-AMBIENT-3106 (§9.10): the rank is a product, so a zero in any of
+/// significance, uncertainty reduction or urgency zeroes it. The additive
+/// form this replaced scored `criteria(10_000, 0, 10_000, 0)` — evidence that
+/// would reduce no uncertainty — at 6,000 bp, and this test asserted that
+/// form for as long as it stood.
+///
+/// Mutation: restore the weighted sum in `net_value_bp` — the zero-reduction
+/// case scores 6,000 and the first loop fails.
 #[test]
-fn acquisition_criteria_net_value_is_evi_minus_cost() {
-    // EVI is weighted: 40% economic, 40% uncertainty, 20% urgency.
-    // If econ=5000, uncertainty=5000, urgency=5000, cost=1000:
-    // EVI = (5000*40 + 5000*40 + 5000*20) / 100 = 5000
-    // Net = 5000 - 1000 = 4000
-    let c = criteria(5_000, 5_000, 5_000, 1_000);
-    assert_eq!(c.net_value_bp(), 4_000, "net value = EVI - cost");
-
-    // If cost exceeds EVI, net value saturates to 0.
-    let expensive = criteria(1_000, 1_000, 1_000, 8_000);
-    let expected_evi = ((1_000 * 40 + 1_000 * 40 + 1_000 * 20) / 100) as u32;
-    assert!(expected_evi < 8_000, "premise: EVI is less than cost");
+fn a_zero_in_any_curiosity_factor_zeroes_the_acquisition_rank() {
+    let full = criteria(10_000, 10_000, 10_000, 0);
     assert_eq!(
-        expensive.net_value_bp(),
-        0,
-        "net value saturates at 0 when cost > EVI"
+        full.net_value_bp(),
+        10_000,
+        "premise: every factor at its maximum and free evidence ranks at the maximum"
     );
-
-    // Economic significance is weighted 40%.
-    let high_econ = criteria(10_000, 0, 0, 0);
-    assert_eq!(
-        high_econ.net_value_bp(),
-        4_000,
-        "40% weight on economic significance"
-    );
-
-    // Uncertainty reduction is weighted 40%.
-    let high_uncertainty = criteria(0, 10_000, 0, 0);
-    assert_eq!(
-        high_uncertainty.net_value_bp(),
-        4_000,
-        "40% weight on uncertainty reduction"
-    );
-
-    // Urgency is weighted 20%.
-    let high_urgency = criteria(0, 0, 10_000, 0);
-    assert_eq!(high_urgency.net_value_bp(), 2_000, "20% weight on urgency");
+    for (name, zeroed) in [
+        ("significance", criteria(0, 10_000, 10_000, 0)),
+        ("uncertainty reduction", criteria(10_000, 0, 10_000, 0)),
+        ("urgency", criteria(10_000, 10_000, 0, 0)),
+    ] {
+        assert_eq!(
+            zeroed.net_value_bp(),
+            0,
+            "zero {name} must rank zero, not be carried by the other factors"
+        );
+    }
+    // Halving one factor halves the rank: multiplicative, not additive.
+    assert_eq!(criteria(5_000, 10_000, 10_000, 0).net_value_bp(), 5_000);
+    assert_eq!(criteria(10_000, 5_000, 10_000, 0).net_value_bp(), 5_000);
+    assert_eq!(criteria(10_000, 10_000, 5_000, 0).net_value_bp(), 5_000);
+    // 0.5 * 0.5 * 0.5 = 0.125 of the scale.
+    assert_eq!(criteria(5_000, 5_000, 5_000, 0).net_value_bp(), 1_250);
 }
 
+/// Cost is a multiplicative penalty in the share of decision value it
+/// consumes: free evidence keeps its rank, evidence costing the whole
+/// decision value ranks zero, and the rank falls strictly as cost rises.
+///
+/// Mutation: drop the `(1 − cost)` factor — the full-cost case then ranks
+/// 10,000 and the second assertion fails.
+#[test]
+fn acquisition_cost_scales_the_rank_down_and_a_cost_of_the_whole_decision_value_zeroes_it() {
+    assert_eq!(criteria(10_000, 10_000, 10_000, 0).net_value_bp(), 10_000);
+    assert_eq!(criteria(10_000, 10_000, 10_000, 10_000).net_value_bp(), 0);
+    assert_eq!(
+        criteria(10_000, 10_000, 10_000, 2_500).net_value_bp(),
+        7_500
+    );
+    let mut previous = u32::MAX;
+    for cost in (0..=10_000).step_by(1_000) {
+        let rank = criteria(8_000, 7_000, 9_000, cost).net_value_bp();
+        assert!(
+            rank < previous,
+            "rank {rank} at cost {cost} did not fall from {previous}"
+        );
+        previous = rank;
+    }
+}
+
+/// The Curiosity Engine's ordering uses the rank: highest first, ties by id,
+/// and a request with a zero factor or one already halted is not ranked.
+///
+/// Mutation: drop the `net_value_bp() > 0` filter in `rank_acquisitions` —
+/// `no-reduction` is then ranked and the id list differs.
+#[test]
+fn the_curiosity_engine_ranks_open_requests_by_the_multiplicative_score_and_skips_worthless_ones() {
+    let request = |id: &str, c: AcquisitionCriteria| {
+        InfoRequest::new(id, "decision-1", c, at(100), at(0)).expect("valid request")
+    };
+    let mut halted = request("halted", criteria(10_000, 10_000, 10_000, 0));
+    assert!(halted.halt(), "premise: a requested request halts");
+    let requests = vec![
+        request("b-mid", criteria(8_000, 8_000, 8_000, 0)),
+        request("no-reduction", criteria(10_000, 0, 10_000, 0)),
+        request("a-mid", criteria(8_000, 8_000, 8_000, 0)),
+        request("top", criteria(10_000, 9_000, 10_000, 0)),
+        halted,
+    ];
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.criteria().net_value_bp() > 0 || r.id() == "no-reduction"),
+        "premise: only the zero-reduction request ranks zero"
+    );
+    let ranked: Vec<&str> = qip_contracts::ambient::rank_acquisitions(&requests)
+        .into_iter()
+        .map(InfoRequest::id)
+        .collect();
+    assert_eq!(ranked, ["top", "a-mid", "b-mid"]);
+}
 #[test]
 fn info_request_refuses_empty_or_future_mismatched_fields() {
     // Premise: a valid request is admitted.
@@ -700,14 +751,19 @@ fn info_request_should_halt_checks_deadline_and_minimum_viable_value() {
     let req = InfoRequest::new(
         "req-1",
         "decision-1",
-        criteria(5_000, 5_000, 5_000, 1_000),
+        criteria(10_000, 9_000, 8_000, 1_000),
         at(100),
         at(0),
     )
     .expect("valid request");
+    assert_eq!(
+        req.criteria().net_value_bp(),
+        6_480,
+        "premise: 1.0 * 0.9 * 0.8 * (1 - 0.1) of the scale"
+    );
 
     // At time 50, before the deadline, with min_viable_value = 2000,
-    // and net value = 4000, should not halt.
+    // and net value = 6480, should not halt.
     assert!(
         !req.should_halt(at(50), 2_000),
         "should_halt is false when before deadline and value > minimum"

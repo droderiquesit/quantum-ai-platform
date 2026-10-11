@@ -602,17 +602,64 @@ impl AcquisitionCriteria {
         })
     }
 
-    /// Computes the net value of acquiring this evidence: the expected value of
-    /// information (EVI) minus the cost. Returns 0 if EVI is less than cost.
-    /// EVI is computed as a weighted average: economic_significance (40%) +
-    /// uncertainty_reduction (40%) + urgency (20%).
+    /// The Curiosity Engine's rank for acquiring this evidence (blueprint
+    /// §9.10, R12-AMBIENT-3106), in basis points:
+    ///
+    /// `significance × uncertainty_reduction × urgency × (1 − cost)`
+    ///
+    /// with every factor read as a fraction of [`MAX_SEVERITY_BP`]. A product,
+    /// not a sum, because each factor is necessary: evidence that would reduce
+    /// no uncertainty is worth nothing however significant the decision, and
+    /// the additive form this replaced (a 40/40/20 weighted sum minus cost)
+    /// ranked exactly that evidence at up to 6,000 bp — the curiosity engine
+    /// would have paid to learn what it already knew.
+    ///
+    /// Cost enters as a multiplicative penalty rather than a subtraction or
+    /// a divisor. It is stated in basis points *of the decision value*, so
+    /// `1 − cost` is the share of the decision's value left after paying for
+    /// the evidence: free evidence keeps its full rank, evidence that costs
+    /// the whole decision value ranks zero. A divisor would never reach zero
+    /// however expensive the evidence, and a subtraction mixes a rank with a
+    /// price.
+    ///
+    /// Integer arithmetic throughout so a replay ranks identically; the
+    /// product is at most 10⁴ · 10⁴ · 10⁴ · 10⁴ = 10¹⁶, well inside `u128`,
+    /// and the result is floored.
     pub fn net_value_bp(&self) -> u32 {
-        let evi = ((self.economic_significance_bp as u64 * 40
-            + self.uncertainty_reduction_bp as u64 * 40
-            + self.urgency_bp as u64 * 20)
-            / 100) as u32;
-        evi.saturating_sub(self.acquisition_cost_bp)
+        let scale = u128::from(MAX_SEVERITY_BP);
+        let kept = u128::from(MAX_SEVERITY_BP.saturating_sub(self.acquisition_cost_bp));
+        let product = u128::from(self.economic_significance_bp)
+            * u128::from(self.uncertainty_reduction_bp)
+            * u128::from(self.urgency_bp)
+            * kept;
+        // Every factor is <= MAX_SEVERITY_BP (refused in `new`), so the
+        // quotient is <= MAX_SEVERITY_BP and fits a u32.
+        u32::try_from(product / (scale * scale * scale)).unwrap_or(MAX_SEVERITY_BP)
     }
+}
+
+/// The Curiosity Engine's ordering: open requests, highest
+/// [`AcquisitionCriteria::net_value_bp`] first, ties broken by request id so
+/// a replay orders identically. Requests already complete or halted, and
+/// those whose rank is zero, are left out — a zero rank means one of the
+/// §9.10 factors is absent, and spending on it is spending on nothing.
+pub fn rank_acquisitions(requests: &[InfoRequest]) -> Vec<&InfoRequest> {
+    let mut open: Vec<&InfoRequest> = requests
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                AcquisitionStatus::Requested | AcquisitionStatus::InProgress
+            ) && r.criteria.net_value_bp() > 0
+        })
+        .collect();
+    open.sort_by(|a, b| {
+        b.criteria
+            .net_value_bp()
+            .cmp(&a.criteria.net_value_bp())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    open
 }
 
 /// A request to acquire evidence to reduce uncertainty in a decision.
