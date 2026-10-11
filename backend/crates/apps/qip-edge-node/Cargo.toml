@@ -63,6 +63,10 @@ qip-routing.workspace = true
 # is this binary's own reflex-ring-to-spool-to-drain composition, so the
 # envelope type is a production dependency here, not a test-only fixture.
 qip-events.workspace = true
+# The limit vocabulary the cell's Risk Gate evaluates, read from the node's
+# limits document (`risk.rs`). A workspace crate `qip-edge` already depends
+# on, not a third external dependency.
+qip-risk.workspace = true
 
 [dev-dependencies]
 # ADR 0100 § 1's broker library (qip-streaming::event_fabric). Dev-only: this

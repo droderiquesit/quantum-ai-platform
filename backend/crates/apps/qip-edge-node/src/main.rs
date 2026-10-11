@@ -78,6 +78,7 @@ use qip_edge_node::outbox::{
 use qip_edge_node::pass::PassMeter;
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
+use qip_edge_node::risk::{CellRiskLimits, RISK_LIMITS_VARIABLE};
 use qip_edge_node::scheduler::{DecisionLoop, HealthFacts, InstantClock, MarkerFacts, Outbox};
 use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::strategies::{
@@ -85,7 +86,7 @@ use qip_edge_node::strategies::{
     parse_pricing,
 };
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
-use qip_edge_node::{NodeAssembly, assemble};
+use qip_edge_node::{NodeAssembly, assemble_with_risk};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::Metrics;
@@ -229,6 +230,11 @@ struct NodeConfig {
     /// The fabric partition the spool drains to, when one is configured —
     /// see `qip_edge_node::outbox`. Taken once, because it holds the token.
     fabric: Option<FabricSettings>,
+    /// The limits the cell's deterministic Risk Gate evaluates. Never
+    /// absent: unset is the shipped set, and a named file that cannot be
+    /// read or names a limit the cell cannot evaluate stops the process —
+    /// see `qip_edge_node::risk`.
+    risk_limits: CellRiskLimits,
 }
 
 impl NodeConfig {
@@ -361,6 +367,10 @@ impl NodeConfig {
         }
 
         let fabric = read_fabric(&|name| std::env::var(name).ok())?;
+        let risk_limits = CellRiskLimits::read(
+            std::env::var(RISK_LIMITS_VARIABLE).ok().as_deref(),
+            |path| std::fs::read_to_string(path),
+        )?;
 
         Ok(Self {
             cell_id,
@@ -382,6 +392,7 @@ impl NodeConfig {
             mirror,
             quote_limits,
             fabric,
+            risk_limits,
         })
     }
 }
@@ -479,13 +490,17 @@ fn run() -> Result<()> {
         telemetry,
         mut cell,
         mesh_series,
-    } = assemble(
+    } = assemble_with_risk(
         cell_config,
         features,
         Arc::clone(&clock),
         config.region_allocation,
         config.mirror.clone(),
+        &config.risk_limits,
     )?;
+    // Said at start, because which limits the reflex path refuses on is the
+    // first thing an operator reading a refusal under `risk_gate` needs.
+    println!("qip-edge-node: {}", config.risk_limits.describe());
     // Said before the venue banner, because which venues are abroad changes
     // what the venue line below means: two venues in one region compose a
     // transport edge and two across a boundary compose a mirror edge, and an

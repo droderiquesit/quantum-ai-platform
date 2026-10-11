@@ -5280,77 +5280,8 @@ impl Cell {
         }
         // The deterministic Risk Gate, last of the checks and before the
         // sequence advances, so a refused order burns no order number. Its
-        // state is the cell's own: confirmed positions, every working order
-        // at its remaining size, and the gross its live verified grants sum
-        // to. Nothing here is a model or reaches the centre.
-        if let Some(gate) = self.risk_gate.as_mut() {
-            let granted = self
-                .deployed
-                .values()
-                .filter(|deployed| deployed.envelope.is_live(now))
-                .try_fold(Decimal::ZERO, |sum, deployed| {
-                    sum.checked_add(deployed.envelope.gross_limit())
-                })
-                .ok_or_else(|| Error::numeric("the cell's granted gross overflows"))?;
-            let held = self.positions.iter().map(|(key, quantity)| {
-                // `Cell::position_key` writes `venue/object`; a key that does
-                // not split that way is priced as nothing the gate has seen,
-                // and refuses, rather than being dropped.
-                let (venue_key, object) = key.split_once('/').unwrap_or(("", key.as_str()));
-                crate::risk_gate::Holding {
-                    venue: venue_key,
-                    object,
-                    signed_quantity: *quantity,
-                    price: None,
-                }
-            });
-            let resting = self.working.values().map(|working| {
-                let order = &working.order;
-                let remaining = (order.quantity - order.filled).max(Decimal::ZERO);
-                crate::risk_gate::Holding {
-                    venue: order.venue.as_str(),
-                    object: order.object_id.as_str(),
-                    signed_quantity: match order.side {
-                        BookSide::Ask => remaining,
-                        BookSide::Bid => -remaining,
-                    },
-                    price: Some(order.price),
-                }
-            });
-            let checked = gate.check(
-                &self.config.cell_id,
-                held.chain(resting),
-                granted,
-                object_id,
-                venue,
-                side,
-                quantity,
-                price,
-                now,
-            )?;
-            if !checked.is_approved() {
-                let reason = format!(
-                    "the cell's risk gate refused {} {} of {} at {}: {}",
-                    match side {
-                        BookSide::Ask => "a buy of",
-                        BookSide::Bid => "a sale of",
-                    },
-                    quantity,
-                    object_id.as_str(),
-                    venue.as_str(),
-                    checked.decision.describe()
-                );
-                self.metrics.refusal(crate::risk_gate::GATE_RISK);
-                self.journal.record(
-                    Decision::Refused {
-                        gate: crate::risk_gate::GATE_RISK.to_string(),
-                        reason: reason.clone(),
-                    },
-                    now,
-                );
-                return Err(Error::denied(reason));
-            }
-        }
+        // state is the cell's own; see `Cell::risk_admit`.
+        self.risk_admit(None, object_id, venue, side, quantity, price, now)?;
         self.order_sequence += 1;
         let order_id = format!("{}-{}", self.config.cell_id, self.order_sequence);
         let placed = gateway.try_place(
@@ -5371,6 +5302,135 @@ impl Cell {
                 "broker queue is at capacity; order will be retried on the next pass",
             )),
         }
+    }
+
+    /// Ask the installed Risk Gate whether a replacement for the open order
+    /// `order_id` may be sent: `quantity` of `object_id` at `price`, at
+    /// `venue`, on `side`.
+    ///
+    /// The node's repricer withdraws a resting order and re-sends its
+    /// acknowledged remainder at the touch beneath the cell's placer seam, so
+    /// the replacement never passed through [`Cell::send`] — a new price is a
+    /// new notional, and the gate never saw it (R12-RISK-4093; the route
+    /// table in `qip-acceptance` carried it as the one ungated row). This is
+    /// the same gate over the same book, with one difference that is the
+    /// point of a separate entry: the order being replaced is left out of the
+    /// working set, because the venue has acknowledged withdrawing it, and
+    /// the replacement is the order under check. Counting both would charge
+    /// the intention twice and refuse a requote that adds nothing.
+    ///
+    /// A refusal is journaled and counted under [`crate::risk_gate::GATE_RISK`]
+    /// here, as at [`Cell::send`], because a requote happens outside
+    /// [`Cell::work`] and has no report to push onto. A cell with no gate
+    /// installed admits, as `send` does; `qip-edge-node` cannot assemble a
+    /// cell without one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_replacement(
+        &mut self,
+        order_id: &str,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        self.risk_admit(Some(order_id), object_id, venue, side, quantity, price, now)
+    }
+
+    /// The deterministic Risk Gate over the cell's own book: confirmed
+    /// positions, every working order at its remaining size except
+    /// `replacing`, and the gross its live verified grants sum to. Nothing
+    /// here is a model or reaches the centre.
+    #[allow(clippy::too_many_arguments)]
+    fn risk_admit(
+        &mut self,
+        replacing: Option<&str>,
+        object_id: &ObjectId,
+        venue: &VenueId,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+        now: Timestamp,
+    ) -> Result<()> {
+        let Some(gate) = self.risk_gate.as_mut() else {
+            return Ok(());
+        };
+        let granted = self
+            .deployed
+            .values()
+            .filter(|deployed| deployed.envelope.is_live(now))
+            .try_fold(Decimal::ZERO, |sum, deployed| {
+                sum.checked_add(deployed.envelope.gross_limit())
+            })
+            .ok_or_else(|| Error::numeric("the cell's granted gross overflows"))?;
+        let held = self.positions.iter().map(|(key, quantity)| {
+            // `Cell::position_key` writes `venue/object`; a key that does
+            // not split that way is priced as nothing the gate has seen,
+            // and refuses, rather than being dropped.
+            let (venue_key, object) = key.split_once('/').unwrap_or(("", key.as_str()));
+            crate::risk_gate::Holding {
+                venue: venue_key,
+                object,
+                signed_quantity: *quantity,
+                price: None,
+            }
+        });
+        let resting = self
+            .working
+            .iter()
+            .filter(|(id, _)| replacing != Some(id.as_str()))
+            .map(|(_, working)| {
+                let order = &working.order;
+                let remaining = (order.quantity - order.filled).max(Decimal::ZERO);
+                crate::risk_gate::Holding {
+                    venue: order.venue.as_str(),
+                    object: order.object_id.as_str(),
+                    signed_quantity: match order.side {
+                        BookSide::Ask => remaining,
+                        BookSide::Bid => -remaining,
+                    },
+                    price: Some(order.price),
+                }
+            });
+        let checked = gate.check(
+            &self.config.cell_id,
+            held.chain(resting),
+            granted,
+            object_id,
+            venue,
+            side,
+            quantity,
+            price,
+            now,
+        )?;
+        if checked.is_approved() {
+            return Ok(());
+        }
+        let reason = format!(
+            "the cell's risk gate refused {}{} {} of {} at {}: {}",
+            match replacing {
+                Some(_) => "the replacement for ",
+                None => "",
+            },
+            match side {
+                BookSide::Ask => "a buy of",
+                BookSide::Bid => "a sale of",
+            },
+            quantity,
+            object_id.as_str(),
+            venue.as_str(),
+            checked.decision.describe()
+        );
+        self.metrics.refusal(crate::risk_gate::GATE_RISK);
+        self.journal.record(
+            Decision::Refused {
+                gate: crate::risk_gate::GATE_RISK.to_string(),
+                reason: reason.clone(),
+            },
+            now,
+        );
+        Err(Error::denied(reason))
     }
 
     /// Record an order the venue accepted: the open order its fills will be
