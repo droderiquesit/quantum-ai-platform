@@ -76,10 +76,15 @@ COPY backend/ .
 # it refuses to start. Nothing set it until 2026-10-11, so every deployed
 # decision named the crate version and no commit. It is a function of the
 # commit like the epoch, so both builds of one commit still agree.
+#
+# The hex check is a `case` glob rather than `printf | tr -d` in a command
+# substitution: a pipe in a RUN line runs under /bin/sh without pipefail
+# (hadolint DL4006), so a failing left-hand side would be masked, and a glob
+# needs no pipe at all. Any character outside lowercase hex refuses the build.
 RUN test -n "$BINARY" \
   && test -n "$SOURCE_DATE_EPOCH" \
   && test "${#QIP_SOURCE_COMMIT}" -eq 40 \
-  && test -z "$(printf '%s' "$QIP_SOURCE_COMMIT" | tr -d '0-9a-f')" \
+  && case "$QIP_SOURCE_COMMIT" in *[!0-9a-f]*) exit 1 ;; esac \
   && export SOURCE_DATE_EPOCH QIP_SOURCE_COMMIT \
   && cargo build --release --locked --bin "$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
