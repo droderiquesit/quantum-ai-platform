@@ -58,6 +58,11 @@ pub struct RecordedAnswer {
     /// The `etag` the source sent with this answer, if it sent one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub etag: Option<String>,
+    /// The SHA-256 (hex) the source declared for this body, if it declared
+    /// one; checked against the body exactly as the HTTP transport checks a
+    /// `content-digest` header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<String>,
 }
 
 impl RecordedAnswer {
@@ -70,6 +75,7 @@ impl RecordedAnswer {
             retry_after_secs: None,
             transport_error: None,
             etag: None,
+            content_digest: None,
         }
     }
 
@@ -82,6 +88,7 @@ impl RecordedAnswer {
             retry_after_secs: Some(retry_after_secs),
             transport_error: None,
             etag: None,
+            content_digest: None,
         }
     }
 
@@ -94,11 +101,18 @@ impl RecordedAnswer {
             retry_after_secs: None,
             transport_error: Some(detail.into()),
             etag: None,
+            content_digest: None,
         }
     }
 
     pub fn with_etag(mut self, etag: impl Into<String>) -> Self {
         self.etag = Some(etag.into());
+        self
+    }
+
+    /// The source declares `sha256_hex` as this body's digest.
+    pub fn with_content_digest(mut self, sha256_hex: impl Into<String>) -> Self {
+        self.content_digest = Some(sha256_hex.into());
         self
     }
 
@@ -118,7 +132,11 @@ impl RecordedAnswer {
             latency: Duration::from_millis(self.latency_ms),
             retry_after: None,
             etag: self.etag.clone(),
+            content_digest: None,
         };
+        if let Some(declared) = &self.content_digest {
+            response = response.with_declared_digest(declared.clone());
+        }
         if let Some(seconds) = self.retry_after_secs {
             response = response.with_retry_after(Duration::from_secs(seconds));
         }

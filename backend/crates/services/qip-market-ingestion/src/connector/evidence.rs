@@ -30,6 +30,7 @@
 //! signal, so a news statement is its headline alone.
 
 use super::manifest::{SchemaVersion, SourceManifest};
+use super::transport::ContentDigest;
 use crate::adapter::SensedRecord;
 use qip_core::Timestamp;
 use qip_core::error::Result;
@@ -133,11 +134,74 @@ pub fn claimed_at(record: &SensedRecord) -> Timestamp {
     }
 }
 
+/// Metadata key: the feed's own sequence number for this claim, where the
+/// feed numbers its messages (never the number the capture gate assigns).
+pub const META_FEED_SEQUENCE: &str = "feed_sequence";
+/// Metadata key: the numbered stream a [`META_FEED_SEQUENCE`] counts in.
+pub const META_STREAM: &str = "stream";
+
+/// The stream a feed numbers `record` in and the number it gave it, for a
+/// tick, quote or trade the *source* numbered.
+///
+/// Read before the capture gate stamps its own arrival count over a missing
+/// one: that count orders arrival here, says nothing the source asserted,
+/// and declaring a cause from it would call every late packet a violation of
+/// the source's own ordering.
+pub fn feed_sequence_of(record: &SensedRecord) -> Option<(String, u64)> {
+    let (kind, venue, instrument, sequence) = match record {
+        SensedRecord::Tick(t) => ("tick", &t.venue, t.object_id.as_str(), t.sequence),
+        SensedRecord::Quote(q) => ("quote", &q.venue, q.object_id.as_str(), q.sequence),
+        SensedRecord::Trade(t) => ("trade", &t.venue, t.object_id.as_str(), t.sequence),
+        _ => return None,
+    };
+    sequence.map(|n| (format!("{kind}@{venue}/{instrument}"), n))
+}
+
+/// The claim this event's source ordered immediately before it, among
+/// `held`: same source, same numbered stream, the greatest feed sequence
+/// below `sequence` (R12-EVID-2036).
+///
+/// The source's numbering is the one causal order a market feed declares:
+/// message *n* is published from the state message *n − 1* left. A claim
+/// numbered after another but dated before it is a feed contradicting its
+/// own clock, and naming the predecessor as the claim's cause is what lets
+/// the fabric's event-ordering check see it. Until 2026-10-11 production
+/// evidence declared no cause at all, so that check could never fire.
+pub fn sequence_predecessor<'a>(
+    held: impl Iterator<Item = &'a EvidenceRecord>,
+    source: &str,
+    stream: &str,
+    sequence: u64,
+) -> Option<String> {
+    held.filter(|prior| {
+        prior.source_identity == source
+            && prior.metadata.get(META_STREAM).map(String::as_str) == Some(stream)
+    })
+    .filter_map(|prior| {
+        let n = prior
+            .metadata
+            .get(META_FEED_SEQUENCE)?
+            .parse::<u64>()
+            .ok()?;
+        (n < sequence).then_some((n, prior.id.clone()))
+    })
+    .max()
+    .map(|(_, id)| id)
+}
+
 /// Build the evidence record for one admitted event.
 ///
 /// `published_at` is the instant the record became knowable under the
 /// manifest's publication delay — what the source made available, and when
 /// — and `claimed_at` the instant the record says the fact was true.
+///
+/// The fetched body's hash is *not* attached as an authenticity signal: it
+/// was compared against itself and credited every claim (R12-EVID-2034).
+/// It travels as provenance ([`CheckedEvidence::document_hash`]). What is
+/// attached is the source's own declared digest when the body did **not**
+/// match it, so the fabric records the claim as spoofed. `feed_sequence` is
+/// [`feed_sequence_of`] taken before the capture gate, and `cause` the
+/// [`sequence_predecessor`] it names.
 #[allow(clippy::too_many_arguments)]
 pub fn evidence_of(
     manifest: &SourceManifest,
@@ -147,7 +211,9 @@ pub fn evidence_of(
     record: &SensedRecord,
     published_at: Timestamp,
     ingested_at: Timestamp,
-    document_hash: &str,
+    declared_digest: Option<&ContentDigest>,
+    feed_sequence: Option<&(String, u64)>,
+    cause: Option<String>,
     confidence: f64,
 ) -> Result<EvidenceRecord> {
     let topic = record.topic();
@@ -181,12 +247,22 @@ pub fn evidence_of(
     )?
     .with_claimed_at(claimed_at(record))
     .with_location(format!("region:{:?}", manifest.region))
-    .with_authenticity_signal(AuthenticitySignal::HashVerified {
-        algorithm: "sha256".into(),
-        hash: document_hash.to_string(),
-    })
     .with_metadata("provider".into(), manifest.provider.clone())
     .with_metadata("upstream_key".into(), upstream_key.to_string());
+    if let Some(digest) = declared_digest.filter(|digest| !digest.matched) {
+        evidence = evidence.with_authenticity_signal(AuthenticitySignal::HashVerified {
+            algorithm: "sha256".into(),
+            hash: digest.declared.clone(),
+        });
+    }
+    if let Some((stream, sequence)) = feed_sequence {
+        evidence = evidence
+            .with_metadata(META_STREAM.into(), stream.clone())
+            .with_metadata(META_FEED_SEQUENCE.into(), sequence.to_string());
+    }
+    if let Some(cause) = cause {
+        evidence = evidence.with_cause(cause);
+    }
     if let Some(subject) = subject {
         evidence = evidence.with_metadata(META_SUBJECT.into(), subject);
         if let Some((attribute, value)) = value {
@@ -206,10 +282,16 @@ pub fn evidence_of(
 /// the one bound a capture without a clock estimate can state: the event
 /// happened no later than it was received, so the receive lag is the width
 /// of the interval it lies in. Zero would claim a measurement nobody made.
+///
+/// `raw` is the event's payload as the source sent it. Until 2026-10-11
+/// this path set the raw bytes and their hash to `None` for every event, so
+/// the lake held canonical records whose source bytes nobody could ever
+/// re-derive or check (R12-DATA-1039).
 pub fn captured_of(
     record: &SensedRecord,
     source_id: &str,
     entitlement: &str,
+    raw: Option<&super::envelope::RawPayload>,
 ) -> Result<Option<qip_storage::tick_capture::CapturedMarketEvent>> {
     let (venue, instrument, sequence, at, capture) = match record {
         SensedRecord::Tick(t) => (
@@ -248,8 +330,8 @@ pub fn captured_of(
         arrival_order: None,
         entitlement: entitlement.to_string(),
         canonical: serde_json::to_value(record)?,
-        raw_sha256: None,
-        raw: None,
+        raw_sha256: raw.map(|payload| payload.sha256.clone()),
+        raw: raw.and_then(|payload| payload.bytes.clone()),
     };
     captured.validate()?;
     Ok(Some(captured))

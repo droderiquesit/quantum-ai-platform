@@ -28,12 +28,14 @@ use super::backoff::{BackoffLadder, FailureKind, RetryDecision};
 use super::checkpoint::{Checkpoint, Cursor, CursorPosition};
 use super::dedup::{DedupWindow, Novelty};
 use super::envelope::{MarketEventEnvelope, RawEvent};
-use super::evidence::{CheckedEvidence, ParserLineage, evidence_of};
+use super::evidence::{
+    CheckedEvidence, ParserLineage, evidence_of, feed_sequence_of, sequence_predecessor,
+};
 use super::heartbeat::{FeedHeartbeat, Liveness};
 use super::manifest::SourceManifest;
 use super::quarantine::{Quarantine, QuarantineReason};
 use super::ratelimit::{Admission, RateLimiter};
-use super::transport::{SourceResponse, SourceTransport};
+use super::transport::{ContentDigest, SourceResponse, SourceTransport};
 use super::validate::SchemaGuard;
 use crate::adapter::SensedRecord;
 use qip_core::error::{Error, Result};
@@ -179,6 +181,13 @@ pub struct PollReport {
     /// The evidence each admitted record was checked as, in admission
     /// order and one per record in `admitted`. See [`super::evidence`].
     pub evidence: Vec<CheckedEvidence>,
+    /// Evidence the fabric checked and the runtime then refused to release:
+    /// a claim on an impossible timeline, or one from a body that did not
+    /// match the digest its own source declared. The records are
+    /// quarantined; the evidence still travels up, because the world
+    /// fabric's spoofing and synthetic-content detectors can only find a
+    /// pattern in claims they are shown (R12-EVID-2039).
+    pub refused_evidence: Vec<CheckedEvidence>,
     /// What this poll changed in what the fabric believes.
     pub knowledge_delta: KnowledgeDelta,
     /// The delta as a knowledge pack, when it changed anything.
@@ -204,6 +213,7 @@ impl PollReport {
             digest: None,
             unreferenced: false,
             evidence: Vec::new(),
+            refused_evidence: Vec::new(),
             knowledge_delta: KnowledgeDelta::default(),
             knowledge_pack: None,
             knowledge_footprint: None,
@@ -705,7 +715,15 @@ impl ConnectorRuntime {
             {
                 subjects.insert(subject.to_string());
             }
-            let withheld = self.admit(connector, event, mapped, at, &body_hash, &mut report);
+            let withheld = self.admit(
+                connector,
+                event,
+                mapped,
+                at,
+                &body_hash,
+                response.content_digest.as_ref(),
+                &mut report,
+            );
             if !withheld {
                 cursor_newest = Some(match cursor_newest {
                     Some(previous) if previous > event.event_time => previous,
@@ -797,6 +815,7 @@ impl ConnectorRuntime {
     /// served; it is consumed here at the point the mapping used to be made,
     /// after knowability and dedup, so a withheld or duplicate event's
     /// mapping failure is still nobody's quarantine.
+    #[allow(clippy::too_many_arguments)]
     fn admit(
         &mut self,
         connector: &dyn SourceConnector,
@@ -804,6 +823,7 @@ impl ConnectorRuntime {
         mapped: Result<SensedRecord>,
         at: Timestamp,
         body_hash: &str,
+        declared_digest: Option<&ContentDigest>,
         report: &mut PollReport,
     ) -> bool {
         let knowable_at = event
@@ -858,6 +878,9 @@ impl ConnectorRuntime {
             .events_seen
             .saturating_add(report.admitted.len() as u64)
             .saturating_add(1);
+        // The source's own numbering, read before the gate fills a gap in it
+        // with an arrival count: only the former declares an order.
+        let feed_sequence = feed_sequence_of(&record);
         stamp_capture(&mut record, at, sequence);
 
         let quality = connector.quality_of(event);
@@ -868,6 +891,8 @@ impl ConnectorRuntime {
             knowable_at,
             at,
             body_hash,
+            declared_digest,
+            feed_sequence.as_ref(),
             quality.confidence,
             report,
         ) {
@@ -923,9 +948,24 @@ impl ConnectorRuntime {
         knowable_at: Timestamp,
         at: Timestamp,
         body_hash: &str,
+        declared_digest: Option<&ContentDigest>,
+        feed_sequence: Option<&(String, u64)>,
         confidence: f64,
         report: &mut PollReport,
     ) -> std::result::Result<CheckedEvidence, String> {
+        let mut fabric = self.evidence.lock().map_err(|_| {
+            "the evidence fabric is unavailable (a previous check panicked holding it), so no \
+             claim can be checked and none is released unchecked"
+                .to_string()
+        })?;
+        let cause = feed_sequence.and_then(|(stream, sequence)| {
+            sequence_predecessor(
+                fabric.held().map(|held| &held.record),
+                &self.manifest.source_id,
+                stream,
+                *sequence,
+            )
+        });
         let evidence = evidence_of(
             &self.manifest,
             &self.lineage,
@@ -934,15 +974,12 @@ impl ConnectorRuntime {
             record,
             knowable_at,
             at,
-            body_hash,
+            declared_digest,
+            feed_sequence,
+            cause,
             confidence,
         )
         .map_err(|error| format!("evidence could not be formed: {}", error.message()))?;
-        let mut fabric = self.evidence.lock().map_err(|_| {
-            "the evidence fabric is unavailable (a previous check panicked holding it), so no \
-             claim can be checked and none is released unchecked"
-                .to_string()
-        })?;
         if let Some(held) = fabric.get(&evidence.id) {
             return Ok(CheckedEvidence {
                 record: held.record.clone(),
@@ -955,20 +992,36 @@ impl ConnectorRuntime {
             .admit(evidence.clone(), Some(body_hash), at)
             .map_err(|error| format!("evidence refused: {}", error.message()))?;
         report.knowledge_delta.absorb(&verdict, outcome, key);
-        if !verdict.admissible {
-            return Err(format!(
+        let refusal = if !verdict.admissible {
+            Some(format!(
                 "evidence on an impossible timeline: {:?}",
                 verdict.temporal
-            ));
-        }
+            ))
+        } else if verdict.authenticity.spoofed {
+            // Fail closed: the body is not what its own source said it sent,
+            // so nothing extracted from it is released.
+            Some(format!(
+                "evidence from an altered document: {}",
+                verdict.authenticity.refused.join("; ")
+            ))
+        } else {
+            None
+        };
         let record = fabric
             .get(&verdict.id)
             .map_or(evidence, |held| held.record.clone());
-        Ok(CheckedEvidence {
+        let checked = CheckedEvidence {
             record,
             document_hash: body_hash.to_string(),
             verdict,
-        })
+        };
+        match refusal {
+            Some(reason) => {
+                report.refused_evidence.push(checked);
+                Err(reason)
+            }
+            None => Ok(checked),
+        }
     }
 
     fn hold(

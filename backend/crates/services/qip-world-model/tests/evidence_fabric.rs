@@ -19,6 +19,8 @@ use qip_world_model::{
 
 const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const HASH_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const HASH_D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 
 fn at(secs: i64) -> Timestamp {
     Timestamp::from_secs(1_800_000_000 + secs)
@@ -137,7 +139,12 @@ fn ten_copies_of_one_press_release_count_as_one_origin() {
 
 #[test]
 fn disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_resolves_them() {
-    let mut fabric = EvidenceFabric::default().trusting_registry("ecb-registry");
+    // The official release's document hash is pinned by an independent
+    // channel (a published checksum): a hash naming its own fetched body
+    // earns nothing on its own (R12-EVID-2034).
+    let mut fabric = EvidenceFabric::default()
+        .trusting_registry("ecb-registry")
+        .pinning_document_hash(HASH_C);
     fabric
         .admit(
             claim("x", "https://rumour.example", "1.20", "1.20", 0),
@@ -168,9 +175,9 @@ fn disagreeing_claims_are_kept_as_competing_hypotheses_until_an_authentic_claim_
         })
         .with_authenticity_signal(AuthenticitySignal::HashVerified {
             algorithm: "sha256".into(),
-            hash: HASH_B.into(),
+            hash: HASH_C.into(),
         });
-    let (resolving, _) = fabric.admit(official, Some(HASH_B), at(12)).unwrap();
+    let (resolving, _) = fabric.admit(official, Some(HASH_C), at(12)).unwrap();
     assert!(resolving.resolved.is_some(), "{resolving:?}");
     let contest = fabric.contests().values().next().unwrap();
     assert_eq!(contest.resolution.as_ref().unwrap().value, "1.10");
@@ -220,20 +227,19 @@ fn a_claim_ingested_before_it_was_published_is_inadmissible_and_weighs_nothing()
     assert!(sound.belief_weight > 0.0);
 }
 
+/// R12-EVID-2034's defect, as it shipped: every production claim carried a
+/// hash of its fetched body and was handed that same hash to compare against,
+/// so the comparison could not fail and credited every claim. The self-hash
+/// must now earn nothing; only a hash an independent channel pinned does,
+/// and a hash that disagrees with the body is still spoofing.
 #[test]
-fn a_hash_is_credited_only_when_it_matches_the_fetched_document_and_a_mismatch_is_spoofing() {
-    let mut fabric = EvidenceFabric::default();
+fn a_hash_naming_its_own_document_credits_nothing_unless_independently_pinned_and_a_mismatch_is_spoofing()
+ {
     let signal = |hash: &str| AuthenticitySignal::HashVerified {
         algorithm: "sha256".into(),
         hash: hash.into(),
     };
-    let (matched, _) = fabric
-        .admit(
-            claim("m", "https://s.example", "m", "1", 0).with_authenticity_signal(signal(HASH_A)),
-            Some(HASH_A),
-            at(10),
-        )
-        .unwrap();
+    let mut fabric = EvidenceFabric::default();
     let (bare, _) = fabric
         .admit(
             claim("n", "https://s.example", "n", "1", 0),
@@ -241,13 +247,42 @@ fn a_hash_is_credited_only_when_it_matches_the_fetched_document_and_a_mismatch_i
             at(10),
         )
         .unwrap();
-    assert!(matched.authenticity.score > bare.authenticity.score);
+    let (self_hashed, _) = fabric
+        .admit(
+            claim("m", "https://s.example", "m", "1", 0).with_authenticity_signal(signal(HASH_A)),
+            Some(HASH_A),
+            at(10),
+        )
+        .unwrap();
+    assert_eq!(
+        self_hashed.authenticity.refused.len(),
+        1,
+        "premise: the hash signal was carried and judged: {:?}",
+        self_hashed.authenticity
+    );
     assert!(
-        matched.belief_weight > bare.belief_weight,
+        self_hashed.authenticity.credited.is_empty(),
+        "a hash compared with the body it was taken from was credited: {:?}",
+        self_hashed.authenticity
+    );
+    assert_eq!(self_hashed.authenticity.score, bare.authenticity.score);
+    assert!(!self_hashed.authenticity.spoofed);
+
+    let mut pinned = EvidenceFabric::default().pinning_document_hash(HASH_A);
+    let (vouched, _) = pinned
+        .admit(
+            claim("p", "https://s.example", "p", "1", 0).with_authenticity_signal(signal(HASH_A)),
+            Some(HASH_A),
+            at(10),
+        )
+        .unwrap();
+    assert!(vouched.authenticity.score > bare.authenticity.score);
+    assert!(
+        vouched.belief_weight > bare.belief_weight,
         "authenticity moves the belief weight"
     );
 
-    let (forged, _) = fabric
+    let (forged, _) = pinned
         .admit(
             claim("o", "https://s.example", "o", "1", 0).with_authenticity_signal(signal(HASH_B)),
             Some(HASH_A),
@@ -256,6 +291,83 @@ fn a_hash_is_credited_only_when_it_matches_the_fetched_document_and_a_mismatch_i
         .unwrap();
     assert!(forged.authenticity.spoofed);
     assert!(forged.authenticity.credited.is_empty());
+}
+
+/// R12-EVID-2038 through R12-EVID-2034: with the self-hash credited no
+/// longer, production authenticity has to come from somewhere a source
+/// cannot supply for itself. Agreement from two independent origins at other
+/// sources reaches the resolving bar; one does not, and neither does a
+/// source repeating itself.
+#[test]
+fn a_contest_resolves_on_two_independent_corroborating_sources_and_not_on_one() {
+    let mut fabric = EvidenceFabric::default();
+    fabric
+        .admit(
+            claim("a", "https://a.example", "a says 1.10", "1.10", 0),
+            Some(HASH_A),
+            at(10),
+        )
+        .unwrap();
+    let (_, outcome) = fabric
+        .admit(
+            claim("b", "https://b.example", "b says 1.20", "1.20", 1),
+            Some(HASH_B),
+            at(11),
+        )
+        .unwrap();
+    assert_eq!(outcome, KeyOutcome::BecameContested, "premise: a contest");
+
+    // The contradicted source repeating itself from a fresh fetch is no
+    // corroboration of anything.
+    let (echo, _) = fabric
+        .admit(
+            claim("b2", "https://b.example", "b again 1.20", "1.20", 2),
+            Some(HASH_D),
+            at(12),
+        )
+        .unwrap();
+    assert_eq!(echo.corroborates, vec!["b".to_string()], "premise: linked");
+    assert_eq!(
+        echo.authenticity.score,
+        qip_world_model::fabric::UNSIGNED_AUTHENTICITY
+    );
+    assert!(echo.resolved.is_none());
+
+    let (one, _) = fabric
+        .admit(
+            claim("c", "https://c.example", "c says 1.10", "1.10", 2),
+            Some(HASH_C),
+            at(12),
+        )
+        .unwrap();
+    assert_eq!(one.corroborates, vec!["a".to_string()]);
+    assert!(
+        one.resolved.is_none(),
+        "one corroborating origin resolved a contest: {:?}",
+        one.authenticity
+    );
+
+    let (two, _) = fabric
+        .admit(
+            claim("d", "https://d.example", "d says 1.10", "1.10", 3),
+            Some("eeee"),
+            at(13),
+        )
+        .unwrap();
+    assert!(two.authenticity.score >= qip_world_model::fabric::RESOLVING_AUTHENTICITY);
+    assert!(two.resolved.is_some(), "{:?}", two.authenticity);
+    let contest = fabric.contests().values().next().unwrap();
+    let resolution = contest.resolution.as_ref().unwrap();
+    assert_eq!(resolution.value, "1.10");
+    assert_eq!(resolution.resolved_by, "d");
+    assert_eq!(contest.hypotheses.len(), 2, "the losing side is kept");
+    assert_eq!(
+        fabric
+            .source_history("https://b.example")
+            .unwrap()
+            .contradicted,
+        2
+    );
 }
 
 #[test]
@@ -481,7 +593,9 @@ fn a_clean_episode_of_independent_agreeing_sources_produces_no_findings() {
 
 #[test]
 fn a_source_repeatedly_contradicted_by_resolutions_is_flagged_as_poisoned() {
-    let mut fabric = EvidenceFabric::default().trusting_registry("reg");
+    let mut fabric = EvidenceFabric::default()
+        .trusting_registry("reg")
+        .pinning_document_hash(HASH_A);
     for round in 0..3_i64 {
         let subject = format!("SUBJ{round}");
         let mut bad = claim(
