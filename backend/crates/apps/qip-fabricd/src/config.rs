@@ -24,8 +24,16 @@ pub const DATA_DIR: &str = "QIP_EVENT_FABRIC_DATA_DIR";
 pub const CATALOGUE: &str = "QIP_EVENT_FABRIC_CATALOGUE";
 /// The identities file: one `<identity> <sha256 of its token>` per line.
 pub const IDENTITIES_FILE: &str = "QIP_EVENT_FABRIC_IDENTITIES_FILE";
-/// Where sealed segments are archived to.
+/// Where sealed segments are archived to, when the archive is a directory.
+/// Exactly one of this and [`ARCHIVE_BUCKET`] is set.
 pub const ARCHIVE_DIR: &str = "QIP_EVENT_FABRIC_ARCHIVE_DIR";
+/// The Cloud Storage landing bucket sealed segments are archived to, when
+/// the archive is a bucket (FABRIC-8101, DATA-8124). Exactly one of this and
+/// [`ARCHIVE_DIR`] is set.
+pub const ARCHIVE_BUCKET: &str = "QIP_EVENT_FABRIC_ARCHIVE_BUCKET";
+/// Optional: the key prefix inside [`ARCHIVE_BUCKET`] this broker writes
+/// under, so one regional landing bucket can hold several brokers.
+pub const ARCHIVE_PREFIX: &str = "QIP_EVENT_FABRIC_ARCHIVE_PREFIX";
 /// The address the fabric protocol is served on.
 pub const LISTEN: &str = "QIP_EVENT_FABRIC_LISTEN";
 /// The address health and metrics are served on, never the protocol's own.
@@ -46,13 +54,39 @@ pub const MAXIMUM_PARTITIONS: u32 = 1024;
 /// cadence for the local slice (`seal_age_ms: 1000`).
 pub const DEFAULT_HOUSEKEEPING_MS: u64 = 1000;
 
+/// Where sealed segments go.
+///
+/// A directory stays the target for development and tests. A bucket is the
+/// deployed target: content-addressed segment objects in a regional landing
+/// bucket, reached over the in-VPC TLS-terminating proxy with a token from
+/// the metadata server or a token file (`qip_storage::gcp`). There is no
+/// fallback from one to the other — a broker told to archive to a bucket it
+/// cannot reach refuses to start rather than writing to the container's
+/// disk and acknowledging P0/P1 batches as archived on a copy that dies with
+/// the pod.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArchiveTarget {
+    Directory(PathBuf),
+    CloudStorage {
+        bucket: String,
+        prefix: String,
+        /// `http://` address of the TLS-terminating proxy (`QIP_GCP_ENDPOINT`).
+        endpoint: String,
+        /// Take tokens from the instance metadata server
+        /// (`QIP_GCP_METADATA_SERVER`); otherwise `token_file`.
+        metadata_server: bool,
+        /// A token file something else keeps fresh (`QIP_GCP_TOKEN_FILE`).
+        token_file: Option<String>,
+    },
+}
+
 /// The broker's validated configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub data_dir: PathBuf,
     pub catalogue: PathBuf,
     pub identities_file: PathBuf,
-    pub archive_dir: PathBuf,
+    pub archive: ArchiveTarget,
     pub listen: String,
     pub health_listen: String,
     pub partitions: u32,
@@ -81,6 +115,83 @@ fn optional_number(variables: &BTreeMap<String, String>, name: &str) -> Result<O
     }
 }
 
+fn present<'a>(variables: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
+    variables
+        .get(name)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
+/// Exactly one archive target, refused by name when there are none or two.
+fn archive_target(variables: &BTreeMap<String, String>, data_dir: &str) -> Result<ArchiveTarget> {
+    use qip_storage::gcp::{
+        ENDPOINT_VARIABLE, METADATA_VARIABLE, TOKEN_FILE_VARIABLE, TOKEN_VARIABLE,
+    };
+    match (
+        present(variables, ARCHIVE_DIR),
+        present(variables, ARCHIVE_BUCKET),
+    ) {
+        (Some(_), Some(_)) => Err(Error::invalid(format!(
+            "both {ARCHIVE_DIR} and {ARCHIVE_BUCKET} are set; set exactly one. Archiving to \
+             whichever a match arm happened to prefer would leave the other believed in"
+        ))),
+        (None, None) => Err(Error::invalid(format!(
+            "{ARCHIVE_DIR} is not set; set it to the directory sealed segments are archived \
+             to, or set {ARCHIVE_BUCKET} to a Cloud Storage landing bucket. The event fabric \
+             has no default for it (ADR 0100 §5: nothing rests on a broker default)"
+        ))),
+        (Some(directory), None) => {
+            // An archive inside the data directory is deleted by the same
+            // mistake, and filled by the same disk, as the segments it copies.
+            if PathBuf::from(directory).starts_with(data_dir) {
+                return Err(Error::invalid(format!(
+                    "{ARCHIVE_DIR} ('{directory}') is inside {DATA_DIR} ('{data_dir}'); archive \
+                     to a directory outside the one being archived"
+                )));
+            }
+            Ok(ArchiveTarget::Directory(PathBuf::from(directory)))
+        }
+        (None, Some(bucket)) => {
+            // A literal token expires in about an hour and nothing in a
+            // long-running broker would notice; the archive would start
+            // failing an hour after start-up with every P0/P1 producer
+            // waiting on it.
+            if present(variables, TOKEN_VARIABLE).is_some() {
+                return Err(Error::invalid(format!(
+                    "{TOKEN_VARIABLE} is set for a bucket archive; a broker runs for longer \
+                     than a literal token lives. Use {METADATA_VARIABLE}=1 or \
+                     {TOKEN_FILE_VARIABLE}"
+                )));
+            }
+            let endpoint = present(variables, ENDPOINT_VARIABLE).ok_or_else(|| {
+                Error::invalid(format!(
+                    "{ARCHIVE_BUCKET} is set but {ENDPOINT_VARIABLE} is not; set it to the \
+                     http:// address of the TLS-terminating proxy in front of Cloud Storage"
+                ))
+            })?;
+            let metadata_server = present(variables, METADATA_VARIABLE)
+                .is_some_and(|v| matches!(v, "1" | "true" | "TRUE" | "yes" | "on"));
+            let token_file = present(variables, TOKEN_FILE_VARIABLE).map(str::to_string);
+            if metadata_server == token_file.is_some() {
+                return Err(Error::invalid(format!(
+                    "a bucket archive needs exactly one credential: {METADATA_VARIABLE}=1 on \
+                     Google Cloud, or {TOKEN_FILE_VARIABLE} pointing at a file something keeps \
+                     fresh"
+                )));
+            }
+            Ok(ArchiveTarget::CloudStorage {
+                bucket: bucket.to_string(),
+                prefix: present(variables, ARCHIVE_PREFIX)
+                    .unwrap_or_default()
+                    .to_string(),
+                endpoint: endpoint.to_string(),
+                metadata_server,
+                token_file,
+            })
+        }
+    }
+}
+
 impl Config {
     /// Read the process environment. The only place this binary does.
     pub fn from_environment() -> Result<Self> {
@@ -100,11 +211,7 @@ impl Config {
             IDENTITIES_FILE,
             "the identities file of token digests",
         )?;
-        let archive_dir = required(
-            variables,
-            ARCHIVE_DIR,
-            "the directory sealed segments are archived to",
-        )?;
+        let archive = archive_target(variables, &data_dir)?;
         let listen = required(variables, LISTEN, "the address the protocol is served on")?;
         let health_listen = required(
             variables,
@@ -119,14 +226,6 @@ impl Config {
             return Err(Error::invalid(format!(
                 "{LISTEN} and {HEALTH_LISTEN} are both '{listen}'; health is served on its own \
                  listener so that it still answers when the protocol's does not"
-            )));
-        }
-        // An archive inside the data directory is deleted by the same
-        // mistake, and filled by the same disk, as the segments it copies.
-        if PathBuf::from(&archive_dir).starts_with(&data_dir) {
-            return Err(Error::invalid(format!(
-                "{ARCHIVE_DIR} ('{archive_dir}') is inside {DATA_DIR} ('{data_dir}'); archive \
-                 to a directory outside the one being archived"
             )));
         }
         let partitions_text = required(
@@ -155,7 +254,7 @@ impl Config {
             data_dir: PathBuf::from(data_dir),
             catalogue: PathBuf::from(catalogue),
             identities_file: PathBuf::from(identities_file),
-            archive_dir: PathBuf::from(archive_dir),
+            archive,
             listen,
             health_listen,
             partitions,
@@ -219,6 +318,11 @@ mod tests {
         let error = Config::parse(&shared).expect_err("a shared listener is refused");
         assert!(error.to_string().contains("its own listener"), "{error}");
 
+        let mut both = complete();
+        both.insert(ARCHIVE_BUCKET.to_string(), "landing-eu".to_string());
+        let error = Config::parse(&both).expect_err("two archive targets are refused");
+        assert!(error.to_string().contains("set exactly one"), "{error}");
+
         let mut nested = complete();
         nested.insert(
             ARCHIVE_DIR.to_string(),
@@ -231,6 +335,68 @@ mod tests {
             let mut variables = complete();
             variables.insert(PARTITIONS.to_string(), bad.to_string());
             assert!(Config::parse(&variables).is_err(), "partitions = {bad}");
+        }
+    }
+
+    fn bucket() -> BTreeMap<String, String> {
+        let mut variables = complete();
+        variables.remove(ARCHIVE_DIR);
+        for (name, value) in [
+            (ARCHIVE_BUCKET, "qip-fabric-landing-europe-west2"),
+            (ARCHIVE_PREFIX, "fabricd-0"),
+            (qip_storage::gcp::ENDPOINT_VARIABLE, "http://127.0.0.1:8443"),
+            (qip_storage::gcp::METADATA_VARIABLE, "1"),
+        ] {
+            variables.insert(name.to_string(), value.to_string());
+        }
+        variables
+    }
+
+    /// FABRIC-8101 / DATA-8124: a bucket is a selectable archive target, and
+    /// one that could not be reached for longer than an hour, or at all, is
+    /// refused at start rather than discovered by the first sealed segment.
+    /// Mutation: in `archive_target`, accept a bucket with no credential —
+    /// the credential-less iteration is accepted and this fails.
+    #[test]
+    fn a_bucket_archive_is_accepted_with_an_endpoint_and_one_lasting_credential_and_refused_otherwise()
+     {
+        let config = Config::parse(&bucket()).expect("premise: a complete bucket archive loads");
+        assert_eq!(
+            config.archive,
+            ArchiveTarget::CloudStorage {
+                bucket: "qip-fabric-landing-europe-west2".to_string(),
+                prefix: "fabricd-0".to_string(),
+                endpoint: "http://127.0.0.1:8443".to_string(),
+                metadata_server: true,
+                token_file: None,
+            }
+        );
+        let directory = Config::parse(&complete()).expect("the directory archive still loads");
+        assert!(matches!(directory.archive, ArchiveTarget::Directory(_)));
+
+        for (remove, insert) in [
+            (Some(qip_storage::gcp::ENDPOINT_VARIABLE), None),
+            (Some(qip_storage::gcp::METADATA_VARIABLE), None),
+            (
+                None,
+                Some((qip_storage::gcp::TOKEN_FILE_VARIABLE, "/run/token")),
+            ),
+            (
+                None,
+                Some((qip_storage::gcp::TOKEN_VARIABLE, "ya29.literal")),
+            ),
+        ] {
+            let mut variables = bucket();
+            if let Some(name) = remove {
+                variables.remove(name);
+            }
+            if let Some((name, value)) = insert {
+                variables.insert(name.to_string(), value.to_string());
+            }
+            assert!(
+                Config::parse(&variables).is_err(),
+                "removed {remove:?}, inserted {insert:?}"
+            );
         }
     }
 }

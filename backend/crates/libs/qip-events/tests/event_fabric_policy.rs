@@ -130,7 +130,7 @@ fn valid_stream_json(
         "retention": "event_anchored",
         "replication_factor": replication_factor,
         "mirroring": mirroring,
-        "overload_policy": "throttle_with_gap",
+        "overload_policy": overload_for(qos_class),
         "ack_profile": ack_profile,
         "byte_quota_per_producer": 1_048_576,
         "message_quota_per_producer": 10_000,
@@ -143,6 +143,16 @@ fn valid_stream_json(
     })
 }
 
+/// The overload policy ADR 0100 §5 gives each class, so a fixture stream
+/// is refused only for the field a test changes.
+fn overload_for(qos_class: &str) -> &'static str {
+    match qos_class {
+        "p0_control" | "p1_outcomes" => "refuse_producer",
+        "p4_telemetry" => "sample_or_shed",
+        _ => "throttle_with_gap",
+    }
+}
+
 fn catalogue_bytes(streams: Vec<serde_json::Value>, grants: Vec<serde_json::Value>) -> Vec<u8> {
     serde_json::json!({ "streams": streams, "grants": grants })
         .to_string()
@@ -151,7 +161,7 @@ fn catalogue_bytes(streams: Vec<serde_json::Value>, grants: Vec<serde_json::Valu
 
 #[test]
 fn a_stream_missing_any_declaration_is_refused_by_name() {
-    let mut stream = valid_stream_json("control", "p0_control", "quorum", 1, "none", vec![]);
+    let mut stream = valid_stream_json("control", "p0_control", "archived", 1, "none", vec![]);
     // Assert the premise: the fully populated declaration parses first, so
     // the refusal below is caused by the missing field and nothing else.
     Catalogue::parse(&catalogue_bytes(vec![stream.clone()], vec![]))
@@ -165,7 +175,7 @@ fn a_stream_missing_any_declaration_is_refused_by_name() {
 
 #[test]
 fn an_ack_profile_weaker_than_the_stream_class_is_refused() {
-    let ok = valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]);
+    let ok = valid_stream_json("outcomes", "p1_outcomes", "archived", 1, "none", vec![]);
     Catalogue::parse(&catalogue_bytes(vec![ok], vec![]))
         .expect("a P1 stream acknowledged at quorum must be accepted");
 
@@ -391,7 +401,7 @@ fn a_partition_hlc_refuses_to_advance_its_logical_counter_past_its_maximum_rathe
 
 #[test]
 fn a_grant_naming_an_undeclared_stream_or_an_unknown_permission_is_refused() {
-    let stream = valid_stream_json("control", "p0_control", "quorum", 1, "none", vec![]);
+    let stream = valid_stream_json("control", "p0_control", "archived", 1, "none", vec![]);
 
     let good_grant = serde_json::json!({
         "identity": "release-controller",
@@ -425,8 +435,8 @@ fn a_grant_naming_an_undeclared_stream_or_an_unknown_permission_is_refused() {
 
 #[test]
 fn a_cell_grant_must_be_scoped_to_its_own_key_and_only_the_release_controller_may_produce_to_p0() {
-    let control = valid_stream_json("control", "p0_control", "quorum", 1, "none", vec![]);
-    let outcomes = valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]);
+    let control = valid_stream_json("control", "p0_control", "archived", 1, "none", vec![]);
+    let outcomes = valid_stream_json("outcomes", "p1_outcomes", "archived", 1, "none", vec![]);
     let streams = vec![control, outcomes];
 
     // Baseline: a cell scoped to its own key, consuming from a non-P0
@@ -492,8 +502,8 @@ fn a_cell_grant_must_be_scoped_to_its_own_key_and_only_the_release_controller_ma
 #[test]
 fn an_agent_identity_is_granted_produce_or_admin_on_research_and_telemetry_streams_only() {
     let streams = vec![
-        valid_stream_json("control", "p0_control", "quorum", 1, "none", vec![]),
-        valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]),
+        valid_stream_json("control", "p0_control", "archived", 1, "none", vec![]),
+        valid_stream_json("outcomes", "p1_outcomes", "archived", 1, "none", vec![]),
         valid_stream_json(
             "journal",
             "p2_market_journal",
@@ -605,7 +615,7 @@ fn a_stream_missing_any_of_the_seven_declarations_is_refused_naming_it_and_a_ful
 {
     use qip_events::event_fabric::policy::{Mirroring, Ordering, OverloadPolicy};
 
-    let full = valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]);
+    let full = valid_stream_json("outcomes", "p1_outcomes", "archived", 1, "none", vec![]);
     let catalogue = Catalogue::parse(&catalogue_bytes(vec![full.clone()], vec![]))
         .expect("a fully declared stream must be accepted");
     let stored = &catalogue
@@ -618,7 +628,7 @@ fn a_stream_missing_any_of_the_seven_declarations_is_refused_naming_it_and_a_ful
     assert_eq!(stored.retention(), RetentionClass::EventAnchored);
     assert_eq!(stored.replication_factor(), 1);
     assert_eq!(stored.mirroring(), Mirroring::None);
-    assert_eq!(stored.overload_policy(), OverloadPolicy::ThrottleWithGap);
+    assert_eq!(stored.overload_policy(), OverloadPolicy::RefuseProducer);
 
     let seven = [
         "qos_class",
@@ -701,6 +711,88 @@ fn an_envelope_with_any_mandatory_field_absent_or_emptied_is_refused() {
         assert!(
             serde_json::from_value::<FabricEnvelope>(broken).is_err(),
             "an envelope with `{key}` emptied must be refused"
+        );
+    }
+}
+
+/// FABRIC-086: the acknowledgement P0 and P1 wait for is the archive copy,
+/// not a replica majority, and is named `archived`. A catalogue committed
+/// before the rename spells it `quorum`; that spelling must still load, as
+/// the same profile, or renaming a word would stop every broker reading the
+/// catalogue it was started with — and what is written back is the honest
+/// name, never the old one.
+///
+/// Mutation: drop `"quorum"` from `parse_ack_profile`'s arm — the legacy
+/// catalogue is refused and this fails at the first `expect`. Mutation:
+/// rename the serde form back to `quorum` — fails at the serialised-name
+/// assertion.
+#[test]
+fn the_archived_ack_profile_reads_its_old_quorum_spelling_and_writes_only_the_new_one() {
+    use qip_events::event_fabric::policy::AckProfile;
+
+    let legacy = valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]);
+    let current = valid_stream_json("outcomes", "p1_outcomes", "archived", 1, "none", vec![]);
+    let legacy = Catalogue::parse(&catalogue_bytes(vec![legacy], vec![]))
+        .expect("a catalogue written before the rename still loads");
+    let current =
+        Catalogue::parse(&catalogue_bytes(vec![current], vec![])).expect("the new spelling loads");
+    let read = |c: &Catalogue| c.stream("outcomes").expect("declared").policy.ack_profile();
+    assert_eq!(read(&legacy), AckProfile::Archived);
+    assert_eq!(read(&current), AckProfile::Archived);
+
+    assert_eq!(
+        serde_json::to_value(AckProfile::Archived).expect("serialises"),
+        serde_json::json!("archived")
+    );
+    let old: AckProfile =
+        serde_json::from_value(serde_json::json!("quorum")).expect("the stored old name reads");
+    assert_eq!(old, AckProfile::Archived);
+}
+
+/// FABRIC-7056: a P0 or P1 stream can never be declared sheddable, and only
+/// P4 telemetry may shed at all. Before this, `StreamPolicy::new` accepted a
+/// P1 outcomes stream declared `sample_or_shed`, and the broker would have
+/// been entitled to drop a fill.
+///
+/// Mutation: make `permits_overload_policy` return `true` — every refusal
+/// below is accepted and this fails at the first `expect_err`.
+#[test]
+fn a_never_dropped_class_cannot_be_declared_sheddable_and_only_telemetry_may_shed() {
+    // Premise: each class with its own overload policy is accepted, so each
+    // refusal below is the overload policy's doing.
+    for class in [
+        "p0_control",
+        "p1_outcomes",
+        "p2_market_journal",
+        "p4_telemetry",
+    ] {
+        let ack = if matches!(class, "p0_control" | "p1_outcomes") {
+            "archived"
+        } else {
+            "leader_only"
+        };
+        Catalogue::parse(&catalogue_bytes(
+            vec![valid_stream_json("s", class, ack, 1, "none", vec![])],
+            vec![],
+        ))
+        .unwrap_or_else(|e| panic!("premise: {class} with its own overload policy loads: {e}"));
+    }
+    let refused = [
+        ("p0_control", "archived", "sample_or_shed"),
+        ("p1_outcomes", "archived", "sample_or_shed"),
+        ("p1_outcomes", "archived", "throttle_with_gap"),
+        ("p1_outcomes", "archived", "allow_backlog"),
+        ("p2_market_journal", "leader_only", "sample_or_shed"),
+        ("p3_research", "leader_only", "sample_or_shed"),
+    ];
+    for (class, ack, overload) in refused {
+        let mut stream = valid_stream_json("s", class, ack, 1, "none", vec![]);
+        stream["overload_policy"] = serde_json::json!(overload);
+        let err = Catalogue::parse(&catalogue_bytes(vec![stream], vec![]))
+            .expect_err("a class declared with an overload policy it may not have is refused");
+        assert!(
+            err.to_string().contains("overload policy"),
+            "{class}/{overload}: {err}"
         );
     }
 }

@@ -38,12 +38,19 @@
 //! stream's policy is refused by the broker and the grants in force stay in
 //! force.
 //!
+//! # Consumer groups
+//!
+//! `groups/join` and `groups/commit` go through a [`GroupCoordinator`]:
+//! members hold leases, partitions are split between them, and a commit from
+//! a superseded generation or a partition the member does not hold is
+//! refused (FABRIC-033, FABRIC-7033; see [`super::group`]). Until it existed
+//! `groups/join` assigned every caller every partition its grant covered and
+//! answered the leader epoch as the generation, so two members of one group
+//! both owned, fetched and committed every partition.
+//!
 //! # What is not here
 //!
-//! No consumer-group membership: `groups/join` assigns a caller every
-//! partition its consume grant covers and holds no lease, so two members of
-//! one group on one partition are not kept apart (FABRIC-033). No transport
-//! security: the bearer token travels over plaintext TCP, and
+//! No transport security: the bearer token travels over plaintext TCP, and
 //! `qip_transport::event_fabric::auth` says what that does and does not buy.
 
 use std::collections::BTreeMap;
@@ -65,6 +72,8 @@ use qip_transport::event_fabric::protocol::{
 
 use super::acl::{self, Scope};
 use super::broker::Broker;
+use super::group::{DEFAULT_SESSION_TIMEOUT_NS, GroupCoordinator};
+use std::sync::Mutex;
 
 /// What the handler did with one request, for whoever records metrics.
 ///
@@ -164,6 +173,10 @@ pub struct Service {
     /// Canonical schema registry holding every registered batch schema
     /// (FABRIC-022: immutable schema IDs and hashes, production caller).
     schema_registry: RwLock<qip_events::registry::SchemaRegistry>,
+    /// Every group's live membership (FABRIC-7033). In memory: a restarted
+    /// broker starts every group empty, and its bumped leader epoch makes
+    /// every generation the previous incarnation handed out stale.
+    groups: Mutex<GroupCoordinator>,
 }
 
 /// How a stream's partitions open their segment logs, given the stream's
@@ -200,7 +213,12 @@ impl Service {
                 "every stream needs at least one partition; state how many each is declared with",
             ));
         }
+        let groups = Mutex::new(GroupCoordinator::new(
+            broker.leader_epoch(),
+            DEFAULT_SESSION_TIMEOUT_NS,
+        )?);
         let service = Self {
+            groups,
             broker,
             identities,
             grants: RwLock::new(Arc::new(Vec::new())),
@@ -211,6 +229,22 @@ impl Service {
         };
         service.apply_catalogue(catalogue)?;
         Ok(service)
+    }
+
+    /// Replace the consumer-group lease length. Resets every membership, so
+    /// it is for a composition root to call before serving, not after.
+    pub fn with_group_session_timeout(self, session_timeout_ns: i64) -> Result<Self> {
+        let groups = GroupCoordinator::new(self.broker.leader_epoch(), session_timeout_ns)?;
+        *self.groups.lock().unwrap_or_else(|e| e.into_inner()) = groups;
+        Ok(self)
+    }
+
+    /// Who is in `group` on `stream` and which partitions each holds.
+    pub fn group_members(&self, group: &str, stream: &str) -> BTreeMap<String, Vec<u32>> {
+        self.groups
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .members(group, stream)
     }
 
     /// The broker this handler serves.
@@ -455,13 +489,19 @@ impl Service {
                 }
                 seen.group = Some(r.group_id.clone());
                 let partition_count = self.broker.partition_count(&r.stream)?;
+                let eligible = scope.partitions(partition_count);
+                let assignment = self.groups.lock().unwrap_or_else(|e| e.into_inner()).join(
+                    self.broker.now_ns(),
+                    identity,
+                    &r.group_id,
+                    &r.stream,
+                    r.member_id.as_deref(),
+                    &eligible,
+                )?;
                 Ok(Response::GroupJoin(GroupJoinResponse {
-                    member_id: r.member_id.unwrap_or_else(|| identity.to_string()),
-                    // The broker's leader epoch: the one number here that
-                    // changes when the broker a member joined is no longer
-                    // the one it is talking to.
-                    generation: self.broker.leader_epoch(),
-                    assigned_partitions: scope.partitions(partition_count),
+                    member_id: assignment.member_id,
+                    generation: assignment.generation,
+                    assigned_partitions: assignment.partitions,
                 }))
             }
             Request::GroupCommit(r) => {
@@ -475,6 +515,21 @@ impl Service {
                     return Ok(Response::Refused(refusal));
                 }
                 seen.group = Some(r.group_id.clone());
+                // Fenced before the checkpoint moves: a member of a
+                // superseded generation must not rewind or skip its
+                // successor's position.
+                self.groups
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .admit_commit(
+                        self.broker.now_ns(),
+                        identity,
+                        &r.group_id,
+                        &r.stream,
+                        &r.member_id,
+                        r.generation,
+                        r.partition,
+                    )?;
                 let committed_offset =
                     self.broker
                         .commit_offset(&r.group_id, &r.stream, r.partition, r.offset)?;

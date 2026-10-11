@@ -692,7 +692,7 @@ pub fn publish(
         partition: fixture.partition,
         producer_id: RELEASE_CONTROLLER.to_string(),
         qos_class: QosClass::P0Control,
-        ack_profile: AckProfile::Quorum,
+        ack_profile: AckProfile::Archived,
         retry_policy: RetryPolicy::default(),
         breaker_policy: BreakerPolicy::default(),
         clock: environment.clock(),

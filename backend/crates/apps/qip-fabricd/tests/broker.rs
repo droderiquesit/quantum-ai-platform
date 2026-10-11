@@ -673,7 +673,7 @@ fn a_restarted_broker_replays_every_durable_class_byte_for_byte_and_a_restarted_
             let ack = producer
                 .send(batch_of(class, &format!("{stream}-{index}"), &records))
                 .unwrap_or_else(|error| panic!("{stream} batch {index}: {error}"));
-            if class.ack_floor() == qip_events::event_fabric::policy::AckProfile::Quorum {
+            if class.ack_floor() == qip_events::event_fabric::policy::AckProfile::Archived {
                 assert!(
                     ack.archived_through() > ack.base_offset(),
                     "{stream}: a quorum acknowledgement covers the batch it acknowledges"

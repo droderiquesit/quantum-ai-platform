@@ -33,15 +33,24 @@ fn temp_dir() -> PathBuf {
 }
 
 fn policy(bytes: u64, messages: u64, lag: u64, overload: OverloadPolicy) -> StreamPolicy {
+    // A backlog is P3's declared overload behaviour; since FABRIC-7056 a P1
+    // stream may only refuse the producer, so the class follows the policy
+    // under test rather than the policy being one P1 may not have.
+    let (qos_class, ack_profile) = match overload {
+        OverloadPolicy::RefuseProducer => (QosClass::P1Outcomes, AckProfile::Archived),
+        OverloadPolicy::AllowBacklog => (QosClass::P3Research, AckProfile::LeaderOnly),
+        OverloadPolicy::ThrottleWithGap => (QosClass::P2MarketJournal, AckProfile::LeaderOnly),
+        OverloadPolicy::SampleOrShed => (QosClass::P4Telemetry, AckProfile::None),
+    };
     StreamPolicy::new(StreamPolicySpec {
-        qos_class: QosClass::P1Outcomes,
+        qos_class,
         partition_key: "account".to_string(),
         ordering: Ord_::PerPartition,
         retention: qip_events::RetentionClass::EventAnchored,
         replication_factor: 1,
         mirroring: Mirroring::None,
         overload_policy: overload,
-        ack_profile: AckProfile::Quorum,
+        ack_profile,
         byte_quota_per_producer: bytes,
         message_quota_per_producer: messages,
         lag_limit: lag,
@@ -175,4 +184,39 @@ fn a_backlog_tolerant_stream_is_not_refused_for_lag() {
     }
     b.commit_offset("risk", "orders", 0, 0).unwrap();
     b.produce("orders", "k", batch("p1", 4, b"a")).unwrap();
+}
+
+/// FABRIC-7056 at the broker: over quota, a P4 telemetry stream is answered
+/// `Shed` — the record is gone and the producer must not retry — while a P1
+/// outcomes stream is answered `Quota` with the wait, and in neither case is
+/// anything appended. Mutation: in `admission::over_quota`, answer `Quota`
+/// for every overload policy — the telemetry refusal is `Quota` and this
+/// fails; answer `Shed` for every one — the outcomes refusal is `Shed` and
+/// this fails.
+#[test]
+fn over_quota_telemetry_is_shed_visibly_and_an_outcome_is_only_ever_told_to_wait() {
+    use qip_transport::event_fabric::protocol::Refusal;
+
+    for (overload, expect_shed) in [
+        (OverloadPolicy::SampleOrShed, true),
+        (OverloadPolicy::RefuseProducer, false),
+    ] {
+        let (b, _clock) = broker_with(1_000_000, 1, 1_000, overload);
+        let class = b.stream_policy("orders").unwrap().qos_class();
+        b.produce("orders", "k", batch("p1", 0, b"a")).unwrap();
+        let refused = b
+            .produce_to("orders", 0, batch("p1", 1, b"b"))
+            .unwrap()
+            .expect_err("a second message in one second exceeds a quota of one");
+        match refused.refusal {
+            Refusal::Shed { class: shed } => {
+                assert!(expect_shed, "{class:?} was shed");
+                assert_eq!(shed, QosClass::P4Telemetry);
+            }
+            Refusal::Quota { .. } => assert!(!expect_shed, "{class:?} was not shed"),
+            other => panic!("unexpected refusal {other:?}"),
+        }
+        // Nothing was appended by the refused produce.
+        assert_eq!(b.metadata("orders", 0).unwrap().high_watermark(), 1);
+    }
 }

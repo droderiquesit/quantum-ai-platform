@@ -1144,7 +1144,11 @@ fn a_second_batch_with_an_oversized_declared_length_keeps_the_codecs_own_invalid
 /// first weaker-than-floor pair, because `Producer::new` then returns `Ok`.
 #[test]
 fn a_producer_is_refused_every_acknowledgement_profile_weaker_than_its_classs_floor() {
-    let profiles = [AckProfile::None, AckProfile::LeaderOnly, AckProfile::Quorum];
+    let profiles = [
+        AckProfile::None,
+        AckProfile::LeaderOnly,
+        AckProfile::Archived,
+    ];
     let mut refused = 0;
     let mut accepted = 0;
     for class in QosClass::ALL {

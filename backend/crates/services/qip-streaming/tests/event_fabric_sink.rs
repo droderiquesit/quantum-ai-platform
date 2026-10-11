@@ -41,7 +41,7 @@ fn policy() -> qip_events::event_fabric::policy::StreamPolicy {
         replication_factor: 1,
         mirroring: Mirroring::None,
         overload_policy: OverloadPolicy::RefuseProducer,
-        ack_profile: AckProfile::Quorum,
+        ack_profile: AckProfile::Archived,
         byte_quota_per_producer: 1_048_576,
         message_quota_per_producer: 10_000,
         lag_limit: 1_000,
