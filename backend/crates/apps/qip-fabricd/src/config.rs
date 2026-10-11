@@ -45,6 +45,59 @@ pub const SEGMENT_BYTES: &str = "QIP_EVENT_FABRIC_SEGMENT_BYTES";
 /// Optional: how often the archiver and the catalogue reload run.
 pub const HOUSEKEEPING_MS: &str = "QIP_EVENT_FABRIC_HOUSEKEEPING_MS";
 
+/// Optional: which managed consensus P0 and P1 are committed to (ADR 0111).
+/// Unset is the local single-broker fabric, the default for development and
+/// tests; `spanner` is the only other value, and anything else is refused
+/// rather than read as either.
+pub const MANAGED_LOG: &str = "QIP_EVENT_FABRIC_MANAGED_LOG";
+/// With `spanner`: the database, `projects/<p>/instances/<i>/databases/<d>`.
+pub const SPANNER_DATABASE: &str = "QIP_EVENT_FABRIC_SPANNER_DATABASE";
+/// With a managed log: the region this broker's leases are keyed under.
+pub const REGION: &str = "QIP_EVENT_FABRIC_REGION";
+/// With a managed log: this instance's name, unique in its region (the zone
+/// and the VM name, say). The lease holder is this joined to the process's
+/// leader epoch.
+pub const INSTANCE: &str = "QIP_EVENT_FABRIC_INSTANCE";
+/// Optional, with a managed log: how long a lease lasts in the database's
+/// time. The lease loop renews at a third of it.
+pub const LEASE_TTL_MS: &str = "QIP_EVENT_FABRIC_LEASE_TTL_MS";
+/// Optional: how many batches of each partition stay on this broker's disk
+/// once their segments are archived and indexed; older history is read back
+/// from the archive (FABRIC-8079). Unset keeps everything on disk.
+pub const HOT_BATCHES: &str = "QIP_EVENT_FABRIC_HOT_BATCHES";
+
+/// The lease TTL when none is stated.
+pub const DEFAULT_LEASE_TTL_MS: u64 = 10_000;
+/// The shortest lease accepted: below this a renewal at a third of it races
+/// one Spanner round trip, and a healthy leader would depose itself.
+pub const MINIMUM_LEASE_TTL_MS: u64 = 1_500;
+/// The longest lease accepted: a dead leader holds its partitions this long
+/// before a standby may take them, and every P0/P1 producer waits for it.
+pub const MAXIMUM_LEASE_TTL_MS: u64 = 120_000;
+
+/// Where the managed consensus lives.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManagedBackend {
+    /// A Spanner database reached through the TLS-terminating proxy, with a
+    /// token from the metadata server or a token file — the same access the
+    /// Cloud Storage archive uses, refused the same way.
+    Spanner {
+        database: String,
+        endpoint: String,
+        metadata_server: bool,
+        token_file: Option<String>,
+    },
+}
+
+/// ADR 0111's managed commit path, when configured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedConfig {
+    pub backend: ManagedBackend,
+    pub region: String,
+    pub instance: String,
+    pub lease_ttl_ms: u64,
+}
+
 /// The most partitions a stream may be declared with. Every partition is a
 /// directory, an open segment and a producer window; a count past this is a
 /// typo, not a deployment.
@@ -92,6 +145,148 @@ pub struct Config {
     pub partitions: u32,
     pub segment_bytes: Option<u64>,
     pub housekeeping_ms: u64,
+    /// `None` is the local single-broker fabric (ADR 0100); `Some` seats the
+    /// broker at the managed consensus and requires every P0/P1 stream to
+    /// be declared `managed_majority` (ADR 0111).
+    pub managed: Option<ManagedConfig>,
+    /// The hot window, in batches per partition, when retention is on.
+    pub hot_batches: Option<u64>,
+}
+
+/// The proxy endpoint and the one lasting credential a Google API is reached
+/// with, refused by name when either is missing or a literal token is given.
+fn gcp_access(
+    variables: &BTreeMap<String, String>,
+    for_what: &str,
+) -> Result<(String, bool, Option<String>)> {
+    use qip_storage::gcp::{
+        ENDPOINT_VARIABLE, METADATA_VARIABLE, TOKEN_FILE_VARIABLE, TOKEN_VARIABLE,
+    };
+    // A literal token expires in about an hour and nothing in a long-running
+    // broker would notice; the archive or the managed log would start failing
+    // an hour after start-up with every P0/P1 producer waiting on it.
+    if present(variables, TOKEN_VARIABLE).is_some() {
+        return Err(Error::invalid(format!(
+            "{TOKEN_VARIABLE} is set for {for_what}; a broker runs for longer than a literal \
+             token lives. Use {METADATA_VARIABLE}=1 or {TOKEN_FILE_VARIABLE}"
+        )));
+    }
+    let endpoint = present(variables, ENDPOINT_VARIABLE).ok_or_else(|| {
+        Error::invalid(format!(
+            "{for_what} is configured but {ENDPOINT_VARIABLE} is not; set it to the http:// \
+             address of the TLS-terminating proxy in front of Google"
+        ))
+    })?;
+    let metadata_server = present(variables, METADATA_VARIABLE)
+        .is_some_and(|v| matches!(v, "1" | "true" | "TRUE" | "yes" | "on"));
+    let token_file = present(variables, TOKEN_FILE_VARIABLE).map(str::to_string);
+    if metadata_server == token_file.is_some() {
+        return Err(Error::invalid(format!(
+            "{for_what} needs exactly one credential: {METADATA_VARIABLE}=1 on Google Cloud, or \
+             {TOKEN_FILE_VARIABLE} pointing at a file something keeps fresh"
+        )));
+    }
+    Ok((endpoint.to_string(), metadata_server, token_file))
+}
+
+/// A Spanner database path, refused unless it is exactly
+/// `projects/<id>/instances/<id>/databases/<id>` in the characters those ids
+/// allow — it is spliced into every request path.
+fn spanner_database(raw: &str) -> Result<String> {
+    let parts: Vec<&str> = raw.split('/').collect();
+    let shaped = parts.len() == 6
+        && parts[0] == "projects"
+        && parts[2] == "instances"
+        && parts[4] == "databases"
+        && [parts[1], parts[3], parts[5]].iter().all(|id| {
+            !id.is_empty()
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_'))
+        });
+    if !shaped {
+        return Err(Error::invalid(format!(
+            "{SPANNER_DATABASE} must be projects/<project>/instances/<instance>/databases/<db> in \
+             lower-case letters, digits, '-' and '_', not '{raw}'"
+        )));
+    }
+    Ok(raw.to_string())
+}
+
+/// A label-safe name: lower-case letters, digits and `-`, as a region or an
+/// instance name is. Both reach a lease row and a log line.
+fn label_name(variables: &BTreeMap<String, String>, name: &str, what: &str) -> Result<String> {
+    let value = required(variables, name, what)?;
+    if !value
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    {
+        return Err(Error::invalid(format!(
+            "{name} must be lower-case letters, digits and '-', not '{value}'"
+        )));
+    }
+    Ok(value)
+}
+
+/// ADR 0111's managed commit path, or `None` for the local fabric.
+fn managed_config(variables: &BTreeMap<String, String>) -> Result<Option<ManagedConfig>> {
+    let backend = match present(variables, MANAGED_LOG) {
+        None => {
+            // Fail closed on a half-configured managed log: settings for it
+            // with the switch off mean somebody meant to turn it on, and a
+            // broker that started local would acknowledge P0/P1 on one disk
+            // while the deployment believed otherwise.
+            for stray in [SPANNER_DATABASE, LEASE_TTL_MS] {
+                if present(variables, stray).is_some() {
+                    return Err(Error::invalid(format!(
+                        "{stray} is set but {MANAGED_LOG} is not; set {MANAGED_LOG}=spanner to \
+                         commit P0/P1 to the managed consensus, or unset {stray}"
+                    )));
+                }
+            }
+            return Ok(None);
+        }
+        Some("spanner") => {
+            let database = spanner_database(&required(
+                variables,
+                SPANNER_DATABASE,
+                "the Spanner database P0/P1 are committed to",
+            )?)?;
+            let (endpoint, metadata_server, token_file) =
+                gcp_access(variables, "the Spanner managed log")?;
+            ManagedBackend::Spanner {
+                database,
+                endpoint,
+                metadata_server,
+                token_file,
+            }
+        }
+        Some(other) => {
+            return Err(Error::invalid(format!(
+                "{MANAGED_LOG} is '{other}'; the only managed log is 'spanner' (ADR 0111). Unset \
+                 it for the local single-broker fabric"
+            )));
+        }
+    };
+    let region = label_name(
+        variables,
+        REGION,
+        "the region this broker's leases are keyed in",
+    )?;
+    let instance = label_name(variables, INSTANCE, "this instance's name in its region")?;
+    let lease_ttl_ms = optional_number(variables, LEASE_TTL_MS)?.unwrap_or(DEFAULT_LEASE_TTL_MS);
+    if !(MINIMUM_LEASE_TTL_MS..=MAXIMUM_LEASE_TTL_MS).contains(&lease_ttl_ms) {
+        return Err(Error::invalid(format!(
+            "{LEASE_TTL_MS} must be between {MINIMUM_LEASE_TTL_MS} and {MAXIMUM_LEASE_TTL_MS}, \
+             not {lease_ttl_ms}"
+        )));
+    }
+    Ok(Some(ManagedConfig {
+        backend,
+        region,
+        instance,
+        lease_ttl_ms,
+    }))
 }
 
 fn required(variables: &BTreeMap<String, String>, name: &str, what: &str) -> Result<String> {
@@ -124,9 +319,6 @@ fn present<'a>(variables: &'a BTreeMap<String, String>, name: &str) -> Option<&'
 
 /// Exactly one archive target, refused by name when there are none or two.
 fn archive_target(variables: &BTreeMap<String, String>, data_dir: &str) -> Result<ArchiveTarget> {
-    use qip_storage::gcp::{
-        ENDPOINT_VARIABLE, METADATA_VARIABLE, TOKEN_FILE_VARIABLE, TOKEN_VARIABLE,
-    };
     match (
         present(variables, ARCHIVE_DIR),
         present(variables, ARCHIVE_BUCKET),
@@ -152,39 +344,14 @@ fn archive_target(variables: &BTreeMap<String, String>, data_dir: &str) -> Resul
             Ok(ArchiveTarget::Directory(PathBuf::from(directory)))
         }
         (None, Some(bucket)) => {
-            // A literal token expires in about an hour and nothing in a
-            // long-running broker would notice; the archive would start
-            // failing an hour after start-up with every P0/P1 producer
-            // waiting on it.
-            if present(variables, TOKEN_VARIABLE).is_some() {
-                return Err(Error::invalid(format!(
-                    "{TOKEN_VARIABLE} is set for a bucket archive; a broker runs for longer \
-                     than a literal token lives. Use {METADATA_VARIABLE}=1 or \
-                     {TOKEN_FILE_VARIABLE}"
-                )));
-            }
-            let endpoint = present(variables, ENDPOINT_VARIABLE).ok_or_else(|| {
-                Error::invalid(format!(
-                    "{ARCHIVE_BUCKET} is set but {ENDPOINT_VARIABLE} is not; set it to the \
-                     http:// address of the TLS-terminating proxy in front of Cloud Storage"
-                ))
-            })?;
-            let metadata_server = present(variables, METADATA_VARIABLE)
-                .is_some_and(|v| matches!(v, "1" | "true" | "TRUE" | "yes" | "on"));
-            let token_file = present(variables, TOKEN_FILE_VARIABLE).map(str::to_string);
-            if metadata_server == token_file.is_some() {
-                return Err(Error::invalid(format!(
-                    "a bucket archive needs exactly one credential: {METADATA_VARIABLE}=1 on \
-                     Google Cloud, or {TOKEN_FILE_VARIABLE} pointing at a file something keeps \
-                     fresh"
-                )));
-            }
+            let (endpoint, metadata_server, token_file) =
+                gcp_access(variables, &format!("{ARCHIVE_BUCKET} (a bucket archive)"))?;
             Ok(ArchiveTarget::CloudStorage {
                 bucket: bucket.to_string(),
                 prefix: present(variables, ARCHIVE_PREFIX)
                     .unwrap_or_default()
                     .to_string(),
-                endpoint: endpoint.to_string(),
+                endpoint,
                 metadata_server,
                 token_file,
             })
@@ -250,6 +417,12 @@ impl Config {
                 "{HOUSEKEEPING_MS} must be at least 1; zero would spin the archiver thread"
             )));
         }
+        let hot_batches = optional_number(variables, HOT_BATCHES)?;
+        if hot_batches == Some(0) {
+            return Err(Error::invalid(format!(
+                "{HOT_BATCHES} must be at least 1; unset it to keep every segment on disk"
+            )));
+        }
         Ok(Self {
             data_dir: PathBuf::from(data_dir),
             catalogue: PathBuf::from(catalogue),
@@ -260,6 +433,8 @@ impl Config {
             partitions,
             segment_bytes: optional_number(variables, SEGMENT_BYTES)?,
             housekeeping_ms,
+            managed: managed_config(variables)?,
+            hot_batches,
         })
     }
 }
@@ -398,5 +573,102 @@ mod tests {
                 "removed {remove:?}, inserted {insert:?}"
             );
         }
+    }
+
+    fn spanner() -> BTreeMap<String, String> {
+        let mut variables = complete();
+        for (name, value) in [
+            (MANAGED_LOG, "spanner"),
+            (
+                SPANNER_DATABASE,
+                "projects/qip-dev/instances/fabric-ew2/databases/fabric",
+            ),
+            (REGION, "europe-west2"),
+            (INSTANCE, "fabricd-ew2-a"),
+            (qip_storage::gcp::ENDPOINT_VARIABLE, "http://127.0.0.1:8443"),
+            (qip_storage::gcp::METADATA_VARIABLE, "1"),
+        ] {
+            variables.insert(name.to_string(), value.to_string());
+        }
+        variables
+    }
+
+    /// ADR 0111: the managed commit path is off unless asked for, and asked
+    /// for it is complete or refused. The failure this prevents is a broker
+    /// that half-reads a Spanner configuration and starts local, answering
+    /// P0/P1 producers from one disk while the deployment believes they
+    /// survive a zone.
+    ///
+    /// Mutation: in `managed_config`, return `Ok(None)` for an unknown
+    /// `MANAGED_LOG` value — the `raft` iteration is accepted and this fires.
+    /// Mutation: drop the stray-setting check — a database with the switch
+    /// off is accepted and this fires.
+    #[test]
+    fn the_managed_log_is_local_by_default_complete_when_asked_for_and_refused_half_configured() {
+        let local = Config::parse(&complete()).expect("premise: the local fabric loads");
+        assert_eq!(local.managed, None);
+        assert_eq!(local.hot_batches, None);
+
+        let managed = Config::parse(&spanner()).expect("a complete Spanner path loads");
+        assert_eq!(
+            managed.managed,
+            Some(ManagedConfig {
+                backend: ManagedBackend::Spanner {
+                    database: "projects/qip-dev/instances/fabric-ew2/databases/fabric".to_string(),
+                    endpoint: "http://127.0.0.1:8443".to_string(),
+                    metadata_server: true,
+                    token_file: None,
+                },
+                region: "europe-west2".to_string(),
+                instance: "fabricd-ew2-a".to_string(),
+                lease_ttl_ms: DEFAULT_LEASE_TTL_MS,
+            })
+        );
+
+        let mut unknown = spanner();
+        unknown.insert(MANAGED_LOG.to_string(), "raft".to_string());
+        assert!(Config::parse(&unknown).is_err(), "an unknown managed log");
+
+        let mut stray = complete();
+        stray.insert(
+            SPANNER_DATABASE.to_string(),
+            "projects/p/instances/i/databases/d".to_string(),
+        );
+        let error = Config::parse(&stray).expect_err("a database with the switch off");
+        assert!(error.to_string().contains(MANAGED_LOG), "{error}");
+
+        for name in [
+            SPANNER_DATABASE,
+            REGION,
+            INSTANCE,
+            qip_storage::gcp::ENDPOINT_VARIABLE,
+            qip_storage::gcp::METADATA_VARIABLE,
+        ] {
+            let mut variables = spanner();
+            variables.remove(name);
+            assert!(Config::parse(&variables).is_err(), "without {name}");
+        }
+        for (name, bad) in [
+            (SPANNER_DATABASE, "projects/p/instances/i"),
+            (SPANNER_DATABASE, "projects/p/instances/i/databases/d?x=1"),
+            (REGION, "Europe West"),
+            (LEASE_TTL_MS, "100"),
+            (LEASE_TTL_MS, "999999"),
+            (qip_storage::gcp::TOKEN_VARIABLE, "ya29.literal"),
+        ] {
+            let mut variables = spanner();
+            variables.insert(name.to_string(), bad.to_string());
+            assert!(Config::parse(&variables).is_err(), "{name} = {bad}");
+        }
+
+        let mut zero = complete();
+        zero.insert(HOT_BATCHES.to_string(), "0".to_string());
+        assert!(Config::parse(&zero).is_err(), "a zero hot window");
+        let mut hot = complete();
+        hot.insert(HOT_BATCHES.to_string(), "64".to_string());
+        assert_eq!(
+            Config::parse(&hot).expect("a hot window").hot_batches,
+            Some(64)
+        );
     }
 }

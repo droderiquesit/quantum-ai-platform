@@ -1,6 +1,6 @@
 [package]
 name = "qip-fabricd"
-description = "Event fabric composition root: the in-tree single-node broker, sole writer of every partition's batch chain (ADR 0100)."
+description = "Event fabric composition root: the in-tree broker, sole writer of every partition's batch chain (ADR 0100), committing P0/P1 to a managed consensus when configured (ADR 0111)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,14 @@ qip-storage.workspace = true
 qip-streaming.workspace = true
 qip-transport.workspace = true
 qip-observability.workspace = true
+
+# FABRIC-7043: `cargo bench -p qip-fabricd` prints produce and fetch latency
+# percentiles against a real broker on loopback. No benchmarking crate: the
+# harness is `qip_fabricd::bench`, and `harness = false` makes this a plain
+# binary that runs it.
+[[bench]]
+name = "fabric"
+harness = false
 
 [lints]
 workspace = true

@@ -27,14 +27,22 @@
 //! boundary's three layers are in Terraform, in the trading composition
 //! roots and in `qip-edge`'s types, and nothing here can reach any of them.
 //!
-//! It is one broker with one disk (ADR 0100 §3). There is no follower, no
-//! replication and no failover; FABRIC-077 and FABRIC-086 are not met by it.
+//! By default it is one broker with one disk (ADR 0100 §3): no follower, no
+//! replication, no failover. With `QIP_EVENT_FABRIC_MANAGED_LOG=spanner` it
+//! is seated at ADR 0111's managed consensus: every P0 and P1 batch is
+//! committed by a Spanner transaction, under a leadership lease the database
+//! fences, before its producer is answered; two or three instances per
+//! region contend for each partition's lease, and the ones that do not hold
+//! it follow the committed log onto their own disks. P2 to P4 stay on the
+//! local path (ADR 0111 §2).
 //! And it is not deployed: ADR 0010 keeps it out of the image matrix until
 //! its placement is decided (ADR 0099 C8).
 
 pub mod archiver;
+pub mod bench;
 pub mod config;
 pub mod health;
+pub mod spanner;
 pub mod telemetry;
 
 use std::io::Read;
@@ -55,12 +63,13 @@ use qip_storage::segment::archive::Archiver;
 use qip_storage::segment::log::SegmentLogConfig;
 use qip_storage::{BlobStore, CloudStorageBlobStore, CloudStorageConfig, FileBlobStore};
 use qip_streaming::event_fabric::broker::Broker;
+use qip_streaming::event_fabric::managed::ManagedLog;
 use qip_streaming::event_fabric::service::{Handled, SegmentConfigFor, Service};
 use qip_transport::event_fabric::auth::{self, IdentityTable};
 use qip_transport::event_fabric::protocol::Route;
 use qip_transport::server::{Handler, Method, Request, Response, Server, ServerLimits};
 
-use crate::config::{ArchiveTarget, Config};
+use crate::config::{ArchiveTarget, Config, ManagedBackend, ManagedConfig};
 use crate::health::Health;
 use crate::telemetry::FabricdTelemetry;
 
@@ -379,6 +388,48 @@ pub fn start_with_archive(
     clock: Arc<dyn Clock>,
     archive: Option<Arc<dyn BlobStore>>,
 ) -> Result<Running> {
+    start_with_seams(config, clock, archive, None)
+}
+
+/// Open the managed log `config` names (ADR 0111). Only Spanner exists.
+fn open_managed_log(managed: &ManagedConfig, clock: Arc<dyn Clock>) -> Result<Arc<dyn ManagedLog>> {
+    match &managed.backend {
+        ManagedBackend::Spanner {
+            database,
+            endpoint,
+            metadata_server,
+            token_file,
+        } => {
+            let access = GcpAccess::from_values(
+                Some(endpoint),
+                metadata_server.then_some("1"),
+                token_file.as_deref(),
+                None,
+                clock,
+            )?;
+            let rpc = spanner::HttpSpannerRpc::new(access)?;
+            Ok(Arc::new(spanner::SpannerManagedLog::new(
+                Arc::new(rpc),
+                database,
+                &managed.region,
+            )))
+        }
+    }
+}
+
+/// [`start_with_archive`], and with `managed` as the managed log instead of
+/// the one the configuration names. The seam the failover and chaos suites
+/// put two brokers on one in-memory managed log through; `main` never passes
+/// one. A managed log supplied to a configuration that names none is
+/// refused: the instance name and lease length come from the configuration,
+/// and a seam that silently invented them would test a broker no deployment
+/// runs.
+pub fn start_with_seams(
+    config: &Config,
+    clock: Arc<dyn Clock>,
+    archive: Option<Arc<dyn BlobStore>>,
+    managed: Option<Arc<dyn ManagedLog>>,
+) -> Result<Running> {
     let catalogue_bytes = read_bounded(
         &config.catalogue,
         MAXIMUM_CATALOGUE_BYTES,
@@ -387,11 +438,30 @@ pub fn start_with_archive(
     let catalogue = parse_catalogue(&config.catalogue, &catalogue_bytes)?;
     let identities = IdentityTable::load(&config.identities_file)?;
 
-    let broker = Arc::new(Broker::open(&config.data_dir, clock.clone())?);
     let archive_store: Arc<dyn BlobStore> = match archive {
         Some(store) => store,
         None => open_archive(&config.archive, clock.clone())?,
     };
+    // Every broker reads its archive back (FABRIC-8079): an offset whose
+    // local segment is gone hydrates from the archive, verified, rather than
+    // reading as the end of the partition.
+    let broker =
+        Broker::open(&config.data_dir, clock.clone())?.with_archive_reader(archive_store.clone());
+    let broker = match (&config.managed, managed) {
+        (Some(settings), Some(log)) => broker.with_managed_log(log, &settings.instance)?,
+        (Some(settings), None) => broker.with_managed_log(
+            open_managed_log(settings, clock.clone())?,
+            &settings.instance,
+        )?,
+        (None, Some(_)) => {
+            return Err(Error::invalid(
+                "a managed log was supplied to a configuration that names none; set \
+                 QIP_EVENT_FABRIC_MANAGED_LOG and the instance it runs as",
+            ));
+        }
+        (None, None) => broker,
+    };
+    let broker = Arc::new(broker);
     prove_archive_writable(archive_store.as_ref(), broker.leader_epoch())?;
     let service = Arc::new(Service::new(
         broker.clone(),
@@ -411,6 +481,17 @@ pub fn start_with_archive(
     telemetry.leader_epoch(broker.leader_epoch());
     let health = Arc::new(Health::new(broker.leader_epoch()));
     health.storage_proven();
+    // One lease pass before serving, so an instance that can lead starts
+    // leading rather than refusing its first P0/P1 produce for a third of a
+    // TTL. A pass that cannot reach the database is reported, not fatal: the
+    // P2-P4 streams this broker also serves do not depend on it.
+    if let Some(settings) = &config.managed {
+        let report = broker.tend_leases(settings.lease_ttl_ms);
+        if let Ok(report) = &report {
+            telemetry.leases(report);
+        }
+        health.lease_pass(&report);
+    }
 
     let data = Server::bind(
         &config.listen,
@@ -456,16 +537,43 @@ pub fn start_with_archive(
         let health = health.clone();
         let telemetry = telemetry.clone();
         let stop = stop_housekeeping.clone();
-        let archiver = Archiver::new(archive_store);
+        // Indexed, so a segment can be read back once its local copy is
+        // retained away or the disk holding it is gone (FABRIC-8079).
+        let archiver = Archiver::new(archive_store).with_manifest_index();
+        let hot_batches = config.hot_batches;
         std::thread::spawn(move || {
             let seals = archiver::SealCounts::default();
             while !stop.load(Ordering::SeqCst) {
-                let outcome = archiver::pass(service.broker(), &archiver, &telemetry, &seals);
+                let outcome = archiver::pass(service.broker(), &archiver, &telemetry, &seals)
+                    .and_then(|archived| {
+                        archiver::retain(service.broker(), hot_batches, &telemetry)
+                            .map(|_| archived)
+                    });
                 health.archive_pass(&outcome);
                 std::thread::sleep(interval);
             }
         })
     };
+    // ADR 0111's lease loop, on a thread of its own: a Spanner round trip
+    // that stalls holds this thread, never the produce path's.
+    let lease_thread = config.managed.as_ref().map(|settings| {
+        let broker = service.broker().clone();
+        let health = health.clone();
+        let telemetry = telemetry.clone();
+        let stop = stop_housekeeping.clone();
+        let ttl_ms = settings.lease_ttl_ms;
+        let renew_every = Duration::from_millis(ttl_ms / 3);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                std::thread::sleep(renew_every);
+                let report = broker.tend_leases(ttl_ms);
+                if let Ok(report) = &report {
+                    telemetry.leases(report);
+                }
+                health.lease_pass(&report);
+            }
+        })
+    });
     let catalogue_thread = {
         let config = config.clone();
         let service = service.clone();
@@ -495,6 +603,9 @@ pub fn start_with_archive(
         stop_health,
         stop_housekeeping,
         data_thread: Some(data_thread),
-        other_threads: vec![health_thread, archive_thread, catalogue_thread],
+        other_threads: [health_thread, archive_thread, catalogue_thread]
+            .into_iter()
+            .chain(lease_thread)
+            .collect(),
     })
 }

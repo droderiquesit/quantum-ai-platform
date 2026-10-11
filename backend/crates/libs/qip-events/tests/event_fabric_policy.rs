@@ -715,38 +715,125 @@ fn an_envelope_with_any_mandatory_field_absent_or_emptied_is_refused() {
     }
 }
 
-/// FABRIC-086: the acknowledgement P0 and P1 wait for is the archive copy,
-/// not a replica majority, and is named `archived`. A catalogue committed
-/// before the rename spells it `quorum`; that spelling must still load, as
-/// the same profile, or renaming a word would stop every broker reading the
-/// catalogue it was started with — and what is written back is the honest
-/// name, never the old one.
+/// FABRIC-8086 (R2.9): `quorum` means a majority of replicas, and a stream
+/// with one replica is refused for declaring it, by name, rather than loaded
+/// as the single-broker `archived` profile. Until this, the parser aliased
+/// the word silently and the committed catalogue said "quorum" on two
+/// replication-factor-one streams — the INCORRECT verdict. Where the stream
+/// does declare the managed consensus's replication (ADR 0111), the old
+/// spelling still loads, as the replicated profile it always claimed to be.
 ///
-/// Mutation: drop `"quorum"` from `parse_ack_profile`'s arm — the legacy
-/// catalogue is refused and this fails at the first `expect`. Mutation:
-/// rename the serde form back to `quorum` — fails at the serialised-name
-/// assertion.
+/// This replaces `the_archived_ack_profile_reads_its_old_quorum_spelling_…`,
+/// which asserted the alias this item exists to remove.
+///
+/// Mutation: restore `"archived" | "quorum" => Ok(AckProfile::Archived)` in
+/// `parse_ack_profile` — the RF1 `quorum` stream parses and the first
+/// `expect_err` fires. Mutation: drop the `"quorum" if replication_factor ==
+/// MANAGED_REPLICATION_FACTOR` arm — the RF3 legacy stream is refused and the
+/// `expect` on it fires. Mutation: move `#[serde(alias = "quorum")]` back to
+/// `Archived` — the serde assertion fires.
 #[test]
-fn the_archived_ack_profile_reads_its_old_quorum_spelling_and_writes_only_the_new_one() {
+fn quorum_is_refused_on_a_stream_with_one_replica_and_read_as_managed_majority_only_where_replicated()
+ {
     use qip_events::event_fabric::policy::AckProfile;
 
-    let legacy = valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]);
     let current = valid_stream_json("outcomes", "p1_outcomes", "archived", 1, "none", vec![]);
-    let legacy = Catalogue::parse(&catalogue_bytes(vec![legacy], vec![]))
-        .expect("a catalogue written before the rename still loads");
     let current =
-        Catalogue::parse(&catalogue_bytes(vec![current], vec![])).expect("the new spelling loads");
-    let read = |c: &Catalogue| c.stream("outcomes").expect("declared").policy.ack_profile();
-    assert_eq!(read(&legacy), AckProfile::Archived);
-    assert_eq!(read(&current), AckProfile::Archived);
+        Catalogue::parse(&catalogue_bytes(vec![current], vec![])).expect("premise: archived loads");
+    assert_eq!(
+        current
+            .stream("outcomes")
+            .expect("declared")
+            .policy
+            .ack_profile(),
+        AckProfile::Archived
+    );
+
+    let single = valid_stream_json("outcomes", "p1_outcomes", "quorum", 1, "none", vec![]);
+    let refused = Catalogue::parse(&catalogue_bytes(vec![single], vec![]))
+        .expect_err("quorum on one replica is a claim nothing honours");
+    assert!(
+        refused
+            .to_string()
+            .contains("'quorum' at replication factor 1"),
+        "{refused}"
+    );
+
+    let replicated = valid_stream_json("outcomes", "p1_outcomes", "quorum", 3, "none", vec![]);
+    let replicated = Catalogue::parse(&catalogue_bytes(vec![replicated], vec![]))
+        .expect("quorum on the managed replication path is the replicated profile");
+    let policy = &replicated.stream("outcomes").expect("declared").policy;
+    assert_eq!(policy.ack_profile(), AckProfile::ManagedMajority);
+    assert!(policy.is_managed());
+    assert_eq!(policy.replication_factor(), 3);
 
     assert_eq!(
         serde_json::to_value(AckProfile::Archived).expect("serialises"),
         serde_json::json!("archived")
     );
-    let old: AckProfile =
+    let stored: AckProfile =
         serde_json::from_value(serde_json::json!("quorum")).expect("the stored old name reads");
-    assert_eq!(old, AckProfile::Archived);
+    assert_eq!(stored, AckProfile::ManagedMajority);
+}
+
+/// ADR 0111 §3: `managed_majority` is admitted exactly where it is true — P0
+/// and P1 at the managed consensus's replication factor — and refused for
+/// P2 to P4 and at any other factor, while an archived stream still may not
+/// claim a replica.
+///
+/// Mutation: delete the class check in `StreamPolicy::new`'s replicated arm —
+/// the P2 managed stream is admitted and its `expect_err` fires. Mutation:
+/// delete the `!= MANAGED_REPLICATION_FACTOR` check — the RF1 managed stream
+/// is admitted and fires.
+#[test]
+fn managed_majority_is_admitted_for_p0_and_p1_at_rf3_and_refused_everywhere_else() {
+    for class in ["p0_control", "p1_outcomes"] {
+        let ok = valid_stream_json("s", class, "managed_majority", 3, "none", vec![]);
+        Catalogue::parse(&catalogue_bytes(vec![ok], vec![]))
+            .unwrap_or_else(|e| panic!("{class} managed at RF3 must load: {e}"));
+    }
+    for class in ["p2_market_journal", "p3_research", "p4_telemetry"] {
+        let bad = valid_stream_json("s", class, "managed_majority", 3, "none", vec![]);
+        let err = Catalogue::parse(&catalogue_bytes(vec![bad], vec![]))
+            .expect_err("P2-P4 have no replicated path");
+        assert!(err.to_string().contains("ADR 0111 §2"), "{class}: {err}");
+    }
+    for rf in [1, 2, 5] {
+        let bad = valid_stream_json("s", "p1_outcomes", "managed_majority", rf, "none", vec![]);
+        let err = Catalogue::parse(&catalogue_bytes(vec![bad], vec![]))
+            .expect_err("a managed stream must declare the managed replication factor");
+        assert!(err.to_string().contains("declare 3"), "rf {rf}: {err}");
+    }
+    let archived_rf3 = valid_stream_json("s", "p1_outcomes", "archived", 3, "none", vec![]);
+    let err = Catalogue::parse(&catalogue_bytes(vec![archived_rf3], vec![]))
+        .expect_err("an archived stream has one replica");
+    assert!(err.to_string().contains("(C2)"), "{err}");
+}
+
+/// R2.9: the committed local catalogue declares what the local broker
+/// delivers. It said `"quorum"` on its P0 and P1 streams at replication
+/// factor one until 2026-10-11; with the alias gone that file would stop
+/// every local broker, and before the alias went it was the INCORRECT row's
+/// own evidence.
+///
+/// Mutation: put `"ack_profile": "quorum"` back on `control.local` — the
+/// parse fails and this fires.
+#[test]
+fn the_committed_local_catalogue_parses_and_claims_no_replication() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../../infrastructure/event-fabric/streams.local.json"
+    );
+    let bytes = std::fs::read(path).expect("premise: the committed catalogue is readable");
+    let catalogue = Catalogue::parse(&bytes).expect("the committed catalogue parses");
+    assert!(
+        !catalogue.streams().is_empty(),
+        "premise: it declares streams"
+    );
+    for (name, declaration) in catalogue.streams() {
+        assert_eq!(declaration.policy.replication_factor(), 1, "{name}");
+        assert!(!declaration.policy.is_managed(), "{name}");
+    }
 }
 
 /// FABRIC-7056: a P0 or P1 stream can never be declared sheddable, and only

@@ -331,11 +331,52 @@ struct ManifestWire {
 #[derive(Debug)]
 pub struct Archiver {
     blob_store: Arc<dyn BlobStore>,
+    index: bool,
+}
+
+/// The blob-store prefix every indexed manifest of `(stream, partition)` is
+/// written under: `manifests/<stream>/<partition, 10 digits>/`.
+///
+/// The index exists because the content-addressed segment objects alone
+/// cannot answer "which object holds offset N of this partition" once the
+/// local segment — and with it the local manifest record — has been retained
+/// away; and a broker whose disk is gone has neither. Refuses a stream name
+/// containing `/`, which would make two partitions' prefixes overlap.
+pub fn manifest_index_prefix(stream: &str, partition: u32) -> Result<String> {
+    if stream.is_empty() || stream.contains('/') {
+        return Err(Error::invalid(format!(
+            "stream name '{stream}' cannot key an archive index: it must be non-empty and \
+             contain no '/'"
+        )));
+    }
+    Ok(format!("manifests/{stream}/{partition:010}/"))
+}
+
+fn manifest_index_key(stream: &str, partition: u32, base_offset: u64) -> Result<String> {
+    Ok(format!(
+        "{}{base_offset:020}",
+        manifest_index_prefix(stream, partition)?
+    ))
 }
 
 impl Archiver {
     pub fn new(blob_store: Arc<dyn BlobStore>) -> Self {
-        Self { blob_store }
+        Self {
+            blob_store,
+            index: false,
+        }
+    }
+
+    /// Also write each manifest into the blob store under
+    /// [`manifest_index_prefix`], **before** the segment is marked archived,
+    /// so [`ArchiveReader::read_indexed`] can hydrate a segment whose local
+    /// copy has been retained away (FABRIC-8079). Before the mark, because
+    /// the mark is what lets retention delete the local copy: a segment
+    /// marked archived but not indexed could be deleted and then be
+    /// unreadable from anywhere.
+    pub fn with_manifest_index(mut self) -> Self {
+        self.index = true;
+        self
     }
 
     /// Archive the sealed segment starting at `start_offset` in `log`.
@@ -485,6 +526,13 @@ impl Archiver {
         })?;
         manifest.verify(&round_tripped)?;
 
+        if self.index {
+            self.blob_store.put(
+                &manifest_index_key(stream, partition, start_offset)?,
+                manifest.to_wire_bytes()?,
+            )?;
+        }
+
         log.manifest_put(
             &archive_manifest_key(start_offset),
             &manifest.to_wire_bytes()?,
@@ -539,11 +587,137 @@ fn decode_extent(label: &str, bytes: &[u8], extent: BatchExtent) -> Result<Batch
 #[derive(Debug)]
 pub struct ArchiveReader {
     blob_store: Arc<dyn BlobStore>,
+    /// The last segment [`Self::read_indexed`] hydrated, already verified
+    /// against its manifest. A consumer replaying a retained range reads it
+    /// batch by batch; without this every batch would download and re-hash
+    /// the whole segment it sits in.
+    last_indexed: std::sync::Mutex<Option<(Manifest, Arc<Vec<u8>>)>>,
+}
+
+/// The batch at `offset` inside a verified segment's bytes, by the
+/// manifest's replay index.
+fn indexed_batch_at(manifest: &Manifest, bytes: &[u8], offset: u64) -> Result<Batch> {
+    let segment_start = manifest.base_offset;
+    let index = manifest
+        .replay_index
+        .binary_search_by_key(&offset, |(o, _)| *o)
+        .map_err(|_| {
+            Error::not_found(format!(
+                "segment {segment_start}'s manifest has no replay-index entry for offset {offset}"
+            ))
+        })?;
+    let start = manifest.replay_index[index].1 as usize;
+    let end = manifest
+        .replay_index
+        .get(index + 1)
+        .map(|(_, byte_start)| *byte_start as usize)
+        .unwrap_or(bytes.len());
+    if end > bytes.len() || start > end {
+        return Err(Error::io(format!(
+            "segment {segment_start}'s replay index names byte range [{start}, {end}) but the \
+             archived object is only {} bytes",
+            bytes.len()
+        )));
+    }
+    match Batch::decode(&bytes[start..end])? {
+        DecodeOutcome::Complete(batch) => Ok(batch),
+        DecodeOutcome::Torn => Err(Error::io(format!(
+            "segment {segment_start}: the replay index named a batch at offset {offset} that \
+             does not decode complete"
+        ))),
+    }
 }
 
 impl ArchiveReader {
     pub fn new(blob_store: Arc<dyn BlobStore>) -> Self {
-        Self { blob_store }
+        Self {
+            blob_store,
+            last_indexed: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Whether the segment of `(stream, partition)` starting at
+    /// `base_offset` has an index entry, so a caller about to delete its
+    /// local copy can refuse to delete one [`Self::read_indexed`] could not
+    /// read back — a segment archived before the index existed.
+    pub fn is_indexed(&self, stream: &str, partition: u32, base_offset: u64) -> Result<bool> {
+        Ok(self
+            .blob_store
+            .get(&manifest_index_key(stream, partition, base_offset)?)?
+            .is_some())
+    }
+
+    /// Read the batch at `offset` of `(stream, partition)` from the archive
+    /// alone, through the manifest index [`Archiver::with_manifest_index`]
+    /// writes — no local segment, seal or manifest record is consulted, so
+    /// this answers for a range retention has deleted and for a broker whose
+    /// disk is new (FABRIC-8079).
+    ///
+    /// `Ok(None)` when no indexed segment covers `offset`. Refuses an index
+    /// entry whose manifest names a different stream, partition or start
+    /// than the key it was found under — an index object copied into the
+    /// wrong place would otherwise serve another partition's history — and,
+    /// like [`Self::read`], never returns bytes that have not re-proved the
+    /// manifest's content hash.
+    pub fn read_indexed(&self, stream: &str, partition: u32, offset: u64) -> Result<Option<Batch>> {
+        {
+            let cached = self.last_indexed.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((manifest, bytes)) = cached.as_ref()
+                && manifest.stream == stream
+                && manifest.partition == partition
+                && offset >= manifest.base_offset
+                && offset <= manifest.last_offset
+            {
+                return indexed_batch_at(manifest, bytes, offset).map(Some);
+            }
+        }
+        let prefix = manifest_index_prefix(stream, partition)?;
+        let mut covering: Option<(u64, String)> = None;
+        for key in self.blob_store.list(&prefix)? {
+            let Some(start) = key
+                .strip_prefix(&prefix)
+                .and_then(|tail| tail.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            if start <= offset && covering.as_ref().is_none_or(|(best, _)| start > *best) {
+                covering = Some((start, key));
+            }
+        }
+        let Some((start, key)) = covering else {
+            return Ok(None);
+        };
+        let manifest_bytes = self.blob_store.get(&key)?.ok_or_else(|| {
+            Error::not_found(format!(
+                "archive index entry {key} was listed and then could not be read"
+            ))
+        })?;
+        let manifest = Manifest::from_wire_bytes(&manifest_bytes)?;
+        if manifest.stream != stream
+            || manifest.partition != partition
+            || manifest.base_offset != start
+        {
+            return Err(Error::invalid(format!(
+                "archive index entry {key} holds the manifest of {}:{} from offset {}; refusing \
+                 to serve another partition's history under this one's name",
+                manifest.stream, manifest.partition, manifest.base_offset
+            )));
+        }
+        if offset > manifest.last_offset {
+            return Ok(None);
+        }
+        let object = blob_key(&manifest.content_hash)?;
+        let bytes = self.blob_store.get(&object)?.ok_or_else(|| {
+            Error::not_found(format!(
+                "archive index entry {key} names object {object}, which the blob store does not \
+                 hold"
+            ))
+        })?;
+        manifest.verify(&bytes)?;
+        let batch = indexed_batch_at(&manifest, &bytes, offset)?;
+        *self.last_indexed.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((manifest, Arc::new(bytes)));
+        Ok(Some(batch))
     }
 
     /// Read the batch at `offset`, from the archive if the segment holding

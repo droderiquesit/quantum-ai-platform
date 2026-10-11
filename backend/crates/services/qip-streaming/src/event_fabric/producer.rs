@@ -183,7 +183,7 @@ struct CachedBatch {
     payload_hash: ContentHash,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct ProducerState {
     /// The highest epoch this table has appended a batch under for this
     /// producer at this partition. `None` until the first append.
@@ -387,6 +387,44 @@ impl ProducerTable {
             }
             Some(_) => Ok(Admission::Conflict),
             None => Ok(Admission::OutsideWindow),
+        }
+    }
+}
+
+/// One producer's state at one partition as it stood before an admission,
+/// for [`ProducerTable::rewind`].
+#[derive(Clone, Debug)]
+pub struct ProducerCheckpoint(Option<ProducerState>);
+
+impl ProducerTable {
+    /// Copy what this table believes about `producer_id` at `partition`, so
+    /// an admission whose append then fails can be undone.
+    ///
+    /// The managed commit path needs it (ADR 0111): a batch is admitted, then
+    /// committed to the managed log, and only then appended. A commit that is
+    /// fenced or conflicts means the batch exists nowhere, and a table that
+    /// still believed it appended would answer the producer's retry as a
+    /// verified duplicate — an acknowledgement for a record no store holds.
+    pub fn checkpoint(&self, producer_id: &str, partition: &str) -> ProducerCheckpoint {
+        ProducerCheckpoint(
+            self.producers
+                .get(&lookup_key(producer_id, partition))
+                .cloned(),
+        )
+    }
+
+    /// Put `producer_id` at `partition` back to `checkpoint`. The caller must
+    /// hold whatever serialises admissions to that partition across the
+    /// checkpoint, the admission and this call.
+    pub fn rewind(&mut self, producer_id: &str, partition: &str, checkpoint: ProducerCheckpoint) {
+        let key = lookup_key(producer_id, partition);
+        match checkpoint.0 {
+            Some(state) => {
+                self.producers.insert(key, state);
+            }
+            None => {
+                self.producers.remove(&key);
+            }
         }
     }
 }
