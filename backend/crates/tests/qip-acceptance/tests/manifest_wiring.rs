@@ -2952,10 +2952,17 @@ const TERRAFORM_MODULES: &str = "infrastructure/terraform/modules";
 /// runtime is added here in the change that introduces it, and until it is,
 /// the root-level check below is what keeps one from arriving unregistered
 /// by the side door.
-const WORKLOAD_RESOURCES: [&str; 5] = [
+///
+/// The two single-machine types joined in W4.2, when the event-fabric broker
+/// gained a machine and `modules/ledgerd` arrived: both are sole writers of a
+/// chain and deliberately not instance groups, so a list that knew only
+/// templates and groups would have let a single machine arrive unregistered.
+const WORKLOAD_RESOURCES: [&str; 7] = [
     "google_cloud_run_v2_service",
     "google_compute_instance_template",
     "google_compute_instance_group_manager",
+    "google_compute_instance",
+    "google_compute_instance_from_template",
     "google_container_cluster",
     "google_vertex_ai_endpoint",
 ];

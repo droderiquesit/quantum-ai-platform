@@ -1602,6 +1602,57 @@ variable "dns_record_ttl_seconds" {
   }
 }
 
+variable "event_fabric_broker" {
+  description = <<-EOT
+    The event-fabric broker, `qip-fabricd` (ADR 0100), or null for none.
+
+    Null in every environment: no boot image carrying the broker has been
+    baked, and the module refuses anything but a self-link to one image.
+    When set, `fabric.tf` creates the broker's identity, a private DNS zone
+    on the Fabric network for its SRV record (FABRIC-087), and one machine
+    on `internal_address` in the `control-fabric` trust zone with its own
+    journal disk. One address: the first build is RF1 (ADR 0100 §3).
+  EOT
+
+  type = object({
+    zone                 = string
+    boot_image           = string
+    internal_address     = string
+    dns_domain           = string
+    machine_type         = optional(string, "c3-standard-4")
+    journal_disk_size_gb = optional(number, 100)
+  })
+  default = null
+
+  validation {
+    condition     = var.event_fabric_broker == null || can(regex("^[a-z0-9-]+(\\.[a-z0-9-]+)*\\.internal$", var.event_fabric_broker.dns_domain))
+    error_message = "event_fabric_broker.dns_domain is a private name ending in `.internal`, such as fabric.qip-dev.internal. A public domain here would publish an internal address."
+  }
+}
+
+variable "ledgerd" {
+  description = <<-EOT
+    The ledger writer, `qip-ledgerd` (ADR 0100 §2), or null for none.
+
+    Null in every environment: no boot image carrying the ledger has been
+    baked. When set, `modules/ledgerd` creates its identity, its archive
+    disk, a stable internal address and one machine in the `ledger` trust
+    zone. `account_id` is an internal book name, never a venue or bank
+    account number; the module refuses anything else.
+  EOT
+
+  type = object({
+    zone                  = string
+    boot_image            = string
+    internal_address      = string
+    account_id            = string
+    machine_type          = optional(string, "e2-standard-2")
+    archive_disk_size_gb  = optional(number, 50)
+    fabric_consumer_group = optional(string, "qip-ledgerd")
+  })
+  default = null
+}
+
 variable "registry_promotion_readers" {
   description = <<-EOT
     Service accounts in later environments that read this environment's image
