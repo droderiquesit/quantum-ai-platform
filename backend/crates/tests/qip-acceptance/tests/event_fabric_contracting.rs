@@ -147,6 +147,45 @@ fn fabric_003_fabric_is_never_on_path_from_venue_event_to_order() {
 }
 
 #[test]
+fn fabric_10194_the_node_reads_no_market_data_from_a_fabric_consumer() {
+    // R12-FABRIC-10194: the fabric must not sit in front of venue market
+    // data. `fabric_003` holds the cell's order path; this holds the node
+    // around it. In `qip-edge-node`'s production code exactly one file may
+    // name a fabric consumer or the broker library — the control consumer,
+    // whose constructor refuses every stream but control (proven
+    // behaviourally by `qip-edge-node`'s
+    // `the_control_consumer_refuses_every_stream_but_control_so_market_
+    // data_never_arrives_through_the_fabric`). The feed and the gateway are
+    // bound in `main` directly; a feed module that read ticks from a fabric
+    // consumer would be a second file here.
+    //
+    // Mutation: add `use qip_transport::event_fabric::consumer::Consumer;`
+    // to `qip-edge-node/src/feed.rs` — the set of naming files becomes two
+    // and the assertion fires.
+    let files = qip_acceptance::files_with_extension("backend/crates/apps/qip-edge-node/src", "rs");
+    assert!(
+        files.iter().any(|f| f.ends_with("feed.rs")),
+        "premise: the node's feed module is among the files scanned"
+    );
+    let root = qip_acceptance::repository_root();
+    let naming: Vec<String> = files
+        .iter()
+        .filter(|path| {
+            let text = qip_acceptance::production_text(&std::fs::read_to_string(path).unwrap());
+            ["event_fabric::consumer", "qip_streaming"]
+                .iter()
+                .any(|token| text.contains(token))
+        })
+        .map(|path| path.strip_prefix(&root).unwrap().display().to_string())
+        .collect();
+    assert_eq!(
+        naming,
+        vec!["backend/crates/apps/qip-edge-node/src/event_fabric/control.rs".to_string()],
+        "only the control consumer may read from the fabric"
+    );
+}
+
+#[test]
 fn fabric_004_reflex_nodes_journal_decision_history_to_regional_fabric_p1_p2() {
     // FABRIC-004: Each Reflex Node must asynchronously journal to its regional fabric
     // every tick it acted on, feature snapshot, decision and decision trace, order,

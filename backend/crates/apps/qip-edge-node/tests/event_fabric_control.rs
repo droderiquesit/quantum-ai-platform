@@ -599,3 +599,82 @@ fn the_control_thread_signals_caught_up_only_after_reading_through_the_start_hig
     assert_eq!(node.settled_stats().start_watermark, Some(3));
     Ok(())
 }
+
+/// FABRIC-10194: the node's one fabric consumer cannot be pointed at market
+/// data or at the node's own journal. `ControlConsumer` is the only type in
+/// this crate that holds a fabric `Consumer`, and its constructor refuses
+/// any stream but `CONTROL_STREAM` — so venue ticks reach a pass through the
+/// feed `main` binds directly, never through a broker, and a configuration
+/// or refactor that tried to route them through the fabric stops at
+/// construction rather than putting a broker hop in front of every order.
+///
+/// Mutation: delete the `consumer.stream() != CONTROL_STREAM` refusal in
+/// `ControlConsumer::new` — every non-control stream is accepted and the
+/// refusal assertion fails.
+#[test]
+fn the_control_consumer_refuses_every_stream_but_control_so_market_data_never_arrives_through_the_fabric()
+-> Result<()> {
+    let build = |stream: &str, broker: &Broker| -> Result<ControlConsumer> {
+        let consumer = Consumer::new(ConsumerConfig {
+            transport: Box::new(broker.clone()),
+            stream: stream.to_string(),
+            partition: 0,
+            group_id: format!("control-{CELL}"),
+            retry_policy: RetryPolicy::default(),
+            breaker_policy: BreakerPolicy::default(),
+            clock: clock_at(0),
+            sleeper: Arc::new(ThreadSleeper),
+            retry_seed: 1,
+            breaker_seed: 1,
+            timeouts: Timeouts::default(),
+            fetch_credit_bytes: 64 * 1024,
+        })?;
+        let (sender, _handoff) = Handoff::bounded(16)?;
+        let (refusal_sender, _refusals) = Refusals::bounded(16)?;
+        let (signal, _barrier) = CaughtUp::new();
+        let telemetry = Arc::new(OutboxTelemetry::new(Arc::new(Metrics::new(
+            "qip-edge-node",
+        ))));
+        ControlConsumer::new(
+            ControlConfig {
+                cell: CELL.to_string(),
+                key: KEY.to_vec(),
+                grant_memory: DEFAULT_GRANT_MEMORY,
+                clock: clock_at(0),
+            },
+            consumer,
+            sender,
+            refusal_sender,
+            signal,
+            telemetry,
+        )
+    };
+
+    // Premise: the same construction on the control stream is accepted, so
+    // the refusals below are about the stream and nothing else.
+    let broker = Broker::default();
+    build(CONTROL_STREAM, &broker)?;
+
+    for stream in [
+        "market.ticks",
+        qip_edge_node::event_fabric::drain::JOURNAL_STREAM,
+        qip_edge_node::event_fabric::drain::OUTCOMES_STREAM,
+        "telemetry.local",
+    ] {
+        assert_ne!(stream, CONTROL_STREAM, "premise: {stream} is not control");
+        let broker = Broker::default();
+        match build(stream, &broker) {
+            Err(error) => assert!(
+                error.message().contains("reads only") && error.message().contains(stream),
+                "{stream}: {}",
+                error.message()
+            ),
+            Ok(_) => panic!("a control consumer was built on {stream}"),
+        }
+        assert!(
+            broker.fetches().is_empty(),
+            "{stream}: nothing is fetched before the refusal"
+        );
+    }
+    Ok(())
+}
