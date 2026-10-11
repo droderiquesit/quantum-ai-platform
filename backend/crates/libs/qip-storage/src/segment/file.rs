@@ -336,9 +336,19 @@ mod tests {
     /// is the check firing rather than a missing file.
     #[test]
     fn a_segment_path_that_climbs_out_of_the_log_directory_is_refused_before_it_is_read() {
-        let root = std::env::temp_dir().join(format!("qip-segment-path-{}", std::process::id()));
+        // Under the workspace's own (ignored) target directory rather than
+        // the process's temp dir: a library may not read `std::env`, tests
+        // included, and `architecture.rs` holds it to that.
+        // Canonicalised once it exists, so the only `..` in a path below is
+        // the one the test puts there.
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/test-scratch")
+            .join(format!("qip-segment-path-{}", std::process::id()));
+        assert!(std::fs::create_dir_all(scratch.join("log")).is_ok());
+        let root = scratch
+            .canonicalize()
+            .expect("the scratch directory exists");
         let log = root.join("log");
-        assert!(std::fs::create_dir_all(&log).is_ok());
         let outside = root.join("segment.00000000000000000000");
         assert!(std::fs::write(&outside, file_header()).is_ok());
         let climbing = log.join("..").join("segment.00000000000000000000");
