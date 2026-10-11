@@ -1,0 +1,5369 @@
+[
+  {
+    "id": "R12-GCP-10001",
+    "domain": "GCP",
+    "title": "Projects and folders isolate blast radius per environment",
+    "statement": "The resource hierarchy (folders/projects) isolates each environment and plane so a failure or policy change in one project cannot reach another; the hierarchy is never a runtime dependency.",
+    "rationale": "A shared project lets a dev mistake or credential reach production resources.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each committed tfvars names a distinct project and nothing at runtime calls Resource Manager; reusing one project id across two environments fails the check."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Folder creation is organisation-scoped and outside this repository's Terraform root."
+  },
+  {
+    "id": "R12-SEC-10002",
+    "domain": "SEC",
+    "title": "Workforce identity comes from Cloud Identity",
+    "statement": "Human (workforce) access to the platform's GCP resources and admin surfaces authenticates through Cloud Identity accounts, not ad-hoc or shared identities.",
+    "rationale": "Shared or unmanaged human identities make privileged actions unattributable.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every human principal granted in Terraform/IAP is a managed user/group; a literal shared account or allUsers grant fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10003",
+    "domain": "SEC",
+    "title": "Privileged access is just-in-time through PAM",
+    "statement": "Privileged (admin/break-glass) access to production projects is granted just-in-time and time-bounded through Privileged Access Manager rather than standing role bindings.",
+    "rationale": "Standing admin grants are the authority an attacker or a misbehaving agent inherits.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A PAM entitlement exists for each privileged role and no human holds that role as a standing binding; a standing owner/editor binding fails."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "Also phase 0 deliverable of §26."
+  },
+  {
+    "id": "R12-GOV-10004",
+    "domain": "GOV",
+    "title": "Organization Policy enforces non-bypassable guardrails",
+    "statement": "Organization Policy constraints enforce platform guardrails (e.g. no service-account keys, no external IPs, resource locations) so no project-level actor can bypass them.",
+    "rationale": "A guardrail held only by convention is undone by the first person in a hurry.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Policies are declared and an acceptance test asserts each; deleting the policy resource fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-10005",
+    "domain": "GOV",
+    "title": "Cloud Asset Inventory records asset and change history",
+    "statement": "Cloud Asset Inventory (feeds or exports) records every resource and its changes so drift and unmanaged resources can be found.",
+    "rationale": "An unmanaged resource is invisible until it costs money or leaks data.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "An asset feed/export resource exists and its sink is readable; removing it fails a plan assertion."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10006",
+    "domain": "SEC",
+    "title": "Security Command Center reports posture with no hot-path dependency",
+    "statement": "Security Command Center collects posture findings for every project; nothing in the trading path depends on it.",
+    "rationale": "Misconfiguration found only by an attacker.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "SCC custom modules are planned in each environment; the edge-node and brains link no SCC client."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10007",
+    "domain": "SEC",
+    "title": "Cloud Audit Logs capture admin and data-access evidence",
+    "statement": "Admin-activity and data-access audit logs are enabled for every service holding secrets, keys, ledger, evidence or model data.",
+    "rationale": "An access nobody logged cannot be investigated.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "An IAM audit config enables DATA_READ/DATA_WRITE for each sensitive service; removing a service from it fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10008",
+    "domain": "GCP",
+    "title": "Isolated Reflex, Fabric, Service, Data and Engineering VPCs",
+    "statement": "Separate VPC networks exist for Reflex, Fabric, Service, Data and Engineering traffic, each deny-by-default on ingress.",
+    "rationale": "One flat network lets a compromised research workload reach the execution path.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Five google_compute_network resources with deny-ingress rules are planned; merging two into one fails the module tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10009",
+    "domain": "GCP",
+    "title": "Network Connectivity Center hub-spoke with route filters",
+    "statement": "VPCs and hybrid links connect through an NCC hub/spoke with route filters, and regional trading continues when remote spokes are unavailable.",
+    "rationale": "Ad-hoc peering creates unintended transitive reachability between isolated networks.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "An NCC hub and spokes with include/exclude ranges are planned; a spoke without filters fails."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10010",
+    "domain": "GCP",
+    "title": "Cloud Router provides dynamic BGP for Interconnect and VPN",
+    "statement": "Hybrid links (Interconnect, HA VPN) exchange routes dynamically through Cloud Router BGP sessions.",
+    "rationale": "Static routes on hybrid links fail silently when a provider path moves.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A router with BGP peers for each attachment/tunnel is planned."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10011",
+    "domain": "GCP",
+    "title": "Private provider connectivity with HA VPN fallback",
+    "statement": "Provider, colo, custody and IBM connectivity uses Dedicated/Partner/Cross-Cloud Interconnect where available, with HA VPN or internet fallback only where acceptable.",
+    "rationale": "Venue and custody traffic over the public internet adds latency and attack surface.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Interconnect attachment and HA VPN gateway are planned together; an attachment without fallback fails the module test."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10012",
+    "domain": "GCP",
+    "title": "Cloud NAT controls egress for non-latency-critical workloads",
+    "statement": "Internet egress for scouts, agents and builders goes through Cloud NAT with logging; Reflex venue egress is governed separately from that path.",
+    "rationale": "Uncontrolled egress is an exfiltration path; coupling venue egress to shared NAT couples trading to crawler load.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every NAT translates only named subnets to reserved addresses and logs; a NAT covering all subnets fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10013",
+    "domain": "SEC",
+    "title": "Agent and crawler web egress is policy-controlled and audited",
+    "statement": "Agent and crawler web egress passes a policy/audit proxy (Secure Web Proxy where suitable) so every outbound destination is allowed by policy and logged.",
+    "rationale": "An agent that can fetch any URL can exfiltrate or be steered by any page.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Egress from agent/scout workloads is only possible through the proxy and the proxy allowlist is declared; a direct route fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "ADR 0024 chose an in-tree Envoy egress sidecar rather than Secure Web Proxy."
+  },
+  {
+    "id": "R12-GCP-10014",
+    "domain": "GCP",
+    "title": "Private Service Connect for managed APIs, never on the hot path",
+    "statement": "Managed Google/service endpoints are reached via Private Service Connect where supported, and no PSC hop sits on the trading hot path.",
+    "rationale": "Public API endpoints widen the exfiltration surface.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A PSC endpoint is planned for Google APIs; none fronts the execution node venue path."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10015",
+    "domain": "GCP",
+    "title": "Private Google Access on every subnet",
+    "statement": "Every subnet reaches Google APIs over Private Google Access without public addresses.",
+    "rationale": "Workloads given external IPs to reach Google APIs become internet-exposed.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every google_compute_subnetwork sets private_ip_google_access=true; one without fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10016",
+    "domain": "FABRIC",
+    "title": "Cloud DNS zones and Fabric bootstrap SRV records",
+    "statement": "Cloud DNS serves public and private zones, and Fabric clients bootstrap brokers from SRV records; critical internal names use resilient zones and clients tolerate DNS loss with cached/local behaviour.",
+    "rationale": "Hard-coded broker addresses break on replacement; DNS loss must not stop trading.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A private zone with SRV records per broker is planned and the client resolves them; hard-coded broker addresses fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-API-10017",
+    "domain": "API",
+    "title": "Global ALB is the only public ingress for portal and API",
+    "statement": "Public client traffic reaches portal/BFF/API only via HTTPS Global External ALB fronting Cloud Run (or GKE Gateway).",
+    "rationale": "Directly exposed services bypass WAF, TLS policy and rate limits.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      },
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "The ALB/forwarding rules exist and every Cloud Run service ingress is internal or internal-and-cloud-load-balancing; a public run.app ingress fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10018",
+    "domain": "REFLEX",
+    "title": "Load balancers never front Reflex or Fabric",
+    "statement": "No load balancer, gateway or mesh hop fronts Reflex execution nodes or Fabric brokers.",
+    "rationale": "A balancer on the venue path adds latency and an unplanned failure domain.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Scanning Terraform finds no backend/NEG that targets an execution-node or broker group; adding one fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10019",
+    "domain": "SEC",
+    "title": "Cloud Armor WAF/DDoS/rate policy on the public edge",
+    "statement": "Every internet-facing backend has a Cloud Armor policy with WAF, adaptive DDoS protection and per-client rate limiting; the edge may deny clients without trading impact.",
+    "rationale": "An unprotected edge is the cheapest denial of service.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0B Foundation & Network"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every security policy enables layer-7 adaptive protection and a rate-based ban; removing either fails the tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-API-10020",
+    "domain": "API",
+    "title": "Cloud CDN accelerates public static content only",
+    "statement": "Public static assets are served through Cloud CDN with an explicit cache mode; dynamic/API backends are not cached.",
+    "rationale": "Caching an API response leaks one client's data to another.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every backend bucket enables CDN with explicit cache mode and no backend service does."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10021",
+    "domain": "SEC",
+    "title": "Certificate Manager issues public TLS certificates",
+    "statement": "Public TLS certificates for the edge are issued and rotated by Certificate Manager (or managed certificates), never uploaded by hand.",
+    "rationale": "Hand-managed certificates expire and take the edge down.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Certificate resources are managed; a self-managed certificate block fails."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10022",
+    "domain": "SEC",
+    "title": "IAP protects every admin interface",
+    "statement": "Admin interfaces (consoles, Argo CD, Kargo, node shells) are reachable only through Identity-Aware Proxy.",
+    "rationale": "An admin surface on a public address is the most direct route to production authority.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Remote-admin firewall rules admit only the IAP range and every admin service has an IAP binding; a rule from 0.0.0.0/0 fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10023",
+    "domain": "SEC",
+    "title": "Hierarchical firewall policies segment networks",
+    "statement": "Network segmentation is enforced by Cloud NGFW / hierarchical firewall policies inherited from the organisation, in addition to per-VPC rules.",
+    "rationale": "Per-VPC rules can be widened by any project editor.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A hierarchical/network firewall policy is planned and associated; absence fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10024",
+    "domain": "REFLEX",
+    "title": "Dedicated C4/C4D-class VMs run Reflex and Fabric",
+    "statement": "Reflex and Fabric run on dedicated Compute Engine C4/C4D-class VMs, pre-provisioned per shard, with a zonal fenced standby.",
+    "rationale": "Shared or autoscaled compute introduces latency jitter and noisy neighbours on the order path.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Execution & Messaging"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "The node module accepts only the C-class allowlist, declares primary and standby templates in different zones; a non-C machine type is refused at plan."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "ADR 0024: one Compute Engine node per region."
+  },
+  {
+    "id": "R12-REFLEX-10025",
+    "domain": "REFLEX",
+    "title": "Reflex state is ephemeral and rebuilt after restart",
+    "statement": "Reflex order books, features, session and model state live in RAM/Local SSD only and are rebuilt from the feed and the deployed package after a restart, never trusted from a previous process.",
+    "rationale": "A restarted node acting on its previous run's book or resting orders trades on state nobody verified.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Execution & Messaging"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A restarted node with a prior session refuses to form orders until venue reconciliation completes and rebuilds books from the feed; removing the reconciliation arm fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10026",
+    "domain": "FABRIC",
+    "title": "Fabric broker journals on persistent Hyperdisk",
+    "statement": "Fabric broker journals persist on Hyperdisk/persistent disks; Local SSD is cache only.",
+    "rationale": "A journal on ephemeral disk loses acknowledged records with the VM.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Execution & Messaging"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "The broker template attaches a persistent hyperdisk journal device; a local-SSD journal fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10027",
+    "domain": "FABRIC",
+    "title": "Fabric journal is RF3 across zones with quorum before durable ack",
+    "statement": "Fabric durable partitions replicate RF3 across three zones and acknowledge durable only after a quorum persisted; regional quorum with selective async cross-region mirrors.",
+    "rationale": "A single-disk broker loses acknowledged financial outcomes when the disk or zone fails.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Execution & Messaging"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A broker cluster test kills one replica after ack and every acknowledged record is still readable; an RF1 configuration fails."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10028",
+    "domain": "FINOPS",
+    "title": "Reservations guarantee production hot capacity",
+    "statement": "Production hot capacity (Reflex, Fabric) is backed by specific Compute Engine reservations sized to target; commitments are used to control cost.",
+    "rationale": "A zone stock-out at restart leaves a region unable to trade.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every machine group consumes a specific reservation sized to its target; an unreserved group fails."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10029",
+    "domain": "SEC",
+    "title": "Critical VMs boot as Shielded VMs",
+    "statement": "Every VM-based critical service boots with Secure Boot, vTPM and integrity monitoring.",
+    "rationale": "An unattestable boot chain is an unattestable chain of custody.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every instance template enables the three shielded options; removing one fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10030",
+    "domain": "GCP",
+    "title": "Regional GKE Standard hosts warm services, solvers, agents and sinks",
+    "statement": "Warm domain/control services, solvers, agents and sinks run on regional GKE Standard clusters with a regional control plane and multi-zone node pools.",
+    "rationale": "Zonal clusters lose the control plane with one zone.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Execution & Messaging"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Regional GKE Standard clusters with multi-zone pools are planned per region."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "Conflicts with ADR 0024: warm binaries run on Cloud Run, no Kubernetes for workloads. ADR 0036 allows a GitOps control-plane cluster only."
+  },
+  {
+    "id": "R12-SEC-10031",
+    "domain": "SEC",
+    "title": "Cloud Service Mesh provides mTLS for warm services only",
+    "statement": "Warm services communicate over mTLS with traffic policy (Cloud Service Mesh), and the mesh never carries Reflex traffic.",
+    "rationale": "Plaintext service-to-service traffic is readable and forgeable inside the VPC.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Warm-service traffic is mTLS; reflex nodes are outside the mesh."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "Service Mesh presumes GKE; conflicts with ADR 0024."
+  },
+  {
+    "id": "R12-GCP-10032",
+    "domain": "GCP",
+    "title": "Cloud Run only where cold-start and latency fit the SLO",
+    "statement": "Cloud Run/Cloud Run Jobs host bursty stateless APIs, scouts, webhooks and agent jobs, and are not used where cold-start or latency violates an SLO.",
+    "rationale": "A cold start on a latency-sensitive service is an SLO breach nobody planned.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Execution & Messaging"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every Cloud Run service on a latency-sensitive path holds a warm minimum instance; an SLO-bound service at min 0 fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "ADR 0024 places every warm binary on Cloud Run, including the brains, which the blueprint would put on GKE."
+  },
+  {
+    "id": "R12-DATA-10033",
+    "domain": "DATA",
+    "title": "Cloud Storage holds replay lake, segment archive, models and evidence",
+    "statement": "Cloud Storage holds the tick/internal replay lake, Fabric segment archive, model weights, compact knowledge packs and internal evidence, under lifecycle classes.",
+    "rationale": "Without a durable archive, replay and audit depend on hot stores that are bounded.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Data, Knowledge & Financial Truth"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Buckets for archive, artifacts and evidence exist with lifecycle/retention rules; fabricd archives to a GCS blob store."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10034",
+    "domain": "DATA",
+    "title": "External world payloads are never retained",
+    "statement": "Raw external-world content is not warehoused: only derived knowledge packs and internal/tick history are retained.",
+    "rationale": "Retaining raw third-party content creates licensing and privacy liability with no replay value.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Data, Knowledge & Financial Truth"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§31 Final Platform Definition"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A knowledge pack carrying an undeclared field (e.g. a raw body) is refused at decode; removing deny_unknown_fields fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10035",
+    "domain": "DATA",
+    "title": "Bigtable holds rebuildable high-rate derived state",
+    "statement": "Bigtable stores high-rate derived time-series, features and replay indexes, rebuildable from retained sources, with replication only as justified.",
+    "rationale": "A hot store treated as source of record makes its loss a data loss.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Data, Knowledge & Financial Truth"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Instance is planned with autoscaling; a rebuild job from GCS/Fabric repopulates it."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10036",
+    "domain": "DATA",
+    "title": "BigQuery serves research and may lag without trading impact",
+    "statement": "BigQuery holds research, resolved forecast scores, backtests and analytics; it can lag without trading impact.",
+    "rationale": "Coupling the warehouse to the trading path makes analytics load a trading risk.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Data, Knowledge & Financial Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The research dataset exists and the edge node links no BigQuery client."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10037",
+    "domain": "DATA",
+    "title": "Knowledge Catalog provides governance, lineage and quality",
+    "statement": "Knowledge Catalog (Dataplex) records governance, lineage, quality and data products for platform data.",
+    "rationale": "Data without lineage cannot be trusted for a decision that must be explained.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Catalog entries/lineage exist for the data stores."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10038",
+    "domain": "DATA",
+    "title": "Dataflow is batch/reprocessing only, never the live bus",
+    "statement": "Dataflow (and Dataproc Serverless) is used only for large batch/reprocessing and Spanner change-stream pipelines, never as the primary live bus.",
+    "rationale": "A batch engine on the live path inherits batch latency and failure modes.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No Dataflow job/resource consumes or produces a live Fabric stream."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10039",
+    "domain": "DATA",
+    "title": "Memorystore is a non-authoritative cache only",
+    "statement": "Memorystore/Redis holds only non-authoritative warm cache; its loss causes recompute or cache miss, never financial inconsistency.",
+    "rationale": "A cache mistaken for a source of record loses positions on failover.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Data, Knowledge & Financial Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every composition root refuses Memorystore as a store of record; persistence is disabled; setting a root's store to Redis stops start-up."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10040",
+    "domain": "DATA",
+    "title": "AlloyDB holds operational relational metadata",
+    "statement": "Operational relational metadata and workflows live in AlloyDB.",
+    "rationale": "Metadata scattered across files cannot be queried or backed up consistently.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "20",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "AlloyDB cluster/instance planned with a writer."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-10041",
+    "domain": "LEDGER",
+    "title": "Spanner Enterprise Plus is authoritative financial truth",
+    "statement": "Ledger, positions, obligations, capital and idempotency records live in Spanner Enterprise Plus with multi-region HA, isolated from analytics workloads.",
+    "rationale": "Financial truth on a single-node store is lost or split by a regional failure.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Data, Knowledge & Financial Truth"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A ledger writer commits to a multi-region Enterprise Plus database and no analytics workload reads it directly."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "A Spanner client needs gRPC/TLS/Google auth, which ADR 0002/0009 do not admit in-tree."
+  },
+  {
+    "id": "R12-WORLD-10042",
+    "domain": "WORLD",
+    "title": "Spanner Graph holds promoted world knowledge apart from the ledger",
+    "statement": "Promoted world/causal/affordance knowledge lives in Spanner Graph in a database and workload boundary separate from the ledger, so graph query load cannot affect money truth; temporary hypotheses stay ephemeral.",
+    "rationale": "Noisy analytical graph load on the ledger database degrades financial commits.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Data, Knowledge & Financial Truth"
+      },
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§29.1 Current Capability Validation - v3 Additions (2026)"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A graph database distinct from the ledger database is planned; evidence workers write it."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10043",
+    "domain": "MODEL",
+    "title": "Vertex AI APIs behind Algorik adapters",
+    "statement": "Training, managed agents, evaluation and model lifecycle use Vertex AI / Agent Platform APIs only through Algorik adapters, so product contracts do not depend on Google branding or API shape.",
+    "rationale": "Provider churn leaking into contracts forces a product rewrite on every rename.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Only the adapter module names Vertex endpoints; contracts carry Algorik types."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10044",
+    "domain": "MODEL",
+    "title": "Model registry records version, evaluation and lineage",
+    "statement": "Every model version carries evaluation and lineage in a registry; if the registry is unavailable promotion pauses while existing packages continue.",
+    "rationale": "A model without lineage cannot be explained or rolled back.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Superintelligence & Compute"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Promotion refuses without a passing evaluation and a stable digest; registry unavailability refuses promotion but leaves served models running."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10045",
+    "domain": "CICD",
+    "title": "Cloud Build private pools build and test privately",
+    "statement": "CI builds and tests run on Cloud Build private pools reached from GitHub via WIF; if unavailable, deployment pauses and runtime is unchanged.",
+    "rationale": "Builds on shared public runners expose source and signing paths to a wider supply chain.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      },
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A worker pool exists and deploy.yml submits builds to it; a build on ubuntu-latest fails."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10046",
+    "domain": "CICD",
+    "title": "Immutable artifacts in Artifact Registry, replicated",
+    "statement": "Images, packages and OCI release/model manifests are stored immutably in Artifact Registry; critical artifacts are replicated and running nodes keep local copies.",
+    "rationale": "A mutable or deletable registry lets a released digest disappear or change.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Repositories set immutable tags and no identity can delete; a replica/remote repository exists."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10047",
+    "domain": "SEC",
+    "title": "Images are vulnerability-scanned before release",
+    "statement": "Every image is vulnerability-scanned (Artifact Analysis metadata) and a failing scan blocks release.",
+    "rationale": "A signed vulnerable image is a vulnerability with a certificate.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "deploy.yml scans before push/sign and fails on CRITICAL; removing the step fails the pipeline gate test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10048",
+    "domain": "CICD",
+    "title": "Binary Authorization blocks unattested deploys",
+    "statement": "Deploy-time admission enforces build/signing attestations and blocks unsafe deploys by design.",
+    "rationale": "Without enforcement any pushed image runs.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Policy requires attestation with ENFORCED_BLOCK_AND_AUDIT_LOG and every Cloud Run service is subject to it; a dry-run policy fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10049",
+    "domain": "SEC",
+    "title": "CI and workloads authenticate keylessly via WIF",
+    "statement": "GitHub Actions and external CI obtain short-lived credentials through Workload Identity Federation; no service-account key exists anywhere.",
+    "rationale": "A downloaded key is a credential that outlives every review.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The pipeline authenticates via the WIF provider, no key resource exists, and org policy disables key creation; adding a key fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10050",
+    "domain": "SEC",
+    "title": "IAM is deny-by-default and least privilege per workload",
+    "statement": "Every workload has its own identity with only the grants it uses; nothing runs as the default compute identity.",
+    "rationale": "A shared or broad identity turns one compromise into all.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "19",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each deployable has its own SA, none uses the default compute SA, and every SA runs or signs something."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10051",
+    "domain": "SEC",
+    "title": "Secrets come from Secret Manager, never Git or environment",
+    "statement": "Venue, API and service secrets are held in Secret Manager, read by authorized workloads only, mounted as files with bounded startup behaviour; no secret is in Git.",
+    "rationale": "A secret in Git or the environment leaks to every reader and child process.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No secret value in Terraform; every secret is mounted as a file and granted per workload; venue credential unreadable where live trading is impossible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10052",
+    "domain": "SEC",
+    "title": "KMS provides CMEK and signing; runtime survives key outage",
+    "statement": "Cloud KMS provides CMEK and release/package/ledger signing keys; key availability is required for new promotions but not for the currently running package.",
+    "rationale": "A runtime that needs KMS for every action halts trading on a KMS outage.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Security, Delivery & Operations"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Keys rotate and data keys cannot be destroyed; the running edge node holds no KMS client on its decision path."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10053",
+    "domain": "SEC",
+    "title": "Cloud HSM for higher-assurance keys where required",
+    "statement": "Signing and key material requiring higher assurance uses Cloud HSM protection.",
+    "rationale": "Software keys are exportable by anyone with enough access to the project.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "kms_protection_level=HSM in environments that require it."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10054",
+    "domain": "SEC",
+    "title": "Private CA issues mTLS identity for Fabric and VMs",
+    "statement": "Certificate Authority Service issues private mTLS identities for Fabric brokers, clients and VMs.",
+    "rationale": "Without mTLS any host on the network can impersonate a broker or producer.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A CA pool exists and Fabric clients/brokers present certificates from it."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "In-tree TLS is refused by ADR 0009; mTLS would come from a sidecar."
+  },
+  {
+    "id": "R12-SEC-10055",
+    "domain": "SEC",
+    "title": "VPC Service Controls perimeter around data, AI and ledger",
+    "statement": "A VPC Service Controls perimeter encloses data, AI and ledger services to prevent exfiltration.",
+    "rationale": "Valid credentials alone can copy a dataset out of the project.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A service perimeter covering the data/AI/ledger APIs is planned."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "Requires organisation access policy."
+  },
+  {
+    "id": "R12-SEC-10056",
+    "domain": "SEC",
+    "title": "Sensitive Data Protection discovers and redacts sensitive data",
+    "statement": "Sensitive Data Protection discovers, classifies and redacts sensitive data in stores and logs.",
+    "rationale": "Unclassified sensitive data leaks through logs and exports.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Discovery config/inspect templates exist for data stores."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-10057",
+    "domain": "OBS",
+    "title": "Cloud Monitoring and Managed Prometheus collect metrics and alerts",
+    "statement": "Metrics, SLOs and alerts flow to Cloud Monitoring and Managed Service for Prometheus, with buffering/sampling so observability loss cannot block trading.",
+    "rationale": "A process nothing can see cannot be operated.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Alert policies exist on series the binaries record and a scrape/ingestion of those series is observed."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-10058",
+    "domain": "OBS",
+    "title": "Cloud Logging receives control and application logs",
+    "statement": "Control and application logs land in Cloud Logging with bounded volume.",
+    "rationale": "Logs that are unbounded or missing make incidents unreconstructable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Workloads log to stdout/stderr on Cloud Run; NAT and flow logs enabled; per-event logging is rate-bounded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-10059",
+    "domain": "OBS",
+    "title": "Cloud Trace covers warm and API paths",
+    "statement": "Warm/API requests emit traces to Cloud Trace.",
+    "rationale": "Latency regressions across services cannot be localised without traces.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A trace exported per API request is observed."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10060",
+    "domain": "GCP",
+    "title": "Connectivity Tests verify network reachability",
+    "statement": "Network Intelligence Center Connectivity Tests verify intended and forbidden paths.",
+    "rationale": "Firewall intent drifts from reality without a reachability check.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19 Complete GCP Service Catalog for This Platform"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Connectivity test resources for key paths exist."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-10061",
+    "domain": "ARCH",
+    "title": "Every cloud service has a reason, connections, scaling and degraded mode",
+    "statement": "Every cloud service/workload added has one primary reason, known upstream/downstream connections, a scaling model and a degraded-mode contract, with a documented state owner; services without a distinct capability are not added.",
+    "rationale": "An unexplained service is cost and attack surface with no owner.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "21",
+        "section": "§19.0A Service-by-Service Production Architecture"
+      },
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each catalogue entry carries owner, connections, scaling and degraded-mode fields and a test refuses an entry missing one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10062",
+    "domain": "FABRIC",
+    "title": "Fabric mirrors only configured critical topics asynchronously",
+    "statement": "The Rust Fabric uses regional quorum durability with selective asynchronous cross-region mirrors; mirroring never blocks local commit.",
+    "rationale": "Synchronous cross-region mirroring couples every region's commit latency to the slowest link.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Execution & Messaging"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A mirror stalled for a topic does not delay a local produce ack; only declared topics mirror."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-10063",
+    "domain": "AGENCY",
+    "title": "Managed agents degrade to backlog, never an execution dependency",
+    "statement": "Managed agent runtime (Vertex Agent Engine where suitable) may hold sessions/memory/A2A; if it fails, agents degrade to backlog and execution is unaffected.",
+    "rationale": "An agent platform on the execution path makes model availability a trading dependency.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Superintelligence & Compute"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§29.1 Current Capability Validation - v3 Additions (2026)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Edge node links no agent crate and trades identically when the centre stops answering."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10064",
+    "domain": "MODEL",
+    "title": "Training is queue/quota-aware and uses Spot where interruptible",
+    "statement": "Custom training/evaluation is queue- and quota-aware and uses Spot/preemptible capacity where interruption is safe.",
+    "rationale": "On-demand capacity for disposable training is pure overspend.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Superintelligence & Compute"
+      },
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Training job specs mark interruptible jobs Spot and refuse beyond quota."
+    },
+    "policy_flags": [
+      "COST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10065",
+    "domain": "MODEL",
+    "title": "Accelerator pools are separate from control pools",
+    "statement": "Persistent/custom accelerator workloads run in GPU pools separated from control pools with taints, priority and quota.",
+    "rationale": "Accelerator jobs sharing control capacity starve control services.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Superintelligence & Compute"
+      },
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26.1 v3 Superintelligence Build Expansion"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Separate tainted GPU pools planned."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": "GKE GPU pools conflict with ADR 0024."
+  },
+  {
+    "id": "R12-QUANT-10066",
+    "domain": "QUANT",
+    "title": "TPU7x only for workloads with measured framework/topology fit",
+    "statement": "TPU7x (Ironwood) is used only for training/inference whose JAX/PyTorch and topology benefit is measured, never assumed for all workloads.",
+    "rationale": "Accelerators chosen by fashion rather than measurement waste budget.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Superintelligence & Compute"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§29.1 Current Capability Validation - v3 Additions (2026)"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The compute router admits a TPU rung only with a recorded benchmark showing benefit."
+    },
+    "policy_flags": [
+      "COST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10067",
+    "domain": "QUANT",
+    "title": "Solver and simulation pools autoscale by queue with Spot",
+    "statement": "Symbolic solvers, simulations, tournament and evaluation run on CPU pools that autoscale by queue depth and use Spot for disposable simulations.",
+    "rationale": "Fixed pools are idle or saturated; on-demand capacity for disposable jobs is overspend.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Superintelligence & Compute"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A batch/job pool scaled by queue with Spot is planned."
+    },
+    "policy_flags": [
+      "COST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10068",
+    "domain": "QUANT",
+    "title": "Quantum gateway is a budgeted, optional dependency with classical fallback",
+    "statement": "IBM Quantum access goes through a gateway as a budgeted external dependency with benchmark tracking and a mandatory classical fallback.",
+    "rationale": "A QPU treated as required makes vendor queue time a decision dependency.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "22",
+        "section": "§19.0B Superintelligence & Compute"
+      },
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every quantum path computes a classical baseline and a failed classical baseline reports nothing; only the optimisation zone may reach IBM."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": "ADR 0006."
+  },
+  {
+    "id": "R12-FABRIC-10069",
+    "domain": "FABRIC",
+    "title": "Cloud Scheduler/Workflows are peripheral ops jobs only",
+    "statement": "Cloud Scheduler and Workflows run only scheduled governance/maintenance ops jobs and never form the core event backbone.",
+    "rationale": "A scheduler used as a bus has no ordering, replay or idempotency.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No scheduler/workflow resource targets a Fabric or trading endpoint."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10070",
+    "domain": "FABRIC",
+    "title": "Pub/Sub is not used for internal messaging",
+    "statement": "Google Pub/Sub is not used for internal pub/sub, control, outcome or tick journals; the native Rust Fabric defines those semantics.",
+    "rationale": "A managed bus with its own delivery semantics silently replaces the ones the platform proved.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.1 Deliberately not used as core internal messaging"
+      },
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No Pub/Sub topic beyond the recorded secret-rotation notice and no Pub/Sub client crate; adding a topic fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10071",
+    "domain": "FABRIC",
+    "title": "Managed Kafka is never the core backbone",
+    "statement": "Managed Service for Apache Kafka is not the core event backbone; it may exist only as an optional external compatibility bridge when a partner requires Kafka.",
+    "rationale": "Same failure as Pub/Sub: borrowed semantics nobody proved.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.1 Deliberately not used as core internal messaging"
+      },
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No Kafka resource or client crate; a bridge, if any, is stateless at the edge."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10072",
+    "domain": "FABRIC",
+    "title": "Eventarc is peripheral automation only",
+    "statement": "Eventarc is not part of core internal eventing and is used only for peripheral Google-service automation that never becomes an application dependency.",
+    "rationale": "Hidden triggers become undocumented application dependencies.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.1 Deliberately not used as core internal messaging"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No Terraform or workflow provisions Eventarc."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10073",
+    "domain": "FABRIC",
+    "title": "Cloud Tasks is not an internal general queue",
+    "statement": "Cloud Tasks is not used as an internal general queue; only isolated customer-facing workflows whose semantics specifically fit may use it.",
+    "rationale": "A task queue as internal bus has no replay or ordering contract.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.1 Deliberately not used as core internal messaging"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No Terraform or workflow provisions Cloud Tasks."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10074",
+    "domain": "REFLEX",
+    "title": "Venue feed and orders connect directly to the Reflex node",
+    "statement": "Market data and orders flow directly between the venue (FIX/WS/native TCP/UDP) and the Reflex node synchronously; this is the only true trading path.",
+    "rationale": "Any intermediary on the venue path adds latency and a failure domain to every order.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The node binds the venue feed and gateway itself; no broker, proxy or service sits between. A feed routed through Fabric fails the check."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL",
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Real venue order submission is refused by ADR 0003; only the simulated gateway is reachable."
+  },
+  {
+    "id": "R12-MESH-10075",
+    "domain": "MESH",
+    "title": "Reflex peers coordinate directly over a fast ephemeral link",
+    "statement": "Reflex nodes exchange cross-region opportunity/reservation coordination directly with peer nodes (direct QUIC), with no durable replay requirement.",
+    "rationale": "Routing peer coordination through the centre or the Fabric doubles latency on the only cross-region time-critical exchange.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.3 Multi-region arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two nodes exchange epoch/reservation frames over a direct socket with no centre hop."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "QUIC needs a dependency ADR 0002/0009 do not admit; MESH-038 records it as blocked."
+  },
+  {
+    "id": "R12-FABRIC-10076",
+    "domain": "FABRIC",
+    "title": "Reflex journals to regional Fabric asynchronously over mTLS",
+    "statement": "The Reflex node journals ticks, decisions, outcomes and control acknowledgments to the regional Fabric asynchronously (QUIC/mTLS); Fabric failure cannot block an order.",
+    "rationale": "A synchronous journal write turns a broker stall into a trading halt.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the writer stalled, ship returns immediately and the pass proceeds; the node's main wires the writer. Removing the non-blocking ship fails."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "mTLS/QUIC needs a dependency or sidecar."
+  },
+  {
+    "id": "R12-FABRIC-10077",
+    "domain": "FABRIC",
+    "title": "Control services publish policy and envelopes through Fabric",
+    "statement": "Warm control services publish policy, research, capital and risk-envelope events to the regional Fabric asynchronously.",
+    "rationale": "Point-to-point control delivery has no replay or ordering record.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A policy/envelope publish lands on a Fabric P0 stream and a cell consumes it from there."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10078",
+    "domain": "FABRIC",
+    "title": "Warm consumers pull ordered partitions and replay",
+    "statement": "Warm services consume ordered Fabric partitions by pull/stream and can replay from committed offsets.",
+    "rationale": "Consumers without offsets lose or double-process records after restart.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A consumer group resumes from its committed offset after restart."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10079",
+    "domain": "DATA",
+    "title": "Fabric segments archive immutably to Cloud Storage",
+    "statement": "Sealed Fabric segments are archived immutably to Cloud Storage via private Google access, off the commit path, as a replay source.",
+    "rationale": "Without an archive the Fabric's retention bound is the replay horizon.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "fabricd archives sealed segments to a GCS store; a stalled store does not block produce."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10080",
+    "domain": "DATA",
+    "title": "Fabric sink writes recent features and replay indexes to Bigtable",
+    "statement": "A Fabric sink writes recent features, time series and replay indexes to Bigtable asynchronously.",
+    "rationale": "Feature lookups against the journal are too slow for warm services.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Sink consumes a stream and rows appear in Bigtable."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10081",
+    "domain": "DATA",
+    "title": "Fabric BigQuery sink streams research data and may lag",
+    "statement": "A Fabric sink streams research/analytics records to BigQuery (Storage Write API) and may lag without trading impact.",
+    "rationale": "Same as BigQuery row.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Sink consumes a stream and rows land; sink lag does not affect producers."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-10082",
+    "domain": "LEDGER",
+    "title": "Ledger writer commits outcomes idempotently",
+    "statement": "The ledger writer consumes P1 outcomes and commits them to the authoritative store idempotently, so redelivery and crash never double-book or drop.",
+    "rationale": "A redelivered fill booked twice, or an offset committed ahead of its postings, corrupts the books silently.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      },
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For any duplication/redelivery/crash schedule, balances equal a single clean delivery; mutating the dedup rule fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10083",
+    "domain": "MODEL",
+    "title": "Training pipelines build datasets from retained stores",
+    "statement": "Training pipelines build training/evaluation datasets from GCS, BigQuery, Bigtable and Spanner Graph over private Google APIs.",
+    "rationale": "Datasets assembled ad hoc cannot be reproduced.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A dataset manifest names its source snapshots and rebuilds identically."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10084",
+    "domain": "MODEL",
+    "title": "Registry publishes signed package manifests and weights",
+    "statement": "Training/registry publishes deployment package manifests and weights to Artifact Registry and GCS as signed OCI/model packages.",
+    "rationale": "Hand-copied model files have no provenance.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A promotion produces a signed manifest stored by digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10085",
+    "domain": "REFLEX",
+    "title": "Package manager verifies signatures before activation",
+    "statement": "The Reflex package manager stages a model/policy bundle from Artifact Registry/GCS and verifies its signature (KMS) before activation.",
+    "rationale": "An unverified bundle is arbitrary code on the order path.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A bundle with a bad signature is refused before any state changes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10086",
+    "domain": "QUANT",
+    "title": "Quantum jobs go through controlled egress with no execution dependency",
+    "statement": "Agent/symbolic workers reach the IBM Quantum gateway only over controlled HTTPS egress, for eligible jobs only, with no execution dependency.",
+    "rationale": "Uncontrolled egress to a vendor is an exfiltration path and a latency trap.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.2 World event to cognitive response"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Only the optimisation zone may reach IBM; fastbrain cannot."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10087",
+    "domain": "CICD",
+    "title": "Environment Git is reconciled by GitOps",
+    "statement": "Desired state lives in environment Git and is reconciled by Config Sync / Argo CD.",
+    "rationale": "Imperative deploys drift and cannot be audited.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Argo CD applications point at this repo's env directories; dev auto-syncs with prune/self-heal; a manifest outside the gitops tree fails."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "Argo CD runs on the ADR 0036 control-plane cluster; Config Sync is not used."
+  },
+  {
+    "id": "R12-CICD-10088",
+    "domain": "CICD",
+    "title": "Builds push signed, provenance-bearing artifacts",
+    "statement": "CI pushes artifacts with signatures and provenance (SBOM/attestation) to Artifact Registry.",
+    "rationale": "An artifact without provenance cannot be traced to a commit.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.4 Autonomous development change"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every pushed digest is attested; the matrix covers every deployable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-10089",
+    "domain": "OBS",
+    "title": "Telemetry flows through buffering collectors",
+    "statement": "Telemetry flows via collectors (OTLP) to Cloud Monitoring/Prometheus/Logging/Trace with sampling and buffering protecting production.",
+    "rationale": "Unbuffered telemetry back-pressures the process emitting it.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20 Critical Service-to-Service Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Collector buffers and drops under pressure without affecting the emitting process."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-10090",
+    "domain": "WORLD",
+    "title": "Evidence updates latent state via typed knowledge events",
+    "statement": "Scout/evidence workers update the NOW Brain's latent state through typed Fabric knowledge events, without storing raw source bytes.",
+    "rationale": "Raw bytes in the knowledge path carry licensing liability and no structure.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Knowledge events are schema-closed and carry no raw payload field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-10091",
+    "domain": "WORLD",
+    "title": "Forecast Router fans multi-horizon questions to the model society",
+    "statement": "A Forecast Router consumes promoted current-state vectors and surprise events and fans out independent forecasts across microsecond-to-year horizons to specialist models, agents, world models and simulators via Fabric task contracts.",
+    "rationale": "Single-horizon forecasting misses the horizon where the edge actually is.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A router produces per-horizon tasks from a state vector."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10092",
+    "domain": "MODEL",
+    "title": "Model society aggregates forecasts and scores calibration",
+    "statement": "Model Tournament and Forecast Market aggregate predictions and score calibration against resolved outcomes.",
+    "rationale": "Unscored forecasts cannot earn or lose influence.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Resolved outcomes update a calibration score per forecaster."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-10093",
+    "domain": "AMBIENT",
+    "title": "Conflicting forecasts trigger InformationRequests",
+    "statement": "When forecasts conflict, the adversarial society issues an InformationRequest to Active Sensing for discriminating evidence where value-of-information is high.",
+    "rationale": "Disagreement left unresolved is either ignored or acted on blindly.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A conflict above threshold produces an InformationRequest with VOI."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-10094",
+    "domain": "AMBIENT",
+    "title": "Meta-Intelligence allocates compute by expected value",
+    "statement": "Meta-Intelligence issues ComputePlans allocating CPU/GPU/TPU/QPU and agent budgets only where expected uncertainty reduction or economic value justifies the cost.",
+    "rationale": "Compute spent uniformly is mostly wasted on questions that do not matter.",
+    "kind": "contract",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A plan's allocation is justified by an expected-value term and recorded."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10095",
+    "domain": "QUANT",
+    "title": "Compute router dispatches parallel candidates across hardware",
+    "statement": "The compute router dispatches parallel candidate computations to CPU/GPU/TPU/QPU through native APIs or controlled egress.",
+    "rationale": "Serial single-backend computation cannot compare methods.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "One problem fans to multiple backends and results are compared with a classical baseline."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10096",
+    "domain": "MODEL",
+    "title": "Verifier results promote, reweight or retire models",
+    "statement": "Verifier emits VerificationResults that promote, reweight or retire models and solver policies in the tournament.",
+    "rationale": "Models that never lose influence accumulate stale authority.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A failed verification demotes a model; a passing one may promote."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-10097",
+    "domain": "CAPITAL",
+    "title": "Forecast consensus feeds capital, risk and hedge as distributions",
+    "statement": "Forecast consensus reaches Capital/Risk/Hedge as ForecastState/WorldBranch contracts carrying full distributions so uncertainty translates into sizing, reserves and hedges.",
+    "rationale": "Point forecasts discard the tails that sizing must respect.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Capital sizing consumes a distribution type including tails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-10098",
+    "domain": "CAPITAL",
+    "title": "Capital/Risk/Hedge distribute bounded authority to regions",
+    "statement": "Capital, Risk and Hedge services distribute bounded authority to regions as CapitalGrant, RiskEnvelope and HedgePlan contracts over the Rust Fabric.",
+    "rationale": "Authority without bounds lets a partitioned region spend beyond plan.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A signed bounded grant reaches a cell and the cell refuses beyond it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-10099",
+    "domain": "REASON",
+    "title": "Cognitive compiler distills signed Reflex packages",
+    "statement": "The Cognitive Compiler distills validated low-latency capability into signed OCI/model packages for Reflex; live order execution remains local and deterministic.",
+    "rationale": "Shipping a research model directly to the hot path makes execution non-deterministic.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "24",
+        "section": "§20.1 Superintelligence Connection Matrix"
+      },
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A distilled package is signed and deterministic in replay."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10100",
+    "domain": "REFLEX",
+    "title": "Market data is sequence-checked and normalized in memory",
+    "statement": "Venue market data entering the Reflex adapter is sequence-checked and normalized in memory before any decision.",
+    "rationale": "A gap applied as if continuous produces a book that never existed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A sequence gap resets/flags the book and replay reproduces the integrity flag."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-10101",
+    "domain": "RISK",
+    "title": "Deterministic local risk gate approves or vetoes every order",
+    "statement": "Local book/features/reflex model evaluate each event, a deterministic local risk gate approves or vetoes, and only then is the order sent directly to the venue.",
+    "rationale": "A non-deterministic or remote gate cannot be replayed or relied on during partition.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every refusal is journaled under a gate constant and no order reaches the gateway past a refusal."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [],
+    "notes": "Order send to a real venue is paper-only (ADR 0003)."
+  },
+  {
+    "id": "R12-FABRIC-10102",
+    "domain": "FABRIC",
+    "title": "Every tick, decision, order and fill reaches Fabric P1/P2",
+    "statement": "Tick, feature snapshot, decision, order and fill/cancel are appended asynchronously to Fabric P1/P2 topics; a Fabric outage cannot retroactively stall the order.",
+    "rationale": "Unjournaled decisions cannot be replayed or attributed.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every journal entry reaches P2 and every outcome also reaches P1 with its digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-10103",
+    "domain": "TICK",
+    "title": "Replay compares predicted fills and outcomes to actuals",
+    "statement": "Replay/evaluation compares predicted fills, slippage and outcomes against actual results and emits episodes and model residuals.",
+    "rationale": "A twin never compared with reality drifts unnoticed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Fill error per venue is recorded on each filled order in LEARN."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10104",
+    "domain": "MODEL",
+    "title": "Candidates are evaluated, signed and promoted through gates",
+    "statement": "Training uses world and tick history to improve models; candidates are evaluated, signed and promoted through GitOps/model gates.",
+    "rationale": "An unevaluated candidate on the hot path is an experiment with real consequences.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Promotion refuses an unevaluated or digest-changed candidate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10105",
+    "domain": "REFLEX",
+    "title": "Packages activate atomically at an approved epoch with rollback ready",
+    "statement": "The Reflex package manager stages a new package, activates it atomically at the approved epoch, and keeps the previous package rollback-ready.",
+    "rationale": "A partially activated package mixes two models in one decision.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.1 Tick to order and learning"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Activation swaps at the epoch boundary only; rollback restores the parent; a mid-pass swap fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-10106",
+    "domain": "EVID",
+    "title": "Observations carry source identity and provenance into immutable evidence",
+    "statement": "Every scout/crawler/API observation is captured with source identity and provenance and published to regional Fabric plus immutable GCS evidence.",
+    "rationale": "Evidence without provenance cannot be challenged or trusted.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.2 World event to cognitive response"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An observation lands with provenance in a retention-locked bucket."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-10107",
+    "domain": "EVID",
+    "title": "Evidence workers normalize entities and corroborate sources",
+    "statement": "Evidence workers normalize entities, corroborate sources and update trust/confidence; world-model services update the knowledge graph.",
+    "rationale": "Uncorroborated single-source facts drive decisions.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.2 World event to cognitive response"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Corroboration changes confidence per source."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-10108",
+    "domain": "AMBIENT",
+    "title": "Ambient models publish research and opportunity tasks",
+    "statement": "Ambient models detect surprise, novelty or causal implications and publish research/opportunity tasks to Fabric.",
+    "rationale": "Surprise that creates no task is surprise nobody acts on.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.2 World event to cognitive response"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A surprise above threshold produces a task."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-10109",
+    "domain": "GOV",
+    "title": "Validated results reach the hot path only as signed packages",
+    "statement": "A validated research result becomes a strategy/model/risk/capital proposal and reaches execution only through promotion gates as signed policy/model packages, never as an unreviewed direct hot-path call.",
+    "rationale": "A direct call from research into execution bypasses every review.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.2 World event to cognitive response"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Cells apply only verified signed payloads; nothing in the edge node depends on cognitive crates."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-10110",
+    "domain": "MESH",
+    "title": "Each cell computes local executable edges from local venue state",
+    "statement": "Each Reflex cell maintains local venue state and computes its locally executable arbitrage edges.",
+    "rationale": "Edges computed centrally are stale by the time a cell can act.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.3 Multi-region arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell's desk finds and executes a cycle from its own books."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-10111",
+    "domain": "MESH",
+    "title": "Opportunity/reservation exchange stays off the Fabric",
+    "statement": "Compressed opportunity/reservation state is exchanged directly over the Reflex Mesh, not through the Fabric.",
+    "rationale": "Fabric latency and quorum on peer coordination misses the opportunity.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.3 Multi-region arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No mesh frame type is a Fabric stream."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-10112",
+    "domain": "MESH",
+    "title": "Bounded reservations under opportunity epoch and fencing",
+    "statement": "Coordinators and participants acquire bounded local reservations using opportunity epoch/fencing and execute legs only under local deterministic risk.",
+    "rationale": "Two cells reserving against an abandoned cycle double-spend.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.3 Multi-region arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "No leg fires after epoch expiry; FIRE only when every leg is reserved and the loss bound covers recovery."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-10113",
+    "domain": "MESH",
+    "title": "Partial completion follows explicit hedge/unwind rules",
+    "statement": "Partial completion of a multi-leg cycle follows explicit hedge/unwind saga rules; no path is treated as riskless when atomicity is impossible.",
+    "rationale": "A stranded leg with no rule becomes an unbounded position.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.3 Multi-region arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A short leg triggers the declared decomposition/unwind policy and a whole-cycle desk stops on any short leg."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-10114",
+    "domain": "LEDGER",
+    "title": "All arbitrage intents, fills, hedges and outcomes are journaled and ledgered",
+    "statement": "All intents, fills, hedges and outcomes of multi-region cycles are journaled to Fabric and ledgered centrally; replay evaluates missed/failed cycles.",
+    "rationale": "Unledgered hedges are positions the books do not know.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.3 Multi-region arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cycle's events appear in P1 and the ledger balances reflect them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10115",
+    "domain": "CICD",
+    "title": "Incidents and gaps create scoped engineering goals",
+    "statement": "An incident, backlog item or Intelligence Expansion gap creates a scoped engineering goal for the autonomous development loop.",
+    "rationale": "Unscoped agent work sprawls and cannot be reviewed.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.4 Autonomous development change"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A goal record is produced from an incident/backlog input."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10116",
+    "domain": "CICD",
+    "title": "Agent changes are evaluated independently in a sandbox",
+    "statement": "Planner/coder agents create a branch/PR with tests, and independent test, security and architecture agents evaluate it in a sandbox.",
+    "rationale": "An agent reviewing its own change is no review.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.4 Autonomous development change"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Agent PRs pass the same CI gates and an independent review step."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10117",
+    "domain": "CICD",
+    "title": "CI runs replay, performance, fuzz, security and IaC gates",
+    "statement": "CI builds deterministic artifacts and runs Rust replay/performance/fuzz plus security and IaC gates before anything is released.",
+    "rationale": "A release that skipped a gate is a release nobody verified.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.4 Autonomous development change"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Pipeline gates on test, clippy -D warnings, deps, secrets, Terraform; deploy requires tests passed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10118",
+    "domain": "CICD",
+    "title": "Release changes only environment Git; Kargo promotes exact digest",
+    "statement": "The release agent changes only the environment Git repository and Kargo promotes the exact attested digest; rollout mechanics depend on component type.",
+    "rationale": "Rebuilding per environment ships different bytes than were tested.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.4 Autonomous development change"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Stages chain dev→test→stage→prod from one warehouse, never by semver; images pinned by digest."
+    },
+    "policy_flags": [
+      "MULTI_REPO"
+    ],
+    "secondary_domains": [],
+    "notes": "Blueprint implies a separate environment repo; this platform is one repository."
+  },
+  {
+    "id": "R12-RES-10119",
+    "domain": "RES",
+    "title": "SLO/replay gates trigger rollback on regression",
+    "statement": "SLO and replay gates observe production; a regression triggers rollback and feeds evidence back to the agent loop.",
+    "rationale": "A regression nobody gates on persists until a person notices.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.4 Autonomous development change"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A degraded release fails the gate and the previous digest is restored."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-10120",
+    "domain": "WORLD",
+    "title": "NOW Brain estimates current latent state and uncertainty",
+    "statement": "Pass-through observations update promoted knowledge and live derived state, and the NOW Brain estimates current latent state and its uncertainty.",
+    "rationale": "Decisions on a state estimate with no uncertainty over-commit.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "25",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "State estimate carries an uncertainty measure updated per observation."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-10121",
+    "domain": "TICK",
+    "title": "Digital twins propagate candidate worlds into portfolio outcomes",
+    "statement": "Future-state/digital-twin simulations propagate candidate worlds into prices, liquidity, counterparties and portfolio outcomes.",
+    "rationale": "Forecasts not propagated to portfolio impact cannot inform sizing.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A scenario world produces a portfolio outcome distribution."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-10122",
+    "domain": "CAPITAL",
+    "title": "Capital, risk, confidence and hedge consume full distributions",
+    "statement": "Capital Society, Risk Brain, Confidence Governor and Hedge Brain consume the full forecast distribution including disagreement and tails and emit bounded CapitalGrant, RiskEnvelope and HedgePlan contracts.",
+    "rationale": "Ignoring disagreement sizes as if consensus existed.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Wider disagreement reduces emitted grant size."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10123",
+    "domain": "MODEL",
+    "title": "Resolved outcomes score forecasts, models, agents, hedges, capital and routing",
+    "statement": "Resolved outcomes score forecasts, models, agents, hedges, capital decisions and compute-routing choices, closing the self-improvement loop.",
+    "rationale": "Unscored decisions never improve.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§21.5 Superintelligence Forecast-to-Capital Flow"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "LEARN updates scores for each decision class."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10124",
+    "domain": "RES",
+    "title": "Fabric loss: reflex continues, spools boundedly, narrows on pressure",
+    "statement": "If the Fabric is lost, Reflex continues under local policy, buffers bounded critical events to a local spool, and narrows when spool or freshness policy is exceeded.",
+    "rationale": "Halting on Fabric loss turns a messaging outage into a trading outage; an unbounded spool fills the disk.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Spool pressure reads Narrow then Exhausted and the wired cell halts new exposure; ship never blocks."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10125",
+    "domain": "RES",
+    "title": "Fabric loss: platform alerts immediately and replays segments",
+    "statement": "If the Fabric is lost the platform alerts immediately, restores the cluster and replays local spools and GCS segments.",
+    "rationale": "A silent Fabric outage loses the journal's guarantees unnoticed.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "An alert fires on broker loss; replay from spool/archive restores continuity."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10126",
+    "domain": "RES",
+    "title": "Warm services loss: reflex continues locally without new authority",
+    "statement": "If regional warm services are lost, Reflex continues local execution with no new warm policy/capital intelligence, Fabric keeps journaling, and other regions may cover eligible functions.",
+    "rationale": "Cells that stop when the centre stops make the centre a single point of failure.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cut-off cell keeps placing paper orders inside its envelope, shrinks as inputs age and stops at envelope expiry."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10127",
+    "domain": "RES",
+    "title": "Ledger loss: trade only within cached envelope until ledger-lag threshold",
+    "statement": "If Spanner is lost, Reflex continues only within its cached capital/risk envelope until a ledger-lag threshold, with stricter transfer/position actions disabled.",
+    "rationale": "Trading on capital the ledger has not confirmed overcommits.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Orders stop when the envelope expires or the ledger-lag threshold is crossed; transfers are refused while lagging."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10128",
+    "domain": "RES",
+    "title": "Ledger loss: outcomes accumulate durably and replay idempotently",
+    "statement": "If Spanner is lost, outcome partitions accumulate durably in the Fabric and the ledger writer replays idempotently when restored.",
+    "rationale": "Outcomes dropped during a ledger outage are fills nobody booked.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Writer down leaves the checkpoint; on recovery balances equal a clean delivery."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10129",
+    "domain": "RES",
+    "title": "Analytics store loss has no hot-path impact",
+    "statement": "Loss of Bigtable/BigQuery has no direct hot-path impact; research/replay/features degrade while Fabric/GCS preserve source history.",
+    "rationale": "An analytics dependency on the order path makes warehouse maintenance a trading risk.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The edge node's dependency closure contains no Bigtable/BigQuery client."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10130",
+    "domain": "RES",
+    "title": "AI platform loss: no new cognition, existing packages continue",
+    "statement": "If the AI/agent platform is lost, no new cognitive/model output is produced, existing packages continue, and research backlog queues.",
+    "rationale": "Model-provider outages must not stop execution.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Node trades identically with the centre silent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10131",
+    "domain": "RES",
+    "title": "Cross-region loss: local trading continues, peer-dependent cycles disabled",
+    "statement": "If cross-region networking is lost, local trading continues, multi-region cycles requiring peers are disabled, Fabric mirrors lag and catch up when the link returns, and regional durability stays intact.",
+    "rationale": "Cycles assuming a missing peer leave one side of a trade with no counterpart.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      },
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A dark region suspends mirrored legs into it and leaves home-only trading unchanged; an unreadable wire treats all others as dark."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10132",
+    "domain": "RES",
+    "title": "Feed loss stops dependent strategies and follows a local playbook",
+    "statement": "If a venue feed is lost, strategies depending on the stale feed stop, positions are hedged or exited per a local playbook, and incident and reconciliation events are journaled.",
+    "rationale": "Trading off a frozen book prices orders against a market that moved.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stalled venue feed gets no new order past max_staleness while other venues keep trading; a playbook action is journaled."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10133",
+    "domain": "RES",
+    "title": "GitOps loss leaves running system unchanged; break-glass reconciles later",
+    "statement": "If GitHub/GitOps is lost the running system is unchanged and no new deploys occur; emergency changes use a pre-approved break-glass process later reconciled to Git.",
+    "rationale": "Control-plane loss deleting workloads turns a tooling outage into a production outage.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§22 Dependency Degradation Contracts"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Cloud Run services carry deletion-policy abandon; a break-glass runbook path exists."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10134",
+    "domain": "FINOPS",
+    "title": "Every resource labelled by plane, region, environment, owner and workload",
+    "statement": "Every project/resource is labelled with plane, region, environment, owner and workload.",
+    "rationale": "Unlabelled spend cannot be attributed.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A scan finds all five labels on every labelable resource."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10135",
+    "domain": "FINOPS",
+    "title": "Billing is exported to BigQuery",
+    "statement": "Billing data is exported to BigQuery.",
+    "rationale": "Without export, cost cannot be analysed or attributed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A billing export dataset/config exists."
+    },
+    "policy_flags": [
+      "COST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "Billing export configuration is billing-account scoped."
+  },
+  {
+    "id": "R12-FINOPS-10136",
+    "domain": "FINOPS",
+    "title": "Cost reported per strategy, model, data source and region",
+    "statement": "Cost is reported per strategy, model, data source and region where attribution is possible.",
+    "rationale": "Unattributed cost cannot be weighed against the value it produced.",
+    "kind": "metric",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A cost ledger entry carries strategy/model/source/region keys."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10137",
+    "domain": "FINOPS",
+    "title": "Hot path is overprovisioned; commitments only after stable sizing",
+    "statement": "Reflex/Fabric capacity is overprovisioned for latency and failure headroom and is never reactively autoscaled; committed-use/reservations are optimised only after benchmark sizing is stable.",
+    "rationale": "Autoscaling the hot path adds jitter exactly when load spikes.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No autoscaler on execution-node groups."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10138",
+    "domain": "FINOPS",
+    "title": "Retention is tiered and derived duplicates are bounded",
+    "statement": "Tick/journal retention is tiered: hot replay in Fabric/Bigtable, immutable segments in GCS, aggregates in BigQuery; derived duplicates are not retained forever.",
+    "rationale": "Unbounded duplication is unbounded cost and a second source of truth.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every derived store carries a bounded retention/lifecycle rule."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10139",
+    "domain": "FINOPS",
+    "title": "AI work has budgets, quotas and benefit-per-dollar benchmarks",
+    "statement": "Agents and training families have budget/concurrency quotas, use Spot where safe, and model benefit is benchmarked per dollar and latency.",
+    "rationale": "Unbudgeted AI spend grows with no measured benefit.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agent exceeding its budget is stopped; cost per benefit is recorded."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10140",
+    "domain": "FINOPS",
+    "title": "Autonomous agents have daily/monthly model, build and tool budgets",
+    "statement": "Autonomous engineering agents get explicit daily/monthly model/build/tool budgets and can be throttled independently of production runtime.",
+    "rationale": "An agent loop without a budget is an open-ended bill.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "26",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A spent daily budget refuses further calls and is audited."
+    },
+    "policy_flags": [
+      "COST",
+      "NON_RUST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10141",
+    "domain": "FINOPS",
+    "title": "Cost anomalies raise Fabric/incident tasks",
+    "statement": "Budgets plus Monitoring/BigQuery anomaly jobs create Fabric/incident tasks.",
+    "rationale": "An anomaly that only emails someone is found at month end.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A billing anomaly fixture produces one journaled task."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-10142",
+    "domain": "FINOPS",
+    "title": "Cost actions never auto-delete production state",
+    "statement": "No cost or budget action automatically deletes production state.",
+    "rationale": "An automated cost cut that deletes a ledger is a catastrophe triggered by a spreadsheet.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§23 FinOps and Capacity Governance"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Budgets carry no programmatic action; adding a Pub/Sub action fails."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10143",
+    "domain": "GCP",
+    "title": "Six environments: dev, integration, replay, paper, staging, prod",
+    "statement": "The platform provides dev, integration, replay, paper, staging and prod environments, each with its stated purpose and data/connectivity posture.",
+    "rationale": "Missing tiers force contract, replay and paper testing into environments not built for them.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each environment has committed tfvars and a project."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10144",
+    "domain": "GCP",
+    "title": "dev uses mock venues and no production secrets",
+    "statement": "dev uses synthetic/mock venues, reduced data and no production secrets.",
+    "rationale": "A dev environment with production secrets is production with weaker controls.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "dev declares the simulated venue adapter and shares no project with any other environment."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10145",
+    "domain": "FABRIC",
+    "title": "integration runs the full Fabric topology at small scale",
+    "statement": "The integration environment runs the full Rust Fabric topology at small scale with deterministic integration feeds for cross-service contract/schema validation.",
+    "rationale": "Contracts first meet each other in production otherwise.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "An integration environment deploys fabricd and consumers."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-10146",
+    "domain": "TICK",
+    "title": "replay environment is read-only with no order routes",
+    "statement": "The replay environment replays historical tick/world data from read-only curated production-derived data with governance and has no live order routes.",
+    "rationale": "Replay against writable production data corrupts the record it replays.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A replay environment with read-only data grants and no venue route."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-10147",
+    "domain": "EXEC",
+    "title": "paper environment: live market data, simulated orders, isolated ledger",
+    "statement": "The paper environment consumes live market data, routes orders only to a simulator, and keeps its ledger isolated from real capital.",
+    "rationale": "Paper results on synthetic data overstate a strategy; a ledger shared with capital mixes fiction with money.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Feed is a real venue feed; gateway is simulated; ledger parks any fill not marked simulated."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10148",
+    "domain": "RES",
+    "title": "staging validates scale, failure and game days with separate credentials",
+    "statement": "Staging provides production-like scale and failure/game-day validation with separate accounts/credentials, canary packages and no uncontrolled live capital.",
+    "rationale": "Failure modes first seen in production.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Stage project has its own identities and canary promotion."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-10149",
+    "domain": "GOV",
+    "title": "prod: live bounded execution with strict isolation and signed artifacts",
+    "statement": "prod runs live bounded execution with strict region/project isolation, reserved capacity and signed artifacts only.",
+    "rationale": "Unsigned or shared-project production is unauditable.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Prod admits only attested digests in an isolated project with reservations."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [],
+    "notes": "Live execution conflicts with ADR 0003 (paper trading only)."
+  },
+  {
+    "id": "R12-CICD-10150",
+    "domain": "CICD",
+    "title": "Promote the same digest; environment differences come from signed config",
+    "statement": "Every environment receives the same digest and schema/model version; environment-specific behaviour comes from signed configuration and authorized secrets, never from rebuilding code.",
+    "rationale": "Rebuilt-per-environment code is untested code.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§24 Environment and Promotion Topology"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "One warehouse digest flows through stages; config differs only by signed inputs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10151",
+    "domain": "RES",
+    "title": "Quarterly regional-loss game day",
+    "statement": "A quarterly game day removes one execution region from service/control networking and verifies other regions continue, mirrors/recovery behave, and no cross-region arbitrage assumes the missing peer.",
+    "rationale": "Region-loss behaviour never exercised is region-loss behaviour unknown.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A scheduled run record with observed outcomes exists each quarter."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10152",
+    "domain": "RES",
+    "title": "Monthly zonal failure game day",
+    "statement": "A monthly game day terminates the Reflex primary or Fabric zone replicas and proves fencing, quorum, failover and bounded outcome loss.",
+    "rationale": "Untested failover fails the first time it is needed.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Monthly drill record with measured outcome loss."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10153",
+    "domain": "RES",
+    "title": "Broker backpressure drill: priority QoS and bounded memory",
+    "statement": "A drill freezes a sink and fills consumer lag, verifying priority QoS and no broker memory explosion.",
+    "rationale": "A slow consumer that grows broker memory takes the broker down for everyone.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Broker memory stays bounded and P0/P1 keep priority under a frozen sink."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10154",
+    "domain": "RES",
+    "title": "Ledger outage drill: P1 retention, capital freshness, idempotent catch-up",
+    "statement": "A drill denies ledger writes and verifies Fabric P1 retention, local capital freshness degradation, then idempotent catch-up.",
+    "rationale": "Idempotency proven only in unit tests may not survive a real outage.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Drill record shows no lost or doubled outcomes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10155",
+    "domain": "RES",
+    "title": "Bad model drill: degraded candidate blocked or rolled back",
+    "statement": "A drill promotes an intentionally degraded candidate in nonprod/staging and verifies the shadow/replay/SLO gate blocks or rolls it back.",
+    "rationale": "A gate never shown to fire is a gate that may not.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Degraded candidate refused or rolled back."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10156",
+    "domain": "FABRIC",
+    "title": "Bad schema is rejected before consumers break",
+    "statement": "An incompatible Fabric schema is rejected by CI and by the runtime registry before any production consumer breaks.",
+    "rationale": "A breaking schema change found by a consumer is found after data is lost.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Registering a breaking change without a version bump is refused; produce under an unregistered schema is refused; a CI schema lock fails on drift."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10157",
+    "domain": "SEC",
+    "title": "Agent compromise simulation proves boundaries hold",
+    "statement": "A drill gives an autonomous dev agent malicious instruction/input and verifies secret, network, merge and prod-deploy boundaries prevent authority escalation.",
+    "rationale": "Agent boundaries never attacked are assumed, not known.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Drill record shows each boundary refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10158",
+    "domain": "RES",
+    "title": "Periodic rebuild from zero proves no console dependency",
+    "statement": "Periodically rebuild a regional cluster and a nonprod Fabric cluster from Terraform/Git/artifacts, proving no undocumented console dependency.",
+    "rationale": "Hidden console state makes disaster recovery impossible.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§25 Resilience Testing and Game Days"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A scheduled up/down run from empty succeeds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-10159",
+    "domain": "ARCH",
+    "title": "Build phase 0: Foundations",
+    "statement": "Phase 0 (Foundations) delivers: org/folders/projects, IAM/PAM, Terraform modules, NCC/VPC/DNS/firewalls, KMS/CA, audit/SCC, GitHub WIF, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10160",
+    "domain": "CICD",
+    "title": "Build phase 1: Supply chain",
+    "statement": "Phase 1 (Supply chain) delivers: Cloud Build private pools, Artifact Registry, provenance/SBOM, Binary Authorization, GitOps management cluster, Config Sync/Argo/Kargo/Rollouts, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10161",
+    "domain": "FABRIC",
+    "title": "Build phase 2: Rust Fabric MVP",
+    "statement": "Phase 2 (Rust Fabric MVP) delivers: single region 3 brokers, schemas/client, RF3 journal, consumer offsets, GCS archive, OTel; chaos tests before application adoption, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "27",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10162",
+    "domain": "REFLEX",
+    "title": "Build phase 3: One Reflex Cell",
+    "statement": "Phase 3 (One Reflex Cell) delivers: one venue/asset shard, local risk/order flow, async Fabric journal, replay and paper trading, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-10163",
+    "domain": "LEDGER",
+    "title": "Build phase 4: Financial truth",
+    "statement": "Phase 4 (Financial truth) delivers: Spanner ledger writer/idempotency, reconciliation, capital/risk envelope contracts, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10164",
+    "domain": "DATA",
+    "title": "Build phase 5: Data plane",
+    "statement": "Phase 5 (Data plane) delivers: GCS retained tick/internal archive and compact knowledge packs, Bigtable, BigQuery, Knowledge Catalog, replay/feature sinks, data contracts, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10165",
+    "domain": "GCP",
+    "title": "Build phase 6: Regional service plane",
+    "statement": "Phase 6 (Regional service plane) delivers: GKE asset/capital/risk/evidence/API services, Fabric consumer scaling, Redis cache, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "GKE conflicts with ADR 0024; Cloud Run satisfies the plane under that decision."
+  },
+  {
+    "id": "R12-MESH-10166",
+    "domain": "MESH",
+    "title": "Build phase 7: Multi-region",
+    "statement": "Phase 7 (Multi-region) delivers: three regional Reflex/Fabric/GKE cells, NCC latency mesh, selective Fabric mirrors, direct Reflex Mesh, game-day failover, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10167",
+    "domain": "MODEL",
+    "title": "Build phase 8: Cognitive/AI",
+    "statement": "Phase 8 (Cognitive/AI) delivers: Spanner Graph, model registry/training, ambient/symbolic agents, world+tick fusion, signed model package lifecycle, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10168",
+    "domain": "CICD",
+    "title": "Build phase 9: Autonomous development",
+    "statement": "Phase 9 (Autonomous development) delivers: planner/coder/test/security/reviewer/release/SRE agent loop through normal CI/GitOps, with sandbox and budget controls, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [
+      "NON_RUST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10169",
+    "domain": "QUANT",
+    "title": "Build phase 10: Quantum/agency expansion",
+    "statement": "Phase 10 (Quantum/agency expansion) delivers: IBM Quantum gateway, causal agency adapters, additional assets/markets, larger arbitrage cycles; only after classical baseline/reliability gates, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26 Recommended Build Order"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-10170",
+    "domain": "WORLD",
+    "title": "Build phase 11: NOW + Forecast Lattice",
+    "statement": "Phase 11 (NOW + Forecast Lattice) delivers: promoted current-state model, multi-horizon forecast contracts, calibration SLOs, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26.1 v3 Superintelligence Build Expansion"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10171",
+    "domain": "MODEL",
+    "title": "Build phase 12: Model Society",
+    "statement": "Phase 12 (Model Society) delivers: specialist agent/model tournament, forecast market, adversarial verification, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26.1 v3 Superintelligence Build Expansion"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-10172",
+    "domain": "TICK",
+    "title": "Build phase 13: Digital Twins",
+    "statement": "Phase 13 (Digital Twins) delivers: future-state tree, market/macro/company twins, rare-event factory, counterfactual portfolio farm, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26.1 v3 Superintelligence Build Expansion"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10173",
+    "domain": "QUANT",
+    "title": "Build phase 14: Hybrid Compute",
+    "statement": "Phase 14 (Hybrid Compute) delivers: Compute Router, GPU/TPU7x pools, quantum gateway, solver registry and benchmark memory, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26.1 v3 Superintelligence Build Expansion"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-10174",
+    "domain": "CAPITAL",
+    "title": "Build phase 15: Money Intelligence",
+    "statement": "Phase 15 (Money Intelligence) delivers: capital society, survival kernel, hedge brain, confidence governor, shadow portfolios, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26.1 v3 Superintelligence Build Expansion"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-10175",
+    "domain": "AMBIENT",
+    "title": "Build phase 16: Meta-Intelligence",
+    "statement": "Phase 16 (Meta-Intelligence) delivers: value-of-information sensing, compute/attention market, recursive specialist creation and cognitive compiler, meeting its exit test before later phases depend on it.",
+    "rationale": "Later phases built on an unproven foundation inherit its defects.",
+    "kind": "process",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§26.1 v3 Superintelligence Build Expansion"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each listed deliverable exists and its exit test passes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-10176",
+    "domain": "ARCH",
+    "title": "No synchronous remote call between venue event and local order",
+    "statement": "No synchronous call to Fabric, warm services, Spanner, Bigtable, Redis, BigQuery, AI or another region is required between a venue event and a local order.",
+    "rationale": "Any remote call on that path makes a remote outage a trading outage and a remote latency a trading latency.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With every remote dependency stalled, a venue event still produces an order in bounded time; inserting a blocking remote call before the pass fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10177",
+    "domain": "FABRIC",
+    "title": "All internal async contracts use the Rust Fabric SDK and schema model",
+    "statement": "All internal asynchronous contracts use the Rust Fabric SDK/schema model (with Pub/Sub and Managed Kafka absent from core internal messaging).",
+    "rationale": "Two messaging systems mean two sets of semantics and two places a record can be lost.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every cross-process async contract is a declared Fabric stream; no other transport carries one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10178",
+    "domain": "FABRIC",
+    "title": "Broker/zone failure loses no quorum-acked records and does not stop Reflex",
+    "statement": "A Fabric broker or zone can fail without losing quorum-acknowledged P0/P1/P2 records or stopping Reflex execution.",
+    "rationale": "Losing acknowledged outcomes is losing financial truth.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Kill a broker after ack; all acked records readable; Reflex passes continue."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-10179",
+    "domain": "LEDGER",
+    "title": "Every financial outcome commits exactly once in effect via event-id idempotency",
+    "statement": "Every financial outcome is eventually committed exactly once in effect to the authoritative ledger through event-id idempotency, even when delivered multiple times.",
+    "rationale": "Double-booked or dropped outcomes corrupt capital.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Property test: any redelivery/crash schedule yields single-delivery balances."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10180",
+    "domain": "MODEL",
+    "title": "Every Reflex model/policy traces to commit, manifest, signature, approval and epoch",
+    "statement": "Every model/policy executing in Reflex can be traced to its source commit, data/evaluation manifest, signature, approval/promotion event and activation epoch.",
+    "rationale": "An untraceable model in production cannot be explained after an incident.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The activated package record carries all five links; removing one is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10181",
+    "domain": "RES",
+    "title": "Region loss does not halt healthy regions",
+    "statement": "Region loss does not globally halt healthy regions; cross-region cycles that depend on failed peers are disabled explicitly.",
+    "rationale": "A global halt on one region's failure multiplies the outage.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Darkening one region leaves other cells' home trading unchanged and suspends only mirrored legs into it."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10182",
+    "domain": "CICD",
+    "title": "Production workloads reconciled from Git and admitted only under supply-chain policy",
+    "statement": "Production workloads are reconciled from Git and admitted only when supply-chain policy is satisfied.",
+    "rationale": "A workload deployed around Git or admission is unreviewed code in production.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every Run service is a GitOps manifest pinned by digest and subject to BinAuthz."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Blueprint says GKE; under ADR 0024 the workloads are Cloud Run services reconciled by Config Connector."
+  },
+  {
+    "id": "R12-SEC-10183",
+    "domain": "SEC",
+    "title": "Autonomous agents cannot gain capital authority, bypass policy or hold long-lived keys",
+    "statement": "Autonomous agents cannot obtain production capital/custody authority, cannot merge/deploy around policy, and cannot access long-lived cloud keys.",
+    "rationale": "An agent with authority is an unaccountable trader.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "28",
+        "section": "§27 Architecture Acceptance Criteria"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§31 Final Platform Definition"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Autonomy changes require an authenticated operator identity; no SA keys exist; prod deploy refused from workflows."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-10184",
+    "domain": "TICK",
+    "title": "Replay reconstructs history from Fabric/GCS to test strategies and explain incidents",
+    "statement": "Replay can reconstruct market/decision/outcome history from Fabric/GCS sufficiently to test a strategy/model and explain a live incident.",
+    "rationale": "An incident that cannot be replayed cannot be explained.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Replaying a recorded session reproduces every event, book, fill and flag."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-10185",
+    "domain": "LEDGER",
+    "title": "Reconciliation rebuilds positions and cash from ledger plus venue/custody statements",
+    "statement": "Reconciliation rebuilds and verifies positions and cash from the authoritative ledger plus venue/custody statements without trusting caches.",
+    "rationale": "Positions trusted from a cache drift from reality unnoticed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Refolding the outcome stream equals stored balances; venue drop-copy reconciles; breaks are counted by direction."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-10186",
+    "domain": "RES",
+    "title": "Every critical component is exercised in scheduled game days with RTO/RPO",
+    "statement": "Every critical component is exercised in scheduled game days and has observable RTO/RPO or a documented reason exact guarantees cannot be promised.",
+    "rationale": "Recovery objectives never measured are guesses.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27 Architecture Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A schedule and per-component RTO/RPO measurements exist."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-10187",
+    "domain": "WORLD",
+    "title": "Every material forecast carries horizon, distribution, calibration, disagreement, lineage and expiry",
+    "statement": "Every material forecast has a horizon, probability distribution, calibration score, model disagreement, evidence lineage and expiry.",
+    "rationale": "A forecast missing any of these cannot be scored or trusted.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The forecast type refuses construction without each field."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10188",
+    "domain": "MODEL",
+    "title": "Model influence is earned from resolved performance; no permanent authority",
+    "statement": "Model influence is earned from resolved forecast performance by domain/regime, and no single frontier model is a permanent authority.",
+    "rationale": "A permanent authority model is a single point of epistemic failure.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Weights move with resolved scores per regime; a model with poor scores loses weight."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-10189",
+    "domain": "AMBIENT",
+    "title": "Meta-Intelligence explains budget allocation and measures marginal information value",
+    "statement": "Meta-Intelligence can explain why compute/agent budget was allocated to a question and measure marginal information value afterward.",
+    "rationale": "Budget allocation nobody can explain cannot be improved.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each allocation records a rationale and a post-hoc information value."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10190",
+    "domain": "QUANT",
+    "title": "Accelerator/QPU use selected by measured fit; promotion never depends on unverified quantum advantage",
+    "statement": "TPU/GPU/QPU use is selected by measured workload fit; classical baselines remain reproducible and promotion cannot depend on unverified quantum advantage.",
+    "rationale": "\"We used a quantum computer\" is not a result.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§29.1 Current Capability Validation - v3 Additions (2026)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Promotion refuses a quantum-produced candidate and a quantum-informed one without a calibrated classical baseline."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "ADR 0006."
+  },
+  {
+    "id": "R12-TICK-10191",
+    "domain": "TICK",
+    "title": "Twin and synthetic jobs can fail without affecting live trading",
+    "statement": "Digital-twin and synthetic-world jobs can fail or backlog without affecting live trading.",
+    "rationale": "A simulator on the trading path makes simulation load a trading risk.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Edge node links no twin/simulation crate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-10192",
+    "domain": "RISK",
+    "title": "Capital/Hedge/Confidence can reduce or veto exposure independently of alpha",
+    "statement": "Capital, Hedge and Confidence services can reduce or veto strategy exposure independently of forecast/alpha services.",
+    "rationale": "A veto that depends on the alpha service agreeing is no veto.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A risk limit vetoes a proposal regardless of signal strength."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-10193",
+    "domain": "ARCH",
+    "title": "No superintelligence service is a synchronous dependency between tick and order",
+    "statement": "No agent, world model, forecast service, TPU job or QPU workflow becomes a synchronous dependency between tick and order.",
+    "rationale": "Cognition on the order path makes the slowest model the latency floor.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§27.1 Superintelligence Acceptance Criteria"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§31 Final Platform Definition"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Edge node depends on no cognitive crate and trades identically with the centre silent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10194",
+    "domain": "FABRIC",
+    "title": "Fabric must not sit in front of venue data or order submission",
+    "statement": "The Rust Fabric must not be placed in front of venue market data or order submission; the hot path bypasses it.",
+    "rationale": "Fabric latency and outages would reach every order.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Feed and gateway are bound in the node without a Fabric hop; a code-level guard fails if the node reads market data from a Fabric consumer."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10195",
+    "domain": "FABRIC",
+    "title": "Must not rebuild Kafka semantics blindly; prove required semantics",
+    "statement": "The Fabric implements only Algorik-required semantics and proves them with fault/property tests rather than rebuilding Kafka semantics blindly.",
+    "rationale": "Unproven semantics are assumed semantics.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Each declared semantic has a fault/property test that drives the code."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-10196",
+    "domain": "FABRIC",
+    "title": "Must not claim global exactly-once delivery",
+    "statement": "No component claims global exactly-once delivery; transport is at-least-once with idempotent state transitions and fencing.",
+    "rationale": "An exactly-once claim invites consumers to skip idempotency.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Source scan finds no exactly-once claim; consumers dedup; producers fenced by epoch."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-10197",
+    "domain": "LEDGER",
+    "title": "Must not share one Spanner database across trust domains",
+    "statement": "Ledger, world graph, agent memory and service tables must not share one Spanner database; trust/performance domains are separated.",
+    "rationale": "Analytical load on the ledger database degrades money truth.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      },
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each Spanner database serves one domain; a second domain's tables in the ledger DB fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-10198",
+    "domain": "RISK",
+    "title": "Must not use Redis as position/capital truth or a risk-gate dependency",
+    "statement": "Redis must not be position/capital truth or a required dependency of any risk gate.",
+    "rationale": "A cache failover would erase positions or open the risk gate.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Risk gate crates cannot reach the Redis client; composition roots refuse a cache as store of record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-10199",
+    "domain": "GCP",
+    "title": "Must not use one global GKE cluster or one flat VPC",
+    "statement": "The platform must not run a single global GKE cluster or a single giant flat VPC.",
+    "rationale": "One cluster or one network is one blast radius.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Multiple VPCs per environment; any cluster is regional and not shared across regions."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10200",
+    "domain": "REFLEX",
+    "title": "Reflex traffic must not traverse mesh, proxy, SWP, NAT chains or gateways without benchmarks",
+    "statement": "Reflex traffic must not be routed through a service mesh, proxy, Secure Web Proxy, Cloud NAT chain or general API gateway without benchmarked necessity.",
+    "rationale": "Each hop adds latency and a failure domain to every order.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Execution node has no LB/mesh/proxy hop; any NAT on its venue path is backed by a recorded benchmark."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-10201",
+    "domain": "SEC",
+    "title": "AI agents must not change production by kubectl, SSH or console",
+    "statement": "An AI agent must not change production via kubectl/SSH or console clicks; only GitOps or a pre-approved audited runbook.",
+    "rationale": "Imperative agent changes are unreviewed and unreconstructable.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      },
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§31 Final Platform Definition"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No agent identity holds production write/SSH/kubectl grants; shells only via IAP."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-10202",
+    "domain": "MODEL",
+    "title": "Must not promote models without replay, calibration, baseline and risk-envelope tests",
+    "statement": "No model is promoted without replay, calibration, classical-baseline and deterministic risk-envelope compatibility tests.",
+    "rationale": "A model promoted on a backtest alone is unverified against the controls it must live within.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Promotion refuses a candidate missing any of the four."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10203",
+    "domain": "CICD",
+    "title": "Must not use mutable tags, unversioned schemas, hand-copied models or undocumented emergency config",
+    "statement": "No mutable 'latest' tags, unversioned schemas, hand-copied model files, or undocumented emergency configuration.",
+    "rationale": "Each makes what ran unreconstructable.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every image pinned by digest; registry tags immutable; schemas versioned and locked."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-10204",
+    "domain": "OBS",
+    "title": "Observability must not block execution or emit raw tick rate into logs",
+    "statement": "Observability must not block execution and must not emit raw tick-rate events into general-purpose log ingestion.",
+    "rationale": "A logging stall or a tick-rate log bill becomes a trading incident.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§28 Explicit Anti-Patterns"
+      },
+      {
+        "doc": "G",
+        "page": "23",
+        "section": "§19.0B Security, Delivery & Operations"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Per-event lines are rate-bounded; metrics recording is in-memory; a slow scrape does not delay a pass."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-10205",
+    "domain": "REFLEX",
+    "title": "Machine selection is validated by venue-level benchmarks",
+    "statement": "Exact Reflex machine selection is made by venue-level benchmark testing, not by catalogue specs.",
+    "rationale": "Specs do not predict tail latency on a given venue.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A benchmark record per venue/machine shape justifies the chosen type."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-10206",
+    "domain": "DATA",
+    "title": "Bigtable app profiles match consistency needs",
+    "statement": "Bigtable routing/app-profile choice matches each reader/writer's consistency needs.",
+    "rationale": "Multi-cluster routing on a read-your-writes path returns stale data.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "An app profile per access pattern with matching routing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-10207",
+    "domain": "CICD",
+    "title": "Config Sync owns baseline/policy; Argo CD/Kargo own apps and promotion",
+    "statement": "Config Sync owns baseline/policy reconciliation and drift prevention, while Argo CD/Kargo own applications and promotion.",
+    "rationale": "Two reconcilers fighting over the same objects cause drift loops.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "29",
+        "section": "§29 Current GCP Capability Validation Notes (2026)"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Baseline manifests are reconciled by Config Sync; apps by Argo CD; no object owned by both."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-10208",
+    "domain": "QUANT",
+    "title": "QPU is used through a hybrid router and benchmark harness, never as an oracle",
+    "statement": "QPU access goes through a hybrid compute router and benchmark harness coordinating CPU/GPU/QPU, never as a standalone oracle.",
+    "rationale": "A QPU result trusted alone has no baseline to be wrong against.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "30",
+        "section": "§29.1 Current Capability Validation - v3 Additions (2026)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every QPU result is benchmarked against a classical result before use."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "ADR 0006."
+  }
+]
