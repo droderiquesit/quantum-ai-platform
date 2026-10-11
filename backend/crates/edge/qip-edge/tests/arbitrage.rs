@@ -27,7 +27,7 @@ use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::{Origin, VenueClass, VenueId, VenueStatus};
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, ObjectId, Timestamp, dec};
-use qip_edge::arbitrage::ArbitrageDesk;
+use qip_edge::arbitrage::{ArbitrageDesk, MAX_CYCLES_PER_PASS};
 use qip_edge::cell::{Cell, CellConfig, Placer, WorkReport};
 use qip_edge::envelope::{VerifiedEnvelope, sign_payload};
 use qip_edge::feasibility::{Granularity, VenueModel};
@@ -810,6 +810,29 @@ fn a_desk_whose_graph_reaches_a_venue_the_cell_cannot_is_refused_at_installation
     assert!(
         desk(ethereum_graph()?, 0).is_err(),
         "a cap of zero built a desk that refuses everything it finds"
+    );
+    Ok(())
+}
+
+/// A cap is the bound on how much one pass journals and sends; a cap past
+/// `MAX_CYCLES_PER_PASS` is refused at construction rather than honoured as a
+/// limit no pass could reach. The ceiling itself is admitted, so the refusal
+/// is the ceiling and not an off-by-one below it.
+#[test]
+fn a_desk_whose_cycle_cap_is_above_the_ceiling_is_refused_and_the_ceiling_is_admitted() -> Result<()>
+{
+    let refusal = desk(ethereum_graph()?, MAX_CYCLES_PER_PASS + 1)
+        .err()
+        .map(|error| error.message().to_owned());
+    assert!(
+        refusal
+            .as_deref()
+            .is_some_and(|message| message.contains("above the ceiling")),
+        "a cap past the ceiling built a desk: {refusal:?}"
+    );
+    assert!(
+        desk(ethereum_graph()?, MAX_CYCLES_PER_PASS).is_ok(),
+        "the ceiling itself was refused"
     );
     Ok(())
 }

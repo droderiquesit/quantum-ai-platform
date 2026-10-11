@@ -69,6 +69,12 @@ use qip_contracts::signal::StrategyId;
 use qip_core::error::{Error, Result};
 use qip_core::{Decimal, Duration, Timestamp};
 
+/// The most cycles a desk may admit in one pass. Every admitted cycle is
+/// journaled, reserved against the envelope and sent inside the pass, so the
+/// cap bounds the pass's work; one configured beyond this is refused rather
+/// than honoured as a limit no pass could reach in time.
+pub const MAX_CYCLES_PER_PASS: usize = 256;
+
 /// The scanner, its whitelist of conversions, the sizes it prices at, and
 /// the capital its legs are admitted against.
 #[derive(Debug)]
@@ -180,6 +186,13 @@ impl ArbitrageDesk {
                 "a cap of zero cycles per pass commits nothing; refuse the cap rather than build \
                  a desk that refuses every opportunity it finds",
             ));
+        }
+        if max_cycles_per_pass > MAX_CYCLES_PER_PASS {
+            return Err(Error::invalid(format!(
+                "a cap of {max_cycles_per_pass} cycles per pass is above the ceiling of \
+                 {MAX_CYCLES_PER_PASS}; each admitted cycle is journaled and sent inside one \
+                 pass, so a cap past it is a pass that cannot finish on time rather than a limit"
+            )));
         }
         if leg_validity.is_zero() || leg_validity.as_nanos() < 0 {
             return Err(Error::invalid(format!(

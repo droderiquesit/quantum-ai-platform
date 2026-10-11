@@ -457,10 +457,14 @@ impl Mirror for FileMirror {
         let line = serde_json::to_string(&batch).map_err(|error| {
             Error::schema(format!("a mirror batch would not serialize: {error}"))
         })?;
+        // Checked at the open rather than at construction alone, so a path
+        // that reached the field by any route is refused before it is
+        // appended to (`qip_core::paths`).
+        let path = qip_core::paths::refuse_traversal(&self.path)?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.path)
+            .open(&path)
             .map_err(|error| {
                 Error::io(format!(
                     "cannot open the mirror at {}: {error}",

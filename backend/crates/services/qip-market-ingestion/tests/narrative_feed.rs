@@ -1452,3 +1452,37 @@ fn the_fetch_helper_returns_what_the_vendor_sent_without_the_knowable_gate() {
         "the helper reports what the vendor actually sent"
     );
 }
+
+/// `max_records` bounds what one response may expand into, so a cap past
+/// `MAX_RECORDS_CEILING` is refused at construction rather than honoured as
+/// a bound nothing could reach; the ceiling itself still builds.
+#[test]
+fn a_record_cap_above_the_ceiling_is_refused_at_construction_and_the_ceiling_is_admitted() {
+    use qip_market_ingestion::narrative::MAX_RECORDS_CEILING;
+    let over = NarrativeAdapter::new(
+        NarrativeFeedConfig {
+            max_records: MAX_RECORDS_CEILING + 1,
+            ..config("http://127.0.0.1:9")
+        },
+        subjects(),
+        series(),
+    );
+    let text = over.err().map(|error| error.to_string());
+    assert!(
+        text.as_deref()
+            .is_some_and(|text| text.contains("above the ceiling")),
+        "a cap past the ceiling built a feed: {text:?}"
+    );
+    assert!(
+        NarrativeAdapter::new(
+            NarrativeFeedConfig {
+                max_records: MAX_RECORDS_CEILING,
+                ..config("http://127.0.0.1:9")
+            },
+            subjects(),
+            series(),
+        )
+        .is_ok(),
+        "the ceiling itself was refused"
+    );
+}
