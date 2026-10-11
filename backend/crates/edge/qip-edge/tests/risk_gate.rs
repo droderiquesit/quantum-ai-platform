@@ -286,3 +286,61 @@ fn the_survival_ceiling_is_the_gross_the_cells_live_grants_sum_to() -> Result<()
     assert_eq!(risk_refusals(&tight).len(), 1);
     Ok(())
 }
+
+#[test]
+fn a_second_order_inside_the_ceiling_alone_is_refused_while_the_first_still_works() -> Result<()> {
+    // The gateway here reports no fills, so the first pass's order is still
+    // working when the second pass checks its own. Each is inside the
+    // survival ceiling alone and the two together are not; a gate that
+    // measured only filled exposure would send both, and both could fill.
+    let survival = |limit: f64| {
+        CellRiskGate::new(
+            LimitSet::new("cell").with(Limit::new(
+                "survival",
+                LimitKind::MaxSurvivalGross { limit },
+            )),
+            dec!("1000000"),
+        )
+    };
+
+    // Premise: under a generous ceiling both passes send, so nothing but the
+    // ceiling stands between the second order and the venue below.
+    let mut open = gated_cell(survival(1.0)?)?;
+    let mut open_gateway = RecordingGateway::default();
+    open.work(t(50), &mut open_gateway)?;
+    open.work(t(51), &mut open_gateway)?;
+    assert_eq!(
+        open_gateway.placed.len(),
+        2,
+        "premise: a generous ceiling sends both passes' orders"
+    );
+    assert_eq!(
+        open_gateway.placed[0].1, open_gateway.placed[1].1,
+        "premise: the two passes send the same size"
+    );
+
+    // A ceiling of one and a half orders' gross at the touch of 101.
+    let one = open_gateway.placed[0].1 * dec!("101");
+    let mut tight = gated_cell(survival(one.to_f64() * 1.5 / 1_000_000.0)?)?;
+    let mut tight_gateway = RecordingGateway::default();
+    tight.work(t(50), &mut tight_gateway)?;
+    assert_eq!(
+        tight_gateway.placed.len(),
+        1,
+        "premise: the first order is inside the ceiling alone"
+    );
+    assert!(tight.work(t(51), &mut tight_gateway).is_err());
+    assert_eq!(
+        tight_gateway.placed.len(),
+        1,
+        "the second order reached the placer while the first still holds the ceiling"
+    );
+    let refusals = risk_refusals(&tight);
+    assert_eq!(refusals.len(), 1, "one journaled refusal under {GATE_RISK}");
+    assert!(
+        refusals[0].contains("survival"),
+        "the refusal names the survival limit: {}",
+        refusals[0]
+    );
+    Ok(())
+}

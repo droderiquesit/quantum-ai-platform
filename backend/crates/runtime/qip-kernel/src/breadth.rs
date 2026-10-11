@@ -32,6 +32,7 @@ use qip_contracts::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_events::EventBody;
+use qip_execution_engine::market_creation::PricingRule;
 use qip_prediction::access::{AccessBook, EntityRecord, Jurisdiction, VenuePolicy};
 use qip_prediction::{OracleIdentity, OracleKind, SyntheticPredictionVenue, SyntheticVenueConfig};
 use serde::{Deserialize, Serialize};
@@ -129,6 +130,10 @@ fn access_book(section: &EventMarketPlan) -> AccessBook {
     access
 }
 
+/// The kill-switch scope a Market Factory ladder is admitted under, so an
+/// operator can halt market making without halting the desk.
+pub const MARKET_FACTORY_SCOPE: &str = "market-factory";
+
 fn refuse_source(section: &str, source: &str) -> Error {
     Error::invalid(format!(
         "configuration: the breadth plan's {section} source is `{source}`, and only \
@@ -178,6 +183,26 @@ impl Platform {
                         ))
                     })?;
                 }
+                // R12-RISK-4093: a seeded ladder is orders at a venue, so each
+                // is measured against the desk's limits over the book as it
+                // stands — working orders included — before it rests, by the
+                // same order manager every desk order passes through. Taken
+                // before the venue is borrowed, because the book is the
+                // platform's and the venue is the broker's.
+                let risk_state = self.risk_state();
+                let orders = &mut self.orders;
+                let autonomy = &self.autonomy;
+                let mut ladders = |product: &str, venue: &str, rule: &PricingRule| {
+                    orders.admit_ladder(
+                        product,
+                        venue,
+                        rule,
+                        MARKET_FACTORY_SCOPE,
+                        autonomy,
+                        &risk_state,
+                        now,
+                    )
+                };
                 let venue = self.broker.listing_venue().ok_or_else(|| {
                     Error::denied(
                         "configuration: the breadth plan asks for a market factory and the desk \
@@ -185,12 +210,13 @@ impl Platform {
                          venue only",
                     )
                 })?;
-                let stage = FactoryStage::install(section, venue, now).map_err(|error| {
-                    Error::invalid(format!(
-                        "configuration: the market factory refused the plan: {}",
-                        error.message()
-                    ))
-                })?;
+                let stage =
+                    FactoryStage::install(section, venue, &mut ladders, now).map_err(|error| {
+                        Error::invalid(format!(
+                            "configuration: the market factory refused the plan: {}",
+                            error.message()
+                        ))
+                    })?;
                 lines.push(format!(
                     "market factory at {}: {} market(s) created, listed and seeded",
                     stage.factory().venue(),

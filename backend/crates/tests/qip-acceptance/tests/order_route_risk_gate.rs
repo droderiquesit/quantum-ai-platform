@@ -427,7 +427,7 @@ fn a_requote_whose_replacement_breaches_the_cells_limit_withdraws_and_sends_noth
 /// The desk path: the order manager refuses a breaching order before the
 /// broker is called.
 ///
-/// Mutation: skip `self.checker.check(` in `OrderManager::submit` and the
+/// Mutation: skip `.check_with_working(` in `OrderManager::submit` and the
 /// broker's submission count is one.
 #[test]
 fn a_desk_order_that_breaches_a_limit_never_reaches_the_broker() {
@@ -523,6 +523,11 @@ enum Route {
     },
     Delegation,
     Release,
+    /// Lists an instrument at the venue with an *empty* book: nothing rests,
+    /// so there is nothing to gate. The walk checks the call builds the
+    /// book with `OrderBook::new(` on the same line, so a listing that
+    /// starts carrying levels stops matching this row.
+    EmptyListing,
 }
 
 /// `(path under backend/crates, enclosing function, how it is gated)`.
@@ -539,13 +544,31 @@ const SITES: &[(&str, &str, Route)] = &[
         "services/qip-execution-engine/src/oms.rs",
         "submit",
         Route::Gated {
-            gate: "self.checker.check(",
+            // `check_with_working` since round 3: the same checker, over the
+            // book plus the remainders of orders already working.
+            gate: ".check_with_working(",
         },
     ),
     (
         "apps/qip-edge-node/src/gateway.rs",
         "submit_now",
         Route::Release,
+    ),
+    // R12-RISK-4093: the Market Factory rests a quote ladder through
+    // `ListingVenue::list_book`, which this walk did not look for, so the
+    // route had no row and no gate. `seed` now takes a `LadderAdmission`,
+    // whose only mint is `OrderManager::admit_ladder`'s limit check.
+    (
+        "services/qip-execution-engine/src/market_creation.rs",
+        "seed",
+        Route::Gated {
+            gate: "ladder: &LadderAdmission",
+        },
+    ),
+    (
+        "services/qip-execution-engine/src/market_creation.rs",
+        "list",
+        Route::EmptyListing,
     ),
     (
         "apps/qip-edge-node/src/gateway.rs",
@@ -626,6 +649,10 @@ fn is_order_call(lines: &[&str], index: usize) -> bool {
         return false;
     }
     if line.contains(".submit(&order") {
+        return true;
+    }
+    // Resting a book at a venue is placing every order in it.
+    if line.contains(".list_book(") {
         return true;
     }
     if line.contains("try_place(") || line.contains(".place(") {
@@ -758,11 +785,26 @@ fn each_gated_route_runs_its_gate_before_the_venue_call_and_no_route_is_ungated(
                 site.function
             ),
             Route::Release => {}
+            Route::EmptyListing => {
+                let call = std::fs::read_to_string(crates_root().join(&site.path))
+                    .expect("a source file is readable")
+                    .lines()
+                    .nth(site.line - 1)
+                    .unwrap_or_default()
+                    .to_string();
+                assert!(
+                    call.contains(".list_book(OrderBook::new("),
+                    "{}:{} is listed as an empty listing but rests something other than a new \
+                     empty book: {call}",
+                    site.path,
+                    site.line
+                );
+            }
         }
     }
     assert!(
-        gated >= 3,
-        "premise: the three gated seams were examined, {gated} were"
+        gated >= 4,
+        "premise: the four gated seams were examined, {gated} were"
     );
 }
 

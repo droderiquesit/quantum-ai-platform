@@ -891,8 +891,8 @@ impl FabricJournal {
     /// The state is rebuilt by [`crate::replay::replay_from`] over everything
     /// the log holds, so a log with a broken chain or a lying record refuses
     /// to be resumed rather than being written after. The id generator is
-    /// advanced past the records already present, for the reason
-    /// [`IdGenerator::advance`] gives.
+    /// moved onto a branch the inherited log names, for the reason
+    /// [`IdGenerator::diverge`] gives.
     ///
     /// # The log's own anchor, not genesis
     ///
@@ -915,16 +915,27 @@ impl FabricJournal {
     pub fn resume(log: EventLog, seed: u64, correlation: CorrelationId) -> Result<Self> {
         let replayed = crate::replay::replay_from(log.records(), &log.retained_anchor())?;
         let ids = IdGenerator::new(seed);
-        // Past every record ever written, not past every record still
-        // retained. The two were the same number while nothing rolled; a
-        // rolled log holds fewer records than its chain has minted, and
-        // advancing by the shorter figure would put the resumed run's
-        // entropy back where a run over the unrolled log already stood —
-        // re-minting an id the *file* holds and the index no longer does, so
-        // the log's duplicate-id refusal could not see it. `last_sequence`
-        // is the log's own monotonic count and is what
-        // [`IdGenerator::advance`]'s argument was always meant to be.
-        ids.advance(log.last_sequence());
+        // Off the stream the writer of this log drew from, onto a branch
+        // named by the log's own monotonic count. This was
+        // `ids.advance(log.last_sequence())`: one raw draw per record, where
+        // an id consumes two, so a resumed run's first id was the id of a
+        // record half-way up the log whenever it was stamped with that
+        // record's instant, and the log refused the append — the fabric
+        // stopped writing on restart. The kernel made the same count and
+        // round 2 replaced it with `IdGenerator::diverge`, whose doc says why
+        // no draw count can be right: a writer may mint ids that never
+        // became records, and the log does not say how many.
+        //
+        // `last_sequence` rather than anything the retained span holds, for
+        // the reason the count was chosen before: a rolled log retains fewer
+        // records than its chain minted, and a label read off the retained
+        // records would differ between a rolled log and its unrolled twin.
+        // A fresh log (sequence zero) branches nothing, so a journal built
+        // over an empty log mints exactly what `new` does.
+        let written = log.last_sequence();
+        if written > 0 {
+            ids.diverge(&format!("{PRODUCER}:resumed:{written}"));
+        }
         Ok(Self {
             log,
             ids,

@@ -234,11 +234,11 @@ pub struct Platform {
     opportunities: OpportunityEngine,
     reasoning: ReasoningEngine,
     constructor: PortfolioConstructor,
-    orders: OrderManager,
+    pub(crate) orders: OrderManager,
     /// `pub(crate)` for `crate::breadth`, which reaches the venue's listing
     /// surface through it for the Market Factory and names no broker type.
     pub(crate) broker: Box<dyn Broker>,
-    autonomy: AutonomyController,
+    pub(crate) autonomy: AutonomyController,
     monitor: RiskMonitor,
     /// Holds between a capital check and its resolution. A proposal that
     /// passes a check reserves what it was sized for, so a second proposal in
@@ -16569,7 +16569,7 @@ impl Platform {
     /// nobody published. The figure is realised-only like the rest, so it is
     /// the loss the platform's own fills booked today and not the book's
     /// mark-to-market day.
-    fn risk_state(&self) -> RiskState {
+    pub(crate) fn risk_state(&self) -> RiskState {
         self.risk_state_from(&self.aggregates)
     }
 

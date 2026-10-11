@@ -618,12 +618,21 @@ fn declined_paths_past_the_per_cycle_cap_are_counted_as_deferred_and_priced_next
 
 /// Offer a traceable buy the controls accept and the simulated venue fills,
 /// and hand back its id. The fill is the premise of every test below.
+///
+/// 700 rather than the 1000 this was until round 3. The default simulated
+/// venue fills 60% on acceptance and leaves the rest working, and the
+/// pre-trade gate now charges a working remainder as exposure the book has
+/// committed to. Ten 1000-lot buys of AAA at 100 commit just over the 10%
+/// weight `limits()` sets, so the tenth was refused — the gate seeing what
+/// the fixture had always built and never meant to. The tests below are
+/// about how fills are learned from, not about sizing; thirteen of these
+/// stay inside the limit, which is the most any of them sends.
 fn fill_one(platform: &mut Platform, proposal: &str, at: Timestamp) -> Result<OrderId> {
     let fills_before = platform.orders().fills().len();
     let order = platform.order_from(
         object("AAA"),
         Side::Buy,
-        dec!("1000"),
+        dec!("700"),
         dec!("100"),
         proposal,
         vec![format!("hyp-{proposal}")],

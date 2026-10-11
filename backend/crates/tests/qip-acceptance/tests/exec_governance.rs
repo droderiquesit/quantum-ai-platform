@@ -172,9 +172,34 @@ fn a_seeded_market_rests_its_rule_at_the_simulated_venue() -> Result<()> {
         venue,
         at(),
     )?;
+    // The ladder's risk verdict, from the only mint there is: the desk's
+    // order manager, here under a 2x leverage limit over a book of a million
+    // that the ladder is far inside (R12-RISK-4093).
+    let mut orders = qip_execution_engine::oms::OrderManager::new(
+        qip_risk_engine::pretrade::PreTradeChecker::new(
+            qip_risk::limits::LimitSet::new("governance").with(qip_risk::limits::Limit::new(
+                "leverage",
+                qip_risk::limits::LimitKind::MaxLeverage { limit: 2.0 },
+            )),
+        ),
+    );
+    let ladder = orders.admit_ladder(
+        PRODUCT,
+        VENUE,
+        &rule()?,
+        "market-factory",
+        &qip_risk_engine::autonomy::AutonomyController::new(),
+        &qip_risk::limits::RiskState {
+            equity: dec!("1000000"),
+            cash: dec!("1000000"),
+            ..qip_risk::limits::RiskState::default()
+        },
+        at(),
+    )?;
     let venue = broker.listing_venue().expect("still offered");
     factory.seed(
         &permissions.admit(&request(CreationAction::Seed, VENUE))?,
+        &ladder,
         dec!("30"),
         venue,
         at(),

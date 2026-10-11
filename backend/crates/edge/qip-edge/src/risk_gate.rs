@@ -31,7 +31,11 @@
 //!
 //! A working order counts at its full remaining size, at its own limit price,
 //! as though it had filled: an order the venue may fill is exposure the cell
-//! has already committed to. A held position is priced at the last price this
+//! has already committed to. Working orders are charged through the desk's
+//! own `commit_working`, so a resting buy and a resting sale of one instrument
+//! at two venues are never summed to nothing: either can fill without the
+//! other, and the gate once added both into one signed figure per instrument
+//! and read the pair as no exposure at all. A held position is priced at the last price this
 //! gate saw an order for that instrument at. A position the gate has never
 //! seen a price for — the gate was installed after the position was built —
 //! cannot be priced, and the state files it as unevaluated, which the checker
@@ -193,8 +197,13 @@ impl CellRiskGate {
         self.mark(object_id.as_str(), price);
 
         // Signed notional per venue and instrument, so a venue's gross can be
-        // projected exactly for the order below.
+        // projected exactly for the order below. `held_pairs` is the same for
+        // confirmed positions alone: the book the working orders are then
+        // charged onto by `commit_working`, which never nets a resting buy
+        // against a resting sale.
         let mut per_pair: BTreeMap<(String, String), Decimal> = BTreeMap::new();
+        let mut held_pairs: BTreeMap<(String, String), Decimal> = BTreeMap::new();
+        let mut working: Vec<ProposedOrder> = Vec::new();
         let mut unpriced: Vec<String> = Vec::new();
         for holding in holdings {
             if holding.signed_quantity.is_zero() {
@@ -214,13 +223,35 @@ impl CellRiskGate {
             *per_pair
                 .entry((holding.venue.to_string(), holding.object.to_string()))
                 .or_insert(Decimal::ZERO) += notional;
+            if holding.price.is_some() {
+                working.push(ProposedOrder {
+                    object_id: ObjectId::from_string(holding.object),
+                    quantity: holding.signed_quantity,
+                    reference_price: price,
+                    axes: BTreeMap::from([(
+                        COUNTERPARTY_AXIS.to_string(),
+                        holding.venue.to_string(),
+                    )]),
+                    scope: cell.to_string(),
+                });
+            } else {
+                *held_pairs
+                    .entry((holding.venue.to_string(), holding.object.to_string()))
+                    .or_insert(Decimal::ZERO) += notional;
+            }
         }
 
-        let mut per_object: BTreeMap<String, Decimal> = BTreeMap::new();
         let mut per_venue: BTreeMap<String, Decimal> = BTreeMap::new();
-        for ((venue_key, object), notional) in &per_pair {
-            *per_object.entry(object.clone()).or_insert(Decimal::ZERO) += *notional;
+        for ((venue_key, _), notional) in &per_pair {
             *per_venue.entry(venue_key.clone()).or_insert(Decimal::ZERO) += notional.abs();
+        }
+        let mut per_object: BTreeMap<String, Decimal> = BTreeMap::new();
+        let mut held_per_venue: BTreeMap<String, Decimal> = BTreeMap::new();
+        for ((venue_key, object), notional) in &held_pairs {
+            *per_object.entry(object.clone()).or_insert(Decimal::ZERO) += *notional;
+            *held_per_venue
+                .entry(venue_key.clone())
+                .or_insert(Decimal::ZERO) += notional.abs();
         }
         let gross: Decimal = per_object.values().map(|n| n.abs()).sum();
         let net: Decimal = per_object.values().copied().sum();
@@ -262,7 +293,7 @@ impl CellRiskGate {
             gross_exposure: gross,
             net_exposure: net,
             position_notionals: per_object,
-            axis_exposures: BTreeMap::from([(COUNTERPARTY_AXIS.to_string(), per_venue)]),
+            axis_exposures: BTreeMap::from([(COUNTERPARTY_AXIS.to_string(), held_per_venue)]),
             venue_exposures,
             survival_gross_ceiling: Some(granted),
             ..RiskState::default()
@@ -287,7 +318,9 @@ impl CellRiskGate {
             axes: BTreeMap::from([(COUNTERPARTY_AXIS.to_string(), venue.as_str().to_string())]),
             scope: cell.to_string(),
         };
-        let result = self.checker.check(&order, &state, now)?;
+        let result = self
+            .checker
+            .check_with_working(&order, &state, &working, now)?;
         Ok(result)
     }
 }
