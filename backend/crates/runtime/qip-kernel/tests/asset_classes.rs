@@ -166,7 +166,13 @@ fn fx_cash_and_digital_asset_instruments_assemble_and_trade_on_paper() -> Result
     let mut platform = assemble(universe_of(vec![
         object("obj-AAA", InstrumentType::CommonStock, None)?,
         object("obj-EURUSD", InstrumentType::FxSpot, Some(dec!("0.00001")))?,
-        object("obj-USD-MMF", InstrumentType::MoneyMarketInstrument, None)?,
+        // `Cash` rather than `MoneyMarketInstrument`: the object model has
+        // always refused a money-market instrument without a maturity (it is
+        // a dated claim, `InstrumentType::has_maturity`), and this fixture
+        // gave it none, so the test died at `build` before reaching the
+        // registry it exists to prove. Plain cash is the same `Cash` class
+        // with no redemption date to invent.
+        object("obj-USD-CASH", InstrumentType::Cash, None)?,
         object("obj-BTC", InstrumentType::Cryptocurrency, None)?,
     ])?)?;
     for class in [

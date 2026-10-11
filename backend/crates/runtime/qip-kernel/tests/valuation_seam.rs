@@ -913,7 +913,30 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
         .cloned()
         .expect("every cycle records a proposal");
     let compounded_notional = sized_notional(&compounded, "compounded");
-    let expected_budget = book() * dec!("0.375") * dec!("0.5");
+    // The book the compounded cycle may size against is the book less the
+    // margin the survival waterfall now withholds. The reference cycle's
+    // own ACT stage, and each scoring cycle's, left the book holding gross,
+    // and since R2-CAPITAL the waterfall withholds the cross-margin review's
+    // maintenance on it (`survival::CapitalObligations`) before anything is
+    // released — about 0.58% of this book, which is what moved the budget
+    // from 187,500 to 186,411 and outside the thousandth this compares to.
+    // The margin is read from the construction rather than restated,
+    // because it is a function of whatever the scoring cycles bought, but it
+    // is not the figure under test: the halving this asserts is applied
+    // after the waterfall, so deleting it still misses by half. The
+    // reference cycle ran on an empty book, so its margin was zero and its
+    // premise above is unchanged.
+    let margin = platform
+        .sizing_budget()
+        .expect("the compounded cycle constructed")
+        .survival
+        .margin_required;
+    assert!(
+        margin.is_positive() && margin < book() * dec!("0.01"),
+        "premise: the waterfall withheld a small, positive maintenance margin on the gross          the earlier cycles left: {margin}"
+    );
+    let releasable = book() - margin;
+    let expected_budget = releasable * dec!("0.375") * dec!("0.5");
     assert!(
         (compounded.equity.amount - expected_budget).abs() <= expected_budget * dec!("0.001"),
         "the budget was not halved by the declined record: {} against {expected_budget}",
@@ -957,7 +980,11 @@ fn a_declined_pattern_and_a_fill_pattern_on_one_instrument_compound_a_halved_bud
     // than about the two narrowings. Both notionals are still asserted
     // positive above, so neither cycle is an empty proposal passing by
     // default.
-    let reference_position = book() * dec!("0.375") * dec!("0.08");
+    // Against the margin-narrowed book, for the reason stated where
+    // `releasable` is taken: the margin is a third narrowing, common to
+    // neither the halving nor the bound, and left in it would read as the
+    // compounding missing by the margin's share.
+    let reference_position = releasable * dec!("0.375") * dec!("0.08");
     let compounded_position = compounded.equity.amount * dec!("0.04");
     let expected = reference_position * dec!("0.25");
     assert!(

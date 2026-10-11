@@ -158,23 +158,43 @@ impl IdGenerator {
 
     /// Discard `draws` outputs from the entropy stream without minting an id.
     ///
-    /// A generator is seeded purely from a configured seed, so two
-    /// generators built from the same seed and asked for an id stamped with
-    /// the same millisecond produce the same id — deliberate, since it is
-    /// what makes a replay reproducible. That guarantee turns into a
-    /// collision the moment a caller resumes an existing log rather than
-    /// starting one from scratch: the resumed run's first id would coincide
-    /// with the id a from-scratch run at the same instant would have minted,
-    /// even though the resumed run's record sits at a different position in
-    /// a longer chain. Advancing the stream by however much history was
-    /// already inherited moves a resumed run's entropy off that fresh-run
-    /// starting point, while a from-scratch caller (nothing to advance past)
-    /// is unaffected and keeps minting exactly the ids it always has.
+    /// Each id consumes two draws, so a caller advancing past history must
+    /// count draws, not records or ids; [`Self::diverge`] needs no count and
+    /// is the safer way to move a resumed run off a writer's stream.
     pub fn advance(&self, draws: u64) {
         let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
         for _ in 0..draws {
             let _ = rng.next_u64();
         }
+    }
+
+    /// Move the entropy stream onto a branch named by `label`, so every id
+    /// minted afterwards comes from a stream no generator built from the
+    /// same seed reaches by minting alone.
+    ///
+    /// A generator is seeded purely from a configured seed, so two
+    /// generators built from the same seed and asked for an id stamped with
+    /// the same millisecond produce the same id — deliberate, since it is
+    /// what makes a replay reproducible. That guarantee turns into a
+    /// collision the moment a caller resumes an existing log rather than
+    /// starting one from scratch: the resumed run would mint, in order, the
+    /// very ids the run that wrote the log minted, and the log refuses a
+    /// second record under an id it already holds.
+    ///
+    /// The kernel used [`Self::advance`] with one raw draw per inherited
+    /// *record*. That under-shot by construction — an id consumes
+    /// two draws and a journaled record mints two ids, a correlation and an
+    /// event — so a process resuming a four-record log at the same instant
+    /// minted, as its first event id, the id of the log's second record, and
+    /// refused to assemble. No fixed count can be right: the previous
+    /// process also minted ids that never became records, and how many is
+    /// not in the log. Branching by a label the inherited log fixes — its
+    /// head hash — is deterministic for a replay of the same log and lands
+    /// on an independent stream, whatever the previous process drew.
+    pub fn diverge(&self, label: &str) {
+        let mut rng = self.rng.lock().unwrap_or_else(|e| e.into_inner());
+        let branch = rng.fork(label);
+        *rng = branch;
     }
 }
 

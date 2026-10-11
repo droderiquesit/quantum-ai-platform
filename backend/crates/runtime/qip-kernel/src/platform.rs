@@ -5038,15 +5038,28 @@ impl Platform {
     /// journal, exactly as a cycle's entry is.
     fn record_universe_assembled(&mut self, now: Timestamp) -> Result<()> {
         // `context.ids()` is seeded purely from `config.seed`, so a process
-        // resuming this log and a from-scratch process both starting at the
-        // same instant would otherwise mint the exact same id for this
-        // record — deliberate determinism turned into a genuine collision,
-        // because the resumed run's record sits at a different position in
-        // a longer chain than a from-scratch run's does. Advancing the
-        // stream by what this run inherited moves it off that shared
-        // starting point; a from-scratch assembly (`inherited_through == 0`)
-        // draws nothing extra and is unaffected.
-        self.context.ids().advance(self.inherited_through);
+        // resuming this log at the same instant as the process that wrote it
+        // would mint, in order, the very ids that process minted — and the
+        // log refuses a second record under an id it holds, so the platform
+        // would not assemble. Branching the stream by the inherited head's
+        // hash puts every id this run mints on a stream the writer never
+        // drew from, and stays reproducible for a replay of the same log. It
+        // used to advance by one raw draw per inherited record, which
+        // under-shot by four to one (two draws an id, two ids a record): a
+        // restart over four records minted the second record's event id
+        // here. A from-scratch assembly (`inherited_through == 0`) inherits
+        // no head, branches nothing and mints exactly the ids it always has.
+        if self.inherited_through > 0
+            && let Some(head) = self
+                .event_log
+                .records()
+                .iter()
+                .rev()
+                .find(|record| record.sequence == self.inherited_through)
+        {
+            let label = format!("resumed:{}", head.record_hash);
+            self.context.ids().diverge(&label);
+        }
         let correlation_id = self
             .context
             .ids()
@@ -25642,10 +25655,23 @@ mod rule_review_tests {
         // is silent about exactly the rules the dormancy finding exists for —
         // the ones that never fire.
         let platform = platform();
-        let boot = LimitSet::conservative_default();
+        // The set the platform actually runs, not the one handed in: the
+        // kernel installs `survival-gross` into whatever set the root gives
+        // it (`crate::survival::install_survival_limit`, R12-RISK-7205), and
+        // that limit is as able to sit dormant as any other. Comparing
+        // against the bare shipped default would leave the one rule the
+        // kernel adds itself outside this check.
+        let boot = crate::survival::install_survival_limit(LimitSet::conservative_default())
+            .expect("the shipped set takes the survival limit");
         assert!(
             !boot.is_empty(),
             "the premise failed: the boot set is empty"
+        );
+        assert!(
+            boot.limits
+                .iter()
+                .any(|limit| limit.name == crate::survival::SURVIVAL_LIMIT_NAME),
+            "the premise failed: the set compared against does not carry the survival limit"
         );
         for limit in &boot.limits {
             let row = platform.rule_activity.get(&limit.name).unwrap_or_else(|| {
@@ -26353,10 +26379,15 @@ mod rule_review_tests {
             written[0].since, 0,
             "a never-fired rule is idle since assembly"
         );
-        // Every rule in the set was equally silent, and each is its own row.
+        // Every rule in the set was equally silent, and each is its own row
+        // — the shipped default plus the `survival-gross` limit the kernel
+        // installs into every set it runs, which is one more rule that can
+        // sit idle while orders go through.
         assert_eq!(
             platform.event_log.by_topic(Topic::RiskRuleDormant).len(),
-            LimitSet::conservative_default().len()
+            crate::survival::install_survival_limit(LimitSet::conservative_default())
+                .expect("the shipped set takes the survival limit")
+                .len()
         );
         assert_eq!(
             platform
