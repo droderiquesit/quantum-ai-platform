@@ -175,3 +175,60 @@ pub fn evidence_of(
     }
     Ok(evidence)
 }
+
+/// A central tick, quote or trade shaped for the Tick Lake, or `None` for a
+/// record the lake's market class does not hold.
+///
+/// A central connector runs no clock discipline, so no correction is
+/// applied and the normalized time is the venue's own. The uncertainty is
+/// the one bound a capture without a clock estimate can state: the event
+/// happened no later than it was received, so the receive lag is the width
+/// of the interval it lies in. Zero would claim a measurement nobody made.
+pub fn captured_of(
+    record: &SensedRecord,
+    source_id: &str,
+    entitlement: &str,
+) -> Result<Option<qip_storage::tick_capture::CapturedMarketEvent>> {
+    let (venue, instrument, sequence, at, capture) = match record {
+        SensedRecord::Tick(t) => (
+            &t.venue,
+            t.object_id.as_str(),
+            t.sequence,
+            t.at,
+            t.capture_time,
+        ),
+        SensedRecord::Quote(q) => (
+            &q.venue,
+            q.object_id.as_str(),
+            q.sequence,
+            q.at,
+            q.capture_time,
+        ),
+        SensedRecord::Trade(t) => (
+            &t.venue,
+            t.object_id.as_str(),
+            t.sequence,
+            t.at,
+            t.capture_time,
+        ),
+        _ => return Ok(None),
+    };
+    let captured = qip_storage::tick_capture::CapturedMarketEvent {
+        venue: venue.clone(),
+        feed: source_id.to_string(),
+        instrument: instrument.to_string(),
+        sequence,
+        event_time: at,
+        receive_time: capture,
+        normalized_time: at,
+        uncertainty: capture.since(at).max(qip_core::Duration::ZERO),
+        corrections: Vec::new(),
+        arrival_order: None,
+        entitlement: entitlement.to_string(),
+        canonical: serde_json::to_value(record)?,
+        raw_sha256: None,
+        raw: None,
+    };
+    captured.validate()?;
+    Ok(Some(captured))
+}

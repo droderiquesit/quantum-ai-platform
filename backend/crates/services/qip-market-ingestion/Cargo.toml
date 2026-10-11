@@ -39,17 +39,10 @@ qip-sequencing.workspace = true
 # the alternative was a second evidence type here, which is how the reasoning
 # engine came to hold a thinner one the world model's checks never see.
 qip-world-model.workspace = true
-
-[dev-dependencies]
-# `StreamJournal` persists through `qip_core::kv::KeyValueStore` — the port,
-# declared in a library this crate already depends on — so nothing here reaches
-# for a filesystem and a deployment chooses the adapter. The tests need *an*
-# adapter, and `MemoryKeyValueStore` is the one the workspace already ships;
-# a store hand-rolled inside the test file would be a second implementation of
-# the port whose disagreements with the real one nothing would catch.
-# A dev-dependency and not a dependency: this is a service and `qip-storage` is
-# a library, so the edge is legal in either position, but the crate needs the
-# port and not the adapter, and the manifest should say which.
+# The Tick Lake writer (R12-DATA-2004): a connector feed given one seals the
+# ticks, quotes and trades it releases into `qip_storage::lake`. A service
+# depending on a library, the legal edge; it was a dev-dependency for the
+# journal's key-value port, and the tests that used it still do.
 qip-storage.workspace = true
 
 [lints]

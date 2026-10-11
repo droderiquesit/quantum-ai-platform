@@ -817,7 +817,9 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-numerics",
+ "qip-storage",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
