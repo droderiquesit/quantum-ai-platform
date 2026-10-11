@@ -55,11 +55,32 @@ pub struct Signal {
 #[derive(Clone, Debug, Default)]
 pub struct EntityGraph {
     nodes: BTreeMap<EntityKey, Vec<Signal>>,
+    /// Signals kept per entity, oldest dropped first; `None` keeps all.
+    retention: Option<usize>,
 }
 
 impl EntityGraph {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A graph keeping at most `per_entity` signals per entity.
+    ///
+    /// A graph fed every cycle by a long-running process and never pruned is
+    /// an unbounded buffer, which this platform does not ship; the record is
+    /// the event log and the metrics registry, and the graph is the working
+    /// set an incident is joined over. Refuses zero, which would keep
+    /// nothing and make every join empty.
+    pub fn with_retention(per_entity: usize) -> Result<Self> {
+        if per_entity == 0 {
+            return Err(Error::invalid(
+                "an entity graph retaining zero signals per entity joins nothing; retain at least one",
+            ));
+        }
+        Ok(Self {
+            nodes: BTreeMap::new(),
+            retention: Some(per_entity),
+        })
     }
 
     /// Attach `signal` to every entity it concerns.
@@ -80,10 +101,14 @@ impl EntityGraph {
             }
         }
         for entity in entities {
-            self.nodes
-                .entry(entity.clone())
-                .or_default()
-                .push(signal.clone());
+            let signals = self.nodes.entry(entity.clone()).or_default();
+            signals.push(signal.clone());
+            if let Some(keep) = self.retention
+                && signals.len() > keep
+            {
+                let excess = signals.len() - keep;
+                signals.drain(..excess);
+            }
         }
         Ok(())
     }
@@ -365,6 +390,14 @@ impl<E: Effector + std::fmt::Debug> Remediator<E> {
 
     pub fn audit(&self) -> &AuditTrail {
         &self.audit
+    }
+
+    /// The effector, read-only, so the composition root that owns it can
+    /// consult the state an approved action left behind. There is no
+    /// mutable accessor: every change to the effector goes through
+    /// [`Self::remediate`] and so through a runbook and the audit trail.
+    pub fn effector(&self) -> &E {
+        &self.effector
     }
 
     /// Execute `action` on `target` only if a runbook names both; otherwise

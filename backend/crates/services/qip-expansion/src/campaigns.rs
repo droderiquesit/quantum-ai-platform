@@ -7,10 +7,12 @@
 //! nobody could explain. This module only decides that a campaign is owed; it
 //! replays nothing and schedules nothing.
 //!
-//! Status: library only. Nothing in the tree feeds the detector yet — the
-//! central plane's `qip_venue_fill_error_bps` histogram is diagnostic and read
-//! by nothing that decides — so the register row this serves stays PARTIAL
-//! with `integrated = false`.
+//! Fed by the deep brain's research loop (`qip-deepbrain/src/research.rs`)
+//! from the kernel's scored fills: each fill's trade error is a fill
+//! prediction residual and each venue it names is a sighting. Lead/lag and
+//! world-event reaction residuals have an observer here
+//! ([`TickCampaignDetector::observe_residual`]) and no producer yet, because
+//! nothing in the tree measures either.
 
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -141,6 +143,50 @@ impl TickCampaignDetector {
             residual_value: Some(residual),
             threshold: Some(self.slippage_threshold),
         })
+    }
+
+    /// Record a residual for one of the four residual triggers that have no
+    /// threshold of their own on the detector — fill and queue prediction
+    /// error, abnormal lead/lag, and world-event reaction residuals
+    /// (EXPAND-069) — against the threshold the caller measured it against.
+    /// Opens a campaign when the magnitude strictly exceeds the threshold.
+    ///
+    /// Refuses the two triggers with their own observers, so a venue
+    /// sighting or a slippage residual cannot be filed under a threshold the
+    /// detector does not hold, and refuses a negative threshold for the
+    /// reason [`Self::with_slippage_threshold`] gives.
+    pub fn observe_residual(
+        &mut self,
+        trigger: TickCampaignTrigger,
+        residual: Decimal,
+        threshold: Decimal,
+        venue: Option<&str>,
+        instruments: BTreeSet<String>,
+    ) -> Result<Option<TickCampaign>> {
+        if matches!(
+            trigger,
+            TickCampaignTrigger::NewVenue | TickCampaignTrigger::UnexplainedSlippage
+        ) {
+            return Err(Error::invalid(format!(
+                "{trigger:?} has its own observer; call observe_venue or observe_slippage"
+            )));
+        }
+        if threshold < Decimal::ZERO {
+            return Err(Error::invalid(format!(
+                "residual threshold {threshold} is negative; residuals are compared by magnitude, so pass zero or more"
+            )));
+        }
+        if residual.abs() <= threshold {
+            return Ok(None);
+        }
+        Ok(Some(TickCampaign {
+            campaign_id: self.next_id(),
+            trigger,
+            affected_instruments: instruments,
+            venue: venue.map(str::to_string),
+            residual_value: Some(residual),
+            threshold: Some(threshold),
+        }))
     }
 
     fn next_id(&mut self) -> String {

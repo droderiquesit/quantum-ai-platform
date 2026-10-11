@@ -1,6 +1,34 @@
-//! One objective for each of the eight critical paths, with its source series.
+//! One objective for each of the eight critical paths, with its source series
+//! and the rule that turns that series into good and total counts.
+//!
+//! Until 2026-10-11 each path named a series and nothing read it: two of the
+//! eight names (`qip_model_package_age_seconds`, `qip_quantum_jobs_total`)
+//! were recorded by nothing at all, and no code evaluated any objective from
+//! a snapshot, so a critical path could miss its target and no number moved.
+//! [`evaluate`] now reads a snapshot through each path's [`SourceRule`] and
+//! [`record`] writes the result as fixed-label gauges, labelled only by the
+//! objective names below.
 
+use crate::metrics::{Metrics, Snapshot, labels, names};
 use crate::slo::{Slo, SloStatus, SloWindow};
+
+/// How a path's series becomes good and total counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceRule {
+    /// A counter labelled `outcome`; good is the named outcome's count and
+    /// total is every outcome's.
+    CounterOutcome { good: &'static str },
+    /// A latency histogram; good is the observations in buckets whose upper
+    /// bound is at or below the objective's threshold. Conservative by
+    /// construction: an observation in a bucket straddling the threshold is
+    /// counted bad, so bucketing can make the path look worse and never
+    /// better.
+    LatencyUnder,
+    /// The series is a gauge or an unlabelled counter that carries no
+    /// good/total split. Evaluates unmeasured, and says so, rather than
+    /// inventing a denominator.
+    NotCountable,
+}
 
 /// An objective for one critical path, with the series that feeds it. A path
 /// whose series nothing records evaluates with zero observations and so reads
@@ -8,14 +36,46 @@ use crate::slo::{Slo, SloStatus, SloWindow};
 #[derive(Clone, Debug, PartialEq)]
 pub struct CriticalPath {
     pub slo: Slo,
-    /// The series whose good/total counts feed this objective. Where nothing
-    /// emits it yet, this is the name it must be emitted under.
+    /// The series whose good/total counts feed this objective.
     pub source_series: &'static str,
+    pub rule: SourceRule,
 }
 
 impl CriticalPath {
     pub fn evaluate(&self, good: u64, total: u64) -> SloStatus {
         self.slo.evaluate(good, total)
+    }
+
+    /// Good and total counts read from `snapshot` under this path's rule.
+    pub fn counts(&self, snapshot: &Snapshot) -> (u64, u64) {
+        match self.rule {
+            SourceRule::CounterOutcome { good } => (
+                snapshot.counter(self.source_series, &labels([("outcome", good)])),
+                snapshot.counter_total(self.source_series),
+            ),
+            SourceRule::LatencyUnder => {
+                let threshold = self.slo.latency_threshold_ms.unwrap_or(f64::NEG_INFINITY);
+                snapshot
+                    .series
+                    .iter()
+                    .filter(|s| s.name == self.source_series)
+                    .filter_map(|s| match &s.value {
+                        crate::metrics::MetricValue::Histogram(h) => Some(h),
+                        _ => None,
+                    })
+                    .fold((0, 0), |(good, total), h| {
+                        let under: u64 = h
+                            .bounds
+                            .iter()
+                            .zip(&h.counts)
+                            .filter(|(bound, _)| **bound <= threshold)
+                            .map(|(_, count)| *count)
+                            .sum();
+                        (good + under, total + h.count)
+                    })
+            }
+            SourceRule::NotCountable => (0, 0),
+        }
     }
 }
 
@@ -23,8 +83,11 @@ impl CriticalPath {
 /// commit, reconciliation, model serving, data provenance and quantum job
 /// success.
 pub fn critical_path_slos() -> Vec<CriticalPath> {
-    use crate::metrics::names;
-    let p = |slo, source_series| CriticalPath { slo, source_series };
+    let p = |slo, source_series, rule| CriticalPath {
+        slo,
+        source_series,
+        rule,
+    };
     vec![
         p(
             Slo::latency(
@@ -35,31 +98,35 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
                 SloWindow::Day,
             ),
             names::EDGE_CAPABILITY_FRESHNESS,
+            SourceRule::NotCountable,
         ),
         p(
             Slo::latency("decision-latency", "fastbrain", 0.99, 50.0, SloWindow::Day),
             names::EXECUTION_LATENCY_MS,
+            SourceRule::LatencyUnder,
         ),
         p(
             Slo::availability("order-fill-integrity", "execution", 1.0, SloWindow::Month),
             names::CENTRAL_FILLS_ATTRIBUTED,
+            SourceRule::NotCountable,
         ),
         p(
             Slo::latency("ledger-commit", "ledger", 0.999, 100.0, SloWindow::Day),
             names::LEDGER_COMMIT_LATENCY_MS,
+            SourceRule::LatencyUnder,
         ),
         p(
             Slo::availability("reconciliation", "execution", 1.0, SloWindow::Month),
             names::CENTRAL_RECONCILIATION_BREAKS,
+            SourceRule::NotCountable,
         ),
+        // Model serving: a promoted model whose package was written where
+        // serving reads it, out of every promotion. Recorded by the deep
+        // brain at the artifact write.
         p(
-            Slo::availability(
-                "model-serving-package-freshness",
-                "deepbrain",
-                0.99,
-                SloWindow::Week,
-            ),
-            "qip_model_package_age_seconds",
+            Slo::availability("model-serving-package", "deepbrain", 0.99, SloWindow::Week),
+            names::MODEL_PACKAGES,
+            SourceRule::CounterOutcome { good: "written" },
         ),
         p(
             Slo::ratio_at_least(
@@ -69,11 +136,49 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
                 0.999,
                 SloWindow::Day,
             ),
-            "qip_lineage_complete_ratio",
+            names::DATA_LINEAGE_COMPLETENESS,
+            SourceRule::NotCountable,
         ),
+        // Quantum job success: attempts that produced a run, out of every
+        // attempt. Recorded by the deep brain from the cycle's journalled
+        // solver routing.
         p(
             Slo::availability("quantum-job-success", "deepbrain", 0.95, SloWindow::Week),
-            "qip_quantum_jobs_total",
+            names::QUANTUM_JOBS,
+            SourceRule::CounterOutcome { good: "succeeded" },
         ),
     ]
+}
+
+/// Every critical path evaluated against one snapshot, in catalogue order.
+pub fn evaluate(snapshot: &Snapshot) -> Vec<SloStatus> {
+    critical_path_slos()
+        .iter()
+        .map(|path| {
+            let (good, total) = path.counts(snapshot);
+            path.evaluate(good, total)
+        })
+        .collect()
+}
+
+/// Write each status as `qip_slo_budget_consumed{objective}` and
+/// `qip_slo_observations{objective}`. The observations gauge is written for
+/// every objective, including an unmeasured one at zero, so a chart shows
+/// the path as unmeasured rather than leaving it absent.
+pub fn record(metrics: &Metrics, statuses: &[SloStatus]) {
+    for status in statuses {
+        let objective = status.slo.name.as_str();
+        metrics.gauge(
+            names::SLO_OBSERVATIONS,
+            labels([("objective", objective)]),
+            status.observations as f64,
+        );
+        if status.is_observed() {
+            metrics.gauge(
+                names::SLO_BUDGET_CONSUMED,
+                labels([("objective", objective)]),
+                status.budget_consumed,
+            );
+        }
+    }
 }
