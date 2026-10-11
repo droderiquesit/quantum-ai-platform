@@ -383,7 +383,10 @@ fn process(fence: &Fence) -> Result<(NodeAssembly, SimulatedGateway, SimulatedFe
         compiled,
         program,
         grant(CELL)?,
-        PricingPolicy::rest_at_mid(Duration::from_secs(600))?,
+        // Marketable, so every order fills against the seeded touch and the
+        // strategy forms a fresh one on every pass: a pass that sends
+        // nothing is then the fence's doing, not a resting order's.
+        PricingPolicy::Marketable,
     )?;
     let named = grant(CELL)?.signature().to_string();
     node.cell.apply_policy(share(CELL, named)?, t(5))?;
@@ -500,14 +503,25 @@ fn a_standby_places_nothing_until_it_promotes_and_the_primary_it_replaced_places
     // The old primary returns. Its hold lapsed on its own clock, so it
     // places nothing even before its keeper reads the store…
     let before = primary_venue.submitted_count();
-    assert!(pass(&mut primary, &mut primary_venue, &mut primary_feed, t(16)).is_err());
+    let refused_before = fenced_refusals(&primary);
+    let _ = pass(&mut primary, &mut primary_venue, &mut primary_feed, t(16));
+    assert_eq!(
+        fenced_refusals(&primary),
+        refused_before + 1,
+        "the lapsed primary formed an order and the fence did not refuse it"
+    );
     // …and once it has, it is fenced for good.
     assert_eq!(primary_keeper.tick(t(16))?, LeaseEvent::Fenced { by: 2 });
     assert!(matches!(
         primary_fence.status(t(17)),
         FenceStatus::Fenced { by: 2, .. }
     ));
-    assert!(pass(&mut primary, &mut primary_venue, &mut primary_feed, t(17)).is_err());
+    let _ = pass(&mut primary, &mut primary_venue, &mut primary_feed, t(17));
+    assert_eq!(
+        fenced_refusals(&primary),
+        refused_before + 2,
+        "the fenced primary formed an order and the fence did not refuse it"
+    );
     assert_eq!(
         primary_venue.submitted_count(),
         before,
