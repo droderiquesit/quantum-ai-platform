@@ -1,0 +1,4822 @@
+[
+  {
+    "id": "R12-ARCH-1001",
+    "domain": "ARCH",
+    "title": "Federated cognition: global core, specialist brains, regional reflex",
+    "statement": "Intelligence is organised as a federation of a global cognitive core, specialist brains and regional reflex intelligence, not one central process that runs once.",
+    "rationale": "A single central brain that runs once cannot react regionally and becomes a global single point of failure (§2 row 1).",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      },
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Composition roots exist for a central plane (qip-api/qip-fastbrain/qip-deepbrain) and a regional reflex binary (qip-edge-node) with no compile-time dependency between them; failing mutation: add qip-kernel to qip-edge-node's dependencies."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-1002",
+    "domain": "TICK",
+    "title": "Dual-stream learning fused into one decision model",
+    "statement": "World data (why prices may change) and tick/order-book data (how liquidity and prices react) are learned as two streams and fused into one opportunity and decision model.",
+    "rationale": "Learning only from one stream misses either causal drivers or execution reality.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fused feature/state record joins a time-aligned world belief and a tick-derived microstructure feature, and a decision consumes it; removing either input changes the decision."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-1003",
+    "domain": "WORLD",
+    "title": "Numerous concurrent world models, not one monolith",
+    "statement": "The platform maintains numerous concurrent world models across domains, regions, horizons and hypothesis branches rather than one monolithic representation.",
+    "rationale": "A single representation forces premature collapse of disagreement (§1, §2 World Model Federation row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A running platform holds more than one registered world model with distinct scopes and they are consulted in the cycle; removing registration leaves the cycle with one model."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-1004",
+    "domain": "REASON",
+    "title": "Neuro-symbolic fabric links neural output to symbolic checks",
+    "statement": "A neuro-symbolic reasoning fabric connects neural perception and generative models to causal graphs, rules, temporal logic, constraints, probabilistic reasoning and executable proofs.",
+    "rationale": "Reasoning left implicit inside generative models cannot be verified or audited.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A neural/LLM proposal passes through a symbolic verifier (rules/constraints) that can reject it, and the rejection is journaled; mutating the verifier to accept-all makes the test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-1005",
+    "domain": "AMBIENT",
+    "title": "Ambient model mesh runs continuously and wakes specialists",
+    "statement": "An ambient model mesh runs continuously in the background, forecasting, searching weak signals, detecting contradictions, generating scenarios and waking specialist brains without being asked.",
+    "rationale": "Models invoked only on request miss precursors no one asked about.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A background loop in a composition root emits AmbientSignal/AttentionEvent records to the log without an external request; disabling the loop removes them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-1006",
+    "domain": "AGENCY",
+    "title": "Causal agency: simulate authorized interventions and learn effect",
+    "statement": "The system reasons about which authorized actions could change the probability of a desired outcome, simulates them, executes only through governed tools, and learns their measured causal effect.",
+    "rationale": "Forecast-only systems cannot learn which lawful actions change outcomes.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A request flows goal -> levers -> candidates -> simulate -> gate -> act -> attribute, and the attribution is journaled; with the action policy absent the engine executes nothing."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-1007",
+    "domain": "REFLEX",
+    "title": "Fast reflex reacts locally without waiting for the global brain",
+    "statement": "The fast reflex system receives compressed knowledge, models, policy and capital envelopes and reacts to local market state without waiting on the global brain.",
+    "rationale": "A hot path that waits on a global round trip turns any partition into an outage.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell with the centre unreachable still runs passes and decides from local artefacts within the pass budget; making the pass await the centre fails the test."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-1008",
+    "domain": "ARCH",
+    "title": "Warm coordination layer between slow and fast systems",
+    "statement": "A warm coordination layer sits between the slow cognitive and fast reflex systems for cross-region arbitrage, capital movement, portfolio management, market creation and settlement.",
+    "rationale": "Without a warm tier, capital and cross-region coordination either block the hot path or wait days in the slow lane.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A central component ingests cell reports and re-issues capital envelopes on a seconds-to-minutes cadence; removing ingestion leaves envelopes un-renewed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-1009",
+    "domain": "TICK",
+    "title": "Raw ticks normalized, reconstructed, replayed, distilled",
+    "statement": "Raw ticks are not fed directly to the largest model; they are normalized, reconstructed into books, replayed and converted into learned microstructure representations that can be distilled into reflex models.",
+    "rationale": "Feeding raw ticks to a large model wastes compute and leaks unreconstructed, mis-sequenced data into learning.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Recorded venue bytes replay deterministically into books, and a distilled student model is produced from the replayed features; skipping reconstruction fails the replay equality test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-1010",
+    "domain": "MESH",
+    "title": "Reflex Mesh coordinates 2-20-leg opportunities with local autonomy",
+    "statement": "Regional nodes communicate through a low-latency Reflex Mesh that coordinates 2-20-leg opportunities while preserving local execution autonomy.",
+    "rationale": "Isolated regions cannot capture multi-region opportunities; a coordinating master would destroy local autonomy.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two cells exchange an opportunity epoch over a transport and each reserves its own leg; an epoch with 1 or 21 legs is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-1011",
+    "domain": "QUANT",
+    "title": "Quantum used only where measurable advantage exists",
+    "statement": "Quantum is a hybrid accelerator used only where measurable advantage against a classical baseline exists.",
+    "rationale": "Quantum claimed without a baseline is not a result (ADR 0006).",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every cycle that sizes a proposal journals the classical baseline and the improvement; a benchmark whose classical baseline fails reports nothing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-1012",
+    "domain": "QUANT",
+    "title": "Quantum never confers truth or bypasses controls",
+    "statement": "Quantum output never confers truth and never bypasses evidence requirements or deterministic controls; it is advisory and classically verified.",
+    "rationale": "A QPU answer treated as an oracle would bypass the deterministic money controls.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      },
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      },
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Quantum results are typed as advisory candidates that must be validated against the request and the classical objective before use; an unvalidated result is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-1013",
+    "domain": "QUANT",
+    "title": "Route eligible work across CPU/GPU/TPU/QPU",
+    "statement": "Eligible work is routed across CPU, GPU, TPU and QPU compute.",
+    "rationale": "Fixed placement wastes expensive accelerators or starves workloads that need them.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A router assigns a job to one of the four resource types by declared eligibility and records why; an ineligible type is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXPAND-1014",
+    "domain": "EXPAND",
+    "title": "Open-ended growth promoted through a controlled evaluation pipeline",
+    "statement": "New information domains, ontology, specialist brains, tools and models may be added, but only through a controlled evaluation pipeline that promotes measured improvements.",
+    "rationale": "Unbenchmarked self-extension would let regressions into production.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "2",
+        "section": "§1 Executive Summary"
+      },
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A candidate capability is admitted only after a recorded benchmark beats the incumbent; removing the benchmark gate lets a worse candidate in."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ASSET-1015",
+    "domain": "ASSET",
+    "title": "Class-specific adapters and lifecycle engines per asset class",
+    "statement": "Liquid, event-driven, illiquid, private, tokenized and physical assets are supported through class-specific adapters and lifecycle engines.",
+    "rationale": "One generic asset model mis-values and mis-settles assets whose lifecycle differs.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An asset-class registry maps each of the six classes to an adapter and lifecycle engine; an unregistered class is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-1016",
+    "domain": "WORLD",
+    "title": "Represent uncertainty and contradiction explicitly",
+    "statement": "World, causal, episodic, semantic and self models explicitly represent uncertainty and contradiction.",
+    "rationale": "A model that hides contradiction presents false confidence.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Beliefs carry a confidence/interval and contradictory evidence is recorded as a contradiction record rather than overwritten."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GOV-1017",
+    "domain": "GOV",
+    "title": "Autonomous operation only inside bounded authority",
+    "statement": "Autonomous discovery, research, training, promotion, deployment, allocation and operation happen only inside bounded authority.",
+    "rationale": "Unbounded autonomy makes the blast radius general.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Autonomy changes go only through AutonomyController::request_change with an authenticated operator; a live ceiling stops the process."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-1018",
+    "domain": "MESH",
+    "title": "Regional nodes peer-share compressed opportunity/state messages",
+    "statement": "Regional nodes make fast local decisions and share compressed opportunity/state messages with peers.",
+    "rationale": "Without peer sharing, cross-region opportunities wait on the centre.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two edge nodes exchange a compressed state/opportunity frame directly; a frame larger than the bound is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-1019",
+    "domain": "QUANT",
+    "title": "Quantum always benchmarked against classical baselines",
+    "statement": "Every quantum participation in optimization or learning is benchmarked against a classical baseline.",
+    "rationale": "ADR 0006: a quantum path without a baseline cannot demonstrate benefit.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A quantum family cannot be registered without a classical baseline and objective; registration with None is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-1020",
+    "domain": "CAPITAL",
+    "title": "Financial-OS capabilities are first-class",
+    "statement": "Asset management, capital management, risk management, treasury/custody, accounting/ledger, execution, settlement, market making, market creation and commerce are first-class capabilities.",
+    "rationale": "Treating them as side components loses explicit contracts and ownership.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each named capability has an owning crate with a typed contract reached from a composition root."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "RISK",
+      "LEDGER",
+      "EXEC",
+      "COMMERCE"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXPAND-1021",
+    "domain": "EXPAND",
+    "title": "No permanent fixed source/ontology/roster/model/tool catalogue",
+    "statement": "No source list, ontology, specialist roster, model family or tool catalog is treated as permanent; gaps can generate new ones through governed promotion.",
+    "rationale": "Fixed catalogues cap the system's intelligence at design time.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Registries accept governed additions at runtime and record lineage; a gap observation produces a registered candidate."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-1022",
+    "domain": "TICK",
+    "title": "Dual streams joined through time-aligned state",
+    "statement": "World/causal and tick/order-book intelligence are joined through time-aligned state, embeddings, beliefs and outcome labels.",
+    "rationale": "Misaligned joins leak future information or mislabel outcomes.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A join refuses any world record whose knowable time is after the tick's event time; a mutation allowing it fails a property test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-1023",
+    "domain": "WORLD",
+    "title": "Disagreement between world models represented explicitly",
+    "statement": "A federation of domain, regional, horizon, scenario and counterfactual world models represents disagreement explicitly instead of collapsing it prematurely.",
+    "rationale": "Premature consensus discards minority explanations that later prove right.",
+    "kind": "invariant",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Arbitration over conflicting models returns a Disagreement record preserving each view."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-1024",
+    "domain": "REASON",
+    "title": "Symbolic layer verifies, combines or rejects neural proposals",
+    "statement": "Neural models propose; symbolic logic, constraints, causal structures and proof traces verify, combine or reject them.",
+    "rationale": "Unverified neural proposals cannot be audited.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A neural proposal violating a rule is rejected with a recorded proof trace."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-1025",
+    "domain": "AGENCY",
+    "title": "Interventions execute only through authorized action surfaces",
+    "statement": "Causal agency executes interventions only through authorized action surfaces and learns which actions changed outcomes versus what would have happened anyway.",
+    "rationale": "Actions outside an authorized surface cannot be governed or attributed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An action whose tool is not registered/authorized is refused and audited; attribution compares to a no-action counterfactual."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-1026",
+    "domain": "AMBIENT",
+    "title": "Always-on models activate specialists without a prompt",
+    "statement": "Always-on models continuously forecast, simulate, monitor assumptions, search for weak signals and activate specialists without waiting for a prompt.",
+    "rationale": "Specialists woken only on request react late.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An AttentionEvent produced by the router wakes a named specialist and is journaled."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-1027",
+    "domain": "FABRIC",
+    "title": "Native Rust event and control fabric for pub/sub, journals, replay",
+    "statement": "Internal publish/subscribe, durable event journals, control propagation and replay use the Algorik Rust Event & Control Fabric.",
+    "rationale": "A managed bus as the nervous system adds a non-replayable, non-audited dependency on the core path.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Central and edge processes publish and consume through the in-tree fabric and a replay reproduces state; deleting the fabric path breaks the replay test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-1028",
+    "domain": "FABRIC",
+    "title": "Google Pub/Sub and Kafka are not core internal dependencies",
+    "statement": "Google Pub/Sub and Kafka are not core internal dependencies of the platform.",
+    "rationale": "A core dependency on a managed bus moves the nervous system outside the replayable log.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.1 Product Identity"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No workspace crate declares a Kafka or Pub/Sub client; scan fails if one is added outside a bridge."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-1029",
+    "domain": "DATA",
+    "title": "Do not warehouse raw external world content",
+    "statement": "External world content (web pages, filings, news, social, product pages, regulatory records, geospatial feeds) is processed transiently and discarded after evidence and knowledge are extracted.",
+    "rationale": "Warehousing third-party content creates licensing liability and an uncontrolled copy of the world.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The durable stores have no class that can hold a world-source document; an attempt is refused by name."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-1030",
+    "domain": "DATA",
+    "title": "Source manifest persists source reference and provider identity",
+    "statement": "Each processed external source persists a source reference (locator) and provider/source identity.",
+    "rationale": "Without the manifest the source cannot be re-fetched, verified or licensed after the content is discarded.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reference built from a real fetch digest carries a populated source reference and provider identity and round-trips through the event log; removing the field from the constructor fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Split from the §1.3 manifest field list."
+  },
+  {
+    "id": "R12-DATA-1031",
+    "domain": "DATA",
+    "title": "Source manifest persists retrieval timestamp and version/etag",
+    "statement": "Each processed external source persists the retrieval timestamp and, when available, the version/etag.",
+    "rationale": "Without the manifest the source cannot be re-fetched, verified or licensed after the content is discarded.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reference built from a real fetch digest carries a populated retrieval timestamp and version/etag and round-trips through the event log; removing the field from the constructor fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Split from the §1.3 manifest field list."
+  },
+  {
+    "id": "R12-DATA-1032",
+    "domain": "DATA",
+    "title": "Source manifest persists cryptographic hash/fingerprint",
+    "statement": "Each processed external source persists a cryptographic hash/fingerprint of the bytes read.",
+    "rationale": "Without the manifest the source cannot be re-fetched, verified or licensed after the content is discarded.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reference built from a real fetch digest carries a populated cryptographic hash/fingerprint and round-trips through the event log; removing the field from the constructor fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Split from the §1.3 manifest field list."
+  },
+  {
+    "id": "R12-DATA-1033",
+    "domain": "DATA",
+    "title": "Source manifest persists entitlement and geography",
+    "statement": "Each processed external source persists its entitlement and geography.",
+    "rationale": "Without the manifest the source cannot be re-fetched, verified or licensed after the content is discarded.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reference built from a real fetch digest carries a populated entitlement and geography and round-trips through the event log; removing the field from the constructor fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Split from the §1.3 manifest field list."
+  },
+  {
+    "id": "R12-DATA-1034",
+    "domain": "DATA",
+    "title": "Source manifest persists parser/version lineage",
+    "statement": "Each processed external source persists parser/version lineage.",
+    "rationale": "Without the manifest the source cannot be re-fetched, verified or licensed after the content is discarded.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reference built from a real fetch digest carries a populated parser/version lineage and round-trips through the event log; removing the field from the constructor fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Split from the §1.3 manifest field list."
+  },
+  {
+    "id": "R12-DATA-1035",
+    "domain": "DATA",
+    "title": "Source manifest persists freshness/expiry metadata",
+    "statement": "Each processed external source persists freshness/expiry metadata.",
+    "rationale": "Without the manifest the source cannot be re-fetched, verified or licensed after the content is discarded.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "3",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reference built from a real fetch digest carries a populated freshness/expiry metadata and round-trips through the event log; removing the field from the constructor fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": "Split from the §1.3 manifest field list."
+  },
+  {
+    "id": "R12-DATA-1036",
+    "domain": "DATA",
+    "title": "Persist compact derived knowledge",
+    "statement": "Persist compact knowledge: normalized facts, entities, relationships, events, causal edges, embeddings/features, summaries, beliefs, confidence, contradictions, novelty, timestamps, world-model deltas and memory episodes.",
+    "rationale": "Discarding content without keeping derived knowledge loses what was learned.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Derived knowledge records survive restart via the event log while source bodies do not."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-1037",
+    "domain": "DATA",
+    "title": "Historical reasoning re-fetches through the manifest",
+    "statement": "Historical reasoning re-fetches the original source or licensed historical API using its manifest.",
+    "rationale": "Reasoning over a stale private copy hides source revisions.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A historical query re-fetches through the manifest locator and compares hashes; a revised extent is flagged."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-1038",
+    "domain": "EVID",
+    "title": "Retain knowledge and mark evidence no longer re-fetchable",
+    "statement": "If the original cannot be retrieved, the derived knowledge is retained together with the fact that the evidence is no longer re-fetchable.",
+    "rationale": "Silently losing the source makes knowledge appear better evidenced than it is.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A 404 on re-fetch yields an Unretrievable marker on the extent while the derived knowledge remains readable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-1039",
+    "domain": "DATA",
+    "title": "Tick and own financial records are separate retention classes",
+    "statement": "High-rate tick/order-book data and Algorik's own financial/execution records are separate retention classes, retained only when venue rights, legal obligations and policy allow.",
+    "rationale": "Mixing classes either deletes audit records or retains unlicensed venue bytes.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The lake partitions by class and entitlement; raw venue bytes without retention entitlement are stored as hash only."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-1040",
+    "domain": "AMBIENT",
+    "title": "Source watchers keep cursors, fingerprints and knowledge deltas",
+    "statement": "Ambient source watchers maintain cursors, last-seen fingerprints and knowledge deltas so change is known without keeping the source corpus.",
+    "rationale": "Without cursors and fingerprints the platform must re-read or store whole corpora to detect change.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A watcher polling a source twice emits a delta only when the fingerprint changes and persists its cursor."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-1041",
+    "domain": "DATA",
+    "title": "Durable knowledge layer smaller than source data",
+    "statement": "The durable knowledge layer is structured graph state, compact knowledge packs, vectors/features, summaries and episodic memory rather than copied documents or web archives, and is intentionally cheaper and smaller than source data.",
+    "rationale": "Copying the source corpus makes storage cost scale with the world.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.3 External World Data Is Pass-Through; Knowledge Is Durable"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No durable store holds document bodies; knowledge packs serialize compactly."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "Text names protobuf/Parquet; both would need an ADR under ADR 0002/0009 (serde/serde_json only)."
+  },
+  {
+    "id": "R12-GOV-1042",
+    "domain": "GOV",
+    "title": "AI may originate but act only inside a pre-authorized envelope",
+    "statement": "AI systems may originate hypotheses, models, strategies, forecasts, explanations, opportunity intents and capital recommendations and act automatically only inside a pre-authorized operating envelope.",
+    "rationale": "Actions outside an envelope make the intelligence's blast radius general.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An edge cell refuses to trade with no verified capital envelope or an expired one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "The §1.2 text appears after §1.3's bullets in the source; attributed to §1.2."
+  },
+  {
+    "id": "R12-RISK-1043",
+    "domain": "RISK",
+    "title": "Deterministic, testable control bounds money movement",
+    "statement": "Money movement is bounded by deterministic, testable controls regardless of what any AI system proposes.",
+    "rationale": "Keeps the blast radius bounded while intelligence becomes more general (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A proposal breaching the money movement bound is refused by a deterministic check with no model in the path; deleting the check makes a named test fail."
+    },
+    "policy_flags": [
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from the §1.2 list of five bounded domains."
+  },
+  {
+    "id": "R12-RISK-1044",
+    "domain": "RISK",
+    "title": "Deterministic, testable control bounds leverage",
+    "statement": "Leverage is bounded by deterministic, testable controls regardless of what any AI system proposes.",
+    "rationale": "Keeps the blast radius bounded while intelligence becomes more general (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A proposal breaching the leverage bound is refused by a deterministic check with no model in the path; deleting the check makes a named test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the §1.2 list of five bounded domains."
+  },
+  {
+    "id": "R12-RISK-1045",
+    "domain": "RISK",
+    "title": "Deterministic, testable control bounds exposure",
+    "statement": "Exposure is bounded by deterministic, testable controls regardless of what any AI system proposes.",
+    "rationale": "Keeps the blast radius bounded while intelligence becomes more general (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A proposal breaching the exposure bound is refused by a deterministic check with no model in the path; deleting the check makes a named test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the §1.2 list of five bounded domains."
+  },
+  {
+    "id": "R12-RISK-1046",
+    "domain": "RISK",
+    "title": "Deterministic, testable control bounds settlement",
+    "statement": "Settlement is bounded by deterministic, testable controls regardless of what any AI system proposes.",
+    "rationale": "Keeps the blast radius bounded while intelligence becomes more general (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A proposal breaching the settlement bound is refused by a deterministic check with no model in the path; deleting the check makes a named test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the §1.2 list of five bounded domains."
+  },
+  {
+    "id": "R12-RISK-1047",
+    "domain": "RISK",
+    "title": "Deterministic, testable control bounds venue access",
+    "statement": "Venue access is bounded by deterministic, testable controls regardless of what any AI system proposes.",
+    "rationale": "Keeps the blast radius bounded while intelligence becomes more general (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A proposal breaching the venue access bound is refused by a deterministic check with no model in the path; deleting the check makes a named test fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from the §1.2 list of five bounded domains."
+  },
+  {
+    "id": "R12-TICK-1048",
+    "domain": "TICK",
+    "title": "Market-data training preserves event time",
+    "statement": "Market-data training preserves event time.",
+    "rationale": "Training that loses event time cannot be replayed, licensed or trusted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A training dataset built from replayed market data carries event time on every row; a mutation dropping it fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §1.2 list (event time, sequence, venue identity, entitlement lineage)."
+  },
+  {
+    "id": "R12-TICK-1049",
+    "domain": "TICK",
+    "title": "Market-data training preserves sequence",
+    "statement": "Market-data training preserves sequence.",
+    "rationale": "Training that loses sequence cannot be replayed, licensed or trusted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A training dataset built from replayed market data carries sequence on every row; a mutation dropping it fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §1.2 list (event time, sequence, venue identity, entitlement lineage)."
+  },
+  {
+    "id": "R12-TICK-1050",
+    "domain": "TICK",
+    "title": "Market-data training preserves venue identity",
+    "statement": "Market-data training preserves venue identity.",
+    "rationale": "Training that loses venue identity cannot be replayed, licensed or trusted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A training dataset built from replayed market data carries venue identity on every row; a mutation dropping it fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §1.2 list (event time, sequence, venue identity, entitlement lineage)."
+  },
+  {
+    "id": "R12-TICK-1051",
+    "domain": "TICK",
+    "title": "Market-data training preserves entitlement lineage",
+    "statement": "Market-data training preserves entitlement lineage.",
+    "rationale": "Training that loses entitlement lineage cannot be replayed, licensed or trusted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A training dataset built from replayed market data carries entitlement lineage on every row; a mutation dropping it fails the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §1.2 list (event time, sequence, venue identity, entitlement lineage)."
+  },
+  {
+    "id": "R12-TICK-1052",
+    "domain": "TICK",
+    "title": "Prevent look-ahead leakage",
+    "statement": "Market-data training and replay prevent look-ahead leakage.",
+    "rationale": "Backtests with look-ahead leakage overstate performance and mislead promotion.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A replay/training run refuses or excludes data exhibiting look-ahead leakage; a mutation removing the guard fails the named test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-1053",
+    "domain": "TICK",
+    "title": "Prevent timestamp contamination",
+    "statement": "Market-data training and replay prevent timestamp contamination.",
+    "rationale": "Backtests with timestamp contamination overstate performance and mislead promotion.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A replay/training run refuses or excludes data exhibiting timestamp contamination; a mutation removing the guard fails the named test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-1054",
+    "domain": "TICK",
+    "title": "Prevent impossible fills in replay",
+    "statement": "Market-data training and replay prevent impossible fills in replay.",
+    "rationale": "Backtests with impossible fills in replay overstate performance and mislead promotion.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A replay/training run refuses or excludes data exhibiting impossible fills in replay; a mutation removing the guard fails the named test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AMBIENT-1055",
+    "domain": "AMBIENT",
+    "title": "Continuous operation never increases ambient authority",
+    "statement": "Ambient models may proactively originate research, warnings, candidates, simulations and proposed actions, but continuous operation does not increase their authority; symbolic verification, evidence policy, risk envelopes and deterministic money controls still decide what executes.",
+    "rationale": "An always-on model accruing authority by running would bypass the controls.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An ambient output reaches anything that acts only through promote(); Advisory<T> has no other path to an action type."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-1056",
+    "domain": "AGENCY",
+    "title": "External intervention checks truthfulness before action",
+    "statement": "Before any external intervention, truthfulness is checked and failure blocks the action.",
+    "rationale": "External action without this check risks deceptive or unlawful conduct (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An intervention failing the truthfulness check is refused before any adapter call; replacing the check with pass-always makes a test fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from §1.2 list of seven pre-action checks."
+  },
+  {
+    "id": "R12-AGENCY-1057",
+    "domain": "AGENCY",
+    "title": "External intervention checks provenance before action",
+    "statement": "Before any external intervention, provenance is checked and failure blocks the action.",
+    "rationale": "External action without this check risks deceptive or unlawful conduct (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An intervention failing the provenance check is refused before any adapter call; replacing the check with pass-always makes a test fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from §1.2 list of seven pre-action checks."
+  },
+  {
+    "id": "R12-AGENCY-1058",
+    "domain": "AGENCY",
+    "title": "External intervention checks identity before action",
+    "statement": "Before any external intervention, identity is checked and failure blocks the action.",
+    "rationale": "External action without this check risks deceptive or unlawful conduct (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An intervention failing the identity check is refused before any adapter call; replacing the check with pass-always makes a test fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from §1.2 list of seven pre-action checks."
+  },
+  {
+    "id": "R12-AGENCY-1059",
+    "domain": "AGENCY",
+    "title": "External intervention checks disclosure before action",
+    "statement": "Before any external intervention, disclosure is checked and failure blocks the action.",
+    "rationale": "External action without this check risks deceptive or unlawful conduct (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An intervention failing the disclosure check is refused before any adapter call; replacing the check with pass-always makes a test fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from §1.2 list of seven pre-action checks."
+  },
+  {
+    "id": "R12-AGENCY-1060",
+    "domain": "AGENCY",
+    "title": "External intervention checks market-conduct rules before action",
+    "statement": "Before any external intervention, market-conduct rules is checked and failure blocks the action.",
+    "rationale": "External action without this check risks deceptive or unlawful conduct (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An intervention failing the market-conduct rules check is refused before any adapter call; replacing the check with pass-always makes a test fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from §1.2 list of seven pre-action checks."
+  },
+  {
+    "id": "R12-AGENCY-1061",
+    "domain": "AGENCY",
+    "title": "External intervention checks channel permissions before action",
+    "statement": "Before any external intervention, channel permissions is checked and failure blocks the action.",
+    "rationale": "External action without this check risks deceptive or unlawful conduct (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An intervention failing the channel permissions check is refused before any adapter call; replacing the check with pass-always makes a test fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from §1.2 list of seven pre-action checks."
+  },
+  {
+    "id": "R12-AGENCY-1062",
+    "domain": "AGENCY",
+    "title": "External intervention checks jurisdiction before action",
+    "statement": "Before any external intervention, jurisdiction is checked and failure blocks the action.",
+    "rationale": "External action without this check risks deceptive or unlawful conduct (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An intervention failing the jurisdiction check is refused before any adapter call; replacing the check with pass-always makes a test fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from §1.2 list of seven pre-action checks."
+  },
+  {
+    "id": "R12-AGENCY-1063",
+    "domain": "AGENCY",
+    "title": "Prohibit fabricated identities",
+    "statement": "The platform never uses fabricated identities to manufacture an outcome.",
+    "rationale": "Manipulative conduct is unlawful and an architectural invariant (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Any action or order pattern constituting fabricated identities is refused before it leaves the platform; a test drives the pattern and asserts refusal."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from the §1.2 list of prohibited conduct."
+  },
+  {
+    "id": "R12-AGENCY-1064",
+    "domain": "AGENCY",
+    "title": "Prohibit fake consensus",
+    "statement": "The platform never uses fake consensus to manufacture an outcome.",
+    "rationale": "Manipulative conduct is unlawful and an architectural invariant (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Any action or order pattern constituting fake consensus is refused before it leaves the platform; a test drives the pattern and asserts refusal."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from the §1.2 list of prohibited conduct."
+  },
+  {
+    "id": "R12-AGENCY-1065",
+    "domain": "AGENCY",
+    "title": "Prohibit deceptive content",
+    "statement": "The platform never uses deceptive content to manufacture an outcome.",
+    "rationale": "Manipulative conduct is unlawful and an architectural invariant (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Any action or order pattern constituting deceptive content is refused before it leaves the platform; a test drives the pattern and asserts refusal."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from the §1.2 list of prohibited conduct."
+  },
+  {
+    "id": "R12-AGENCY-1066",
+    "domain": "AGENCY",
+    "title": "Prohibit undisclosed promotion",
+    "statement": "The platform never uses undisclosed promotion to manufacture an outcome.",
+    "rationale": "Manipulative conduct is unlawful and an architectural invariant (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Any action or order pattern constituting undisclosed promotion is refused before it leaves the platform; a test drives the pattern and asserts refusal."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from the §1.2 list of prohibited conduct."
+  },
+  {
+    "id": "R12-EXEC-1067",
+    "domain": "EXEC",
+    "title": "Prohibit wash activity",
+    "statement": "The platform never uses wash activity to manufacture an outcome.",
+    "rationale": "Manipulative conduct is unlawful and an architectural invariant (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Any action or order pattern constituting wash activity is refused before it leaves the platform; a test drives the pattern and asserts refusal."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from the §1.2 list of prohibited conduct."
+  },
+  {
+    "id": "R12-EXEC-1068",
+    "domain": "EXEC",
+    "title": "Prohibit spoofing",
+    "statement": "The platform never uses spoofing to manufacture an outcome.",
+    "rationale": "Manipulative conduct is unlawful and an architectural invariant (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Any action or order pattern constituting spoofing is refused before it leaves the platform; a test drives the pattern and asserts refusal."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from the §1.2 list of prohibited conduct."
+  },
+  {
+    "id": "R12-AGENCY-1069",
+    "domain": "AGENCY",
+    "title": "Prohibit rumor engineering",
+    "statement": "The platform never uses rumor engineering to manufacture an outcome.",
+    "rationale": "Manipulative conduct is unlawful and an architectural invariant (§1.2).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§1.2 Non-Negotiable Safety/Correctness Boundary"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Any action or order pattern constituting rumor engineering is refused before it leaves the platform; a test drives the pattern and asserts refusal."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "Split from the §1.2 list of prohibited conduct."
+  },
+  {
+    "id": "R12-ARCH-1070",
+    "domain": "ARCH",
+    "title": "Global state authoritative long-horizon; regions keep local state",
+    "statement": "Global state is authoritative for long-horizon knowledge; regions retain local state and can peer-share fast state.",
+    "rationale": "Without a clear authority split, regions and centre disagree about facts with no tiebreak.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell keeps its own ledger and state across a centre outage, and long-horizon knowledge is only written centrally."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-1071",
+    "domain": "MESH",
+    "title": "Add signed policy/artifacts downward",
+    "statement": "Beyond policy down/outcomes up, the platform provides signed policy/artifacts downward.",
+    "rationale": "Policy-down/outcomes-up only is too restrictive for cross-region opportunities (§2 row 2).",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two components exchange signed policy/artifacts downward over a real channel and an unsigned/invalid message is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 row 'Policy down, outcomes up only'."
+  },
+  {
+    "id": "R12-MESH-1072",
+    "domain": "MESH",
+    "title": "Add peer reflex messaging",
+    "statement": "Beyond policy down/outcomes up, the platform provides peer reflex messaging.",
+    "rationale": "Policy-down/outcomes-up only is too restrictive for cross-region opportunities (§2 row 2).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two components exchange peer reflex messaging over a real channel and an unsigned/invalid message is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 row 'Policy down, outcomes up only'."
+  },
+  {
+    "id": "R12-MESH-1073",
+    "domain": "MESH",
+    "title": "Add distributed reservations",
+    "statement": "Beyond policy down/outcomes up, the platform provides distributed reservations.",
+    "rationale": "Policy-down/outcomes-up only is too restrictive for cross-region opportunities (§2 row 2).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two components exchange distributed reservations over a real channel and an unsigned/invalid message is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 row 'Policy down, outcomes up only'."
+  },
+  {
+    "id": "R12-MESH-1074",
+    "domain": "MESH",
+    "title": "Add opportunity tokens",
+    "statement": "Beyond policy down/outcomes up, the platform provides opportunity tokens.",
+    "rationale": "Policy-down/outcomes-up only is too restrictive for cross-region opportunities (§2 row 2).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two components exchange opportunity tokens over a real channel and an unsigned/invalid message is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 row 'Policy down, outcomes up only'."
+  },
+  {
+    "id": "R12-MESH-1075",
+    "domain": "MESH",
+    "title": "Add cross-region outcome/state exchange",
+    "statement": "Beyond policy down/outcomes up, the platform provides cross-region outcome/state exchange.",
+    "rationale": "Policy-down/outcomes-up only is too restrictive for cross-region opportunities (§2 row 2).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two components exchange cross-region outcome/state exchange over a real channel and an unsigned/invalid message is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 row 'Policy down, outcomes up only'."
+  },
+  {
+    "id": "R12-QUANT-1076",
+    "domain": "QUANT",
+    "title": "Quantum Foundry supports optimization",
+    "statement": "The Quantum Foundry supports optimization as a benchmarked workload family.",
+    "rationale": "Restricting quantum to allocation forgoes other measurable advantages (§2 row 3).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The foundry registers the PortfolioAllocation family with an encoding, classical baseline and benchmark; status is not 'not built'."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Quantum Foundry row."
+  },
+  {
+    "id": "R12-QUANT-1077",
+    "domain": "QUANT",
+    "title": "Quantum Foundry supports graph workloads",
+    "statement": "The Quantum Foundry supports graph workloads as a benchmarked workload family.",
+    "rationale": "Restricting quantum to allocation forgoes other measurable advantages (§2 row 3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The foundry registers the GraphSearch family with an encoding, classical baseline and benchmark; status is not 'not built'."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Quantum Foundry row."
+  },
+  {
+    "id": "R12-QUANT-1078",
+    "domain": "QUANT",
+    "title": "Quantum Foundry supports feature/ensemble selection",
+    "statement": "The Quantum Foundry supports feature/ensemble selection as a benchmarked workload family.",
+    "rationale": "Restricting quantum to allocation forgoes other measurable advantages (§2 row 3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The foundry registers the FeatureEnsembleSelection family with an encoding, classical baseline and benchmark; status is not 'not built'."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Quantum Foundry row."
+  },
+  {
+    "id": "R12-QUANT-1079",
+    "domain": "QUANT",
+    "title": "Quantum Foundry supports quantum kernels/variational experiments",
+    "statement": "The Quantum Foundry supports quantum kernels/variational experiments as a benchmarked workload family.",
+    "rationale": "Restricting quantum to allocation forgoes other measurable advantages (§2 row 3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The foundry registers the KernelsAndVariationalModels family with an encoding, classical baseline and benchmark; status is not 'not built'."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Quantum Foundry row."
+  },
+  {
+    "id": "R12-QUANT-1080",
+    "domain": "QUANT",
+    "title": "Quantum Foundry supports quantum reservoir/extreme-learning research",
+    "statement": "The Quantum Foundry supports quantum reservoir/extreme-learning research as a benchmarked workload family.",
+    "rationale": "Restricting quantum to allocation forgoes other measurable advantages (§2 row 3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The foundry registers the ReservoirAndExtremeLearning family with an encoding, classical baseline and benchmark; status is not 'not built'."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Quantum Foundry row."
+  },
+  {
+    "id": "R12-QUANT-1081",
+    "domain": "QUANT",
+    "title": "Quantum Foundry supports scenario exploration",
+    "statement": "The Quantum Foundry supports scenario exploration as a benchmarked workload family.",
+    "rationale": "Restricting quantum to allocation forgoes other measurable advantages (§2 row 3).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "4",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The foundry registers the ScenarioHypothesisSelection family with an encoding, classical baseline and benchmark; status is not 'not built'."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Quantum Foundry row."
+  },
+  {
+    "id": "R12-MODEL-1082",
+    "domain": "MODEL",
+    "title": "Rust-first execution; Python/JAX/PyTorch allowed for research",
+    "statement": "Execution is Rust-first, while research/training may use Python/JAX/PyTorch where appropriate.",
+    "rationale": "Rust-only research slows model development without improving hot-path safety.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Hot-path binaries are Rust; a research pipeline outside Rust produces artefacts consumed by Rust."
+    },
+    "policy_flags": [
+      "NON_RUST",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "Conflicts with ADR 0001/0011 'Rust everywhere' for services; a non-Rust research lane needs an ADR."
+  },
+  {
+    "id": "R12-MODEL-1083",
+    "domain": "MODEL",
+    "title": "Export hardened inference artifacts to Rust reflex nodes",
+    "statement": "Research-trained models are exported as hardened inference artifacts to Rust reflex nodes.",
+    "rationale": "Unhardened or non-Rust inference on the hot path breaks latency and safety guarantees.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A distilled model artifact with a content digest is accepted by the edge node only when its digest and form match; a mismatched digest is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-1084",
+    "domain": "MODEL",
+    "title": "Tiny reflex models on hot paths",
+    "statement": "Hot paths keep tiny reflex models.",
+    "rationale": "Large models on the hot path blow the latency budget.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Reflex model forms are bounded (linear/tree with bounded nodes) and evaluated within the pass budget."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-1085",
+    "domain": "MODEL",
+    "title": "Large models in slow lane, distilled into fast models",
+    "statement": "Large multimodal/foundation/generalist models are allowed in the slow lane, with distillation into fast models.",
+    "rationale": "Banning large models forgoes capability; deploying them on the hot path breaks latency.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A slow-lane model's output is distilled into a fast student with a recorded fidelity report."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-1086",
+    "domain": "REFLEX",
+    "title": "No synchronous global dependency on the hot path",
+    "statement": "Reflex cells have no synchronous global dependency on the hot path.",
+    "rationale": "A synchronous global call on the hot path couples every region's latency and availability to the centre.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "The reflex crate closure excludes cognitive crates and a pass completes with the centre unreachable within budget."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-COMMERCE-1087",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides product discovery",
+    "statement": "A Commerce & Physical Operations plane provides product discovery.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs product discovery in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-COMMERCE-1088",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides purchasing",
+    "statement": "A Commerce & Physical Operations plane provides purchasing.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs purchasing in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-COMMERCE-1089",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides logistics",
+    "statement": "A Commerce & Physical Operations plane provides logistics.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs logistics in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-COMMERCE-1090",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides inventory",
+    "statement": "A Commerce & Physical Operations plane provides inventory.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs inventory in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-COMMERCE-1091",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides resale",
+    "statement": "A Commerce & Physical Operations plane provides resale.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs resale in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-COMMERCE-1092",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides returns",
+    "statement": "A Commerce & Physical Operations plane provides returns.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs returns in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-COMMERCE-1093",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides taxes/duties",
+    "statement": "A Commerce & Physical Operations plane provides taxes/duties.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs taxes/duties in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-COMMERCE-1094",
+    "domain": "COMMERCE",
+    "title": "Commerce plane provides marketplace settlement",
+    "statement": "A Commerce & Physical Operations plane provides marketplace settlement.",
+    "rationale": "Treating physical assets as just another class omits their operational lifecycle (§2 row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The commerce plane performs marketplace settlement in a paper simulation reached from a composition root, with a test asserting the ledger effect."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Commerce row; paper/simulated only under ADR 0003."
+  },
+  {
+    "id": "R12-CAPITAL-1095",
+    "domain": "CAPITAL",
+    "title": "Asset Brain is a first-class domain with explicit contracts",
+    "statement": "The Asset Brain is a first-class autonomous domain with explicit contracts.",
+    "rationale": "A capital engine buried as a component has no contract others can rely on (§2 row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A crate owns the Asset Brain with typed public contracts, reached from a composition root, with contract tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "RISK",
+      "LEDGER"
+    ],
+    "notes": "Split from §2 'Capital engine is a component' row."
+  },
+  {
+    "id": "R12-CAPITAL-1096",
+    "domain": "CAPITAL",
+    "title": "Capital Brain is a first-class domain with explicit contracts",
+    "statement": "The Capital Brain is a first-class autonomous domain with explicit contracts.",
+    "rationale": "A capital engine buried as a component has no contract others can rely on (§2 row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A crate owns the Capital Brain with typed public contracts, reached from a composition root, with contract tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "RISK",
+      "LEDGER"
+    ],
+    "notes": "Split from §2 'Capital engine is a component' row."
+  },
+  {
+    "id": "R12-CAPITAL-1097",
+    "domain": "CAPITAL",
+    "title": "Risk Brain is a first-class domain with explicit contracts",
+    "statement": "The Risk Brain is a first-class autonomous domain with explicit contracts.",
+    "rationale": "A capital engine buried as a component has no contract others can rely on (§2 row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A crate owns the Risk Brain with typed public contracts, reached from a composition root, with contract tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "RISK",
+      "LEDGER"
+    ],
+    "notes": "Split from §2 'Capital engine is a component' row."
+  },
+  {
+    "id": "R12-CAPITAL-1098",
+    "domain": "CAPITAL",
+    "title": "Treasury Bank is a first-class domain with explicit contracts",
+    "statement": "The Treasury Bank is a first-class autonomous domain with explicit contracts.",
+    "rationale": "A capital engine buried as a component has no contract others can rely on (§2 row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A crate owns the Treasury Bank with typed public contracts, reached from a composition root, with contract tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "RISK",
+      "LEDGER"
+    ],
+    "notes": "Split from §2 'Capital engine is a component' row."
+  },
+  {
+    "id": "R12-CAPITAL-1099",
+    "domain": "CAPITAL",
+    "title": "Ledger Brain is a first-class domain with explicit contracts",
+    "statement": "The Ledger Brain is a first-class autonomous domain with explicit contracts.",
+    "rationale": "A capital engine buried as a component has no contract others can rely on (§2 row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A crate owns the Ledger Brain with typed public contracts, reached from a composition root, with contract tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "RISK",
+      "LEDGER"
+    ],
+    "notes": "Split from §2 'Capital engine is a component' row."
+  },
+  {
+    "id": "R12-CAPITAL-1100",
+    "domain": "CAPITAL",
+    "title": "Settlement Brain is a first-class domain with explicit contracts",
+    "statement": "The Settlement Brain is a first-class autonomous domain with explicit contracts.",
+    "rationale": "A capital engine buried as a component has no contract others can rely on (§2 row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "A crate owns the Settlement Brain with typed public contracts, reached from a composition root, with contract tests."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ASSET",
+      "RISK",
+      "LEDGER"
+    ],
+    "notes": "Split from §2 'Capital engine is a component' row."
+  },
+  {
+    "id": "R12-DATA-1101",
+    "domain": "DATA",
+    "title": "Scout Fabric searches continuously",
+    "statement": "The global Scout Fabric searches continuously.",
+    "rationale": "Discovery that only finds sources leaves the catalogue stale and unvetted (§2 Scout row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scout run searches continuously and records the result in the event log; disabling it changes the recorded outcome."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Scout Fabric row."
+  },
+  {
+    "id": "R12-DATA-1102",
+    "domain": "DATA",
+    "title": "Scout Fabric scores novelty",
+    "statement": "The global Scout Fabric scores novelty.",
+    "rationale": "Discovery that only finds sources leaves the catalogue stale and unvetted (§2 Scout row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scout run scores novelty and records the result in the event log; disabling it changes the recorded outcome."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Scout Fabric row."
+  },
+  {
+    "id": "R12-DATA-1103",
+    "domain": "DATA",
+    "title": "Scout Fabric validates access rights",
+    "statement": "The global Scout Fabric validates access rights.",
+    "rationale": "Discovery that only finds sources leaves the catalogue stale and unvetted (§2 Scout row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scout run validates access rights and records the result in the event log; disabling it changes the recorded outcome."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Scout Fabric row. Access-rights validation is also a compliance precondition (rules: licensing before use)."
+  },
+  {
+    "id": "R12-DATA-1104",
+    "domain": "DATA",
+    "title": "Scout Fabric creates adapters",
+    "statement": "The global Scout Fabric creates adapters.",
+    "rationale": "Discovery that only finds sources leaves the catalogue stale and unvetted (§2 Scout row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scout run creates adapters and records the result in the event log; disabling it changes the recorded outcome."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Scout Fabric row."
+  },
+  {
+    "id": "R12-DATA-1105",
+    "domain": "DATA",
+    "title": "Scout Fabric measures source alpha",
+    "statement": "The global Scout Fabric measures source alpha.",
+    "rationale": "Discovery that only finds sources leaves the catalogue stale and unvetted (§2 Scout row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scout run measures source alpha and records the result in the event log; disabling it changes the recorded outcome."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Scout Fabric row."
+  },
+  {
+    "id": "R12-DATA-1106",
+    "domain": "DATA",
+    "title": "Scout Fabric retires weak feeds",
+    "statement": "The global Scout Fabric retires weak feeds.",
+    "rationale": "Discovery that only finds sources leaves the catalogue stale and unvetted (§2 Scout row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A scout run retires weak feeds and records the result in the event log; disabling it changes the recorded outcome."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Scout Fabric row."
+  },
+  {
+    "id": "R12-EVID-1107",
+    "domain": "EVID",
+    "title": "Evidence/Truth Fabric provides provenance graph",
+    "statement": "The Evidence/Truth Fabric provides provenance graph.",
+    "rationale": "Confidence alone does not establish truth (§2 Evidence row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A conflicting or forged input is detected by the provenance graph mechanism and the finding recorded; removing it lets the input through."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Evidence/Truth row."
+  },
+  {
+    "id": "R12-EVID-1108",
+    "domain": "EVID",
+    "title": "Evidence/Truth Fabric provides corroboration",
+    "statement": "The Evidence/Truth Fabric provides corroboration.",
+    "rationale": "Confidence alone does not establish truth (§2 Evidence row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A conflicting or forged input is detected by the corroboration mechanism and the finding recorded; removing it lets the input through."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Evidence/Truth row."
+  },
+  {
+    "id": "R12-EVID-1109",
+    "domain": "EVID",
+    "title": "Evidence/Truth Fabric provides contradiction resolution",
+    "statement": "The Evidence/Truth Fabric provides contradiction resolution.",
+    "rationale": "Confidence alone does not establish truth (§2 Evidence row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A conflicting or forged input is detected by the contradiction resolution mechanism and the finding recorded; removing it lets the input through."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Evidence/Truth row."
+  },
+  {
+    "id": "R12-EVID-1110",
+    "domain": "EVID",
+    "title": "Evidence/Truth Fabric provides cryptographic/source authenticity",
+    "statement": "The Evidence/Truth Fabric provides cryptographic/source authenticity.",
+    "rationale": "Confidence alone does not establish truth (§2 Evidence row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A conflicting or forged input is detected by the cryptographic/source authenticity mechanism and the finding recorded; removing it lets the input through."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Evidence/Truth row."
+  },
+  {
+    "id": "R12-EVID-1111",
+    "domain": "EVID",
+    "title": "Evidence/Truth Fabric provides time/location consistency",
+    "statement": "The Evidence/Truth Fabric provides time/location consistency.",
+    "rationale": "Confidence alone does not establish truth (§2 Evidence row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A conflicting or forged input is detected by the time/location consistency mechanism and the finding recorded; removing it lets the input through."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Evidence/Truth row."
+  },
+  {
+    "id": "R12-EVID-1112",
+    "domain": "EVID",
+    "title": "Evidence/Truth Fabric provides adversarial-source detection",
+    "statement": "The Evidence/Truth Fabric provides adversarial-source detection.",
+    "rationale": "Confidence alone does not establish truth (§2 Evidence row).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A conflicting or forged input is detected by the adversarial-source detection mechanism and the finding recorded; removing it lets the input through."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Evidence/Truth row."
+  },
+  {
+    "id": "R12-EXPAND-1113",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides novelty/gap detection",
+    "statement": "The Intelligence Expansion Engine provides novelty/gap detection.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises novelty/gap detection and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-EXPAND-1114",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides self-generated curriculum",
+    "statement": "The Intelligence Expansion Engine provides self-generated curriculum.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises self-generated curriculum and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-EXPAND-1115",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides source/ontology/tool/brain registries",
+    "statement": "The Intelligence Expansion Engine provides source/ontology/tool/brain registries.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises source/ontology/tool/brain registries and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-EXPAND-1116",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides autonomous research campaigns",
+    "statement": "The Intelligence Expansion Engine provides autonomous research campaigns.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises autonomous research campaigns and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-EXPAND-1117",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides model evolution",
+    "statement": "The Intelligence Expansion Engine provides model evolution.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises model evolution and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-EXPAND-1118",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides reflex learning",
+    "statement": "The Intelligence Expansion Engine provides reflex learning.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises reflex learning and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-EXPAND-1119",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides collective intelligence",
+    "statement": "The Intelligence Expansion Engine provides collective intelligence.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises collective intelligence and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-EXPAND-1120",
+    "domain": "EXPAND",
+    "title": "Intelligence Expansion Engine provides benchmark-gated capability promotion",
+    "statement": "The Intelligence Expansion Engine provides benchmark-gated capability promotion.",
+    "rationale": "Fixed intelligence cannot grow without redesign (§2 Expansion row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A run of the expansion engine exercises benchmark-gated capability promotion and records its output; a test asserts the record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Expansion Engine row."
+  },
+  {
+    "id": "R12-TICK-1121",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides immutable tick/order-book history",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides immutable tick/order-book history.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises immutable tick/order-book history reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-TICK-1122",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides clock normalization",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides clock normalization.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises clock normalization reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-TICK-1123",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides book reconstruction",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides book reconstruction.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises book reconstruction reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-TICK-1124",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides cross-venue alignment",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides cross-venue alignment.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises cross-venue alignment reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-TICK-1125",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides replay/simulation",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides replay/simulation.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises replay/simulation reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-TICK-1126",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides microstructure training",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides microstructure training.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises microstructure training reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-TICK-1127",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides world+market fusion",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides world+market fusion.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises world+market fusion reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-TICK-1128",
+    "domain": "TICK",
+    "title": "Tick Learning Fabric provides reflex-model distillation",
+    "statement": "The Market Intelligence & Tick Learning Fabric provides reflex-model distillation.",
+    "rationale": "Ticks used only as execution input waste a full learning corpus (§2 Tick row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A recorded session processed through the fabric exercises reflex-model distillation reproducibly; a mutation of that stage changes the replay digest."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Market Intelligence & Tick Learning Fabric row."
+  },
+  {
+    "id": "R12-WORLD-1129",
+    "domain": "WORLD",
+    "title": "World Model Federation of many concurrent models",
+    "statement": "A World Model Federation runs many concurrent domain, regional, horizon, scenario and counterfactual models.",
+    "rationale": "A single model is a single point of epistemic failure (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Several registered models with distinct scopes are live in the cycle."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-1130",
+    "domain": "WORLD",
+    "title": "Arbitration layer preserves disagreement, confidence and lineage",
+    "statement": "An arbitration layer over the federation preserves disagreement, confidence and lineage.",
+    "rationale": "Arbitration that discards lineage cannot be audited.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Arbitrate returns per-model confidence and lineage and the disagreement set."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-1131",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides ontologies",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides ontologies coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses ontologies and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-REASON-1132",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides causal graphs",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides causal graphs coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses causal graphs and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-REASON-1133",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides temporal/event logic",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides temporal/event logic coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses temporal/event logic and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-REASON-1134",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides probabilistic logic",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides probabilistic logic coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses probabilistic logic and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-REASON-1135",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides rules",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides rules coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses rules and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-REASON-1136",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides constraint solvers",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides constraint solvers coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses constraint solvers and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-REASON-1137",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides planning",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides planning coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses planning and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-REASON-1138",
+    "domain": "REASON",
+    "title": "Symbolic fabric provides proof traces",
+    "statement": "The Symbolic & Neuro-Symbolic Reasoning Fabric provides proof traces coupled to neural models.",
+    "rationale": "Reasoning implicit in generative models is unverifiable (§2 Symbolic row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A reasoning task uses proof traces and its result is recorded and reproducible."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Symbolic row."
+  },
+  {
+    "id": "R12-AMBIENT-1139",
+    "domain": "AMBIENT",
+    "title": "Ambient mesh maintains forecasts",
+    "statement": "Always-running ambient models maintain forecasts.",
+    "rationale": "Models invoked only by workflows miss what nobody asked (§2 Ambient row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A running ambient loop updates forecasts on a schedule without external request and journals it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Proactive Ambient Model Mesh row."
+  },
+  {
+    "id": "R12-AMBIENT-1140",
+    "domain": "AMBIENT",
+    "title": "Ambient mesh maintains surprise scores",
+    "statement": "Always-running ambient models maintain surprise scores.",
+    "rationale": "Models invoked only by workflows miss what nobody asked (§2 Ambient row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A running ambient loop updates surprise scores on a schedule without external request and journals it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Proactive Ambient Model Mesh row."
+  },
+  {
+    "id": "R12-AMBIENT-1141",
+    "domain": "AMBIENT",
+    "title": "Ambient mesh maintains anomaly/opportunity scans",
+    "statement": "Always-running ambient models maintain anomaly/opportunity scans.",
+    "rationale": "Models invoked only by workflows miss what nobody asked (§2 Ambient row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A running ambient loop updates anomaly/opportunity scans on a schedule without external request and journals it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Proactive Ambient Model Mesh row."
+  },
+  {
+    "id": "R12-AMBIENT-1142",
+    "domain": "AMBIENT",
+    "title": "Ambient mesh maintains scenario branches",
+    "statement": "Always-running ambient models maintain scenario branches.",
+    "rationale": "Models invoked only by workflows miss what nobody asked (§2 Ambient row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A running ambient loop updates scenario branches on a schedule without external request and journals it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Proactive Ambient Model Mesh row."
+  },
+  {
+    "id": "R12-AMBIENT-1143",
+    "domain": "AMBIENT",
+    "title": "Ambient mesh maintains assumption health",
+    "statement": "Always-running ambient models maintain assumption health.",
+    "rationale": "Models invoked only by workflows miss what nobody asked (§2 Ambient row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A running ambient loop updates assumption health on a schedule without external request and journals it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Proactive Ambient Model Mesh row."
+  },
+  {
+    "id": "R12-AMBIENT-1144",
+    "domain": "AMBIENT",
+    "title": "Ambient mesh maintains automatic waking of specialist brains",
+    "statement": "Always-running ambient models maintain automatic waking of specialist brains.",
+    "rationale": "Models invoked only by workflows miss what nobody asked (§2 Ambient row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "5",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A running ambient loop updates automatic waking of specialist brains on a schedule without external request and journals it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Proactive Ambient Model Mesh row."
+  },
+  {
+    "id": "R12-QUANT-1145",
+    "domain": "QUANT",
+    "title": "Quantum research for symbolic search, ensembles, hypothesis space",
+    "statement": "Quantum research covers selected symbolic/combinatorial search, world-model/scenario ensemble selection and hypothesis-space exploration.",
+    "rationale": "(§2 row) Expands quantum beyond optimization where benchmarked.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Families SymbolicCombinatorialSearch and ScenarioHypothesisSelection are built with baselines."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-1146",
+    "domain": "AGENCY",
+    "title": "Causal Agency Engine provides explicit goals",
+    "statement": "The Causal Agency & Intervention Engine provides explicit goals.",
+    "rationale": "Prediction without intervention modelling cannot learn which lawful actions change outcomes (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agency run uses explicit goals and records it; a test asserts the record and a mutation removing it fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Causal Agency row."
+  },
+  {
+    "id": "R12-AGENCY-1147",
+    "domain": "AGENCY",
+    "title": "Causal Agency Engine provides action-affordance graphs",
+    "statement": "The Causal Agency & Intervention Engine provides action-affordance graphs.",
+    "rationale": "Prediction without intervention modelling cannot learn which lawful actions change outcomes (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agency run uses action-affordance graphs and records it; a test asserts the record and a mutation removing it fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Causal Agency row."
+  },
+  {
+    "id": "R12-AGENCY-1148",
+    "domain": "AGENCY",
+    "title": "Causal Agency Engine provides structural causal intervention models",
+    "statement": "The Causal Agency & Intervention Engine provides structural causal intervention models.",
+    "rationale": "Prediction without intervention modelling cannot learn which lawful actions change outcomes (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agency run uses structural causal intervention models and records it; a test asserts the record and a mutation removing it fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Causal Agency row."
+  },
+  {
+    "id": "R12-AGENCY-1149",
+    "domain": "AGENCY",
+    "title": "Causal Agency Engine provides policy-constrained planning",
+    "statement": "The Causal Agency & Intervention Engine provides policy-constrained planning.",
+    "rationale": "Prediction without intervention modelling cannot learn which lawful actions change outcomes (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agency run uses policy-constrained planning and records it; a test asserts the record and a mutation removing it fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Causal Agency row."
+  },
+  {
+    "id": "R12-AGENCY-1150",
+    "domain": "AGENCY",
+    "title": "Causal Agency Engine provides authorized action tools",
+    "statement": "The Causal Agency & Intervention Engine provides authorized action tools.",
+    "rationale": "Prediction without intervention modelling cannot learn which lawful actions change outcomes (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agency run uses authorized action tools and records it; a test asserts the record and a mutation removing it fails."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "Split from §2 Causal Agency row."
+  },
+  {
+    "id": "R12-AGENCY-1151",
+    "domain": "AGENCY",
+    "title": "Causal Agency Engine provides counterfactual no-action baselines",
+    "statement": "The Causal Agency & Intervention Engine provides counterfactual no-action baselines.",
+    "rationale": "Prediction without intervention modelling cannot learn which lawful actions change outcomes (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agency run uses counterfactual no-action baselines and records it; a test asserts the record and a mutation removing it fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Causal Agency row."
+  },
+  {
+    "id": "R12-AGENCY-1152",
+    "domain": "AGENCY",
+    "title": "Causal Agency Engine provides post-action causal attribution",
+    "statement": "The Causal Agency & Intervention Engine provides post-action causal attribution.",
+    "rationale": "Prediction without intervention modelling cannot learn which lawful actions change outcomes (§2 row).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§2 Corrections Required to v10.1"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An agency run uses post-action causal attribution and records it; a test asserts the record and a mutation removing it fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Split from §2 Causal Agency row."
+  },
+  {
+    "id": "R12-DATA-1153",
+    "domain": "DATA",
+    "title": "Global sensing capability scope",
+    "statement": "The platform provides Global sensing with the required scope: Discovery and ingestion across web/API/WebSocket/file/stream/database/registry/satellite/geospatial/IoT/shipping/customs/blockchain/news/social/product/filing sources.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Global sensing' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-EVID-1154",
+    "domain": "EVID",
+    "title": "Evidence & trust capability scope",
+    "statement": "The platform provides Evidence & trust with the required scope: Source identity, provenance, licensing, freshness, corroboration, contradictions, manipulation detection, confidence and audit trail.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Evidence & trust' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-WORLD-1155",
+    "domain": "WORLD",
+    "title": "World model capability scope",
+    "statement": "The platform provides World model with the required scope: Temporal entity/event/relationship graph spanning companies, people, assets, supply chains, countries, products, venues, contracts, weather, logistics and markets.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'World model' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-WORLD-1156",
+    "domain": "WORLD",
+    "title": "Financial AGI core capability scope",
+    "statement": "The platform provides Financial AGI core with the required scope: Planning, research, tool use, hypothesis generation, causal reasoning, counterfactuals, self-model, uncertainty, memory and specialist-agent orchestration.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Financial AGI core' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-MODEL-1157",
+    "domain": "MODEL",
+    "title": "Model foundry capability scope",
+    "statement": "The platform provides Model foundry with the required scope: Foundation/specialist models, supervised/unsupervised/RL, distillation, ensembles, regime models, microstructure, valuation, risk and reflex models.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Model foundry' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-QUANT-1158",
+    "domain": "QUANT",
+    "title": "Quantum foundry capability scope",
+    "statement": "The platform provides Quantum foundry with the required scope: Hybrid QAOA/QUBO optimization, graph/search, feature/ensemble selection, kernels/variational, reservoir/ELM research, benchmark harness.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Quantum foundry' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-MODEL-1159",
+    "domain": "MODEL",
+    "title": "Strategy factory capability scope",
+    "statement": "The platform provides Strategy factory with the required scope: Generate, backtest, simulate, stress, paper trade, promote, decay and retire thousands of strategies.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Strategy factory' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-ASSET-1160",
+    "domain": "ASSET",
+    "title": "Asset management capability scope",
+    "statement": "The platform provides Asset management with the required scope: Portfolio construction, mandates, horizons, valuation, lifecycle, corporate actions, commitments, divestment, hedging and attribution.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Asset management' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-CAPITAL-1161",
+    "domain": "CAPITAL",
+    "title": "Capital management capability scope",
+    "statement": "The platform provides Capital management with the required scope: Funding, liquidity ladder, collateral, margin, leverage, cash buffers, capital grants, cross-region placement, compounding and idle-cash optimization.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "6",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Capital management' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-RISK-1162",
+    "domain": "RISK",
+    "title": "Risk management capability scope",
+    "statement": "The platform provides Risk management with the required scope: Pre-trade, post-trade, market, liquidity, counterparty, concentration, causal-driver, settlement, model, data, operational and systemic risk.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Risk management' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-CAPITAL-1163",
+    "domain": "CAPITAL",
+    "title": "Treasury/capital bank capability scope",
+    "statement": "The platform provides Treasury/capital bank with the required scope: Cash and collateral fabric, custody corridors, FX conversion, internal funding, financing/credit where licensed, yield routing and rebalancing.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Treasury/capital bank' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-LEDGER-1164",
+    "domain": "LEDGER",
+    "title": "Ledger/accounting capability scope",
+    "statement": "The platform provides Ledger/accounting with the required scope: Event-sourced double-entry multi-asset ledger: positions, cash, obligations, inventory, tax lots, fees, accruals, margin, commitments and settlement state.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Ledger/accounting' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-REFLEX-1165",
+    "domain": "REFLEX",
+    "title": "Reflex execution capability scope",
+    "statement": "The platform provides Reflex execution with the required scope: Regional low-latency nodes with local market data, order books, features, models, strategies, risk, netting, inventory and venue adapters.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Reflex execution' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-MESH-1166",
+    "domain": "MESH",
+    "title": "Reflex mesh capability scope",
+    "statement": "The platform provides Reflex mesh with the required scope: Peer-to-peer regional exchange, synchronized clocks, distributed reservations, opportunity epochs and bounded-loss multi-leg sagas.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Reflex mesh' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-MESH-1167",
+    "domain": "MESH",
+    "title": "Arbitrage capability scope",
+    "statement": "The platform provides Arbitrage with the required scope: 2-20 leg cross-venue/region/asset/currency arbitrage with size-aware graph costs.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Arbitrage' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-EXEC-1168",
+    "domain": "EXEC",
+    "title": "Market making capability scope",
+    "statement": "The platform provides Market making with the required scope: Continuous quoting, inventory skew, adverse-selection models, rate control, dynamic spread and portfolio-aware quoting.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Market making' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-EXEC-1169",
+    "domain": "EXEC",
+    "title": "Market creation capability scope",
+    "statement": "The platform provides Market creation with the required scope: Create/list/seed markets only where venue and jurisdiction permit; bootstrap liquidity and risk-manage.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Market creation' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-EVENT-1170",
+    "domain": "EVENT",
+    "title": "Prediction/event markets capability scope",
+    "statement": "The platform provides Prediction/event markets with the required scope: Research, valuation, trading, market making and creation for event contracts; regulated wagering adapters isolated by jurisdiction/eligibility.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Prediction/event markets' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-COMMERCE-1171",
+    "domain": "COMMERCE",
+    "title": "Physical commerce capability scope",
+    "statement": "The platform provides Physical commerce with the required scope: Discover products, buy, route, hold inventory, ship, insure, handle duties/taxes, list/resell, settle and learn SKU-level economics.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Physical commerce' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-OBS-1172",
+    "domain": "OBS",
+    "title": "Operations/AIOps capability scope",
+    "statement": "The platform provides Operations/AIOps with the required scope: Self-observing platform, SLOs, anomaly detection, incident triage, auto-remediation, deployment verification and autonomous test loops.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Operations/AIOps' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-EXPAND-1173",
+    "domain": "EXPAND",
+    "title": "Intelligence expansion engine capability scope",
+    "statement": "The platform provides Intelligence expansion engine with the required scope: Detect knowledge/capability gaps; expand sources, ontology, memory, brains, tools, models and curricula; benchmark and promote without redesign.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Intelligence expansion engine' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-EXPAND-1174",
+    "domain": "EXPAND",
+    "title": "Collective intelligence fabric capability scope",
+    "statement": "The platform provides Collective intelligence fabric with the required scope: Brains, evaluators and reflex cells exchange compressed knowledge, episodes, residuals, model lessons and outcomes via typed contracts and lineage.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Collective intelligence fabric' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-TICK-1175",
+    "domain": "TICK",
+    "title": "Market intelligence & tick learning capability scope",
+    "statement": "The platform provides Market intelligence & tick learning with the required scope: Tick/trade/quote/L1/L2/L3/auction/options/futures/FX/crypto/funding/liquidation/on-chain and own execution data; normalization, reconstruction, features, replay, training and distillation.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "7",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Market intelligence & tick learning' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-TICK-1176",
+    "domain": "TICK",
+    "title": "Historical replay & market simulation capability scope",
+    "statement": "The platform provides Historical replay & market simulation with the required scope: Deterministic event-time replay with microstructure, latency/queue/fill assumptions, fees, rejects, partial fills, impact and multi-leg sagas; counterfactual execution and synthetic rare regimes.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Historical replay & market simulation' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-TICK-1177",
+    "domain": "TICK",
+    "title": "World + market intelligence fusion capability scope",
+    "statement": "The platform provides World + market intelligence fusion with the required scope: Time-align causal/world beliefs with market state and learned tick embeddings.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'World + market intelligence fusion' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-WORLD-1178",
+    "domain": "WORLD",
+    "title": "World Model Federation capability scope",
+    "statement": "The platform provides World Model Federation with the required scope: Concurrent global, macro, geopolitical, company, supply-chain, physical, microstructure, event, portfolio/capital, counterparty, regional, self, scenario and counterfactual models that branch, disagree, merge, expire and are scored by calibration.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'World Model Federation' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-REASON-1179",
+    "domain": "REASON",
+    "title": "Symbolic & neuro-symbolic reasoning fabric capability scope",
+    "statement": "The platform provides Symbolic & neuro-symbolic reasoning fabric with the required scope: KG/ontology reasoning, temporal/event calculus, causal reasoning, rules, probabilistic logic, constraint/SAT/SMT/MILP/graph solvers, abduction, planning, proof traces, neural-to-symbolic compilation.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Symbolic & neuro-symbolic reasoning fabric' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-AMBIENT-1180",
+    "domain": "AMBIENT",
+    "title": "Ambient proactive model mesh capability scope",
+    "statement": "The platform provides Ambient proactive model mesh with the required scope: Always-on models predict, detect novelty, monitor assumptions, simulate paths, scan weak signals, identify precursors and route attention without prompts.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Ambient proactive model mesh' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-WORLD-1181",
+    "domain": "WORLD",
+    "title": "World-model arbitration & epistemic control capability scope",
+    "statement": "The platform provides World-model arbitration & epistemic control with the required scope: Compare competing states, preserve minority explanations, score calibration/evidence fit, detect contradictions, maintain uncertainty and decide to branch, merge, abstain or request information.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'World-model arbitration & epistemic control' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-AGENCY-1182",
+    "domain": "AGENCY",
+    "title": "Causal agency & intervention engine capability scope",
+    "statement": "The platform provides Causal agency & intervention engine with the required scope: Desired-outcome models, affordance graph, do-calculus/SCM reasoning, action generation, multi-step planning, simulation, authority gates, orchestration and closed-loop attribution.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Causal agency & intervention engine' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-AGENCY-1183",
+    "domain": "AGENCY",
+    "title": "Authorized action surfaces capability scope",
+    "statement": "The platform provides Authorized action surfaces with the required scope: Each action surface (communications, posting, outreach, research acquisition, product/pricing/config, operational, capital/hedging/liquidity, commerce, market/product creation) is a typed tool with identity, scope, disclosure and audit policy.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Authorized action surfaces' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-AGENCY-1184",
+    "domain": "AGENCY",
+    "title": "Intervention learning & effect attribution capability scope",
+    "statement": "The platform provides Intervention learning & effect attribution with the required scope: Estimate treatment/uplift/causal effect over horizons via experiments, observational inference, synthetic controls, counterfactual branches and no-action baselines; update graphs and policies from measured effect.",
+    "rationale": "Capability map row (§3) states the required scope.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "8",
+        "section": "§3 Full Capability Map"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each scope item of 'Intervention learning & effect attribution' maps to code reached from a composition root with a named test; a missing item fails inspection."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "One requirement per §3 table row; scope items are not split further (they are refined by §2 and later sections)."
+  },
+  {
+    "id": "R12-ARCH-1185",
+    "domain": "ARCH",
+    "title": "Each function lives in the fastest lane meeting its correctness",
+    "statement": "Every function is assigned to exactly one time lane: the fastest lane that can meet its correctness requirements.",
+    "rationale": "Placing work by aspiration puts slow, fallible work on the hot path.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Every workspace crate has exactly one lane and a stated requirement, and no faster-lane crate depends on a slower one."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-1186",
+    "domain": "REFLEX",
+    "title": "Lane 0 operates in ~10 us to 10 ms",
+    "statement": "Lane 0 (feed decode, book update, features, reflex inference, predicates, local risk, netting, routing, order/quote generation) completes within ~10 us to 10 ms.",
+    "rationale": "Missing the budget forfeits the reflex lane's reason to exist.",
+    "kind": "metric",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Measured per-step costs of book apply, features, strategy, arbitrage, risk and order construction stay within budget; a slowed step fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-1187",
+    "domain": "REFLEX",
+    "title": "Lane 0 has no remote dependency",
+    "statement": "Lane 0 has no remote dependency.",
+    "rationale": "A remote call in the order path couples latency and availability to the network.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A pass completes with every remote peer unreachable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-1188",
+    "domain": "REFLEX",
+    "title": "Lane 0 uses compact features and distilled models",
+    "statement": "Lane 0 uses compact tick-derived features/embeddings and distilled microstructure/reflex models.",
+    "rationale": "Uncompressed models do not fit the hot-path budget.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The cell consumes feature-DAG features and a distilled model in a pass."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-1189",
+    "domain": "REFLEX",
+    "title": "Lane 0 never reads the historical Tick Lake in the order path",
+    "statement": "Lane 0 never reads the historical Tick Lake in the order path.",
+    "rationale": "Reading history on the hot path adds unbounded I/O latency.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "qip-edge does not depend on qip-storage and qip-edge-node never references Lake; adding a Lake read fails a scan."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-1190",
+    "domain": "MESH",
+    "title": "Lane 1 coordinated-fast responsibilities",
+    "statement": "Lane 1 (~1 ms to seconds) carries peer reflex messages, multi-region opportunity tokens, distributed inventory reservations, multi-leg coordination and hedge/unwind commands, accepting cross-region latency explicitly.",
+    "rationale": "Coordination placed in Lane 0 would block on cross-region latency.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Lane-1 messages flow between nodes with measured latency recorded."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-1191",
+    "domain": "ARCH",
+    "title": "Lane 2 tactical/warm responsibilities",
+    "statement": "Lane 2 (seconds to minutes) carries portfolio/risk refresh, capital placement, treasury moves, market-making regime shifts, event repricing, cross-region inventory rebalancing, aggregated microstructure state, liquidity maps, execution-quality refresh, short-horizon fusion and bounded tactical interventions.",
+    "rationale": "Tactical work in the slow lane is too late; in the hot lane it is too slow.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "9",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The central cycle refreshes portfolio/risk and capital placement on a minute cadence."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-1192",
+    "domain": "ARCH",
+    "title": "Lane 3 cognitive slow responsibilities",
+    "statement": "Lane 3 (minutes to days) hosts discovery, evidence synthesis, causal reasoning, research, hypothesis generation, simulation, strategy discovery, training/validation, tick replay, microstructure training, ambient models, symbolic reasoners, arbitration and intervention planning.",
+    "rationale": "Slow work belongs off the decision path.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Lane-3 crates are registered lane 3 and composed in qip-deepbrain."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-1193",
+    "domain": "QUANT",
+    "title": "Lane 4 quantum/research never blocks execution",
+    "statement": "Lane 4 quantum-classical and research workloads are asynchronous and never block execution.",
+    "rationale": "A queue-bound QPU call on the decision path makes execution depend on an external queue.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Synchronous quantum jobs are refused at admission, and the decision path completes with the quantum provider unavailable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-QUANT-1194",
+    "domain": "QUANT",
+    "title": "Quantum output advisory and classically verified",
+    "statement": "Quantum output is advisory and classically verified before use.",
+    "rationale": "Unverified quantum output would act as a truth oracle.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§4 Time-Lane Architecture"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Every quantum answer is re-scored on the classical objective and only used if better by the threshold."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CONTRACT-1195",
+    "domain": "CONTRACT",
+    "title": "Signed model/strategy/belief/capital/risk packs flow to the reflex mesh",
+    "statement": "Foundries and brains publish signed model, strategy, belief, capital and risk packs down to regional reflex cells.",
+    "rationale": "Unsigned artefacts on the hot path let anyone steer capital.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell installs only packs whose signature verifies; tampered packs are refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-1196",
+    "domain": "REFLEX",
+    "title": "Americas, Europe and APAC reflex cells each run a local hot lane",
+    "statement": "Reflex cells exist for Americas, Europe and APAC, each running a local hot lane against its markets.",
+    "rationale": "One region serving all markets adds intercontinental latency to every order.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Three execution nodes in three regions run passes."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-1197",
+    "domain": "LEDGER",
+    "title": "Fills/events flow to ledger, treasury, settlement and inventory",
+    "statement": "Fills and events from cells flow to ledger, treasury, settlement and inventory.",
+    "rationale": "Fills not booked leave capital and positions wrong.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell fill reported to the centre produces balanced ledger postings and inventory update."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MODEL-1198",
+    "domain": "MODEL",
+    "title": "Outcomes, episodes and missed opportunities feed the learning brain",
+    "statement": "Outcomes, episodes and missed opportunities flow to a learning/evaluation brain that updates the world model and the tick/microstructure models.",
+    "rationale": "Learning only from acted trades biases the system; non-actions must be scored too.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "12",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The LEARN stage scores declined and filled opportunities and calibrates resolved beliefs each cycle."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "WORLD",
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-AGENCY-1199",
+    "domain": "AGENCY",
+    "title": "Effect attribution with no-action counterfactual updates world model",
+    "statement": "Actions taken through authorized surfaces are followed by effect attribution against a no-action counterfactual, which updates the world model.",
+    "rationale": "Without the loop the system cannot learn which actions work.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An executed intervention produces an attribution record consumed by a world-model update."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-1200",
+    "domain": "EVID",
+    "title": "Scout -> Evidence & Truth -> World model ordering",
+    "statement": "World data passes through the global scout, then evidence & truth, before reaching the world model/causal memory.",
+    "rationale": "A record that skips the evidence gate reaches the world model unvetted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "10",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A record failing its quality gate is refused by name and never reaches the world model."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-TICK-1201",
+    "domain": "TICK",
+    "title": "Tick capture -> normalize/clock -> book reconstruction -> Tick Lake",
+    "statement": "Venue data is captured, normalized/clocked, reconstructed into books and stored in the Tick Lake, with live features and replay branching from it.",
+    "rationale": "Skipping normalization or reconstruction corrupts every downstream feature.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "11",
+        "section": "§5 End-to-End System Path"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Captured bytes produce normalized events, books and sealed lake segments, and replay from the lake reproduces them."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  }
+]
