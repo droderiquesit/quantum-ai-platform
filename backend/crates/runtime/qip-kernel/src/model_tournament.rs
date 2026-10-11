@@ -280,6 +280,20 @@ fn deviation(values: &[f64]) -> Option<f64> {
     Some((values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt())
 }
 
+/// The tail threshold, in basis points, a question on a subject with these
+/// returns carries: [`TAIL_SIGMAS`] of the subject's own deviations, and
+/// nothing until [`MIN_TAIL_RETURNS`] returns exist — a deviation read off a
+/// handful of moves would call ordinary noise a tail. A separate function so
+/// the rule is testable apart from opening a question.
+fn tail_threshold(returns: &[f64]) -> Option<f64> {
+    if returns.len() < MIN_TAIL_RETURNS {
+        return None;
+    }
+    deviation(returns)
+        .map(|sd| TAIL_SIGMAS * sd * 10_000.0)
+        .filter(|t| *t > 0.0)
+}
+
 fn up_bp(probability: f64) -> u32 {
     // In range by construction (a probability), so the rounded value fits.
     (probability * 10_000.0).round() as u32
@@ -327,13 +341,7 @@ impl TournamentStage {
         let target = format!("{subject}/close-direction");
         let resolves_at = now.saturating_add(hypothesis.horizon);
         let rets = returns(observation.closes);
-        let tail_threshold = if rets.len() >= MIN_TAIL_RETURNS {
-            deviation(&rets)
-                .map(|sd| TAIL_SIGMAS * sd * 10_000.0)
-                .filter(|t| *t > 0.0)
-        } else {
-            None
-        };
+        let tail_threshold = tail_threshold(&rets);
         if let Err(error) = self.tournament.open(
             QuestionSpec {
                 id: question.clone(),
@@ -747,15 +755,37 @@ impl TournamentStage {
 mod tests {
     use super::*;
 
+    /// The threshold is two of the subject's own deviations, and is stated
+    /// only once ten returns exist. Until the round-2 mutation audit this
+    /// test asserted only that five closes give fewer than ten returns and
+    /// that some deviation is positive — it called neither the threshold
+    /// rule nor the minimum, and passed with `TAIL_SIGMAS` at one and with
+    /// the minimum at one. Mutations: `TAIL_SIGMAS = 1.0` fails the 2,000 bp
+    /// figure; `>= 1` (or `>`) in place of the minimum fails the nine- or
+    /// ten-return arm.
     #[test]
     fn tail_threshold_needs_enough_returns_and_reads_two_deviations() {
-        let closes: Vec<f64> = (0..5).map(|i| 100.0 + f64::from(i)).collect();
-        assert!(returns(&closes).len() < MIN_TAIL_RETURNS);
-        let wide: Vec<f64> = (0..30)
-            .map(|i| if i % 2 == 0 { 100.0 } else { 102.0 })
-            .collect();
-        let sd = deviation(&returns(&wide)).unwrap_or(0.0);
-        assert!(sd > 0.0);
+        // Returns alternating +10% and -10% exactly: mean zero, population
+        // deviation 0.1, so two deviations are 2,000 bp.
+        let mut closes = vec![100.0_f64];
+        for i in 0..MIN_TAIL_RETURNS {
+            let last = closes[closes.len() - 1];
+            closes.push(if i % 2 == 0 { last * 1.1 } else { last * 0.9 });
+        }
+        let enough = returns(&closes);
+        assert_eq!(
+            enough.len(),
+            MIN_TAIL_RETURNS,
+            "premise: exactly the minimum"
+        );
+        let threshold = tail_threshold(&enough).expect("ten returns state a threshold");
+        assert!((threshold - 2_000.0).abs() < 1e-6, "{threshold}");
+        let short = &enough[..MIN_TAIL_RETURNS - 1];
+        assert!(
+            deviation(short).is_some_and(|sd| sd > 0.0),
+            "premise: the short window has a deviation to read"
+        );
+        assert_eq!(tail_threshold(short), None, "nine returns state no tail");
     }
 
     #[test]
