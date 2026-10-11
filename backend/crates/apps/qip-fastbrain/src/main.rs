@@ -617,7 +617,17 @@ fn banner(
 /// the process with the variable named — see
 /// `qip_kernel::survival::SurvivalPolicy::from_settings`.
 fn apply_survival_policy(platform: &mut Platform) -> Result<String> {
-    let policy = survival_policy_from(&|name| std::env::var(name))?;
+    apply_survival_policy_from(platform, &|name| std::env::var(name))
+}
+
+/// [`apply_survival_policy`] over any lookup, so a test drives the root's own
+/// install rather than calling the kernel beside it — a test that called
+/// `set_survival_policy` itself passed with this function's call deleted.
+fn apply_survival_policy_from(
+    platform: &mut Platform,
+    lookup: &dyn Fn(&str) -> std::result::Result<String, std::env::VarError>,
+) -> Result<String> {
+    let policy = survival_policy_from(lookup)?;
     platform.set_survival_policy(policy);
     Ok(policy.describe())
 }
@@ -770,7 +780,10 @@ mod tests {
     /// Mutations that make it fail: return `SurvivalPolicy::default()` for an
     /// unset variable in `survival_policy_from` (first assertion); map the
     /// `NotUnicode` arm to `Ok(None)` (the unreadable assertion); delete the
-    /// `set_survival_policy` call's body in the kernel (the last assertion).
+    /// `set_survival_policy` call's body in the kernel, or the call to it in
+    /// `apply_survival_policy_from` (the last assertion). The second of those
+    /// passed until the round-2 mutation pass: the test called the kernel
+    /// itself instead of the root's install.
     #[test]
     fn an_unset_survival_configuration_withholds_the_shipped_reserves_and_a_lowered_one_stops_the_process()
      {
@@ -828,7 +841,8 @@ mod tests {
             &SurvivalPolicy::default(),
             "premise: before the root applies it, the library default withholds nothing"
         );
-        platform.set_survival_policy(unset);
+        super::apply_survival_policy_from(&mut platform, &|_| Err(std::env::VarError::NotPresent))
+            .expect("the root installs the shipped policy");
         assert_eq!(platform.survival_policy(), &unset);
     }
 }

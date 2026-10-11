@@ -240,6 +240,12 @@ fn batch(payload: &str) -> Batch {
 }
 
 fn payload_at(address: &str, offset: u64) -> Vec<u8> {
+    served_at(address, offset).unwrap_or_else(|| panic!("offset {offset} is not served"))
+}
+
+/// The payload at `offset` if the instance serves it now, `None` if the
+/// fetch is answered but holds no complete batch there yet.
+fn served_at(address: &str, offset: u64) -> Option<Vec<u8>> {
     let mut reader = HttpTransport::new(
         address.to_string(),
         BearerToken::new(token(READER)).unwrap(),
@@ -259,9 +265,12 @@ fn payload_at(address: &str, offset: u64) -> Vec<u8> {
         panic!("a fetch is answered with batches: {answer:?}");
     };
     let bytes = qip_core::hash::from_hex(fetched.batches()).unwrap();
+    if bytes.is_empty() {
+        return None;
+    }
     match Batch::decode(&bytes).unwrap() {
-        DecodeOutcome::Complete(batch) => batch.records[0].payload.clone(),
-        DecodeOutcome::Torn => panic!("offset {offset} is not served"),
+        DecodeOutcome::Complete(batch) => Some(batch.records[0].payload.clone()),
+        DecodeOutcome::Torn => None,
     }
 }
 
@@ -275,8 +284,10 @@ fn payload_at(address: &str, offset: u64) -> Vec<u8> {
 /// Mutation: in `start_with_seams`, drop the lease thread (`lease_thread =
 /// None`) — the survivor never takes the lease, the post-kill produce never
 /// succeeds and the deadline assertion fires. Mutation: in
-/// `Broker::tend_leases`, skip `catch_up` for a follower — the survivor's
-/// fetch of offset 0 after the kill finds nothing and fires.
+/// `Broker::tend_leases`, skip `catch_up` for a follower — the survivor
+/// never serves offset 2 while it follows and the warm-follower assertion
+/// fires (this comment said the post-kill fetch fires; it does not, because
+/// promotion catches up as well).
 #[test]
 fn a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost() {
     let database_time = Arc::new(ManualClock::new(Timestamp::from_civil(2026, 10, 11)));
@@ -296,6 +307,19 @@ fn a_killed_leader_is_replaced_by_its_follower_with_no_acknowledged_record_lost(
         stray.send(batch("stray")).is_err(),
         "premise: the follower acknowledges nothing"
     );
+    // The follower catches up while it follows, before anything fails. The
+    // round-2 mutation pass skipped `catch_up` in `tend_leases`'s
+    // `HeldByOther` arm and the test still passed, because promotion catches
+    // up too; what that mutation loses is a warm follower, so it is asserted
+    // here, before the kill, where promotion cannot paper over it.
+    let warm_by = Instant::now() + StdDuration::from_secs(30);
+    while served_at(&survivor.address(), 2).is_none() {
+        assert!(
+            Instant::now() < warm_by,
+            "the follower never caught up with the leader's committed records"
+        );
+        std::thread::sleep(StdDuration::from_millis(50));
+    }
 
     leader.running.take().unwrap().stop();
     database_time.advance(Duration::from_millis(1_501));

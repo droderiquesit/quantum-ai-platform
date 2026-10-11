@@ -204,6 +204,18 @@ impl MemoryManagedLog {
         Ok(())
     }
 
+    /// The holder and epoch the lease row of `partition` names now, expired
+    /// or not — what a test reads to prove an acknowledgement came from the
+    /// lease's holder at the lease's epoch, and not from a broker deposed
+    /// before it answered.
+    pub fn lease_of(&self, partition: &PartitionRef) -> Option<(String, u64)> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state
+            .leases
+            .get(partition)
+            .map(|(holder, epoch, _)| (holder.clone(), *epoch))
+    }
+
     /// Every lease epoch any row of `partition` was committed under, in
     /// offset order — what a test reads to prove no two holders committed in
     /// one epoch.

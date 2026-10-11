@@ -116,12 +116,26 @@ fn a_plan_file_installs_the_factory_and_the_event_plane_into_the_running_platfor
 /// A plan that does not parse, names an unknown section, or is empty stops
 /// start-up as a configuration error. Mutation: drop `deny_unknown_fields`
 /// from `BreadthPlan` and the misspelt section is silently ignored.
+///
+/// The misspelt plan carries a real section beside the misspelling, and each
+/// case asserts its own reason. This test once used `{"market_factroy":
+/// null}` alone and only checked the `configuration:` prefix: with
+/// `deny_unknown_fields` deleted that plan parsed as empty, the empty-plan
+/// refusal fired instead, and the test passed the very mutation it names.
 #[test]
 fn a_malformed_misspelt_or_empty_plan_is_a_configuration_error() -> Result<()> {
-    for (name, text) in [
-        ("broken", "{ not json"),
-        ("misspelt", r#"{"market_factroy": null}"#),
-        ("empty", "{}"),
+    const EVENTS: &str = r#""event_markets": {"source": "synthetic", "entity": "desk"}"#;
+    let premise = plan_file("events-only", &format!("{{{EVENTS}}}"))?;
+    let premise = lookup(BTreeMap::from([(PLAN_VARIABLE.to_string(), premise)]));
+    assert!(
+        load(&premise)?.is_some(),
+        "premise: the section beside the misspelling loads on its own"
+    );
+    let misspelt = format!(r#"{{{EVENTS}, "market_factroy": null}}"#);
+    for (name, text, reason) in [
+        ("broken", "{ not json", "does not parse"),
+        ("misspelt", misspelt.as_str(), "does not parse"),
+        ("empty", "{}", "names a plan with no section"),
     ] {
         let path = plan_file(name, text)?;
         let set = lookup(BTreeMap::from([(PLAN_VARIABLE.to_string(), path)]));
@@ -129,6 +143,11 @@ fn a_malformed_misspelt_or_empty_plan_is_a_configuration_error() -> Result<()> {
         assert!(
             refused.message().starts_with("configuration:"),
             "{name}: {}",
+            refused.message()
+        );
+        assert!(
+            refused.message().contains(reason),
+            "{name} was refused, but not because {reason}: {}",
             refused.message()
         );
     }

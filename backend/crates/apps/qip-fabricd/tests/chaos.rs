@@ -232,8 +232,11 @@ fn check(
 
 /// Mutation: in `MemoryManagedLog::commit`, drop the lease-epoch check (commit
 /// whenever the offset is next) — a deposed broker that still believes it
-/// leads commits under its stale epoch after a takeover, epochs go backwards
-/// and property 2 fires within the first seeds. Mutation: in
+/// leads commits under its stale epoch after a takeover and the
+/// acknowledged-by-the-holder assertion fires. (This comment said epochs go
+/// backwards and property 2 fires; the round-2 mutation pass ran it and
+/// nothing fired, because a stale commit lands only before the new leader's
+/// first, where epochs stay monotonic.) Mutation: in
 /// `Broker::produce_managed`, append locally before committing — a
 /// partitioned leader's disk gains a batch the log never committed and
 /// property 3 fires.
@@ -267,6 +270,19 @@ fn seeded_kills_and_partitions_lose_no_acknowledged_record_and_never_split_an_ep
                             assert_eq!(
                                 first, &holder,
                                 "seed {seed} step {step}: two holders acknowledged in epoch {epoch}"
+                            );
+                            // The acknowledger holds the lease, at that epoch, when it
+                            // answers. A broker deposed while it still believed it led
+                            // commits under its stale epoch at the next offset whenever
+                            // the new leader has not committed yet; epochs stay
+                            // monotonic and no epoch has two holders, so the round-2
+                            // mutation pass found that dropping the managed log's epoch
+                            // check passed every other property here.
+                            assert_eq!(
+                                cluster.log.lease_of(&PartitionRef::new(STREAM, 0)),
+                                Some((holder.clone(), epoch)),
+                                "seed {seed} step {step}: {holder} acknowledged in epoch {epoch} \
+                                 without holding the lease"
                             );
                             acknowledged.insert(ack.base_offset(), payload);
                             sequence += 1;

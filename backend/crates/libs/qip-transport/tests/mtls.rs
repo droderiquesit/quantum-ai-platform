@@ -134,8 +134,45 @@ fn a_client_presenting_a_certificate_the_roots_chain_is_served_and_named() {
     assert_eq!(response.body_as_str().expect("text"), "none");
 }
 
+/// A workload identity whose chain holds no certificate is refused when it is
+/// loaded, even beside a good key and good roots.
+///
+/// `empty_tls_material_is_refused_at_load_rather_than_at_the_first_handshake`
+/// in `tls.rs` passes `b""` for all three parts, so the key parse refuses
+/// before the chain check is reached; the round-2 mutation pass deleted the
+/// chain check and that test still passed. This one isolates it.
+///
+/// Mutation: delete the `chain.is_empty()` refusal in
+/// `WorkloadIdentity::from_pem` and this fails.
+#[test]
+fn an_identity_with_no_certificate_is_refused_beside_a_good_key_and_roots() {
+    let pki = pki();
+    // Premise: the same key and roots load with the chain present.
+    identity(&pki.client, &pki.ca);
+    let error = WorkloadIdentity::from_pem(
+        b"",
+        pki.client.key_pem().as_bytes(),
+        pki.ca.certificate_pem().as_bytes(),
+    )
+    .expect_err("an identity with no certificate loaded");
+    assert!(
+        error
+            .message()
+            .contains("certificate chain holds no certificate"),
+        "refused for another reason: {}",
+        error.message()
+    );
+}
+
 /// Mutation: build the verifier with `allow_unauthenticated()` (optional
-/// client auth) and the handler runs for the anonymous client; this fails.
+/// client auth) and the anonymous client completes the handshake; this fails
+/// on `outcome.is_err()`.
+///
+/// It does not fail on the handler count, and this comment said it would
+/// until the round-2 mutation pass ran it: under that mutation the session
+/// has no peer certificate, `serve_tls_connection`'s `None` arm answers 403,
+/// and the handler still never runs. That arm is the second layer; the
+/// handshake refusal is the first, and this test pins the first.
 #[test]
 fn a_client_with_no_certificate_never_reaches_a_handler() {
     let pki = pki();

@@ -57,10 +57,18 @@ fn model(name: &str, links: Vec<StructuralLink>, noise: &[(&str, f64)]) -> Struc
 /// confounder inflates. Z drives both X and Y; X's own effect on Y is 0.5,
 /// and the association X shows with Y is 1.5.
 ///
-/// Mutation: make `StructuralModel::intervene` leave the intervened
-/// variable's parents in place (skip the `fixed` insert, or have `evaluate`
-/// ignore `fixed`) — the do-effect then reads the confounded slope, and the
-/// first assertion after the premise fails.
+/// Mutation: make `StructuralModel::evaluate` keep adding a fixed variable's
+/// parents to its fixed value — `do(x)` that does not cut z -> x. The
+/// surgery assertions at the end then fail: with z at 1 the intervened x
+/// reads 4, not 3. (Skipping the `fixed` insert in `intervene` fails earlier,
+/// at the clean-model premise, because the do-effect then reads 0.)
+///
+/// Until this round's mutation pass the test asserted only
+/// `interventional_effect`, which evaluates with every exogenous term at zero
+/// — so z is 0, the confounder never shows, and an uncut x gave the same 0.5.
+/// The uncut-parents mutation passed it; only `coefficient`'s own read of the
+/// `fixed` map stood in for surgery, which is a statement about bookkeeping
+/// rather than about the world the intervened model computes.
 #[test]
 fn an_interventions_effect_is_computed_by_graph_surgery_not_read_off_the_association() {
     let noise = [("z", 1.0), ("x", 1.0), ("y", 1.0)];
@@ -90,6 +98,21 @@ fn an_interventions_effect_is_computed_by_graph_surgery_not_read_off_the_associa
         .unwrap();
     assert_eq!(cut.coefficient("z", "x"), None);
     assert_eq!(confounded.coefficient("z", "x"), Some(1.0));
+    // And the cut is in what the model computes, not only in what it reports:
+    // with the confounder at 1, the untouched model moves x with it, and the
+    // intervened one holds x at 3 whatever z does.
+    let z_up = BTreeMap::from([("z".to_string(), 1.0)]);
+    let factual = confounded.evaluate(&z_up);
+    assert!((factual["x"] - 1.0).abs() < 1e-12, "premise: {factual:?}");
+    let world = cut.evaluate(&z_up);
+    assert!(
+        (world["x"] - 3.0).abs() < 1e-12,
+        "do(x = 3) held x: {world:?}"
+    );
+    assert!(
+        (world["y"] - (2.0 * 1.0 + 0.5 * 3.0)).abs() < 1e-12,
+        "y under do(x = 3): {world:?}"
+    );
 }
 
 /// Abduction, action, prediction: the same world replayed under the
@@ -190,9 +213,11 @@ fn effect_sizes_are_learned_from_data_over_the_declared_structure() {
     let data = observations(400);
     assert_eq!(data.len(), 400, "premise");
     let fitted = StructuralModel::fit("learned", &structure, &data).unwrap();
+    // x->y is asserted before z->y is read, so the named mutation fails on
+    // the confounded figure it produces rather than on a missing edge.
     let xy = fitted.coefficient("x", "y").unwrap();
-    let zy = fitted.coefficient("z", "y").unwrap();
     assert!((xy - 0.5).abs() < 0.1, "x->y learned {xy}");
+    let zy = fitted.coefficient("z", "y").unwrap();
     assert!((zy - 2.0).abs() < 0.1, "z->y learned {zy}");
     assert!((fitted.interventional_effect("x", "y").unwrap() - xy).abs() < 1e-12);
 
