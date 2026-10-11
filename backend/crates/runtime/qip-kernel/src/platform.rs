@@ -982,6 +982,12 @@ pub struct Platform {
     /// thesis is queued once and drained once; re-expressing it every cycle
     /// would pyramid the same idea until the mandate cap alone stopped it.
     pending_theses: Vec<qip_portfolio_engine::construction::ApprovedThesis>,
+    /// The capital survival kernel and the confidence governor: what DECIDE
+    /// may size against, and the gross the Risk Gate holds orders to. See
+    /// [`crate::survival`]. One field for both because they answer one
+    /// question — how much the platform may stand behind now — and two would
+    /// be two answers to it.
+    governor: crate::survival::SurvivalGovernor,
     /// Proposals produced since assembly, including those aged out above.
     proposals_made: u64,
     /// Corporate actions absorbed whose ex-date the tape has not yet reached,
@@ -1440,6 +1446,10 @@ pub struct StressReport {
     pub causal_drivers: usize,
     /// Drivers whose propagation reached no held position at either sign.
     pub causal_drivers_unconnected: usize,
+    /// The worlds the factor library cannot express — the counterparty the
+    /// book is held at failing, and the model the book was built on failing —
+    /// computed off the book directly. See [`crate::tail`].
+    pub tail_worlds: Vec<crate::tail::TailWorld>,
 }
 
 impl StressReport {
@@ -4796,6 +4806,7 @@ impl Platform {
             last_correlation: None,
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
+            governor: crate::survival::SurvivalGovernor::default(),
             episodes: EpisodicMemory::default(),
             pending_episodes: Vec::new(),
             precedents: Vec::new(),
@@ -9013,7 +9024,12 @@ impl Platform {
                 std::collections::BTreeMap::new();
             for evaluation in &self.evaluations {
                 if evaluation.verdict.is_informative() {
-                    let horizon_key = format!("{}s", evaluation.horizon.as_secs_f64() as i64);
+                    // A fixed bucket, never the duration itself: a label
+                    // built from a runtime value is a series per distinct
+                    // horizon, bounded by nothing (W0.8).
+                    let horizon_key = crate::confidence::HorizonBucket::of(evaluation.horizon)
+                        .as_str()
+                        .to_string();
                     horizon_groups
                         .entry(horizon_key)
                         .or_default()
@@ -9035,6 +9051,19 @@ impl Platform {
                 );
             }
             self.last_calibration = Some(report.calibration.clone());
+            // R12-RISK-4111/4115: the calibration DECIDE sizes against, and
+            // the regimes the claims graded in this pass were graded in —
+            // the regime each subject is in now, as it resolves.
+            let graded: Vec<qip_cost_router::context::MarketRegime> = evaluations
+                .iter()
+                .filter(|evaluation| evaluation.verdict.is_informative())
+                .map(|evaluation| self.market_regime(&evaluation.subject))
+                .collect();
+            self.governor.signals_mut().observe_calibration(
+                report.calibration.brier_score,
+                report.calibration.evaluated,
+                graded,
+            );
             Some(report)
         } else {
             None
@@ -9045,6 +9074,27 @@ impl Platform {
             report,
             problems,
         })
+    }
+
+    /// What the last construction was allowed to size against: the survival
+    /// waterfall, the tail response, the confidence contractions and the
+    /// gross ceiling the Risk Gate reads. `None` before any construction.
+    pub fn sizing_budget(&self) -> Option<&crate::survival::SizingBudget> {
+        self.governor.last()
+    }
+
+    /// The measurements the confidence governor will size the next
+    /// construction against.
+    pub fn confidence_signals(&self) -> &crate::confidence::ConfidenceSignals {
+        self.governor.signals()
+    }
+
+    /// Withhold hedge capacity under `policy` from every construction from
+    /// now on. Replaces the policy and keeps the governor's measurements.
+    pub fn set_survival_policy(&mut self, policy: crate::survival::SurvivalPolicy) {
+        let signals = self.governor.signals().clone();
+        self.governor = crate::survival::SurvivalGovernor::with_policy(policy);
+        *self.governor.signals_mut() = signals;
     }
 
     /// The most recent calibration, if any thesis has resolved informatively.
@@ -10578,11 +10628,18 @@ impl Platform {
         // cycle that measured everything and found nothing distinguishable
         // from a cycle where this never ran.
         //
-        // Nothing here narrows a size or drops a feed. Which of those a
-        // distribution shift should cause is a sizing decision, and taking it
-        // by implication from a statistic is how a control arrives that
-        // nobody chose.
+        // Nothing here drops a feed. Which sizing consequence a distribution
+        // shift should have was a decision this comment once declined to take
+        // by implication; R12-RISK-4114 took it explicitly, as the governor's
+        // schedule below, so the control is one somebody chose and can read.
         let statistics = crate::feature_statistics::measure(&self.price_history, self.cycle, now);
+        // R12-RISK-4114: the one place a distribution shift now narrows a
+        // size, and it is chosen rather than implied — the confidence
+        // governor's out-of-distribution schedule, contraction only, read by
+        // DECIDE (`crate::confidence`). Nothing here drops a feed.
+        self.governor
+            .signals_mut()
+            .observe_distribution(&statistics);
         let statistics_detail = if statistics.has_findings() {
             format!("; {}", statistics.describe())
         } else {
@@ -11973,6 +12030,14 @@ impl Platform {
                                 "; sized on conviction {:.3}",
                                 thesis.conviction.abs()
                             ));
+                            // R12-RISK-4112: how split the panel was on
+                            // the thesis now queued, for DECIDE's
+                            // confidence governor to size against.
+                            self.governor.signals_mut().observe_dissent(
+                                &thesis.hypothesis_id,
+                                reasoned.dissenters.len(),
+                                report.runs.len(),
+                            );
                             self.pending_theses.push(thesis);
                             // Bounded like the proposal working set: an idea
                             // nobody sized for this many cycles is stale, and
@@ -12992,10 +13057,45 @@ impl Platform {
                 "narrowing the sizing multiplier by mark confidence overflows".to_string(),
             )
         })?;
-        let budget = free.checked_mul(multiplier).ok_or_else(|| {
+        // The capital survival kernel (R12-CAPITAL-4086/4089) and the
+        // confidence governor (R12-RISK-4111/4112/4114/4115): hedge capacity
+        // and the stressed-liquidity reserve SIMULATE's worst world demands
+        // are withheld from `free` before anything is sized, and what is left
+        // is narrowed by calibration, disagreement, distribution shift and
+        // regime mismatch. Contraction only — `SurvivalGovernor::size`
+        // refuses a release above `free` — and it reconciles its waterfall
+        // against `deployable_capital` above rather than trusting either.
+        let views: Vec<crate::confidence::ThesisView> = theses
+            .iter()
+            .map(|thesis| crate::confidence::ThesisView {
+                hypothesis_id: thesis.hypothesis_id.clone(),
+                object_id: thesis.object_id.as_str().to_string(),
+                regime: self.market_regime(thesis.object_id.as_str()),
+            })
+            .collect();
+        let figures = crate::survival::LedgerFigures {
+            equity: self.capital.equity(),
+            held: self.reservations.reserved_total(),
+            obligations: self.commitments.unfunded_total(now)?,
+            deployable: free,
+            gross: RiskState::from_figures(&self.aggregates).gross_exposure,
+        };
+        let sizing = self.governor.size(
+            figures,
+            self.stress.as_ref(),
+            STRESS_LOSS_TOLERANCE,
+            &views,
+            now,
+        )?;
+        self.governor
+            .signals_mut()
+            .forget_theses(theses.iter().map(|thesis| thesis.hypothesis_id.as_str()));
+        let released = sizing.released;
+        let budget = released.checked_mul(multiplier).ok_or_else(|| {
             Error::numeric(format!(
-                "the free budget {free} narrowed by the degradation multiplier {multiplier} \
-                 overflows; nothing is sized against a number that cannot be represented"
+                "the released budget {released} narrowed by the degradation multiplier \
+                 {multiplier} overflows; nothing is sized against a number that cannot be \
+                 represented"
             ))
         })?;
 
@@ -13032,6 +13132,11 @@ impl Platform {
         crate::regime_allocation::narrow(&mut caps, &mut capped, theses, |subject| {
             self.market_regime(subject)
         });
+        // Every survival tier and confidence contraction that bit, on the
+        // same DECIDE detail line the caps above reach: the recorded capital
+        // response a tail world the book does not survive is required to
+        // have (R12-RISK-4117..4124).
+        capped.extend(sizing.narrowing());
         let outcome = self.constructor.construct_capped(
             theses,
             &covariance,
@@ -13564,6 +13669,14 @@ impl Platform {
                         worst.loss_fraction,
                     );
                 }
+                // The generated tail worlds, under their own constant names.
+                for world in &report.tail_worlds {
+                    self.telemetry.metrics.gauge(
+                        names::SIMULATION_STRESS_LOSS_FRACTION,
+                        labels([("scenario", world.scenario.as_str())]),
+                        world.loss_fraction,
+                    );
+                }
             }
             // Not "nothing to stress": the word is what a reader greps for,
             // and a book with no open position has no scenario to apply, which
@@ -13587,7 +13700,12 @@ impl Platform {
         let produced = longest
             + report
                 .as_ref()
-                .map(|r| r.scenarios.len() + usize::from(r.adversarial.is_some()) + r.causal.len())
+                .map(|r| {
+                    r.scenarios.len()
+                        + usize::from(r.adversarial.is_some())
+                        + r.causal.len()
+                        + r.tail_worlds.len()
+                })
                 .unwrap_or(0);
         self.stress = report;
         problems.into_iter().fold(
@@ -13798,6 +13916,30 @@ impl Platform {
             }
         }
 
+        // R12-RISK-4121/4122: the two worlds no factor shock reaches, off the
+        // book directly. The `Decimal -> f64` crossing is the one the
+        // exposures above already make, at cost, for the same tester-shaped
+        // statistic. A breach is the stage's problem like any scenario's, and
+        // DECIDE's survival kernel withholds the excess (`crate::survival`).
+        let book: Vec<(String, f64)> = self
+            .capital
+            .positions
+            .iter()
+            .map(|(object, lot)| (object.clone(), (lot.quantity * lot.average_price).to_f64()))
+            .collect();
+        let tail_worlds = crate::tail::worlds(&book, &self.price_history, equity.to_f64(), now);
+        for world in &tail_worlds {
+            if world.breaches(STRESS_LOSS_TOLERANCE) {
+                problems.push(format!(
+                    "{} loses {:.1}% of equity, above the {:.0}% tolerance: {}",
+                    world.scenario,
+                    world.loss_fraction * 100.0,
+                    STRESS_LOSS_TOLERANCE * 100.0,
+                    world.detail
+                ));
+            }
+        }
+
         let decomposition = self.decompose_risk(&market, &assets, &betas, &specific, &mut problems);
         (
             Some(StressReport {
@@ -13810,6 +13952,7 @@ impl Platform {
                 causal,
                 causal_drivers,
                 causal_drivers_unconnected,
+                tail_worlds,
             }),
             problems,
         )
@@ -16072,6 +16215,13 @@ impl Platform {
             // single-day-loss `HaltGlobally` arm could not be reached. Both
             // read as controls and neither could fire.
             daily_loss: self.capital.daily_loss(),
+            // The gross the capital survival kernel last stood behind, for
+            // `LimitKind::MaxSurvivalGross` (R12-RISK-7205): survival reaches
+            // the gate as a figure a limit reads, never as a second veto
+            // beside it. `None` before the first construction, which that
+            // limit refuses on — so a desk that installs it trades nothing
+            // the survival kernel has not sized, rather than everything.
+            survival_gross_ceiling: self.governor.gross_ceiling(),
             ..RiskState::from_figures(figures).with_tail_risk(self.monitor.limits(), &returns)
         };
         // Blueprint §25.3's per-factor and per-causal-driver levels, charged

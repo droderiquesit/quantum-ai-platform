@@ -24,26 +24,33 @@ use qip_core::error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
 /// One capital accounting across all priority tiers.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// **Fields are private and there is no `Deserialize`.** They were public, so
+/// any holder could lower a reserve in place — or deserialize a negative one —
+/// after the builder had refused it, and opportunity capital would rise by
+/// exactly the amount nobody had approved. A reserve can now only be set
+/// through a `with_*` method that refuses a negative figure, which is what
+/// makes [`Self::opportunity_capital`] a statement about validated inputs.
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CapitalSurvivalState {
     /// Total deployable capital at the start of the accounting.
-    pub total_capital: Decimal,
+    total_capital: Decimal,
     /// Required Net Asset Value floor: the level below which the book cannot trade.
-    pub nav_floor: Decimal,
+    nav_floor: Decimal,
     /// Minimum uncommitted liquidity to hold (CAPITAL-005).
-    pub reserved_cash: Decimal,
+    reserved_cash: Decimal,
     /// Capital required as margin at venues.
-    pub margin_required: Decimal,
+    margin_required: Decimal,
     /// Capital posted as collateral, encumbered to obligations.
-    pub collateral_posted: Decimal,
+    collateral_posted: Decimal,
     /// Capital needed for settlement of pending transactions.
-    pub settlement_required: Decimal,
+    settlement_required: Decimal,
     /// Capital tied up in financing obligations coming due soon.
-    pub funding_maturity_required: Decimal,
+    funding_maturity_required: Decimal,
     /// Capital reserved for hedging positions.
-    pub hedge_capacity: Decimal,
+    hedge_capacity: Decimal,
     /// Capital reserved for stressed-liquidity scenarios.
-    pub stressed_liquidity_reserve: Decimal,
+    stressed_liquidity_reserve: Decimal,
 }
 
 impl CapitalSurvivalState {
@@ -155,6 +162,21 @@ impl CapitalSurvivalState {
         }
         self.stressed_liquidity_reserve = reserve;
         Ok(self)
+    }
+
+    /// The capital the accounting starts from.
+    pub fn total_capital(&self) -> Decimal {
+        self.total_capital
+    }
+
+    /// The hedge-capacity tier: capital withheld so a hedge can be put on.
+    pub fn hedge_capacity(&self) -> Decimal {
+        self.hedge_capacity
+    }
+
+    /// The stressed-liquidity tier: capital withheld against the tail.
+    pub fn stressed_liquidity_reserve(&self) -> Decimal {
+        self.stressed_liquidity_reserve
     }
 
     /// Calculate total capital withheld (not available for opportunity).
