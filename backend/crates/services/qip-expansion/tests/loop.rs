@@ -630,3 +630,71 @@ fn quantum_research_reaches_capability_only_through_every_environment_and_criter
     assert_eq!(capability.verb, CapabilityVerb::Simulate);
     assert_eq!(capability.eligibility, "paper and shadow only");
 }
+
+fn model_gap(trigger: GapTrigger, observation: &str) -> qip_expansion::gap::RaisedGap {
+    raise(Observation {
+        trigger,
+        wanting: vec![Wanting::Model],
+        observation: observation.into(),
+        affected_domains: vec!["equities".into()],
+        evidence: vec![format!("reading:{observation}")],
+        severity: 0.5,
+        // Priority multiplies by value per cost, so a zero here zeroes both
+        // gaps and the comparison below would be between two zeros.
+        economic_value: Decimal::from_int(5),
+    })
+    .unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// R12-COVERAGE-7169: the expansion engine ranks what it learns from failure
+/// above what merely surprised it. Two model gaps identical in severity,
+/// value and reach, one raised by a model drifting (a failure the platform
+/// is running) and one by a surprise, are ranked failure first — and the
+/// failure is offered second, so it wins while carrying the coverage
+/// handicap of being the class's second item.
+///
+/// A mutation that scored every gap as a non-failure (`criteria_for` with
+/// `failure = false`) survived every test in this crate and in the deep
+/// brain before this one: ranking from live failure signals was asserted
+/// nowhere. Mutation: that one, and the drift ranks below the surprise.
+#[test]
+fn a_failure_signal_outranks_an_otherwise_identical_surprise_on_the_desk() {
+    let surprise = model_gap(GapTrigger::Surprise, "momentum surprised the forecast");
+    let drift = model_gap(GapTrigger::ModelDrift, "momentum model drifted");
+    assert_eq!(
+        surprise.signal.gap_class, drift.signal.gap_class,
+        "premise: one class, so only the trigger differs"
+    );
+    let mut desk = desk_with(&[("model-fit", ToolKind::ModelEndpoint)]);
+    let us = set(&["US"]);
+    for raised in [surprise.clone(), drift.clone()] {
+        let admission = desk.offer(raised, &set(&[]), &us);
+        assert!(
+            !matches!(admission, Admission::Refused { .. } | Admission::Duplicate),
+            "premise: both are queued: {admission:?}"
+        );
+    }
+    let ranked: Vec<&str> = desk
+        .queue()
+        .ranked()
+        .iter()
+        .map(|e| e.item().research_question.as_str())
+        .collect();
+    assert_eq!(ranked.len(), 2, "{ranked:?}");
+    assert_eq!(
+        ranked[0],
+        question_for(&drift),
+        "the drifting model was not ranked first: {ranked:?}"
+    );
+    let priority = |raised: &qip_expansion::gap::RaisedGap| {
+        desk.queue()
+            .entry(&question_for(raised))
+            .map(|e| e.score().priority())
+            .unwrap_or_else(|| panic!("queued"))
+    };
+    assert!(
+        priority(&surprise) > 0.0,
+        "premise: the surprise has a priority to be outranked"
+    );
+    assert!(priority(&drift) > priority(&surprise));
+}
