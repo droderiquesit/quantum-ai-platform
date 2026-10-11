@@ -1,0 +1,267 @@
+//! What `deploy.yml` will sign, proven by running its own gate steps.
+//!
+//! R12-CICD-9066: agent-produced code goes through Git, tests, attestation
+//! and deployment policy like any other change, and a fork or pull-request
+//! commit cannot be signed. The workflow's attestor holds the one key Binary
+//! Authorization admits an image on, so the property that matters is which
+//! commits reach the step that uses it.
+//!
+//! The automatic path's refusal is a shell step; it is extracted from the
+//! committed workflow and executed under each event shape, rather than read,
+//! because a script that reads correctly and exits 0 on every input is the
+//! failure a text check cannot see.
+#![allow(clippy::panic_in_result_fn)]
+
+use std::process::Command;
+
+use qip_acceptance::read;
+
+const DEPLOY: &str = ".github/workflows/deploy.yml";
+
+/// The `run: |` body of the step named `name`, dedented.
+fn step_script(workflow: &str, name: &str) -> String {
+    let marker = format!("- name: {name}\n");
+    let at = workflow
+        .find(&marker)
+        .unwrap_or_else(|| panic!("{DEPLOY} has no step named {name:?}"));
+    let rest = &workflow[at + marker.len()..];
+    let step_indent = workflow[..at]
+        .rsplit('\n')
+        .next()
+        .map_or(0, |line| line.len());
+    let mut lines = rest.lines();
+    // Up to the `run: |` key of this step and no further than the next step.
+    let mut found = false;
+    for line in lines.by_ref() {
+        let indent = line.len() - line.trim_start().len();
+        if line.trim_start().starts_with("- name:") && indent <= step_indent {
+            break;
+        }
+        if line.trim() == "run: |" {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "{DEPLOY}: step {name:?} has no `run: |` block");
+    let body: Vec<&str> = lines
+        .take_while(|line| {
+            line.trim().is_empty() || line.len() - line.trim_start().len() > step_indent + 2
+        })
+        .collect();
+    let indent = body
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.len() - line.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    body.iter()
+        .map(|line| line.get(indent..).unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Run `script` under bash with exactly `env` and report its exit code.
+fn run(script: &str, env: &[(&str, &str)]) -> i32 {
+    let mut command = Command::new("bash");
+    command.arg("-c").arg(script).env_clear();
+    command.env("PATH", "/usr/bin:/bin");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("cannot run bash: {error}"));
+    output.status.code().unwrap_or(-1)
+}
+
+#[test]
+fn a_ci_run_started_by_a_pull_request_or_from_a_fork_cannot_start_a_deployment() {
+    let workflow = read(DEPLOY);
+    let script = step_script(&workflow, "the triggering ci run is this repository's own");
+    let this = "droderiquesit/quantum-ai-platform";
+
+    // The admitting half first: a push to this repository proceeds. Without
+    // it, a script that refused everything would pass every case below.
+    assert_eq!(
+        run(
+            &script,
+            &[
+                ("TRIGGER_EVENT", "push"),
+                ("TRIGGER_REPOSITORY", this),
+                ("THIS_REPOSITORY", this)
+            ]
+        ),
+        0,
+        "a push to this repository was refused, so the gate refuses everything"
+    );
+
+    for (case, event, repository) in [
+        ("a pull request from this repository", "pull_request", this),
+        (
+            "a pull request from a fork",
+            "pull_request",
+            "someone/quantum-ai-platform",
+        ),
+        ("a pull_request_target run", "pull_request_target", this),
+        (
+            "a push to a fork whose branch is called main",
+            "push",
+            "someone/quantum-ai-platform",
+        ),
+        ("a run naming no event", "", this),
+        ("a run naming no repository", "push", ""),
+    ] {
+        assert_ne!(
+            run(
+                &script,
+                &[
+                    ("TRIGGER_EVENT", event),
+                    ("TRIGGER_REPOSITORY", repository),
+                    ("THIS_REPOSITORY", this),
+                ]
+            ),
+            0,
+            "{case} reached the images job, which builds that commit and has the \
+             environment's attestor sign it"
+        );
+    }
+
+    // And the step runs on the automatic path at all.
+    let marker = "- name: the triggering ci run is this repository's own\n";
+    let header = &workflow[workflow.find(marker).unwrap_or(0)..];
+    assert!(
+        header
+            .lines()
+            .nth(1)
+            .is_some_and(|line| line.trim() == "if: github.event_name == 'workflow_run'"),
+        "the provenance step is not bound to the workflow_run path it guards"
+    );
+}
+
+#[test]
+fn a_dispatched_deployment_trusts_only_a_ci_run_started_by_a_push() {
+    // On the manual path the commit's ci history is asked for. A pull
+    // request's ci run carries the pull request's head as its `head_sha` and
+    // succeeds like any other, so a query without `event=push` finds it and
+    // a dispatch naming a fork's commit signs the fork's code.
+    let workflow = read(DEPLOY);
+    for step in [
+        "ci succeeded for this commit",
+        "static analysis passed in that ci run",
+    ] {
+        let script = step_script(&workflow, step);
+        let queries: Vec<&str> = script
+            .lines()
+            .filter(|line| line.contains("actions/workflows/ci.yml/runs?"))
+            .collect();
+        assert!(
+            !queries.is_empty(),
+            "premise: step {step:?} no longer asks for the commit's ci runs"
+        );
+        for query in queries {
+            assert!(
+                query.contains("head_sha=${DEPLOY_SHA}")
+                    && query.contains("&status=success")
+                    && query.contains("&event=push"),
+                "step {step:?} trusts a ci run not started by a push: {query}"
+            );
+        }
+    }
+}
+
+#[test]
+fn only_a_branch_of_this_repository_can_obtain_the_signing_identity() {
+    // The workflow's checks are the first line; the identity federation is
+    // the second, and holds even against an edited workflow. A pull request
+    // authenticates as `refs/pull/<n>/merge` and a tag as `refs/tags/<t>`;
+    // the provider admits neither.
+    let cicd: String = read("infrastructure/terraform/modules/cicd/main.tf")
+        .split_whitespace()
+        .collect();
+    assert!(
+        cicd.contains(
+            "attribute_condition=\"attribute.repository=='${var.github_repository}'&&attribute.ref.startsWith('refs/heads/')\""
+        ),
+        "the GitHub provider admits a token from a pull-request or tag ref, so a run that is \
+         not a branch of this repository can impersonate the account that signs"
+    );
+}
+
+/// The `- name: <name>` step's own text, up to the next step of its job.
+fn step_text<'a>(workflow: &'a str, name: &str) -> &'a str {
+    let marker = format!("      - name: {name}\n");
+    let at = workflow
+        .find(&marker)
+        .unwrap_or_else(|| panic!("{DEPLOY} has no step named {name:?}"));
+    let rest = &workflow[at + marker.len()..];
+    let end = rest
+        .find("\n      - name:")
+        .or_else(|| rest.find("\n  # "))
+        .unwrap_or(rest.len());
+    &rest[..end]
+}
+
+#[test]
+fn a_high_or_critical_finding_stops_an_image_before_it_is_signed_on_every_path() {
+    // R12-SEC-9070: security findings are triaged by a severity policy that
+    // controls promotion. The policy is two committed bars that agree — the
+    // image scan's `--severity CRITICAL,HIGH` and CodeQL's
+    // `min_security_severity` 7.0, the bottom of its "high" band — and what
+    // makes either control promotion is where it runs: before the attestor
+    // signs, with nothing able to skip it. A scan that warns, or that runs
+    // only when the job built (and not when it promotes a digest built
+    // earlier), would leave the policy written and the promotion unchanged.
+    let workflow = read(DEPLOY);
+    let scan = step_text(&workflow, "scan image");
+    for flag in ["--severity CRITICAL,HIGH", "--exit-code 1", "trivy image"] {
+        assert!(
+            scan.contains(flag),
+            "the image scan does not carry `{flag}`, so a high or critical finding does not \
+             stop the image"
+        );
+    }
+    let header: Vec<&str> = scan
+        .lines()
+        .take_while(|line| line.trim() != "run: |")
+        .collect();
+    assert!(
+        !header.iter().any(|line| {
+            let line = line.trim();
+            line.starts_with("if:") || line.starts_with("continue-on-error:")
+        }),
+        "the image scan is conditional or allowed to fail ({header:?}); a promotion that \
+         skips it signs an image nobody scanned"
+    );
+
+    let scanned = workflow.find("      - name: scan image\n");
+    let signed = workflow.find("      - name: sign the pushed image\n");
+    let pushed = workflow.find("      - name: push\n");
+    assert!(
+        matches!((scanned, pushed, signed), (Some(s), Some(p), Some(g)) if s < p && p < g),
+        "the image is not scanned before it is pushed and signed; the attestation would \
+         admit bytes the severity bar never saw"
+    );
+
+    // The images job between the scan and the signature holds no step that
+    // may fail without failing the job.
+    let images_job = &workflow[scanned.unwrap_or(0)..signed.unwrap_or(0)];
+    assert!(
+        !images_job.contains("continue-on-error: true"),
+        "a step between the scan and the signature may fail without failing the job"
+    );
+
+    // And the two bars are one policy, not two that drifted.
+    let policy: serde_json::Value = serde_json::from_str(&read("scripts/sast-policy.json"))
+        .unwrap_or_else(|error| panic!("scripts/sast-policy.json does not parse: {error}"));
+    assert_eq!(
+        policy["min_security_severity"].as_f64(),
+        Some(7.0),
+        "CodeQL's blocking bar is no longer the bottom of the high band the image scan stops on"
+    );
+    assert_eq!(policy["band"].as_str(), Some("high"));
+    let ci = read(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("--severity CRITICAL,HIGH \\\n            --exit-code 1"),
+        "ci's filesystem scan no longer stops on the same high and critical bar"
+    );
+}
