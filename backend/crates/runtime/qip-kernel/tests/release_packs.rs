@@ -9,7 +9,7 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_ai::registry::ModelRegistry;
-use qip_contracts::policy::ModelPack;
+use qip_contracts::policy::{InlineModel, ModelPack};
 use qip_contracts::trust::{ArtefactClass, ArtefactVerifier, Publication};
 use qip_core::error::{Error, Result};
 use qip_core::{Context, Timestamp};
@@ -96,7 +96,7 @@ impl ArtefactVerifier for Admits {
     }
 }
 
-fn pack_for(digest: &str) -> ModelPack {
+fn pack_for(digest: &str, inline: Option<(&str, String)>) -> ModelPack {
     ModelPack {
         artifact_digest: digest.to_string(),
         signature: "released".to_string(),
@@ -111,6 +111,10 @@ fn pack_for(digest: &str) -> ModelPack {
             approver: "approver".to_string(),
             approved_at: start(),
         },
+        inline_model: inline.map(|(name, digest)| InlineModel {
+            name: name.to_string(),
+            digest,
+        }),
     }
 }
 
@@ -150,7 +154,10 @@ fn a_promoted_distillate_reaches_the_manifest_only_when_a_verified_release_pack_
 
     // A release that covers some other artifact: the promotion is withheld.
     platform.admit_model_packs(
-        vec![pack_for("not-this-artifact")],
+        vec![pack_for(
+            "not-this-artifact",
+            Some((student.name(), student.digest())),
+        )],
         &Admits("released"),
         start(),
     )?;
@@ -163,9 +170,29 @@ fn a_promoted_distillate_reaches_the_manifest_only_when_a_verified_release_pack_
         refused.message()
     );
 
-    // The release that covers it: named again.
+    // A release of this artifact that does not name the inline model the
+    // cells compute — none, or other weights under the same name — is one
+    // every bundle cell would refuse (ADR 0110, Amendment 1), so it is
+    // withheld here rather than shipped to be refused fleet-wide.
+    for inline in [None, Some((student.name(), "other-weights".to_string()))] {
+        platform.admit_model_packs(
+            vec![pack_for(&artifact.digest, inline.clone())],
+            &Admits("released"),
+            start(),
+        )?;
+        assert!(
+            platform.model_manifest().is_err(),
+            "a pack naming {inline:?} released the distillate"
+        );
+    }
+
+    // The release that covers it at its inline model: named again, and the
+    // pack rides beside it so a cell can verify the release itself.
     platform.admit_model_packs(
-        vec![pack_for(&artifact.digest)],
+        vec![pack_for(
+            &artifact.digest,
+            Some((student.name(), student.digest())),
+        )],
         &Admits("released"),
         start(),
     )?;
@@ -174,13 +201,28 @@ fn a_promoted_distillate_reaches_the_manifest_only_when_a_verified_release_pack_
         issue.manifest().models.get(student.name()),
         Some(&student.digest())
     );
+    assert_eq!(
+        issue
+            .manifest()
+            .packs
+            .get(student.name())
+            .map(|pack| pack.artifact_digest.as_str()),
+        Some(artifact.digest.as_str())
+    );
     assert_eq!(issue.unreleased(), 0);
 
     // A pack that does not verify is refused whole and leaves the gate as it
     // was, rather than half-replacing it.
     assert!(
         platform
-            .admit_model_packs(vec![pack_for(&artifact.digest)], &Admits("other"), start())
+            .admit_model_packs(
+                vec![pack_for(
+                    &artifact.digest,
+                    Some((student.name(), student.digest()))
+                )],
+                &Admits("other"),
+                start()
+            )
             .is_err()
     );
     assert!(platform.model_manifest().is_ok());

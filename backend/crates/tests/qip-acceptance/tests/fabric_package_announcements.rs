@@ -27,7 +27,7 @@ fn model_manifest_carries_only_digests_never_weights() {
     models.insert("llm-v7".to_string(), "sha256:abc123".to_string());
     models.insert("qa-model".to_string(), "sha256:def456".to_string());
 
-    let manifest = ModelManifest { models };
+    let manifest = ModelManifest::unreleased(models);
 
     // Serialize to JSON to verify the wire format
     let json = serde_json::to_value(&manifest).expect("serialize");
@@ -59,7 +59,7 @@ fn model_manifest_serializes_to_bounded_size() {
         models.insert(format!("model-{:03}", i), format!("sha256:{:064x}", i));
     }
 
-    let manifest = ModelManifest { models };
+    let manifest = ModelManifest::unreleased(models);
     let json = serde_json::to_vec(&manifest).expect("serialize");
 
     assert!(
@@ -81,7 +81,7 @@ fn package_announcement_digest_is_verifiable_by_construction() {
         "sha256:0123456789abcdef".to_string(),
     );
 
-    let manifest = ModelManifest { models };
+    let manifest = ModelManifest::unreleased(models);
     let serialized = serde_json::to_string(&manifest).expect("serialize");
 
     // Verify no storage paths or URLs leak into the announcement
@@ -121,8 +121,8 @@ fn model_manifest_serialization_is_deterministic() {
     models2.insert("a-model".to_string(), "sha256:aaa".to_string());
     models2.insert("b-model".to_string(), "sha256:bbb".to_string());
 
-    let manifest1 = ModelManifest { models: models1 };
-    let manifest2 = ModelManifest { models: models2 };
+    let manifest1 = ModelManifest::unreleased(models1);
+    let manifest2 = ModelManifest::unreleased(models2);
 
     let json1 = serde_json::to_string(&manifest1).expect("serialize");
     let json2 = serde_json::to_string(&manifest2).expect("serialize");

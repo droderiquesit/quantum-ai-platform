@@ -121,6 +121,7 @@ mod tests {
                 approver: approver.to_string(),
                 approved_at: Timestamp::from_secs(1_800_000_000),
             },
+            inline_model: None,
         }
     }
 
