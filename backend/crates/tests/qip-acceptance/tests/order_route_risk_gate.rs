@@ -427,7 +427,7 @@ fn a_requote_whose_replacement_breaches_the_cells_limit_withdraws_and_sends_noth
 /// The desk path: the order manager refuses a breaching order before the
 /// broker is called.
 ///
-/// Mutation: skip `self.checker.check(` in `OrderManager::submit` and the
+/// Mutation: skip `.check_with_working(` in `OrderManager::submit` and the
 /// broker's submission count is one.
 #[test]
 fn a_desk_order_that_breaches_a_limit_never_reaches_the_broker() {
@@ -539,7 +539,9 @@ const SITES: &[(&str, &str, Route)] = &[
         "services/qip-execution-engine/src/oms.rs",
         "submit",
         Route::Gated {
-            gate: "self.checker.check(",
+            // `check_with_working` since round 3: the same checker, over the
+            // book plus the remainders of orders already working.
+            gate: ".check_with_working(",
         },
     ),
     (

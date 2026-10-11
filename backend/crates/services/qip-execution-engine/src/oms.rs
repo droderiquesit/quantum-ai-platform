@@ -401,11 +401,13 @@ pub struct OrderManager {
     /// these, and before they existed nothing in any binary could construct
     /// the evidence that rung asks for.
     sessions: SessionRecorder,
-    /// The exposure axes each accepted order was checked on, keyed by order
-    /// id, so its unfilled remainder is charged to the same buckets when a
-    /// later order is checked. Only the caller knows an instrument's axes,
-    /// and it states them for the order it submits and no other. Pruned to
-    /// open orders at every submit, so it is bounded by them.
+    /// Every accepted order still open, keyed by id, with the exposure axes
+    /// it was checked on, so its unfilled remainder is charged to the same
+    /// buckets when a later order is checked. Only the caller knows an
+    /// instrument's axes, and it states them for the order it submits and no
+    /// other. Pruned at every submit, so it is bounded by the open orders and
+    /// is the index the pre-trade check walks instead of every order ever
+    /// sent.
     working_axes: BTreeMap<String, BTreeMap<String, String>>,
     sequence: u64,
 }
@@ -989,16 +991,20 @@ impl OrderManager {
     /// a sale may fill above its limit, so the limit alone can understate it
     /// — and at the arrival price otherwise, the price the order itself was
     /// checked at.
-    /// Also forgets the axes of every order that is no longer open, which is
-    /// what keeps that map bounded.
+    /// Also forgets every order that is no longer open, which is what keeps
+    /// the index bounded by the open orders.
     fn working_exposure(&mut self) -> Vec<ProposedOrder> {
+        // Walks the accepted-and-open index, never `self.orders`: that map
+        // holds every order ever sent, and a scan of it per submit made each
+        // submission cost more the longer the desk had run — the acceptance
+        // suite's scaling probe caught it at 5x per order for 5x the history.
         let orders = &self.orders;
         self.working_axes
             .retain(|id, _| orders.get(id).is_some_and(|order| order.state.is_open()));
-        self.orders
-            .values()
-            .filter(|order| order.state.is_open())
-            .filter_map(|order| {
+        self.working_axes
+            .iter()
+            .filter_map(|(id, axes)| {
+                let order = orders.get(id)?;
                 let remaining = order.remaining_quantity();
                 if !remaining.is_positive() {
                     return None;
@@ -1011,11 +1017,7 @@ impl OrderManager {
                     object_id: order.object_id.clone(),
                     quantity: remaining * Decimal::from_int(i64::from(order.side.sign())),
                     reference_price: price,
-                    axes: self
-                        .working_axes
-                        .get(order.order_id.as_str())
-                        .cloned()
-                        .unwrap_or_default(),
+                    axes: axes.clone(),
                     scope: order.scope.clone(),
                 })
             })
