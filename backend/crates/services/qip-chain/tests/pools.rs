@@ -482,11 +482,20 @@ fn a_fee_ceiling_below_the_base_fee_is_not_a_price_but_an_exclusion() {
 
 // --- mempool ----------------------------------------------------------------
 
-fn pending(label: &str, sender: &str, nonce: u64, tip: i128, at: Timestamp) -> PendingTransaction {
+// `sequence`, not `nonce`: this is an account's transaction count, not a
+// cryptographic nonce, and CodeQL treats any literal passed to a parameter
+// named `nonce` as a hard-coded cryptographic value.
+fn pending(
+    label: &str,
+    sender: &str,
+    sequence: u64,
+    tip: i128,
+    at: Timestamp,
+) -> PendingTransaction {
     PendingTransaction {
         hash: TxHash::new(Hash32::of(&[label.as_bytes()])),
         from: Address::new(sender),
-        nonce,
+        nonce: sequence,
         gas_limit: 200_000,
         max_fee_per_gas: Decimal::from_raw(100),
         max_priority_fee_per_gas: Decimal::from_raw(tip),
