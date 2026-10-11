@@ -29,6 +29,7 @@ use qip_contracts::trust::{
 };
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
+use qip_tls::ring;
 use ring::rand::SystemRandom;
 use ring::signature::{
     ECDSA_P256_SHA256_ASN1, ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair,

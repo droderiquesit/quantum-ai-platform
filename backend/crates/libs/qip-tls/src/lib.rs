@@ -1,6 +1,11 @@
 //! Mutual TLS where the platform owns the socket (ADR 0112), through
 //! `rustls` on the `ring` provider.
 //!
+//! A crate of its own since the Reflex Mesh was held apart from the durable
+//! fabric (R12-COVERAGE-7194). It was `qip_transport::tls`, and that path
+//! still resolves through a re-export, but the peer link now depends on this
+//! crate alone and so reaches none of the fabric's wire.
+//!
 //! Until this module every link this crate opened was plaintext with a bearer
 //! token for identity, and the crate's own documentation said "production
 //! must add mutual TLS". ADR 0112 decides where: between processes on Compute
@@ -56,8 +61,16 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 // cannot drift to a provider or a protocol version this module refuses.
 pub use rustls::pki_types::ServerName;
 pub use rustls::{ClientConfig, ClientConnection, ServerConfig, ServerConnection};
+
+// The three TLS crates, re-exported whole for the crates that drive a
+// session or verify a signature themselves (`qip-transport`'s client, server,
+// trust bundle and KMS signer, and the mTLS test support). This crate is the
+// one manifest that pins them; see its `Cargo.toml`.
+pub use ring;
+pub use rustls;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+pub use webpki;
 
 /// The provider every config here is built on: `ring`, so the platform's TLS
 /// and its artefact verification share one implementation of the primitives

@@ -19,26 +19,11 @@ qip-contracts.workspace = true
 # suite enforces that direction. It is a dev-dependency instead, so the tests
 # can prove that a `StreamEnvelope` crosses this transport unchanged.
 qip-events.workspace = true
-# ADR 0110 and ADR 0112, admitted under ADR 0109: one cryptography library,
-# in one crate. `ring` verifies ECDSA P-256 signatures on policy frames,
-# halts, capital envelopes and model packs against a trust bundle, and is the
-# provider `rustls` runs on, so the platform carries one implementation of
-# the primitives rather than two. Both contain C and assembly (ADR 0109
-# condition 8): `ring`'s primitives are BoringSSL-derived C and assembly,
-# and that is named here rather than hidden. Pinned exactly, no default
-# features: `ring` needs none for verification, signing from a PKCS#8
-# document or the system random source; `rustls` takes `ring` as its
-# provider and `std` for the blocking `StreamOwned` the in-tree client and
-# server drive. TLS 1.2 is not enabled — ADR 0112 is mTLS 1.3 — so a peer
-# that can only offer 1.2 fails the handshake rather than negotiating down.
-ring = { version = "=0.17.14", default-features = false }
-rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
-# Already in the tree as `rustls`'s certificate verifier; named directly for
-# one call, `EndEntityCert::verify_is_valid_for_subject_name`, which is how a
-# mutual-TLS server checks a client certificate against the workload names
-# it admits (`tls::PeerNames`). The version `rustls` resolves, so this adds
-# no package to the lockfile.
-webpki = { package = "rustls-webpki", version = "=0.103.15", default-features = false, features = ["ring", "std"] }
+# The TLS policy (ADR 0112), and through its re-exports the one pin of
+# `ring`, `rustls` and `rustls-webpki` (ADR 0110, ADR 0109). It was this
+# crate's `tls` module until the peer link needed it without the fabric's
+# wire (R12-COVERAGE-7194); `qip_transport::tls` still names it.
+qip-tls.workspace = true
 
 [dev-dependencies]
 qip-streaming.workspace = true

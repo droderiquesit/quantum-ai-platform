@@ -127,18 +127,15 @@ pub mod queue;
 pub mod retry;
 pub mod server;
 pub mod spool;
-pub mod tls;
 pub mod trust;
 
-/// The one cryptography library (ADR 0110), re-exported so a crate that
-/// builds on [`tls`] reaches this crate's pin of it instead of writing its
-/// own. The peer link's mTLS suite mints its throwaway certificates with
-/// `ring` through the same `tests/support/certs.rs` this crate's suites use;
-/// with its own `ring` line it was a second manifest pinning one crate, which
-/// `cargo deny`'s workspace-duplicate check refuses, and two pins agree only
-/// until one of them is edited. Not a second implementation and not a wider
-/// surface: it is the same crate, at the same version, under one manifest.
-pub use ring;
+/// The TLS policy, a crate of its own since the peer link needed it without
+/// this crate's fabric wire (R12-COVERAGE-7194); every `qip_transport::tls`
+/// path still resolves here.
+pub use qip_tls as tls;
+/// The cryptography and TLS crates `qip-tls` pins, re-exported for the
+/// crates and tests that build on this one, so none pins them a second time.
+pub use qip_tls::{ring, rustls};
 
 pub use deadletter::{DeadLetter, DeadLetterReason, DeadLetterSink, MemoryDeadLetters};
 pub use error::TransportError;

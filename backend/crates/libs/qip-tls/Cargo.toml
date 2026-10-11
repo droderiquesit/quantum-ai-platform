@@ -1,0 +1,48 @@
+[package]
+name = "qip-tls"
+description = "Mutual TLS where the platform owns the socket (ADR 0112): workload identity, TLS 1.3 configs on the ring provider, and the admitted-name check."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Cut out of `qip-transport` so the peer link (ADR 0116) can take the TLS
+# policy without taking the rest of the transport with it.
+# `architecture::reflex_mesh_traffic_and_durable_fabric_traffic_share_no_crate_in_either_direction`
+# holds the Reflex Mesh crates apart from the durable fabric's — `qip-events`,
+# `qip-streaming`, `qip-transport`, `qip-fabricd` — and while `tls` lived in
+# `qip-transport` the link reached all of the fabric's wire through it: one
+# innocent import from a frame journal or a replay cursor on the leg path.
+# This crate depends on `qip-core` and the three TLS crates and nothing else,
+# so both stacks share the one TLS policy without sharing a crate that
+# carries either one's traffic.
+[dependencies]
+qip-core.workspace = true
+# ADR 0110 and ADR 0112, admitted under ADR 0109: one cryptography library,
+# pinned in one manifest. `ring` verifies ECDSA P-256 signatures on policy
+# frames, halts, capital envelopes and model packs against a trust bundle
+# (`qip_transport::trust`, through the re-export in `src/lib.rs`), and is the
+# provider `rustls` runs on, so the platform carries one implementation of
+# the primitives rather than two. Both contain C and assembly (ADR 0109
+# condition 8): `ring`'s primitives are BoringSSL-derived C and assembly, and
+# that is named here rather than hidden. Pinned exactly, no default
+# features: `ring` needs none for verification, signing from a PKCS#8
+# document or the system random source; `rustls` takes `ring` as its
+# provider and `std` for the blocking `StreamOwned` the in-tree client and
+# server drive. TLS 1.2 is not enabled — ADR 0112 is mTLS 1.3 — so a peer
+# that can only offer 1.2 fails the handshake rather than negotiating down.
+# Every other crate reaches these three through this crate's re-exports:
+# `cargo deny`'s workspace-duplicate check refuses a second pin, and two pins
+# agree only until one of them is edited.
+ring = { version = "=0.17.14", default-features = false }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+# Already in the tree as `rustls`'s certificate verifier; named directly for
+# one call, `EndEntityCert::verify_is_valid_for_subject_name`, which is how a
+# mutual-TLS server checks a client certificate against the workload names
+# it admits (`PeerNames`). The version `rustls` resolves, so this adds no
+# package to the lockfile.
+webpki = { package = "rustls-webpki", version = "=0.103.15", default-features = false, features = ["ring", "std"] }
+
+[lints]
+workspace = true

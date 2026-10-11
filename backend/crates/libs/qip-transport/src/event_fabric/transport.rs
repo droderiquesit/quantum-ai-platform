@@ -33,6 +33,7 @@
 //! request this seam builds. The producer and consumer therefore ran over
 //! an HTTP transport that no broker would ever authenticate.
 
+use qip_tls::rustls;
 use std::time::Duration;
 
 use qip_core::error::{Error, Result};

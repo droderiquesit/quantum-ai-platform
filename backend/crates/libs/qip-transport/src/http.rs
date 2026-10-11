@@ -34,6 +34,7 @@
 //! handed an `http` URL does not either. There is no code path on which a
 //! configured TLS link quietly goes out in plaintext.
 
+use qip_tls::rustls;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};

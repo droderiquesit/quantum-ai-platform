@@ -19,6 +19,7 @@ use qip_core::error::Result;
 use qip_core::{ManualClock, Timestamp};
 use qip_transport::TlsHttpClient;
 use qip_transport::kms::{BearerSource, KmsSigner, encode_base64};
+use qip_transport::rustls;
 use qip_transport::trust::{BundleVerifier, LocalSigner};
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};

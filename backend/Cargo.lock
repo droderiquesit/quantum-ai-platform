@@ -816,6 +816,7 @@ version = "0.1.0"
 dependencies = [
  "qip-core",
  "qip-peer",
+ "qip-tls",
  "qip-transport",
 ]
 
@@ -999,6 +1000,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qip-tls"
+version = "0.1.0"
+dependencies = [
+ "qip-core",
+ "ring",
+ "rustls",
+ "rustls-webpki",
+]
+
+[[package]]
 name = "qip-training"
 version = "0.1.0"
 dependencies = [
@@ -1021,9 +1032,7 @@ dependencies = [
  "qip-events",
  "qip-storage",
  "qip-streaming",
- "ring",
- "rustls",
- "rustls-webpki",
+ "qip-tls",
  "serde",
  "serde_json",
 ]

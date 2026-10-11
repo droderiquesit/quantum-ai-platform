@@ -31,7 +31,7 @@
 //! inside TLS 1.3 with a workload certificate on both ends. The listener
 //! requires a client certificate chained to the configured roots and then
 //! admits only a certificate valid for one of the configured peers' names
-//! (`qip_transport::tls::PeerNames`); each outbound connection verifies the
+//! (`qip_tls::PeerNames`); each outbound connection verifies the
 //! peer's certificate for the name it is configured under. Every frame read
 //! is tagged with the name its connection authenticated, so the endpoint can
 //! refuse a frame that claims to speak for another node
@@ -47,7 +47,7 @@
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, SystemClock, Timestamp};
 use qip_peer::{ExecutableEdge, MAX_EDGE_PEERS, PeerEndpoint, PeerLimits, Refusal};
-use qip_transport::tls::{
+use qip_tls::{
     ClientConfig, ClientConnection, LinkSecurity, PeerNames, ServerConfig, ServerConnection,
     ServerName,
 };

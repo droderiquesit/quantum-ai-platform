@@ -37,6 +37,7 @@
 //! through [`crate::tls::LinkSecurity`].
 
 use qip_core::error::{Error, Result};
+use qip_tls::rustls;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

@@ -60,6 +60,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-quant | 0 | statistics; deterministic |
 | qip-storage | 0 | local engine store with explicit timeouts; managed targets refuse at preflight |
 | qip-transport | 0 | bounded blocking sockets with explicit timeouts; refuses when full |
+| qip-tls | 0 | the mutual-TLS 1.3 policy on the `ring` provider, loaded from files the root names and refusing a missing identity; opens no socket, so its callers own every timeout; the one pin of `ring`, `rustls` and `rustls-webpki` |
 | qip-protocols | 0 | venue message codecs; local decode, no remote read |
 | qip-orderbook | 0 | local book update; no remote read |
 | qip-sequencing | 0 | local ordering and dedup; no remote read |
@@ -74,7 +75,7 @@ past `qip_peer_link::boundary`; and when the port declares a method beyond
 | qip-edge-node | 1 | the cell's composition root. Hosts Lane 0 (the cell) and Lane 1 (the peer link), and its decision loop reaches Lane 1 only through `qip_peer_link::boundary`; paper passes without any cognitive process present |
 | qip-mesh | 1 | cell and centre exchange of signed deltas and grants, and the host of the peer coordination protocol's five functions, re-exported as `qip_mesh::peer`; latency accepted, never awaited by a pass |
 | qip-peer | 1 | the peer coordination protocol, pure: frames in, state and refusals out; depends on qip-core, serde and serde_json alone, so no warehouse client is reachable from it (DATA-058) |
-| qip-peer-link | 1 | the peer wire (mutual TLS 1.3 through `qip_transport::tls`) and session on threads of their own, with explicit connect, write and handshake timeouts; runs the peer cycle on the session thread; reached from the reflex node only through a port that offers with `try_send` and reports from atomics |
+| qip-peer-link | 1 | the peer wire (mutual TLS 1.3 through `qip-tls`, not `qip-transport`, so the fabric's wire is unreachable from it) and session on threads of their own, with explicit connect, write and handshake timeouts; runs the peer cycle on the session thread; reached from the reflex node only through a port that offers with `try_send` and reports from atomics |
 | qip-streaming | 1 | stream transports with explicit bounds; a refusing port rather than a silent fallback |
 | qip-chain | 1 | signed chain records over qip-transport; bounded round trips |
 | qip-fabricd | 1 | the in-tree fabric daemon; journal appends acknowledged locally |

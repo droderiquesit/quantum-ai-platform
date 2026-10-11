@@ -35,6 +35,7 @@ use crate::trust::BundleVerifier;
 use qip_contracts::trust::{ArtefactClass, ArtefactSigner, ArtefactVerifier};
 use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
+use qip_tls::ring;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
