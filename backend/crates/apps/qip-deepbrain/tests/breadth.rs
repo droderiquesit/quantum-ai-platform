@@ -11,12 +11,15 @@
 use std::collections::BTreeMap;
 
 use qip_core::error::Result;
-use qip_core::{Context, Timestamp};
+use qip_core::{Context, Decimal, Timestamp};
 use qip_deepbrain::breadth::{PLAN_VARIABLE, install, load};
+use qip_events::Topic;
 use qip_financial::universe::Universe;
+use qip_kernel::event_markets::EventMarketsSimulated;
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
 use qip_risk::limits::LimitSet;
+use qip_streaming::envelope::StreamEnvelope;
 
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
@@ -130,6 +133,98 @@ fn a_malformed_misspelt_or_empty_plan_is_a_configuration_error() -> Result<()> {
             refused.message().starts_with("configuration:"),
             "{name}: {}",
             refused.message()
+        );
+    }
+    Ok(())
+}
+
+/// An event-markets plan naming one venue and one entity; `kind` and
+/// `jurisdiction` are what the three runs below vary.
+fn event_plan(kind: &str, jurisdiction: &str) -> String {
+    format!(
+        r#"{{"event_markets": {{
+  "source": "synthetic",
+  "entity": "desk",
+  "policies": [{{
+    "venue": "SYNTH-PREDICT", "kind": "{kind}", "creation": [], "trading": ["GB"],
+    "products": ["SYNTH-PREDICT-CUT", "SYNTH-PREDICT-HOLD", "SYNTH-PREDICT-HIKE"],
+    "minimum_age": 18
+  }}],
+  "entities": {{"desk": {{
+    "jurisdiction": "{jurisdiction}", "eligible": true, "age_years": 30,
+    "venues": ["SYNTH-PREDICT"]
+  }}}}
+}}}}"#
+    )
+}
+
+/// Install `plan` through the variable the binary reads, run one cycle, and
+/// return what SIMULATE journaled for the event markets.
+fn simulated_through_the_variable(name: &str, plan: &str) -> Result<EventMarketsSimulated> {
+    let path = plan_file(name, plan)?;
+    let mut platform = platform()?;
+    let set = lookup(BTreeMap::from([(PLAN_VARIABLE.to_string(), path)]));
+    install(&mut platform, &set, start())?.expect("a plan was set");
+    platform.run_cycle(start());
+    let mut records = Vec::new();
+    for event in platform.event_log().by_topic(Topic::ScenarioEvaluated) {
+        if let Ok(decoded) = StreamEnvelope::from_frame(event)?.decode::<EventMarketsSimulated>() {
+            records.push(decoded.body);
+        }
+    }
+    Ok(records.pop().expect("SIMULATE journaled the event markets"))
+}
+
+/// R12-EVENT-5084, -5085, -5086, -5088 and -5089 on the deep brain's own
+/// path: a plan read from `QIP_DEEPBRAIN_BREADTH_PLAN` makes the running
+/// platform estimate an outcome distribution summing to one, price every
+/// outcome from it, and rest paper quotes for an admitted entity — while a
+/// venue recorded as regulated wagering, or an entity out of the venue's
+/// trading jurisdictions, gets no quote and a refusal naming why, at an
+/// identical price.
+///
+/// Mutation: in `EventMarketPlane::simulate`, skip the access book and quote
+/// every outcome, and the wagering and out-of-jurisdiction runs quote; drop
+/// the `policy.trading` check from `AccessBook::admit` and the
+/// out-of-jurisdiction run quotes.
+#[test]
+fn an_event_plan_from_the_variable_prices_every_outcome_and_quotes_only_where_access_admits()
+-> Result<()> {
+    let admitted = simulated_through_the_variable("event-admitted", &event_plan("Event", "GB"))?;
+    let wagering = simulated_through_the_variable("event-wagering", &event_plan("Wagering", "GB"))?;
+    let abroad = simulated_through_the_variable("event-abroad", &event_plan("Event", "US"))?;
+
+    // The admitted run priced and quoted, so the empty sets below are
+    // refusals and not a plane that did nothing.
+    assert!(
+        !admitted.decision_grade,
+        "a synthetic source is research only"
+    );
+    let valuation = admitted.valuations.first().expect("the market was priced");
+    assert_eq!(valuation.fair_values.len(), 3, "{valuation:?}");
+    let total: Decimal = valuation.fair_values.values().copied().sum();
+    assert_eq!(
+        total,
+        Decimal::ONE,
+        "unit payoff: fair values are the distribution"
+    );
+    assert_eq!(admitted.quotes.len(), 3, "{admitted:?}");
+    assert!(admitted.refusals.is_empty(), "{:?}", admitted.refusals);
+
+    for (refused, why) in [
+        (&wagering, "Wagering venue"),
+        (&abroad, "does not permit orders from US"),
+    ] {
+        assert!(refused.quotes.is_empty(), "{why}: {refused:?}");
+        assert!(refused.fills.is_empty(), "{why}: {refused:?}");
+        assert!(
+            refused.refusals.iter().any(|reason| reason.contains(why)),
+            "{why}: {:?}",
+            refused.refusals
+        );
+        assert_eq!(
+            refused.valuations, admitted.valuations,
+            "{why}: the price moved with availability"
         );
     }
     Ok(())
