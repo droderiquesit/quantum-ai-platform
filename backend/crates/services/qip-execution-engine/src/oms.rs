@@ -401,6 +401,12 @@ pub struct OrderManager {
     /// these, and before they existed nothing in any binary could construct
     /// the evidence that rung asks for.
     sessions: SessionRecorder,
+    /// The exposure axes each accepted order was checked on, keyed by order
+    /// id, so its unfilled remainder is charged to the same buckets when a
+    /// later order is checked. Only the caller knows an instrument's axes,
+    /// and it states them for the order it submits and no other. Pruned to
+    /// open orders at every submit, so it is bounded by them.
+    working_axes: BTreeMap<String, BTreeMap<String, String>>,
     sequence: u64,
 }
 
@@ -415,6 +421,7 @@ impl OrderManager {
             instrument_feasibility: BTreeMap::new(),
             withdrawn_venues: BTreeSet::new(),
             sessions: SessionRecorder::default(),
+            working_axes: BTreeMap::new(),
             sequence: 0,
         }
     }
@@ -732,7 +739,17 @@ impl OrderManager {
             axes,
             scope: order.scope.clone(),
         };
-        let check = match self.checker.check(&proposed, risk_state, at) {
+        // `risk_state` is the book the caller built from fills. The orders
+        // this manager has sent and the venue has not yet filled are in no
+        // fill, so without them two orders each inside the gross headroom
+        // were each approved against the same headroom and could fill past
+        // the ceiling together. Their remainders are charged here, where the
+        // only record of them lives, rather than trusted to every caller.
+        let working = self.working_exposure();
+        let check = match self
+            .checker
+            .check_with_working(&proposed, risk_state, &working, at)
+        {
             Ok(check) => check,
             Err(error) => {
                 let result = refuse(
@@ -863,6 +880,10 @@ impl OrderManager {
                     reduced_to,
                     reconciliation_breaks: breaks,
                 };
+                if order.state.is_open() {
+                    self.working_axes
+                        .insert(order.order_id.as_str().to_string(), proposed.axes);
+                }
                 self.orders
                     .insert(order.order_id.as_str().to_string(), order);
                 result
@@ -959,6 +980,46 @@ impl OrderManager {
             }
         }
         (cancelled, failed)
+    }
+
+    /// The unfilled remainder of every open order, as the pre-trade check
+    /// charges it.
+    ///
+    /// Priced at the larger of a limit order's limit and its arrival price —
+    /// a sale may fill above its limit, so the limit alone can understate it
+    /// — and at the arrival price otherwise, the price the order itself was
+    /// checked at.
+    /// Also forgets the axes of every order that is no longer open, which is
+    /// what keeps that map bounded.
+    fn working_exposure(&mut self) -> Vec<ProposedOrder> {
+        let orders = &self.orders;
+        self.working_axes
+            .retain(|id, _| orders.get(id).is_some_and(|order| order.state.is_open()));
+        self.orders
+            .values()
+            .filter(|order| order.state.is_open())
+            .filter_map(|order| {
+                let remaining = order.remaining_quantity();
+                if !remaining.is_positive() {
+                    return None;
+                }
+                let price = match order.order_type {
+                    OrderType::Limit { price } => price.max(order.arrival_price),
+                    _ => order.arrival_price,
+                };
+                Some(ProposedOrder {
+                    object_id: order.object_id.clone(),
+                    quantity: remaining * Decimal::from_int(i64::from(order.side.sign())),
+                    reference_price: price,
+                    axes: self
+                        .working_axes
+                        .get(order.order_id.as_str())
+                        .cloned()
+                        .unwrap_or_default(),
+                    scope: order.scope.clone(),
+                })
+            })
+            .collect()
     }
 
     /// A fresh order id, deterministic across a replay.

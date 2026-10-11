@@ -1694,3 +1694,117 @@ fn a_fill_on_an_order_that_was_never_sent_is_refused_before_anything_is_booked()
     }
     Ok(())
 }
+
+// --- working orders count against the limits --------------------------------
+
+/// A buy limit order at 90 for an instrument arriving at 100: the simulated
+/// venue's market never reaches it, so the venue accepts it and it rests.
+fn resting_buy(symbol: &str, quantity: &str) -> Order {
+    Order::new(
+        OrderId::from_string(format!("ord-rest-{symbol}")),
+        object(symbol),
+        Side::Buy,
+        Decimal::parse(quantity).unwrap(),
+        OrderType::Limit { price: dec!("90") },
+        dec!("100"),
+        "prop-1",
+        vec!["hyp-1".to_string()],
+        "momentum",
+        now(),
+    )
+}
+
+/// A manager under nothing but the survival ceiling, against a book with
+/// nothing filled and a ceiling of a million.
+fn survival_gated() -> (OrderManager, RiskState) {
+    let limits = LimitSet::new("survival-test").with(
+        Limit::new("survival-gross", LimitKind::MaxSurvivalGross { limit: 1.0 })
+            .with_rationale("gross is capped at what the survival kernel released"),
+    );
+    let state = RiskState {
+        survival_gross_ceiling: Some(dec!("1000000")),
+        ..risk_state()
+    };
+    (OrderManager::new(PreTradeChecker::new(limits)), state)
+}
+
+#[test]
+fn a_second_order_inside_the_headroom_alone_is_refused_when_a_working_order_already_holds_it() {
+    // Round 3 found the pre-trade gate measuring only filled gross. The book
+    // a caller builds comes from fills, a resting order is in none, so each
+    // of two 600k orders was checked against the same empty book under a 1M
+    // survival ceiling — both admitted, and 1.2M could fill.
+    let autonomy = AutonomyController::new();
+    let mut venue = simulator();
+
+    // Contrast: the second order alone is inside the ceiling, so what
+    // refuses it below is the first order's remainder and not its own size.
+    let (mut alone, state) = survival_gated();
+    let solo = alone.submit(
+        resting_buy("BBB", "6000"),
+        &mut venue,
+        &autonomy,
+        &state,
+        BTreeMap::new(),
+        None,
+        now(),
+    );
+    assert!(
+        solo.accepted,
+        "the contrast premise failed: {:?}",
+        solo.refusal
+    );
+
+    let (mut manager, state) = survival_gated();
+    let first = manager.submit(
+        resting_buy("AAA", "6000"),
+        &mut venue,
+        &autonomy,
+        &state,
+        BTreeMap::new(),
+        None,
+        now(),
+    );
+    assert!(first.accepted, "the premise failed: {:?}", first.refusal);
+    // Premise: the first order rests unfilled. A filled one would be in a
+    // book the caller builds, and the test would prove nothing about working
+    // orders.
+    assert!(
+        first.fills.is_empty(),
+        "the premise failed: the first order filled"
+    );
+    assert_eq!(
+        manager.open_orders().len(),
+        1,
+        "the premise failed: nothing rests"
+    );
+
+    // The caller hands the same fill-built book — nothing has filled.
+    let second = manager.submit(
+        resting_buy("BBB", "6000"),
+        &mut venue,
+        &autonomy,
+        &state,
+        BTreeMap::new(),
+        None,
+        now(),
+    );
+    assert!(
+        !second.accepted,
+        "a second order was admitted against headroom a working order already holds"
+    );
+    match second.refusal.as_ref() {
+        Some(RefusalReason::RiskRejected { breaches, .. }) => assert!(
+            breaches
+                .iter()
+                .any(|breach| breach.limit_name == "survival-gross"),
+            "the refusal was not the survival ceiling: {breaches:?}"
+        ),
+        other => panic!("expected the survival ceiling to refuse, got {other:?}"),
+    }
+    assert_eq!(
+        manager.open_orders().len(),
+        1,
+        "the refused order rests anyway"
+    );
+}
