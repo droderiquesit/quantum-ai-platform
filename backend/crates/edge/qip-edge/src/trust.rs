@@ -162,9 +162,24 @@ mod tests {
         let asymmetric = ArtefactSignature::new("projects/p/k/1", vec![0x30; 70])
             .expect("well formed")
             .encode();
+        // Refused *as* an asymmetric signature, not merely as a MAC that
+        // failed to match: the HMAC comparison would refuse it too, so an
+        // `is_err` alone passed with the parse arm deleted (round-2 mutation
+        // audit). The operator needs the instruction, not "does not verify".
+        let refused = root
+            .check(ArtefactClass::Policy, b"payload", &asymmetric, now)
+            .expect_err("an asymmetric signature was admitted as a MAC");
         assert!(
-            root.check(ArtefactClass::Policy, b"payload", &asymmetric, now)
-                .is_err()
+            refused.message().contains("install the trust bundle"),
+            "{}",
+            refused.message()
+        );
+        assert!(
+            !refused
+                .message()
+                .contains("does not verify against this cell's key"),
+            "the asymmetric signature was tried as a MAC: {}",
+            refused.message()
         );
         assert!(TrustRoot::shared_key(b"").is_err());
         assert!(!format!("{root:?}").contains("thirty-two"));
