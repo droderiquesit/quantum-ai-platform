@@ -430,15 +430,13 @@
   },
   {
     "id": "R12-REFLEX-8020",
-    "status": "PARTIAL",
-    "current": "Structural tests forbid edge crates reaching qip-storage (which holds Redis/BigQuery/Bigtable adapters), LM, solvers and history readers, and require lane-0 stages linked in-process. The edge-node main loop still runs the halt poll, journal flush and mesh exchange on the decision thread between passes (control.rs moves them off-thread but is not yet wired in main).",
+    "status": "COMPLETE",
+    "current": "Lane-0 crates reach no storage/LM/historical reader by dependency walk; halt flag and plan compilation run on Poller/PlanCompiler threads with bounded handoffs; decision loop in main.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:849 every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_transport",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:967 no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store",
-      "backend/crates/apps/qip-edge-node/src/control.rs:1-40 off-thread control, 'until SLICE-36 switches fabric mode over'",
-      "backend/crates/apps/qip-edge-node/src/main.rs:880-990 main loop polls halt and exchanges before run_pass"
+      "backend/crates/apps/qip-edge-node/src/main.rs:896 ControlHandoff/PlanCompiler; :903 Poller::spawn",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:849; :976 edge crates cannot reach qip-storage"
     ],
-    "gap": "Wire control::Handoff/Poller into main so no blocking I/O shares the decision thread; latency proof under replay.",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -449,22 +447,22 @@
     "verification": "cargo test -p qip-acceptance --test architecture; cargo test -p qip-edge-node --test control",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Handoff/Poller now wired. No latency proof under replay exists (not required by the statement)."
   },
   {
     "id": "R12-ARCH-8021",
-    "status": "PARTIAL",
-    "current": "Cell journals in memory and the node ships it to a StoreMirror between passes; journal pressure narrows rather than blocks. The fabric spool/drain (edge-node event_fabric) is tested but not wired into main.",
+    "status": "COMPLETE",
+    "current": "backend/crates/apps/qip-edge-node/src/main.rs:770 spool writer thread, :795 JournalRelay, :820 Drain; decision thread hands off via bounded channels and DecisionLoop::turn (backend/crates/apps/qip-edge-node/src/main.rs:932)",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/mirror.rs StoreMirror",
-      "backend/crates/edge/qip-edge/tests/journal_pressure.rs",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
-      "backend/crates/apps/qip-edge-node/src/lib.rs:140-200 assemble (no event_fabric)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:781 qip-spool-writer thread spawned",
+      "backend/crates/apps/qip-edge-node/src/main.rs:872 DecisionLoop::new",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:350 a_stalled_journal_store_never_holds_the_decision_thread",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped"
     ],
-    "gap": "Wire the event_fabric writer/drain into main so journals go to the fabric off the decision thread.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -474,7 +472,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: writer/relay/drain wired in edge-node main; a stalled-store test drives DecisionLoop::turn. Passes run only on the simulated feed, and no node is deployed."
   },
   {
     "id": "R12-FABRIC-8022",
@@ -525,18 +523,18 @@
   },
   {
     "id": "R12-LEDGER-8024",
-    "status": "PARTIAL",
-    "current": "LedgerStore::apply writes postings, balances, chain tail and consumed offset in one WAL batch; property test covers duplication and crash. qip-ledgerd's main never applies a delivery (consumer placeholder; read API serve() errors so the process exits).",
+    "status": "COMPLETE",
+    "current": "apply checks the chain tail/cursor and writes postings, balances, tail and cursor in one WriteBatch under the writer lock.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:372 apply (single WriteBatch)",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:57-70 placeholder consumer, hard-coded 127.0.0.1:9090",
-      "backend/crates/apps/qip-ledgerd/src/read_api.rs:38-43 serve() always Err"
+      "backend/crates/apps/qip-ledgerd/src/store.rs:378 writer lock; :372-600 single batch per delivery",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 duplication/crash property",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:399 restart books once",
+      "backend/crates/apps/qip-ledgerd/src/lib.rs:169 start from main"
     ],
-    "gap": "Wire the fabric consumer and read API in qip-ledgerd so apply is reached from main.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -544,7 +542,7 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": "qip-ledgerd cannot start: main returns serve()'s unavailable error. ADR 0100 describes it as the ledger's sole writer."
+    "notes": "qip-ledgerd cannot start: main returns serve()'s unavailable error. ADR 0100 describes it as the ledger's sole writer. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. apply is now reached from qip-ledgerd main via the partition workers."
   },
   {
     "id": "R12-RES-8025",
@@ -1462,17 +1460,15 @@
   {
     "id": "R12-REFLEX-8067",
     "status": "PARTIAL",
-    "current": "Cell holds books, features, envelope and sequence in memory. The node ships the journal to a qip-storage StoreMirror; the edge-node event_fabric spool/drain/writer exists and is tested but assemble/main never construct it.",
+    "current": "Cell state is in memory; journal batches go through spool/drain; delivery to a fabric partition is configuration-dependent and untested.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs",
-      "backend/crates/apps/qip-edge-node/src/mirror.rs",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs",
-      "backend/crates/apps/qip-edge-node/src/lib.rs:140-200 assemble without event_fabric"
+      "backend/crates/apps/qip-edge-node/src/main.rs:809 fabric sink optional",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:489 ticks reach the lake (not the fabric)"
     ],
-    "gap": "Construct the fabric writer/drain in main and ship to qip-fabricd.",
+    "gap": "A test that journal batches reach a fabric partition without blocking a pass.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -1482,7 +1478,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Writer/drain now constructed in main; fabric leg unproven."
   },
   {
     "id": "R12-EXEC-8068",
@@ -1659,16 +1655,17 @@
   {
     "id": "R12-FABRIC-8076",
     "status": "PARTIAL",
-    "current": "qip-transport event_fabric Producer/Consumer: epoch init, sequenced sends, ack-profile wait, credit-bounded fetch, breaker; tested against fabricd. No production process uses it (edge-node fabric writer unwired; ledgerd consumer is a placeholder).",
+    "current": "qip-transport Producer has idempotent producer id/epoch/sequence, retry/breaker policy and an explicit AckProfile; production caller is qip-edge-node FabricSink when a fabric URL is configured. The strongest profile is Archived (single broker + archive), so no quorum acknowledgement exists to report.",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:291-396",
-      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:112 fetch_credit_bytes",
-      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs"
+      "backend/crates/apps/qip-edge-node/src/outbox.rs:144 FabricSettings::sink builds two Producers with class.ack_floor()",
+      "backend/crates/apps/qip-edge-node/src/main.rs:812 sink pushed only when fabric configured",
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:397 Archived ack waits for archived_through",
+      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs:434 a_consumer_killed_after_committing_n_resumes_at_n_plus_one"
     ],
-    "gap": "A production caller; zero-copy buffers.",
+    "gap": "No quorum ack exists (see FABRIC-8086); no test drives FabricSink against a broker.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1676,7 +1673,7 @@
     "verification": "cargo test -p qip-transport --test event_fabric_client",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Gained a production caller; \"quorum only when durable\" cannot hold without replication."
   },
   {
     "id": "R12-FABRIC-8077",
@@ -1724,13 +1721,14 @@
   {
     "id": "R12-FABRIC-8079",
     "status": "PARTIAL",
-    "current": "Archiver writes content-addressed segments with manifest and verifies round-trip; ArchiveReader hydrates and verifies — but only tests construct ArchiveReader, and fabricd archives to a local FileBlobStore.",
+    "current": "qip-fabricd archives sealed segments with content-addressed manifests to a directory or Cloud Storage target; ArchiveReader::hydrate verifies and hydrates but has no production caller.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:355 archive, :540-578 ArchiveReader/hydrate",
-      "backend/crates/libs/qip-storage/tests/segment_archive.rs:507 manifest-verify mutation test",
-      "backend/crates/apps/qip-fabricd/tests/broker.rs:1057 sealed_segments_are_archived_exactly_once_and_a_stalled_archive_never_delays_an_append"
+      "backend/crates/apps/qip-fabricd/src/lib.rs:136 open_archive (Directory | CloudStorage); :454 archive thread",
+      "backend/crates/libs/qip-storage/src/segment/archive.rs:568 hydrate re-verifies manifest",
+      "backend/crates/libs/qip-storage/tests/segment_archive.rs:507 tamper mutation",
+      "grep ArchiveReader outside qip-storage src/tests: no production caller"
     ],
-    "gap": "Fetch path that hydrates from the archive; GCS archive target.",
+    "gap": "A fetch/replay path in qip-fabricd or a consumer that hydrates from the archive.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1741,7 +1739,7 @@
     "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. GCS target added; hydrate still unreached from any binary."
   },
   {
     "id": "R12-FABRIC-8080",
@@ -1879,15 +1877,16 @@
   {
     "id": "R12-FABRIC-8086",
     "status": "INCORRECT",
-    "current": "Single broker, RF1. AckProfile::Quorum is implemented as 'the batch's segment has been archived' (archived_through) — and fabricd archives to a local directory — so a 'quorum' ack can be returned with one copy on one machine's disks.",
+    "current": "Replication is refused (RF1 only). The profile was renamed Archived, but the committed catalogue still declares \"ack_profile\": \"quorum\" on replication_factor 1 streams and the parser silently reads \"quorum\" as Archived (one broker plus an archive copy).",
     "evidence": [
-      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:396 await_ack_profile; :700 test equating quorum with archived",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:354 FileBlobStore archive",
-      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 RF1"
+      "backend/crates/libs/qip-events/src/event_fabric/catalogue.rs:226 \"archived\" | \"quorum\" => AckProfile::Archived",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:184 #[serde(alias = \"quorum\")] Archived",
+      "infrastructure/event-fabric/streams.local.json:12 \"ack_profile\": \"quorum\" with \"replication_factor\": 1 (also :35)",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:384 RF != 1 refused"
     ],
-    "gap": "Replication with majority acknowledgement; rename or redefine the current profile until then.",
+    "gap": "RF3 with majority ack; meanwhile refuse (not alias) a \"quorum\" declaration and correct streams.local.json.",
     "implemented": false,
-    "tested": false,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1896,7 +1895,7 @@
     "verification": "property test killing replicas",
     "work_item": "",
     "size": "XL",
-    "notes": "The 'Quorum' name contradicts the blueprint's definition; acceptance tests event_fabric_stream_classes.rs and event_fabric_delivery_semantics.rs:156 assert on local fixture structs and would pass with no fabric at all."
+    "notes": "The 'Quorum' name contradicts the blueprint's definition; acceptance tests event_fabric_stream_classes.rs and event_fabric_delivery_semantics.rs:156 assert on local fixture structs and would pass with no fabric at all. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->INCORRECT. Still INCORRECT: a committed config that says quorum is accepted and delivered as single-broker durability."
   },
   {
     "id": "R12-FABRIC-8087",
@@ -2012,12 +2011,13 @@
   {
     "id": "R12-FABRIC-8092",
     "status": "PARTIAL",
-    "current": "P1 ack floor Quorum and producer dedupe exist; ledgerd's consumer is a placeholder so no ledger sink retries anything.",
+    "current": "P1 has idempotent producer ids, refuse_producer overload, archive-required segments, and a ledger sink that holds its checkpoint through outages; RF3 is refused and no archive bucket is provisioned.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:23-36",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs:36-42"
+      "backend/crates/services/qip-streaming/tests/event_fabric_sink.rs:119 a_sustained_ledger_outage_holds_the_checkpoint_skips_nothing_and_every_outcome_commits_once_in_effect",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:81 P1 ack floor Archived; :384 RF1 only",
+      "infrastructure/terraform/fabric.tf:141 ledgerd archive disk only; no fabric archive bucket"
     ],
-    "gap": "Ledger sink with indefinite retry; RF3; immutable GCS archive.",
+    "gap": "RF3 quorum; an immutable GCS archive provisioned.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2031,7 +2031,7 @@
     "verification": "cargo test -p qip-ledgerd",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Ledger-sink retry and archiving improved; RF3 and immutable cloud archive still absent."
   },
   {
     "id": "R12-FABRIC-8093",
@@ -2209,13 +2209,13 @@
   {
     "id": "R12-FABRIC-8101",
     "status": "PARTIAL",
-    "current": "Content-addressed keys (blob_key) and manifest exist; fabricd always archives to a local FileBlobStore; CloudStorageBlobStore exists but is not wired; no landing bucket.",
+    "current": "qip-fabricd can archive content-addressed segments to a Cloud Storage bucket; Terraform provisions no landing bucket or lifecycle copy, and event_fabric_broker is null in every environment.",
     "evidence": [
-      "backend/crates/libs/qip-storage/src/segment/archive.rs:87 blob_key",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:354",
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs:388"
+      "backend/crates/apps/qip-fabricd/src/lib.rs:139 ArchiveTarget::CloudStorage",
+      "infrastructure/terraform/variables.tf:1611 event_fabric_broker default null (\"Null in every environment\")",
+      "grep archive in infrastructure/terraform/fabric.tf and modules/event-fabric-broker: no bucket/lifecycle"
     ],
-    "gap": "GCS archive configuration in fabricd; landing bucket + lifecycle.",
+    "gap": "Regional landing bucket, lifecycle/residency copy to archive bucket, enabled in an environment.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2226,7 +2226,7 @@
     "verification": "cargo test -p qip-storage --test segment_archive",
     "work_item": "",
     "size": "M",
-    "notes": "event_fabric_infrastructure.rs:263 fabric_090 uses DefaultHasher labelled 'blake3' on a literal — it tests nothing."
+    "notes": "event_fabric_infrastructure.rs:263 fabric_090 uses DefaultHasher labelled 'blake3' on a literal — it tests nothing. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. GCS target added in code; infrastructure still absent."
   },
   {
     "id": "R12-FABRIC-8102",
@@ -2701,14 +2701,13 @@
   {
     "id": "R12-DATA-8124",
     "status": "PARTIAL",
-    "current": "No landing bucket; fabric archives to local disk; CloudStorageBlobStore unwired.",
+    "current": "infrastructure/terraform/fabric.tf:23 fabricd resources gated on var.event_fabric_broker, null in every environment; no regional landing bucket resource for replay segments/knowledge packs found",
     "evidence": [
-      "backend/crates/apps/qip-fabricd/src/lib.rs:354",
-      "backend/crates/libs/qip-storage/src/gcp/storage.rs:388"
+      "infrastructure/terraform/fabric.tf:23 count = var.event_fabric_broker == null ? 0 : 1"
     ],
-    "gap": "Bucket + fabricd GCS config.",
-    "implemented": true,
-    "tested": true,
+    "gap": "No landing bucket; fabricd has no GCS writer config; gated off everywhere.",
+    "implemented": false,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -2719,7 +2718,7 @@
     "verification": "terraform plan + fabricd integration",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
   },
   {
     "id": "R12-DATA-8125",
@@ -2912,18 +2911,17 @@
   },
   {
     "id": "R12-LEDGER-8134",
-    "status": "PARTIAL",
-    "current": "LedgerStore::apply does one atomic batch with double-entry postings and the consumed offset, deduplicating by per-cell chain continuity (sequence + digest) rather than event_id; storage is local DurableStore; qip-ledgerd main never consumes (placeholder) and exits on read-API serve error.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd runs a worker per P1 partition that applies each record in one batch keyed by the cell chain position (ADR 0105), recording the cursor so redelivery is a no-op; read API served.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:1-60 module doc, :372 apply",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337,430",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:57-70",
-      "backend/crates/apps/qip-ledgerd/src/consumer.rs:36-42"
+      "backend/crates/apps/qip-ledgerd/src/lib.rs:194 Server::bind ReadApi; :219 PartitionWorker; :238 serve thread",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:399 a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 property over redelivery/crash"
     ],
-    "gap": "Real fabric consumer, running read API, Spanner transaction.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -2934,7 +2932,7 @@
     "verification": "cargo test -p qip-ledgerd --test store; process-level test of qip-ledgerd",
     "work_item": "",
     "size": "L",
-    "notes": "Dedup by chain continuity is a deliberate deviation from 'keyed by event_id' (red-team M3); record as a design difference."
+    "notes": "Dedup by chain continuity is a deliberate deviation from 'keyed by event_id' (red-team M3); record as a design difference. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Consumer and read API now run from main. Dedup key is chain position, not a separate event_id; Spanner not used (local store)."
   },
   {
     "id": "R12-LEDGER-8135",
@@ -3022,14 +3020,13 @@
   {
     "id": "R12-LEDGER-8139",
     "status": "PARTIAL",
-    "current": "Cell::reconcile compares the venue's view with the cell's own book each pass (called from run_pass) and a break trips the kill switch; the centre records breaks/halts from cell reports. Comparison is cell-vs-venue, not ledger-vs-venue, and no fabric event is emitted.",
+    "current": "The edge cell reconciles venue drop-copy against its own order/position state, halts on a break, and writes ReconciliationBreak to P1; nothing compares venue/custody truth with qip-ledgerd balances.",
     "evidence": [
-      "backend/crates/edge/qip-edge/src/cell.rs:9776 reconcile",
-      "backend/crates/apps/qip-edge-node/src/pass.rs:359",
-      "backend/crates/edge/qip-edge/tests/telemetry.rs:856 a_reconciliation_break_is_counted_and_raises_the_kill_switch_gauge",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:239 ReconciliationBreak classified P1",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:77 breaks halt the cell",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:212 break written to spool"
     ],
-    "gap": "Ledger-vs-venue reconciliation and P0/P1 break event on the fabric.",
+    "gap": "Ledger-vs-venue/custody comparison feeding the halt.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3042,7 +3039,7 @@
     "verification": "cargo test -p qip-edge --test telemetry",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Cell-side break now reaches P1; ledger-side reconciliation still absent."
   },
   {
     "id": "R12-LEDGER-8140",

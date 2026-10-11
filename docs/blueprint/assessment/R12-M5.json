@@ -1,18 +1,19 @@
 [
   {
     "id": "R12-LEDGER-5001",
-    "status": "PARTIAL",
-    "current": "LedgerStore (backend/crates/apps/qip-ledgerd/src/store.rs:340) has no update/delete method; apply (backend/crates/apps/qip-ledgerd/src/store.rs:372) commits one WriteBatch per delivery; fold (backend/crates/apps/qip-ledgerd/src/store.rs:970). LedgerEvent fields private (backend/crates/libs/qip-contracts/src/ledger.rs:148). But qip-ledgerd never runs: backend/crates/apps/qip-ledgerd/src/main.rs:65 consumer constructed but never started; backend/crates/apps/qip-ledgerd/src/main.rs:70 read_api.serve() always returns Err(unavailable), so the binary exits with an error at start; backend/crates/apps/qip-ledgerd/src/consumer.rs:32-37 start() is a placeholder returning Err.",
+    "status": "INCORRECT",
+    "current": "Normal path is append-only: apply folds events into balance rows in one batch and a refold test equals stored balances. But LedgerStore::import_state is a pub method that writes BalanceRow entries directly (doc: \"replaces the current state entirely\"), bypassing the event fold; it also silently skips every key containing a second colon, which is every key Account::Display produces.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:340 LedgerStore, no mutation API",
-      "backend/crates/apps/qip-ledgerd/src/store.rs:372 apply one batch",
+      "backend/crates/apps/qip-ledgerd/src/store.rs:907 import_state writes balance_key -> BalanceRow without an event",
+      "backend/crates/apps/qip-ledgerd/src/store.rs:916 parts.len()==2 else continue (silent skip)",
+      "backend/crates/libs/qip-contracts/src/ledger.rs:91 Account display \"trading:{cell}/{strategy}\" (so keys always have >=3 colon parts)",
       "backend/crates/apps/qip-ledgerd/tests/store.rs:720 refolding_the_outcome_stream_from_its_first_record_equals_the_stored_balances",
-      "backend/crates/apps/qip-ledgerd/src/main.rs:70 serve() placeholder"
+      "backend/crates/apps/qip-ledgerd/src/lib.rs:169 start (reached from qip-ledgerd main.rs:40)"
     ],
-    "gap": "Wire FabricConsumer to a real broker and implement ReadApi::serve so the binary runs; deploy qip-ledgerd (absent from Terraform).",
+    "gap": "Remove import_state (or make restore replay events through apply); then refold invariant holds structurally.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -20,7 +21,7 @@
     "verification": "cargo test -p qip-ledgerd --test store; a qip-ledgerd process consuming qip-fabricd outcomes",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->INCORRECT. PARTIAL->INCORRECT: ledgerd now runs, but its store exposes a direct balance-write path contradicting append-only."
   },
   {
     "id": "R12-LEDGER-5002",
@@ -263,18 +264,18 @@
   },
   {
     "id": "R12-LEDGER-5013",
-    "status": "PARTIAL",
-    "current": "Dedup by per-(cell,session) hash-chain continuity in LedgerStore::apply (backend/crates/apps/qip-ledgerd/src/store.rs:372, duplicate_or_conflict backend/crates/apps/qip-ledgerd/src/store.rs:698); tested by property-style test. Not global across a running process: backend/crates/apps/qip-ledgerd/src/main.rs:65 consumer constructed but never started; backend/crates/apps/qip-ledgerd/src/main.rs:70 read_api.serve() always returns Err(unavailable), so the binary exits with an error at start; backend/crates/apps/qip-ledgerd/src/consumer.rs:32-37 start() is a placeholder returning Err.",
+    "status": "COMPLETE",
+    "current": "qip-ledgerd consumes the outcomes stream per partition and applies each record once: same chain position + same digest is a no-op; same offset or sequence with different content parks the cell as an integrity break.",
     "evidence": [
-      "backend/crates/apps/qip-ledgerd/src/store.rs:698 duplicate_or_conflict",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 for_any_duplication_redelivery_and_crash...",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:430 same digest moves nothing",
-      "backend/crates/apps/qip-ledgerd/tests/store.rs:485 different digest parks the cell"
+      "backend/crates/apps/qip-ledgerd/src/store.rs:372 apply; :380 offset re-delivery with different hash -> Integrity park",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery; :485 different digest parks",
+      "backend/crates/apps/qip-ledgerd/tests/fabric.rs:399 a_started_ledger_books_every_fill_on_the_stream_once_across_a_restart",
+      "backend/crates/apps/qip-ledgerd/src/lib.rs:219 PartitionWorker per partition; main.rs:40"
     ],
-    "gap": "Run the store as the global journal (fabric consumer + serving).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -284,20 +285,20 @@
     "verification": "cargo test -p qip-ledgerd --test store",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. qip-ledgerd now starts, consumes and serves; dedup reached from main."
   },
   {
     "id": "R12-LEDGER-5014",
     "status": "PARTIAL",
-    "current": "SourceEvent carries order_id and journal digest (backend/crates/libs/qip-contracts/src/ledger.rs:133-140) linking fill->order->cell journal; intent id not carried; settlement link absent (Simulated only).",
+    "current": "SourceEvent carries cell/order_id back toward the fill; no intent id and no settlement record are carried, so the walk stops at the order.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ledger.rs:133 SourceEvent fields",
-      "backend/crates/libs/qip-contracts/src/reflex.rs OrderSent/Filled decisions"
+      "backend/crates/libs/qip-contracts/src/ledger.rs:133 SourceEvent with order_id; no intent field",
+      "backend/crates/libs/qip-contracts/src/ledger.rs:32 Settlement is a state, not a record"
     ],
-    "gap": "Carry intent id and a settlement record; a test walking lineage end to end from a ledger balance.",
+    "gap": "Carry intent id and a settlement record; a test walking lineage both directions from a balance.",
     "implemented": true,
     "tested": false,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -305,7 +306,7 @@
     "verification": "new acceptance test walking ledger -> journal -> intent",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged."
   },
   {
     "id": "R12-LEDGER-5015",
@@ -642,17 +643,16 @@
   {
     "id": "R12-REFLEX-5031",
     "status": "PARTIAL",
-    "current": "event_fabric writer with non-blocking HandoffSender::offer (backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:158-164) and FabricMirror (event_fabric/mirror.rs:28), tested in tests/event_fabric_outbox.rs:255. Not wired: main.rs uses StoreMirror (backend/crates/apps/qip-edge-node/src/main.rs:519), and event_fabric/drain.rs is a 2-line stub.",
+    "current": "qip-edge-node composes mirror -> relay -> spool writer -> drain, and adds a FabricSink producing to qip-fabricd when a fabric URL is configured; no test drives the drain into a fabric endpoint.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:164 offer",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:1-2 stub",
-      "backend/crates/apps/qip-edge-node/src/main.rs:519 StoreMirror used instead",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255"
+      "backend/crates/apps/qip-edge-node/src/main.rs:809 fabric sink only when configured; :847 FabricMirror",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:396 FabricSink::deliver",
+      "grep FabricSink in apps/qip-edge-node/tests and qip-acceptance: none"
     ],
-    "gap": "Implement the drain to qip-fabricd and wire FabricMirror in main.rs.",
+    "gap": "A test that a record reaches a fabricd partition (and fails if the mirror is removed); a deployed node.",
     "implemented": true,
-    "tested": true,
-    "integrated": false,
+    "tested": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -660,7 +660,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; node test asserting records reach a broker double",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Drain and mirror now wired in main; the fabric delivery is untested."
   },
   {
     "id": "R12-REFLEX-5032",
@@ -686,17 +686,18 @@
   },
   {
     "id": "R12-REFLEX-5033",
-    "status": "PARTIAL",
-    "current": "HandoffSender::offer is try_send-only (event_fabric/writer.rs:164), tested (tests/event_fabric_outbox.rs:255). But the deployed loop calls cell.flush(mirror) synchronously on the decision thread (backend/crates/apps/qip-edge-node/src/main.rs:922) into StoreMirror (a qip-storage write), and the channel is std mpsc not a preallocated lock-free ring.",
+    "status": "COMPLETE",
+    "current": "Decision thread offers to bounded sync_channels with try_send; a stalled store leaves entries unshipped while the turn returns; journal in memory bounded and halts new exposure at the bound.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/main.rs:922 synchronous flush on the pass thread",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:164",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:165 try_send; :217 sync_channel(capacity)",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:350 a_stalled_journal_store_never_holds_the_decision_thread; :424 bound/halt",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255",
+      "backend/crates/apps/qip-edge-node/src/main.rs:872 DecisionLoop with outbox"
     ],
-    "gap": "Move flush off the decision thread via the FabricMirror handoff; preallocated ring.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -706,20 +707,20 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox; a main-loop test with a stalled store",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Flush moved off the decision thread via the relay, wired in main."
   },
   {
     "id": "R12-REFLEX-5034",
     "status": "PARTIAL",
-    "current": "Writer maps journal entries to P1/P2 records (event_fabric/writer.rs header); drain.rs is a stub; telemetry is scraped at /metrics not drained; acks reach the centre via the mesh delta, not the fabric.",
+    "current": "Outcomes (P1) and the market journal (P2) drain asynchronously; telemetry and policy/model acknowledgements are not fabric records (the sink refuses any class but P1/P2).",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:18-29",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:1-2"
+      "backend/crates/apps/qip-edge-node/src/event_fabric/drain.rs:405 any class but P1/P2 refused",
+      "backend/crates/apps/qip-edge-node/src/main.rs:820 Drain spawned"
     ],
-    "gap": "Implement the drain thread and include telemetry and policy/model acks as fabric records.",
+    "gap": "Telemetry and policy/model acks as fabric records; a test they arrive after the pass.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -729,7 +730,7 @@
     "verification": "node test with in-process qip-streaming broker double",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Drain now running; scope incomplete."
   },
   {
     "id": "R12-MESH-5035",

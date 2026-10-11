@@ -322,14 +322,13 @@
   {
     "id": "R12-QUANT-7016",
     "status": "PARTIAL",
-    "current": "admit_job refuses synchronous jobs; solvers compute the classical baseline always; kernel uses SimulatedProvider.",
+    "current": "QuantumGateway refuses inline jobs, abandons a job past its patience and keeps the classical answer; it is constructed only by ComputeRouter::with_quantum, unreachable from any binary.",
     "evidence": [
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-233 JobClass/admit_job refuses synchronous quantum jobs",
-      "backend/crates/libs/qip-quantum/tests/foundry.rs:118-135 admit_job tests",
-      "backend/crates/libs/qip-quantum/tests/solvers.rs:112,155,175 classical baseline computed always; failed classical validation refused; backend/crates/services/qip-optimization-engine/tests/optimization.rs:202,436",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:178 kernel uses qip_quantum::provider::SimulatedProvider"
+      "backend/crates/libs/qip-quantum/src/gateway.rs:57 inline refusal",
+      "backend/crates/libs/qip-quantum/tests/gateway.rs:184 a_job_past_its_patience_is_abandoned_keeps_its_slot_and_its_late_answer_is_discarded",
+      "backend/crates/runtime/qip-kernel/src/config.rs:534 quantum_enabled defaults false; no app config sets it (grep quantum in apps/*/src/config.rs, main.rs: none)"
     ],
-    "gap": "No queue-aware async orchestration against a real provider; admit_job has no production caller.",
+    "gap": "A binary that enables the gateway against a provider.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -340,7 +339,7 @@
     "verification": "cargo test -p qip-quantum",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. admit_job now has a caller in the gateway, but no binary reaches it."
   },
   {
     "id": "R12-OBS-7017",
@@ -645,18 +644,19 @@
   },
   {
     "id": "R12-FABRIC-7031",
-    "status": "PARTIAL",
-    "current": "Edge-node handoff is try_send only; cell work does not depend on qip-streaming broker; degraded test shows trading continues when cut off.",
+    "status": "COMPLETE",
+    "current": "Edge crates have no broker dependency; qip-streaming is a dev-dependency of qip-edge-node only; the decision thread hands journal batches to a relay/spool-writer/drain over try_send; the fabric producer runs on the drain thread.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:1-16,158 HandoffSender::offer try_send only, never blocks",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship returns without waiting when the writer is stalled",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation",
-      "backend/crates/apps/qip-edge-node/src/main.rs has no reference to event_fabric::{writer,mirror,pressure} (only lib.rs:30 declares the module)"
+      "backend/crates/apps/qip-edge-node/Cargo.toml:72 qip-streaming under [dev-dependencies]",
+      "backend/crates/apps/qip-edge-node/src/main.rs:770 bounded handoff channels; :795 JournalRelay::spawn; :820 Drain::open(...).spawn()",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:165 offer() uses try_send",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:757 no_edge_cell_can_reach_a_historical_data_reader forbids qip-streaming from edge crates",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:350 a_stalled_journal_store_never_holds_the_decision_thread"
     ],
-    "gap": "The fabric writer is not wired into qip-edge-node main, so the property is proven on components, not on the binary.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -666,7 +666,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox --test degraded",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Writer/relay/drain now composed in qip-edge-node main; dependency and stall tests hold."
   },
   {
     "id": "R12-FABRIC-7032",
@@ -693,16 +693,20 @@
   },
   {
     "id": "R12-FABRIC-7033",
-    "status": "MISSING",
-    "current": "Consumer-group module is a one-line stub; qip-ledgerd names a consumer group in config only.",
+    "status": "COMPLETE",
+    "current": "GroupCoordinator gives generation-fenced membership and deterministic partition assignment; broker persists committed offsets; served by qip-fabricd through Service.",
     "evidence": [
-      "backend/crates/services/qip-streaming/src/event_fabric/group.rs:1 one-line stub; consumer groups not implemented",
-      "backend/crates/apps/qip-ledgerd/src/config.rs"
+      "backend/crates/services/qip-streaming/src/event_fabric/group.rs:103 GroupCoordinator; :244 admit_commit",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1008 commit_offset; :1039 committed_offset",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs:179 groups: Mutex<GroupCoordinator>",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:390 Broker::open; :396 Service::new (reached from apps/qip-fabricd/src/main.rs:27 start)",
+      "backend/crates/services/qip-streaming/src/event_fabric/group.rs:368 two_members_of_one_group_split_the_partitions_and_never_share_one",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:583 a_group_committing_n_resumes_at_n_plus_one_after_a_broker_restart"
     ],
-    "gap": "Implement committed offsets and group membership in qip-streaming event_fabric.",
-    "implemented": false,
-    "tested": false,
-    "integrated": false,
+    "gap": "",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -710,7 +714,7 @@
     "verification": "cargo test -p qip-fabricd --test broker (new consumer-group test)",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->COMPLETE. Consumer groups and committed offsets implemented and served by qip-fabricd; was a one-line stub."
   },
   {
     "id": "R12-FABRIC-7034",
@@ -735,16 +739,15 @@
   },
   {
     "id": "R12-FABRIC-7035",
-    "status": "INCORRECT",
-    "current": "StreamPolicy::new refuses any replication factor other than 1; fabricd is one broker with one disk.",
+    "status": "MISSING",
+    "current": "No leader/follower replication exists: StreamPolicy::new refuses any replication factor but 1. The earlier mislabelling was renamed, so the code no longer claims replication; ADR 0111 (accepted) delegates replication to Spanner, which is not built.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:316-332 StreamPolicy::new refuses replication_factor != 1 (C2) and mirroring != None (C8)",
-      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:179,205 tests asserting the RF and mirroring refusals",
-      "backend/crates/apps/qip-fabricd/src/lib.rs:1-33 single-node broker composition root (one broker, one disk)"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:384 replication_factor != 1 refused",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_scaling.rs:315 fabric_086_gap_no_stream_may_declare_replication_so_durability_rests_on_one_broker"
     ],
-    "gap": "Implement replication (needs consensus decision C2).",
+    "gap": "Spanner-backed P0/P1 commit and lease-row leadership per ADR 0111; a test that kills the leader and loses no committed record.",
     "implemented": false,
-    "tested": true,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -753,21 +756,23 @@
     "verification": "multi-broker replication test",
     "work_item": "",
     "size": "XL",
-    "notes": "The code deliberately refuses the requirement until C2 is decided."
+    "notes": "The code deliberately refuses the requirement until C2 is decided. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->MISSING. INCORRECT->MISSING: the code now refuses replication explicitly instead of implying it; nothing replicates."
   },
   {
     "id": "R12-FABRIC-7036",
-    "status": "PARTIAL",
-    "current": "Quotas declared in StreamPolicy; producer-side spool pressure narrows then halts; broker QoS admission module is a stub.",
+    "status": "COMPLETE",
+    "current": "Broker enforces per-producer byte/message quotas and a lag limit for refuse_producer streams; refusals are typed (Quota with retry_after, Shed) and named on the wire.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:264-400 StreamPolicySpec/StreamPolicy: qos, partition key, ordering, retention, RF, mirroring, overload, ack, byte/message quotas, lag limit, entitlement",
-      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs:1-2 two-line stub ('Filled by SLICE-30'); QoS admission not implemented",
-      "backend/crates/edge/qip-edge/tests/journal_pressure.rs:248,311 pressure narrows sizing before halting; exhausted journal halts new exposure while withdrawals continue"
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:303 quota_spent; :1096 lag > lag_limit refusal",
+      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs:60 Refusal::Quota",
+      "backend/crates/services/qip-streaming/src/event_fabric/service.rs:120 \"quota\" refusal surfaced",
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs:112 a_producer_past_its_message_quota_is_refused_with_the_wait_and_others_are_not; :159 lag-limit refusal",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:390 broker in qip-fabricd start"
     ],
-    "gap": "Broker-side quota enforcement/admission not implemented.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -775,7 +780,7 @@
     "verification": "broker quota test",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Broker-side quota and lag admission now implemented and reached from qip-fabricd."
   },
   {
     "id": "R12-FABRIC-7037",
@@ -800,15 +805,15 @@
   },
   {
     "id": "R12-FABRIC-7038",
-    "status": "INCORRECT",
-    "current": "Any mirroring policy other than None is refused (C8: fabric-mirror not built).",
+    "status": "BLOCKED",
+    "current": "fabric-mirror is not built; StreamPolicy::new refuses every mirroring policy but none, naming C8; ADR 0100 lists Mirror as BLOCKED(C8).",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:316-332 StreamPolicy::new refuses replication_factor != 1 (C2) and mirroring != None (C8)",
-      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs:179,205 tests asserting the RF and mirroring refusals"
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:392 mirroring != None refused \"(C8): fabric-mirror is not built\"",
+      "docs/adr/0100-the-event-fabrics-first-build-is-an-in-tree-single-node-broker-and-a-separate-single-writer-ledger-on-std-tcp-with-producer-retained-durability.md:70 Mirror: BLOCKED(C8)"
     ],
-    "gap": "Build fabric-mirror.",
+    "gap": "Owner cost/placement decision C8 (ADR 0099) and then a mirror implementation.",
     "implemented": false,
-    "tested": true,
+    "tested": false,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -817,7 +822,7 @@
     "verification": "mirror integration test",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->BLOCKED. INCORRECT->BLOCKED: code now refuses mirroring rather than mislabelling it, under a standing ADR 0099 C8 refusal."
   },
   {
     "id": "R12-FABRIC-7039",
@@ -1195,17 +1200,19 @@
   },
   {
     "id": "R12-FABRIC-7056",
-    "status": "PARTIAL",
-    "current": "Overload policy per class; edge outbox writes an overflow gap to P1 so replay refuses the window; broker admission stub.",
+    "status": "COMPLETE",
+    "current": "Over-quota P4 telemetry is shed with a visible Shed refusal; P0/P1 get Quota (wait, nothing appended); a recorded-inputs overflow on the node becomes an InputGap written on P2 and P1.",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:264-400 StreamPolicySpec/StreamPolicy: qos, partition key, ordering, retention, RF, mirroring, overload, ack, byte/message quotas, lag limit, entitlement",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:526",
-      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs:1-2 two-line stub ('Filled by SLICE-30'); QoS admission not implemented"
+      "backend/crates/services/qip-streaming/src/event_fabric/admission.rs:60 class-dependent refusal",
+      "backend/crates/services/qip-streaming/tests/event_fabric_quota.rs:197 over_quota_telemetry_is_shed_visibly_and_an_outcome_is_only_ever_told_to_wait",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/inputs.rs:141 overflow extends an InputGap",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:526 an_input_backlog_overflow_writes_a_gap_that_marks_the_window_unreproducible",
+      "backend/crates/apps/qip-edge-node/src/main.rs:848 RecordedInputs in the production outbox"
     ],
-    "gap": "Broker-side overload handling not implemented.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1213,7 +1220,7 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Broker overload handling now exists and both halves are reached from qip-fabricd and qip-edge-node main."
   },
   {
     "id": "R12-FABRIC-7057",
@@ -1240,16 +1247,16 @@
   {
     "id": "R12-FABRIC-7058",
     "status": "PARTIAL",
-    "current": "HandoffSender exposes only try_send; test proves the ship returns while the writer is stalled; not wired into qip-edge-node main; no core pinning of the writer thread.",
+    "current": "Decision thread hands off with try_send to a separate spool-writer thread spawned in main; no CPU affinity/pinning exists anywhere in the binary.",
     "evidence": [
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:1-16,158 HandoffSender::offer try_send only, never blocks",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship returns without waiting when the writer is stalled",
-      "backend/crates/apps/qip-edge-node/src/main.rs has no reference to event_fabric::{writer,mirror,pressure} (only lib.rs:30 declares the module)"
+      "backend/crates/apps/qip-edge-node/src/main.rs:780 qip-spool-writer thread spawned",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:217 bounded sync_channel; :165 try_send",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs:255 ship_returns_without_waiting_when_the_writer_is_stalled_and_the_entries_stay_unshipped"
     ],
-    "gap": "Wire the outbox into the edge-node binary on a pinned core.",
+    "gap": "Pin the writer to a dedicated core (no affinity call exists in qip-edge-node).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1257,21 +1264,20 @@
     "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Outbox now wired into main; the \"separate core\" half is still absent."
   },
   {
     "id": "R12-REFLEX-7059",
-    "status": "PARTIAL",
-    "current": "Cell::work has no broker call; edge crates compile without the broker; handoff is non-blocking.",
+    "status": "COMPLETE",
+    "current": "No edge crate links the broker; the cell decides and sends without any fabric call, and the composed DecisionLoop is tested with a stalled store.",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
-      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs:1-16,158 HandoffSender::offer try_send only, never blocks",
-      "backend/crates/edge/qip-edge/src/cell.rs:4084 Cell::work"
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:849 every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_transport",
+      "backend/crates/apps/qip-edge-node/tests/decision_loop.rs:350"
     ],
-    "gap": "Proven per component; no binary-level test with the outbox wired.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -1281,7 +1287,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Binary-level stall test now covers the wired outbox."
   },
   {
     "id": "R12-FABRIC-7060",
@@ -1330,14 +1336,16 @@
   },
   {
     "id": "R12-CONTRACT-7062",
-    "status": "MISSING",
-    "current": "No EvidencePacket type in the workspace (grep finds zero references).",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/evidence_packet.rs:72 EvidencePacket = Validated<EvidencePacketFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src (no EvidencePacket)"
+      "backend/crates/libs/qip-contracts/src/evidence_packet.rs:72 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:118 an_evidence_packet_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:133 an_evidence_packet_refuses_each_broken_invariant"
     ],
-    "gap": "Define and use EvidencePacket.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes EvidencePacket (grep of EvidencePacketFields outside qip-contracts finds nothing).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1346,20 +1354,20 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": "Evidence ids appear in other contracts as strings only."
+    "notes": "Evidence ids appear in other contracts as strings only. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding EvidencePacket exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7063",
     "status": "PARTIAL",
-    "current": "qip_contracts::policy::BeliefState has every field (expires_at as TTL); a second BeliefState in qip-reasoning-engine.",
+    "current": "backend/crates/libs/qip-contracts/src/policy.rs:372 BeliefState; a second, divergent BeliefState in backend/crates/services/qip-reasoning-engine/src/belief.rs:27 is what production uses",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:372-384",
-      "backend/crates/services/qip-reasoning-engine/src/belief.rs:27"
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:274 a_belief_state_missing_any_of_its_six_fields_is_refused_on_decode",
+      "backend/crates/services/qip-reasoning-engine/src/engine.rs:17 production imports the reasoning-engine type"
     ],
-    "gap": "No named test asserts refusal of each missing field; two divergent types.",
+    "gap": "Two divergent BeliefState types remain; the contract type has no production constructor.",
     "implemented": true,
-    "tested": false,
-    "integrated": true,
+    "tested": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1367,20 +1375,19 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field refusal test added; still two types and the contract is unused."
   },
   {
     "id": "R12-CONTRACT-7064",
     "status": "PARTIAL",
-    "current": "qip_contracts::policy::ModelPack has digest, signature, features, calibration, allowed_universes, budget, expiry, rollback_parent; kernel has its own ModelPack.",
+    "current": "backend/crates/libs/qip-contracts/src/policy.rs:295 ModelPack; a second ModelPack in backend/crates/runtime/qip-kernel/src/model_serving.rs:242",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:295-311",
-      "backend/crates/runtime/qip-kernel/src/model_serving.rs:242"
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:288 a_model_pack_missing_any_of_its_eight_fields_is_refused_on_decode"
     ],
-    "gap": "Contract test per field and single canonical type.",
+    "gap": "Not a single canonical type; the contract ModelPack has no production constructor.",
     "implemented": true,
-    "tested": false,
-    "integrated": true,
+    "tested": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1388,18 +1395,20 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Per-field test added; duplicate type remains."
   },
   {
     "id": "R12-CONTRACT-7065",
-    "status": "MISSING",
-    "current": "No StrategyPack type; edge uses CompiledStrategy/compiled_plan digest.",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 StrategyPack = Validated<StrategyPackFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:431 PlanDigest"
+      "backend/crates/libs/qip-contracts/src/strategy_pack.rs:79 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:215 a_strategy_pack_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:224 a_strategy_pack_refuses_each_broken_invariant"
     ],
-    "gap": "Define StrategyPack.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes StrategyPack (grep of StrategyPackFields outside qip-contracts finds nothing).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1408,20 +1417,21 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding StrategyPack exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7066",
     "status": "PARTIAL",
-    "current": "CapitalEnvelope (signed, expiring) and CapitalGrant decision enum exist; collateral class/leverage/liquidity constraint fields not all present.",
+    "current": "backend/crates/libs/qip-contracts/src/capital.rs:316 CapitalGrant = Validated<CapitalGrantFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/capital.rs:20,161-239",
-      "backend/crates/edge/qip-edge/tests/envelope_expiry.rs"
+      "backend/crates/libs/qip-contracts/src/capital.rs:316 type",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:732 a_capital_grant_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/control_contracts.rs:764 a_capital_grant_refuses_each_broken_invariant"
     ],
-    "gap": "Fields collateral class, leverage, liquidity constraints, owner/mandate.",
+    "gap": "No production seam constructs or consumes CapitalGrant (grep of CapitalGrantFields outside qip-contracts finds nothing). Fields owner, mandate, collateral, max_leverage, max_drawdown_bp and liquidity_reserve now exist (capital.rs:290-312).",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1429,19 +1439,21 @@
     "verification": "cargo test -p qip-edge --test envelope_expiry",
     "work_item": "",
     "size": "M",
-    "notes": "Here CapitalGrant is an enum of decisions, not the §27 record."
+    "notes": "Here CapitalGrant is an enum of decisions, not the §27 record. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding CapitalGrant exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7067",
     "status": "PARTIAL",
-    "current": "RiskEnvelopeSnapshot carries limits as opaque JSON in the policy payload.",
+    "current": "backend/crates/libs/qip-contracts/src/risk_envelope.rs:101 RiskEnvelope = Validated<RiskEnvelopeFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:550-551"
+      "backend/crates/libs/qip-contracts/src/risk_envelope.rs:101 type",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:89 a_risk_envelope_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:103 a_risk_envelope_refuses_each_broken_invariant"
     ],
-    "gap": "Typed scenario, causal-driver and health-requirement fields and emergency mode.",
+    "gap": "No production seam constructs or consumes RiskEnvelope (grep of RiskEnvelopeFields outside qip-contracts finds nothing).",
     "implemented": true,
-    "tested": false,
-    "integrated": true,
+    "tested": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1449,18 +1461,20 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding RiskEnvelope exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7068",
-    "status": "MISSING",
-    "current": "Only a MeshFunction::OpportunityToken enum variant; no token type.",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/opportunity_token.rs:91 OpportunityToken = Validated<OpportunityTokenFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/services/qip-mesh/src/peer.rs:112,356"
+      "backend/crates/libs/qip-contracts/src/opportunity_token.rs:91 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:319 an_opportunity_token_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:337 an_opportunity_token_refuses_each_broken_invariant"
     ],
-    "gap": "Define the token.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes OpportunityToken (grep of OpportunityTokenFields outside qip-contracts finds nothing).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1469,7 +1483,7 @@
     "verification": "cargo test -p qip-mesh",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding OpportunityToken exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7069",
@@ -1495,15 +1509,16 @@
   {
     "id": "R12-CONTRACT-7070",
     "status": "PARTIAL",
-    "current": "Episode types in qip-agents and qip-ai memory; RegionalEpisode contract.",
+    "current": "backend/crates/libs/qip-contracts/src/episode.rs:78 Episode = Validated<EpisodeFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-agents/src/memory.rs:23",
-      "backend/crates/libs/qip-contracts/src/regional_episode.rs:68"
+      "backend/crates/libs/qip-contracts/src/episode.rs:78 type",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:205 an_episode_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_partial_contracts.rs:214 an_episode_refuses_each_broken_invariant_including_one_with_no_counterfactual"
     ],
-    "gap": "No single Episode contract with all six fields.",
+    "gap": "No production seam constructs or consumes Episode (grep of EpisodeFields outside qip-contracts finds nothing). Production episodes are libs/qip-ai/src/memory/episode.rs:462 and libs/qip-agents/src/memory.rs:23.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -1511,7 +1526,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding Episode exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7071",
@@ -1579,14 +1594,16 @@
   },
   {
     "id": "R12-CONTRACT-7074",
-    "status": "MISSING",
-    "current": "No MicrostructureDelta type; venue fill error histogram is the nearest analogue.",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/microstructure_delta.rs:67 MicrostructureDelta = Validated<MicrostructureDeltaFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/metrics.rs (VENUE_FILL_ERROR_BPS)"
+      "backend/crates/libs/qip-contracts/src/microstructure_delta.rs:67 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:429 a_microstructure_delta_round_trips_and_its_residual_is_signed",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:438 a_microstructure_delta_refuses_each_broken_invariant"
     ],
-    "gap": "Define and emit residual records.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes MicrostructureDelta (grep of MicrostructureDeltaFields outside qip-contracts finds nothing). No residual records are emitted.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1595,18 +1612,20 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding MicrostructureDelta exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7075",
-    "status": "MISSING",
-    "current": "No WorldModelState type; federation Hypothesis carries part of it.",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/world_model.rs:110 WorldModelState = Validated<WorldModelStateFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/federation.rs:22-41"
+      "backend/crates/libs/qip-contracts/src/world_model.rs:110 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:513 a_world_model_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:530 a_world_model_state_refuses_each_broken_invariant"
     ],
-    "gap": "Define WorldModelState.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes WorldModelState (grep of WorldModelStateFields outside qip-contracts finds nothing).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1615,17 +1634,18 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding WorldModelState exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7076",
     "status": "PARTIAL",
-    "current": "qip-world-model federation Disagreement/Arbitration (views, spread, decision, reason) — a service type, not a contract.",
+    "current": "backend/crates/libs/qip-contracts/src/world_model.rs:242 ModelDisagreement = Validated<ModelDisagreementFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/services/qip-world-model/src/federation.rs:246-275,641 Disagreement/Decision/Arbitration, arbitrate",
-      "backend/crates/services/qip-world-model/tests/federation.rs:204,243,472,509 keeps every view; branches stay live; material disagreement raises research task"
+      "backend/crates/libs/qip-contracts/src/world_model.rs:242 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:660 a_model_disagreement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:681 a_model_disagreement_refuses_each_broken_invariant"
     ],
-    "gap": "Contract type with unresolved assumptions and status.",
+    "gap": "No production seam constructs or consumes ModelDisagreement (grep of ModelDisagreementFields outside qip-contracts finds nothing).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1636,18 +1656,20 @@
     "verification": "cargo test -p qip-world-model --test federation",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelDisagreement exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7077",
-    "status": "MISSING",
-    "current": "No SymbolicDerivation type.",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/symbolic.rs:86 SymbolicDerivation = Validated<SymbolicDerivationFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/services/qip-reasoning-engine/src"
+      "backend/crates/libs/qip-contracts/src/symbolic.rs:86 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:766 a_symbolic_derivation_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:778 a_symbolic_derivation_refuses_each_broken_invariant_including_an_uncheckable_trace"
     ],
-    "gap": "Define it with a checkable trace.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes SymbolicDerivation (grep of SymbolicDerivationFields outside qip-contracts finds nothing). The kernel uses its own runtime/qip-kernel/src/symbolic_stage.rs:166 SymbolicDerivation.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1656,7 +1678,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding SymbolicDerivation exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7078",
@@ -1745,12 +1767,14 @@
   },
   {
     "id": "R12-CONTRACT-7082",
-    "status": "MISSING",
-    "current": "qip_contracts::action::ActionIntent holds only opportunity, instrument and action_class — a different concept (executable-scope intent).",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/action_intent.rs:88 ActionIntent = Validated<ActionIntentFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/action.rs:96-116"
+      "backend/crates/libs/qip-contracts/src/action_intent.rs:88 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1086 a_section_27_action_intent_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1102 a_section_27_action_intent_refuses_each_broken_invariant_including_an_edited_payload"
     ],
-    "gap": "action.rs:96 ActionIntent is a different concept sharing the name; the §27 ActionIntent contract is absent rather than contradicted. Define the §27 ActionIntent (identity, channel, disclosure, idempotency, lineage).",
+    "gap": "No production seam constructs or consumes ActionIntent (grep of ActionIntentFields outside qip-contracts finds nothing).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1761,7 +1785,7 @@
     "verification": "cargo test -p qip-contracts --test action",
     "work_item": "",
     "size": "M",
-    "notes": "Re-graded INCORRECT->MISSING on 2026-10-11 by an independent spot-check: action.rs:96 ActionIntent is a different concept sharing the name; the §27 ActionIntent contract is absent rather than contradicted."
+    "notes": "Re-graded INCORRECT->MISSING on 2026-10-11 by an independent spot-check: action.rs:96 ActionIntent is a different concept sharing the name; the §27 ActionIntent contract is absent rather than contradicted. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ActionIntent exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7083",
@@ -1871,14 +1895,16 @@
   },
   {
     "id": "R12-CONTRACT-7088",
-    "status": "MISSING",
-    "current": "No KnowledgeDelta type (knowledge_pack.rs is a different contract).",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/knowledge_delta.rs:73 KnowledgeDelta = Validated<KnowledgeDeltaFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/knowledge_pack.rs"
+      "backend/crates/libs/qip-contracts/src/knowledge_delta.rs:73 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:856 a_knowledge_delta_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:871 a_knowledge_delta_refuses_each_broken_invariant"
     ],
-    "gap": "Define KnowledgeDelta and merge policy.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes KnowledgeDelta (grep of KnowledgeDeltaFields outside qip-contracts finds nothing). The ingestion path uses libs/qip-evidence/src/fabric.rs:375 KnowledgeDelta, a different type.",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1887,7 +1913,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding KnowledgeDelta exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7089",
@@ -1933,14 +1959,16 @@
   },
   {
     "id": "R12-CONTRACT-7091",
-    "status": "MISSING",
-    "current": "No ControlPackAnnouncement type; ModelManifest digests only.",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/control_pack.rs:65 ControlPackAnnouncement = Validated<ControlPackAnnouncementFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/fabric_package_announcements.rs"
+      "backend/crates/libs/qip-contracts/src/control_pack.rs:65 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:931 a_control_pack_announcement_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:945 a_control_pack_announcement_refuses_each_broken_invariant"
     ],
-    "gap": "Define it.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes ControlPackAnnouncement (grep of ControlPackAnnouncementFields outside qip-contracts finds nothing).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1949,18 +1977,20 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding ControlPackAnnouncement exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-CONTRACT-7092",
-    "status": "MISSING",
-    "current": "No MirrorCheckpoint type (no mirror).",
+    "status": "PARTIAL",
+    "current": "backend/crates/libs/qip-contracts/src/mirror_checkpoint.rs:43 MirrorCheckpoint = Validated<MirrorCheckpointFields>, deny_unknown_fields decode and invariant checks",
     "evidence": [
-      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:316-332 StreamPolicy::new refuses replication_factor != 1 (C2) and mirroring != None (C8)"
+      "backend/crates/libs/qip-contracts/src/mirror_checkpoint.rs:43 type",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1002 a_mirror_checkpoint_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+      "backend/crates/libs/qip-contracts/tests/section27_contracts.rs:1017 a_mirror_checkpoint_refuses_each_broken_invariant"
     ],
-    "gap": "Define with fabric-mirror.",
-    "implemented": false,
-    "tested": false,
+    "gap": "No production seam constructs or consumes MirrorCheckpoint (grep of MirrorCheckpointFields outside qip-contracts finds nothing).",
+    "implemented": true,
+    "tested": true,
     "integrated": false,
     "deployable": false,
     "e2e": false,
@@ -1971,7 +2001,7 @@
     "verification": "cargo test -p qip-contracts",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: typed, strict-decoding MirrorCheckpoint exists and is tested; nothing in production constructs or decodes it."
   },
   {
     "id": "R12-RES-7093",
@@ -2414,17 +2444,15 @@
   {
     "id": "R12-RES-7113",
     "status": "PARTIAL",
-    "current": "Spool pressure gauge narrows then halts new exposure; cell continues on cached policy; spool not wired into the binary.",
+    "current": "Spool pressure gauge reads narrow before exhausted and the cell is built with the journal wire; no fabric quorum exists, and nothing tests that control changes stop on fabric loss.",
     "evidence": [
-      "backend/crates/edge/qip-edge/tests/journal_pressure.rs:248,311 pressure narrows sizing before halting; exhausted journal halts new exposure while withdrawals continue",
-      "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs:65",
-      "backend/crates/apps/qip-edge-node/src/main.rs has no reference to event_fabric::{writer,mirror,pressure} (only lib.rs:30 declares the module)",
-      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a cell cut off from everything keeps placing paper orders inside its envelope and journals degradation"
+      "backend/crates/apps/qip-edge-node/src/main.rs:449 with_journal_trimmed_on_ship().with_journal_wire()",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_pressure.rs:65 spool_pressure_reads_narrow_before_exhausted_and_a_fenced_producer_reads_exhausted"
     ],
-    "gap": "Wire spool into qip-edge-node; quorum does not exist yet.",
+    "gap": "Control-change freeze on fabric loss; quorum (none exists).",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [
@@ -2434,7 +2462,7 @@
     "verification": "cargo test -p qip-edge --test journal_pressure",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Spool now wired into the binary; quorum-loss behaviour unprovable."
   },
   {
     "id": "R12-RES-7114",
@@ -2461,15 +2489,17 @@
   {
     "id": "R12-OBS-7115",
     "status": "PARTIAL",
-    "current": "aiops::EntityGraph records signals by entity; no production caller.",
+    "current": "Deep brain feeds an EntityGraph each iteration with infrastructure (its own iteration time), application, data-quality, model-drift and venue-fill signals; infrastructure/application attach to the deep brain process only, and the production test asserts only the Infrastructure class.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/aiops.rs:56 EntityGraph, :212 build_timeline, :235 Runbook, :341-372 Remediator, :409 release_gate",
-      "backend/crates/libs/qip-observability/tests/aiops.rs"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs:289 observe feeds five SignalClass values",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:646 Operations::new; :663 passed to run loop",
+      "backend/crates/libs/qip-observability/tests/aiops.rs:20 five_signal_classes_about_one_instrument_are_reachable_from_its_single_node",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:229 asserts only Infrastructure on deployment key"
     ],
-    "gap": "Feed graph from live telemetry.",
+    "gap": "Graph over the platform (other binaries, edge nodes, infra), and a production test that the five classes share entity keys.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2477,7 +2507,7 @@
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now has a production feed, but scope is one process."
   },
   {
     "id": "R12-CICD-7116",
@@ -2587,16 +2617,18 @@
   },
   {
     "id": "R12-OBS-7121",
-    "status": "PARTIAL",
-    "current": "aiops::Remediator executes only runbook actions with a verifiable audit trail; no production caller or effector.",
+    "status": "COMPLETE",
+    "current": "Remediator acts only through committed runbooks and audits every action; the deep brain wires a real effector (switching off its own research capability), and the run loop honours it.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/aiops.rs:56 EntityGraph, :212 build_timeline, :235 Runbook, :341-372 Remediator, :409 release_gate",
-      "backend/crates/libs/qip-observability/tests/aiops.rs"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs:57 runbooks(); :78 CapabilitySwitch effector refuses other actions; :415 remediate on incident",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:436 research skipped when disabled",
+      "backend/crates/libs/qip-observability/tests/aiops.rs:155 an_action_in_no_runbook_is_refused_and_recorded_while_a_named_one_executes",
+      "backend/crates/apps/qip-deepbrain/src/main.rs:646"
     ],
-    "gap": "Wire to real effectors under approval.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2604,21 +2636,21 @@
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Effector now real and reached from deep brain main; the action set is deliberately one capability."
   },
   {
     "id": "R12-OBS-7122",
-    "status": "PARTIAL",
-    "current": "aiops::build_timeline merges sources; compliance Incident log in central plane; no agent.",
+    "status": "COMPLETE",
+    "current": "On a level shift the deep brain opens an incident whose timeline merges telemetry (the shift), deployment (process start), data anomalies, venue behaviour and model drift, ordered by build_timeline.",
     "evidence": [
-      "backend/crates/libs/qip-observability/src/aiops.rs:56 EntityGraph, :212 build_timeline, :235 Runbook, :341-372 Remediator, :409 release_gate",
-      "backend/crates/libs/qip-compliance/src/incident.rs:66",
-      "backend/crates/runtime/qip-kernel/src/central/plane.rs:42"
+      "backend/crates/apps/qip-deepbrain/src/operations.rs:202 Deployment event; :278 VenueBehaviour; :322 DataAnomaly; :338 ModelDrift; :410 build_timeline",
+      "backend/crates/libs/qip-observability/tests/aiops.rs:106 the_timeline_holds_exactly_the_five_in_window_events_in_order_each_attributed",
+      "backend/crates/apps/qip-deepbrain/tests/research.rs:229 run loop observes operations every cycle"
     ],
-    "gap": "Incident agent fed by live sources.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -2626,7 +2658,7 @@
     "verification": "cargo test -p qip-observability --test aiops",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Fed by live sources from the deep brain main loop. Scope limited to the deep brain process."
   },
   {
     "id": "R12-OBS-7123",
@@ -4250,15 +4282,16 @@
   {
     "id": "R12-AMBIENT-7200",
     "status": "PARTIAL",
-    "current": "AcquisitionCriteria/InfoRequest compute net value (EVI minus cost); no production sensing loop.",
+    "current": "backend/crates/apps/qip-deepbrain/src/research.rs:290 cheapest_viable picks re-sweep vs declared acquisition by §9.10 rank, called from ResearchLoop::admit in the deep brain",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/ambient.rs:565-620",
-      "backend/crates/libs/qip-contracts/tests/ambient.rs:516,699"
+      "backend/crates/apps/qip-deepbrain/src/research.rs:812 a_gap_with_economic_value_launches_on_the_product_rank",
+      "backend/crates/apps/qip-deepbrain/src/research.rs:830 a_gap_with_a_zero_factor_launches_nothing_at_any_cost",
+      "backend/crates/apps/qip-deepbrain/src/node.rs:450 sweep called from run loop"
     ],
-    "gap": "Build and integrate the capability.",
+    "gap": "No observation is actually made: the chosen acquisition is only recorded (InfoRequest.record_acquisition); the menu is two fixed options and urgency is unmeasured.",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -4266,7 +4299,7 @@
     "verification": "new acceptance suite",
     "work_item": "",
     "size": "XL",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Now reached from the deep brain, but active sensing chooses among records, not real observations."
   },
   {
     "id": "R12-MODEL-7201",
@@ -4334,12 +4367,13 @@
   {
     "id": "R12-CAPITAL-7204",
     "status": "PARTIAL",
-    "current": "Capital survival kernel acceptance suite; lane placement separates crates; hedge and model-risk systems not separate domains.",
+    "current": "backend/crates/tests/qip-acceptance/tests/survival_independence.rs:98 dependency-closure checks between survival/risk crates and alpha crates",
     "evidence": [
-      "backend/crates/tests/qip-acceptance/tests/capital_survival_kernel.rs",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane"
+      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs:98 no_survival_or_risk_crate_can_reach_an_alpha_crate",
+      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs:126 no_alpha_crate_can_reach_the_survival_kernel",
+      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs:142 the_kernel_survival_modules_read_measurements_and_import_no_alpha_component"
     ],
-    "gap": "Hedge and model-risk systems as independent domains.",
+    "gap": "Hedge and model-risk systems are not independent domains and are not covered by the check; the survival kernel lives in qip-kernel beside the alpha consumers.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -4350,23 +4384,22 @@
     "verification": "cargo test -p qip-acceptance --test capital_survival_kernel",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Acceptance check added for capital/risk; hedge and model-risk halves still absent."
   },
   {
     "id": "R12-RISK-7205",
     "status": "PARTIAL",
-    "current": "Deterministic checks in the edge cell refuse orders by gate; RiskGate contract; cost-router Determinism::Required structural; expected-shortfall limit proven to fire in the kernel.",
+    "current": "Kernel writes the survival gross ceiling into RiskState and LimitKind::MaxSurvivalGross vetoes deterministically on the desk path; on the reflex path the cell gate is optional and qip-edge-node installs none.",
     "evidence": [
-      "backend/crates/libs/qip-contracts/src/policy.rs:1182-1194 RiskGate",
-      "backend/crates/edge/qip-edge/src/cell.rs:4084 Cell::work gates",
-      "backend/crates/tests/qip-acceptance/tests/arch_014_deterministic_checks.rs",
-      "backend/crates/tests/qip-acceptance/tests/arch_032_cost_router.rs",
-      "backend/crates/runtime/qip-kernel/src/platform.rs:19703 the_expected_shortfall_limit_can_actually_fire"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:16224 survival_gross_ceiling into RiskState",
+      "backend/crates/libs/qip-risk/src/limits.rs:228 MaxSurvivalGross",
+      "backend/crates/edge/qip-edge/src/cell.rs:1369 Option gate; no app installs it",
+      "backend/crates/tests/qip-acceptance/tests/survival_independence.rs:98 no_survival_or_risk_crate_can_reach_an_alpha_crate"
     ],
-    "gap": "Not deployed; the full survival veto chain is not proven on a deployed node.",
+    "gap": "Install the gate on the reflex path in qip-edge-node.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -4374,19 +4407,18 @@
     "verification": "cargo test -p qip-acceptance --test arch_014_deterministic_checks; cargo test -p qip-edge",
     "work_item": "",
     "size": "M",
-    "notes": "nothing deployed: execution_nodes = {} in every environment"
+    "notes": "nothing deployed: execution_nodes = {} in every environment Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Desk-side veto real; reflex-path claim not met in the binary."
   },
   {
     "id": "R12-QUANT-7206",
     "status": "PARTIAL",
-    "current": "admit_job refuses synchronous jobs; classical baseline always; reflex compile set excludes quantum; no hybrid compute router across CPU/GPU/TPU/QPU and admit_job unused in production.",
+    "current": "Async gateway, classical baseline every solve, no reflex crate depends on qip-quantum/qip-optimization-engine; quantum arm unreachable from binaries.",
     "evidence": [
-      "backend/crates/libs/qip-quantum/src/foundry.rs:192-233 JobClass/admit_job refuses synchronous quantum jobs",
-      "backend/crates/libs/qip-quantum/tests/solvers.rs:112,155,175 classical baseline computed always; failed classical validation refused; backend/crates/services/qip-optimization-engine/tests/optimization.rs:202,436",
-      "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127,154,178 reflex node compile set; no fast-lane crate depends on a slower lane",
-      "backend/crates/services/qip-optimization-engine/src/router.rs"
+      "backend/crates/runtime/qip-kernel/src/platform.rs:4608 ComputeRouter::classical always; :4609 quantum only if enabled",
+      "Cargo manifests: only qip-deepbrain, qip-kernel, qip-lifecycle, qip-optimization-engine, qip-portfolio-engine, qip-acceptance depend on qip-quantum/optimization (no edge crate)",
+      "backend/crates/libs/qip-quantum/tests/gateway.rs:80"
     ],
-    "gap": "Hybrid compute fabric and production async gateway.",
+    "gap": "A reachable hybrid compute path.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -4397,7 +4429,7 @@
     "verification": "cargo test -p qip-quantum; cargo test -p qip-acceptance --test quantum_routing",
     "work_item": "",
     "size": "L",
-    "notes": ""
+    "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged status."
   },
   {
     "id": "R12-QUANT-7207",

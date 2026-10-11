@@ -2105,15 +2105,15 @@
  {
   "id": "R12-CICD-9097",
   "status": "INCORRECT",
-  "current": "Images are built by docker on GitHub-hosted runners in deploy.yml; no Cloud Build pool exists. The Dockerfile and deploy pass SOURCE_DATE_EPOCH=$(date +%s), so two builds of one commit embed different timestamps.",
+  "current": ".github/workflows/deploy.yml:593 a second --no-cache build with SOURCE_DATE_EPOCH must yield the same image id; builds run on runs-on: ubuntu-latest (.github/workflows/deploy.yml:318)",
   "evidence": [
-   ".github/workflows/deploy.yml:443-460 docker build with SOURCE_DATE_EPOCH=$(date +%s)",
-   "infrastructure/docker/Dockerfile:63-68"
+   ".github/workflows/deploy.yml:593 reproducibility step",
+   ".github/workflows/deploy.yml:318 build job on GitHub-hosted ubuntu-latest"
   ],
-  "gap": "Private-pool builds; SOURCE_DATE_EPOCH from the commit time; a reproducibility check.",
-  "implemented": true,
+  "gap": "Builds run on GitHub-hosted runners, not a Cloud Build private pool in private networking; the portal image is exempt from the reproducibility check.",
+  "implemented": false,
   "tested": false,
-  "integrated": true,
+  "integrated": false,
   "deployable": true,
   "e2e": false,
   "depends_on": [],
@@ -2121,7 +2121,7 @@
   "verification": "build twice and compare digests",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->INCORRECT. Reproducibility half implemented; the private-pool half is still contradicted by where builds run."
  },
  {
   "id": "R12-CICD-9098",
@@ -2274,16 +2274,15 @@
  {
   "id": "R12-CICD-9105",
   "status": "PARTIAL",
-  "current": "ci.yml secret scan job, CodeQL, cargo-audit/deny (SCA), Trivy in CI and again before sign in deploy.yml.",
+  "current": ".github/workflows/ci.yml:448 secret scan, :141 cargo audit, :163 cargo-deny, :253 trivy, :497 sast (CodeQL via workflow_call); .github/workflows/deploy.yml:247 deploy refuses unless every 'sast / ' job succeeded; .github/workflows/deploy.yml:638 trivy image before push",
   "evidence": [
-   ".github/workflows/ci.yml:448",
-   ".github/workflows/codeql-analysis.yml:28",
-   ".github/workflows/ci.yml:253",
-   ".github/workflows/deploy.yml:462-495"
+   ".github/workflows/deploy.yml:247 static analysis passed in that ci run",
+   ".github/workflows/ci.yml:503 uses codeql-analysis.yml",
+   ".github/workflows/codeql-analysis.yml:26 workflow_call"
   ],
-  "gap": "CodeQL (codeql-analysis.yml:14) is a separate workflow; deploy.yml waits only on ci, so SAST does not gate acceptance. None.",
+  "gap": "CodeQL analyze uploads findings and does not fail the job on alerts, so SAST \"success\" means analysis ran, not that it found nothing; SAST does not block on findings.",
   "implemented": true,
-  "tested": true,
+  "tested": false,
   "integrated": true,
   "deployable": true,
   "e2e": false,
@@ -2292,7 +2291,7 @@
   "verification": "inspection",
   "work_item": "",
   "size": "S",
-  "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: CodeQL (codeql-analysis.yml:14) is a separate workflow; deploy.yml waits only on ci, so SAST does not gate acceptance."
+  "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: CodeQL (codeql-analysis.yml:14) is a separate workflow; deploy.yml waits only on ci, so SAST does not gate acceptance. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. SAST now gates deploy on completion; it still cannot block on a finding."
  },
  {
   "id": "R12-CICD-9106",
@@ -2427,14 +2426,15 @@
  },
  {
   "id": "R12-CICD-9112",
-  "status": "INCORRECT",
-  "current": "Kargo chains only dev→test→stage→prod (no integration/replay/paper stages). deploy.yml builds and pushes into a per-environment registry (`.../qip-${TARGET_ENVIRONMENT}`) when dispatched for that environment, i.e. a rebuild per environment, and the build is not reproducible (timestamped SOURCE_DATE_EPOCH).",
+  "status": "PARTIAL",
+  "current": "infrastructure/gitops/kargo/base/stages.yaml:38 Kargo stages dev, test, replay, paper, stage, prod over one warehouse; .github/workflows/deploy.yml:508 a promotion never builds",
   "evidence": [
-   "infrastructure/gitops/kargo/base/stages.yaml:14-104",
-   ".github/workflows/deploy.yml:413-460 per-env registry build",
-   "backend/crates/tests/qip-acceptance/tests/gitops.rs:1959 the_kargo_stages_chain_dev_to_test_to_stage_to_prod_from_one_warehouse"
+   "infrastructure/gitops/kargo/base/stages.yaml:105 replay stage",
+   "infrastructure/gitops/kargo/base/stages.yaml:131 paper stage",
+   ".github/workflows/deploy.yml:508 a promotion attests the image built once and never builds one",
+   "infrastructure/environments/dev/terraform.tfvars:145 gitops_enabled = true (dev only)"
   ],
-  "gap": "Build once into a shared registry and promote the digest; add replay/paper stages.",
+  "gap": "No promotion has been shown to run; only dev enables the gitops control plane; nothing proves the digest at each stage equals the one built.",
   "implemented": true,
   "tested": false,
   "integrated": false,
@@ -2447,7 +2447,7 @@
   "verification": "cargo test -p qip-acceptance --test gitops plus a digest-equality check",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: INCORRECT->PARTIAL. Moved INCORRECT->PARTIAL: build-once/promote-digest and replay/paper stages now declared; not deployed or exercised."
  },
  {
   "id": "R12-CICD-9113",
@@ -2664,11 +2664,14 @@
  },
  {
   "id": "R12-SEC-9123",
-  "status": "MISSING",
-  "current": "No PAM entitlements in Terraform.",
-  "evidence": [],
-  "gap": "PAM entitlements.",
-  "implemented": false,
+  "status": "PARTIAL",
+  "current": "PAM entitlement resource declared, created only when pam_entitlements is non-empty; no environment sets it.",
+  "evidence": [
+   "infrastructure/terraform/security.tf:17 pam_on; :55 google_privileged_access_manager_entitlement",
+   "infrastructure/environments/*/terraform.tfvars: no pam_entitlements"
+  ],
+  "gap": "Enable in an environment with a plan.",
+  "implemented": true,
   "tested": false,
   "integrated": false,
   "deployable": false,
@@ -2678,7 +2681,7 @@
   "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL: Terraform gated off everywhere."
  },
  {
   "id": "R12-SEC-9124",
@@ -2769,11 +2772,13 @@
  },
  {
   "id": "R12-SEC-9128",
-  "status": "MISSING",
-  "current": "No CAS resources; the in-tree transport speaks plaintext HTTP/1.1 behind an egress proxy.",
-  "evidence": [],
-  "gap": "CAS pool and mTLS on Fabric links.",
-  "implemented": false,
+  "status": "PARTIAL",
+  "current": "CA Service pool/CA declared under certificate_authority != null; null everywhere; fabric links remain plaintext.",
+  "evidence": [
+   "infrastructure/terraform/security.tf:111 google_privateca_ca_pool count = cas_on; :160 CA"
+  ],
+  "gap": "Enable, issue certs, mTLS on fabric links.",
+  "implemented": true,
   "tested": false,
   "integrated": false,
   "deployable": false,
@@ -2783,17 +2788,17 @@
   "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
   "work_item": "",
   "size": "L",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
  },
  {
   "id": "R12-SEC-9129",
-  "status": "MISSING",
-  "current": "No access-context-manager resources (organisation-scoped; config has no org id).",
+  "status": "PARTIAL",
+  "current": "Service perimeter declared under vpc_service_controls != null; null everywhere; needs org scope.",
   "evidence": [
-   "infrastructure/terraform/modules/scc/main.tf:1-15 (no org id by design)"
+   "infrastructure/terraform/security.tf:236 google_access_context_manager_service_perimeter count = vpc_on"
   ],
-  "gap": "Perimeters (needs org scope).",
-  "implemented": false,
+  "gap": "Org-scoped policy and enablement.",
+  "implemented": true,
   "tested": false,
   "integrated": false,
   "deployable": false,
@@ -2803,7 +2808,7 @@
   "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
  },
  {
   "id": "R12-SEC-9130",
@@ -2891,11 +2896,13 @@
  },
  {
   "id": "R12-SEC-9134",
-  "status": "MISSING",
-  "current": "No DLP resources.",
-  "evidence": [],
-  "gap": "DLP discovery on BQ/GCS.",
-  "implemented": false,
+  "status": "PARTIAL",
+  "current": "DLP inspect/deidentify templates and discovery config declared under sensitive_data_protection != null; null everywhere.",
+  "evidence": [
+   "infrastructure/terraform/security.tf:291 inspect template; :334 discovery_config count = sdp_on"
+  ],
+  "gap": "Enable over the lake/analytics with a plan.",
+  "implemented": true,
   "tested": false,
   "integrated": false,
   "deployable": false,
@@ -2905,7 +2912,7 @@
   "verification": "cargo test -p qip-acceptance --test security_controls --test infrastructure",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. MISSING->PARTIAL."
  },
  {
   "id": "R12-SEC-9135",

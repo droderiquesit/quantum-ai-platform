@@ -230,17 +230,19 @@
  {
   "id": "R12-EXPAND-6011",
   "status": "PARTIAL",
-  "current": "qip-expansion gap.rs defines triggers and classifies observations into gap classes (tested), but no detector over live platform state raises them. qip-expansion is library-only: no composition root constructs a ResearchQueue (its own lib.rs:13-17 says so, and grep of backend/crates/apps and runtime finds only the unused anomaly_to_observation in qip-deepbrain/src/signal_mapper.rs, which nothing calls).",
+  "current": "backend/crates/apps/qip-deepbrain/src/research.rs:449 sweep runs low_confidence, incompetent_specialists, contradictions, unexplained_residuals, coverage, anomaly_clusters, repeated_vetoes, refusal_clusters",
   "evidence": [
-   "backend/crates/services/qip-expansion/src/gap.rs:17 GapTrigger",
-   "backend/crates/services/qip-expansion/src/gap.rs:70 classify",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:148 classification test",
-   "backend/crates/apps/qip-deepbrain/src/signal_mapper.rs:20 'Nothing in this binary calls anomaly_to_observation yet'"
+   "backend/crates/services/qip-expansion/tests/loop.rs:78 unexplained residual",
+   "backend/crates/services/qip-expansion/tests/loop.rs:49 low confidence",
+   "backend/crates/services/qip-expansion/tests/loop.rs:104 contradictions read as a missing causal link",
+   "backend/crates/services/qip-expansion/tests/loop.rs:131 unsupported asset class",
+   "backend/crates/services/qip-expansion/tests/loop.rs:69 no competent specialist",
+   "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
   ],
-  "gap": "Detectors and a caller in a composition root.",
+  "gap": "Contradictory evidence and missing causal links share one detector over price-direction readings; nothing reads the evidence fabric's contested claims or the causal graph for missing links.",
   "implemented": true,
   "tested": true,
-  "integrated": false,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -248,7 +250,7 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "L",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Detectors now run from the deep brain; two of six kinds are conflated in one proxy."
  },
  {
   "id": "R12-REFLEX-6012",
@@ -529,14 +531,13 @@
  {
   "id": "R12-EXPAND-6025",
   "status": "PARTIAL",
-  "current": "Gap raise, curriculum queue and scheduling exist and are tested as a library. qip-expansion is library-only: no composition root constructs a ResearchQueue (its own lib.rs:13-17 says so, and grep of backend/crates/apps and runtime finds only the unused anomaly_to_observation in qip-deepbrain/src/signal_mapper.rs, which nothing calls).",
+  "current": "backend/crates/apps/qip-deepbrain/src/research.rs:560 raised gaps are routed and queued in the ExpansionDesk; backend/crates/services/qip-expansion/src/desk.rs:456 conclude promotes a closed campaign",
   "evidence": [
-   "backend/crates/services/qip-expansion/src/gap.rs:121 raise",
-   "backend/crates/services/qip-expansion/src/curriculum.rs:291 admit",
-   "backend/crates/services/qip-expansion/src/curriculum.rs:433 schedule",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:338"
+   "backend/crates/apps/qip-deepbrain/tests/research.rs:103 an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router",
+   "backend/crates/services/qip-expansion/tests/loop.rs:513 proven_research_becomes_a_capability_and_failed_research_records_its_null",
+   "backend/crates/services/qip-expansion/src/desk.rs:456 conclude has no production caller"
   ],
-  "gap": "A composition-root caller and a promotion path from closed research to capability.",
+  "gap": "The gap->queue half runs in the deep brain; the research->capability half (conclude/promote) has no caller.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -547,7 +548,7 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "L",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Half integrated."
  },
  {
   "id": "R12-EXPAND-6026",
@@ -973,15 +974,16 @@
  {
   "id": "R12-EXPAND-6046",
   "status": "PARTIAL",
-  "current": "GapTrigger enumerates exactly the seven triggers and each raises one signal (tested); no detector raises them from platform state.",
+  "current": "backend/crates/apps/qip-deepbrain/src/research.rs:449 detectors emit Surprise, LowConfidence, Contradiction, MissedOpportunity, UnexplainedPnl, UnsupportedRequest",
   "evidence": [
-   "backend/crates/services/qip-expansion/src/gap.rs:17",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:184"
+   "backend/crates/services/qip-expansion/tests/expansion.rs:184 each_of_the_seven_triggers_raises_exactly_one_gap_signal_naming_its_trigger",
+   "backend/crates/services/qip-expansion/src/gap.rs:23 ModelDrift has no producing detector in qip-expansion or the deep brain",
+   "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
   ],
-  "gap": "Detectors wired in a composition root.",
+  "gap": "No detector produces ModelDrift; \"a request no brain/tool can satisfy\" is approximated by agent hit rates and asset-class coverage.",
   "implemented": true,
   "tested": true,
-  "integrated": false,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -989,21 +991,21 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Six of seven triggers now produced in production."
  },
  {
   "id": "R12-EXPAND-6047",
-  "status": "PARTIAL",
-  "current": "classify maps Wanting to GapClass's nine classes and refuses unclassifiable/mixed evidence (tested); library-only.",
+  "status": "COMPLETE",
+  "current": "backend/crates/services/qip-expansion/src/gap.rs:70 classify into nine GapClass values; raise() refuses an unclassifiable observation and the deep brain counts it (backend/crates/apps/qip-deepbrain/src/research.rs:548)",
   "evidence": [
-   "backend/crates/services/qip-expansion/src/gap.rs:70",
-   "backend/crates/libs/qip-contracts/src/expansion.rs:257 GapClass",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:148"
+   "backend/crates/services/qip-expansion/tests/expansion.rs:148 every_generated_gap_is_classified_into_one_of_the_nine_classes_and_an_unclassifiable_one_is_refused",
+   "backend/crates/services/qip-expansion/tests/loop.rs:242 an_observation_naming_two_lacks_becomes_two_classifiable_observations",
+   "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
   ],
-  "gap": "Integration.",
+  "gap": "",
   "implemented": true,
   "tested": true,
-  "integrated": false,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1011,20 +1013,20 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: classification runs on every raised gap in the deep brain sweep. Ran expansion+loop: 9 and 19 passed."
  },
  {
   "id": "R12-EXPAND-6048",
   "status": "PARTIAL",
-  "current": "Criteria::score requires all inputs and ranks; library-only.",
+  "current": "backend/crates/services/qip-expansion/src/desk.rs:115 criteria_for fills eleven inputs; desk ranks and schedules in finish_sweep",
   "evidence": [
-   "backend/crates/services/qip-expansion/src/curriculum.rs:111",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:202"
+   "backend/crates/services/qip-expansion/tests/expansion.rs:383 candidates_of_all_five_kinds_are_ranked_and_the_scheduler_starts_the_highest_ranked_eligible_item_first",
+   "backend/crates/services/qip-expansion/src/desk.rs:142 urgency: Some(0.0) stated, never measured"
   ],
-  "gap": "Integration with measured inputs.",
+  "gap": "Economic value is zero from every qip-expansion detector and urgency is always zero; inputs are mostly proxies of severity, not measurements.",
   "implemented": true,
   "tested": true,
-  "integrated": false,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1032,17 +1034,36 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Integrated now; measured inputs still missing."
  },
  {
   "id": "R12-EXPAND-6049",
   "status": "PARTIAL",
-  "current": "Lawful data discovery exists (qip-data-finder, licensing first); tool proposals are records only; no specialist instantiation.",
+  "current": "backend/crates/services/qip-expansion/src/desk.rs:276 offer queues a ResearchPlan; a missing tool becomes a build item",
   "evidence": [
-   "backend/crates/services/qip-data-finder/src/decision.rs:464",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:450"
+   "backend/crates/services/qip-expansion/tests/loop.rs:379 a_gap_whose_tool_is_missing_is_blocked_and_the_tool_becomes_a_build_task_of_its_own"
   ],
-  "gap": "Acquisition actions triggered from gaps.",
+  "gap": "No acquisition action is carried out: nothing discovers data, builds a connector, instantiates a specialist or constructs a simulation from a started item.",
+  "implemented": false,
+  "tested": true,
+  "integrated": true,
+  "deployable": false,
+  "e2e": false,
+  "depends_on": [],
+  "blocked_by": "",
+  "verification": "cargo test -p qip-expansion",
+  "work_item": "",
+  "size": "L",
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Queue records only."
+ },
+ {
+  "id": "R12-EXPAND-6050",
+  "status": "PARTIAL",
+  "current": "backend/crates/services/qip-expansion/src/promotion.rs:32 ResearchCampaign across historical, simulated, paper, shadow in order with provenance",
+  "evidence": [
+   "backend/crates/services/qip-expansion/tests/loop.rs:475 a_campaign_refuses_a_stage_out_of_order_and_one_with_no_provenance"
+  ],
+  "gap": "No production code runs a campaign; ResearchCampaign/desk.conclude have no caller.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -1053,42 +1074,19 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "L",
-  "notes": ""
- },
- {
-  "id": "R12-EXPAND-6050",
-  "status": "PARTIAL",
-  "current": "Deep-brain learning rounds fetch windows through a campaign and register fits with dataset lineage; no campaign object spanning the four environments.",
-  "evidence": [
-   "backend/crates/apps/qip-deepbrain/src/main.rs:608 learning round windows via fetch campaign",
-   "backend/crates/runtime/qip-kernel/src/central/models.rs:126 register_fit"
-  ],
-  "gap": "Campaign record spanning environments.",
-  "implemented": true,
-  "tested": true,
-  "integrated": true,
-  "deployable": false,
-  "e2e": false,
-  "depends_on": [],
-  "blocked_by": "",
-  "verification": "cargo test -p qip-expansion",
-  "work_item": "",
-  "size": "L",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated."
  },
  {
   "id": "R12-EXPAND-6051",
   "status": "PARTIAL",
-  "current": "Calibrated-baseline gate, regime split and walk-forward folds exist; leakage, safety and legal-eligibility checks are not part of one evaluation record.",
+  "current": "backend/crates/services/qip-expansion/src/promotion.rs:134 EvaluationRecord requires all nine criteria",
   "evidence": [
-   "backend/crates/runtime/qip-kernel/tests/models.rs:386",
-   "backend/crates/services/qip-evolution/src/discovery.rs:18 folds",
-   "backend/crates/apps/qip-deepbrain/src/learning.rs:2605"
+   "backend/crates/services/qip-expansion/tests/loop.rs:488 an_evaluation_missing_any_of_the_nine_criteria_is_refused_by_name"
   ],
-  "gap": "One evaluation record covering all nine criteria.",
+  "gap": "Nothing in production evaluates research; conclude has no caller.",
   "implemented": true,
   "tested": true,
-  "integrated": true,
+  "integrated": false,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1096,7 +1094,7 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "L",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Record type exists; not integrated."
  },
  {
   "id": "R12-EXPAND-6052",
@@ -1334,17 +1332,17 @@
  },
  {
   "id": "R12-EXPAND-6063",
-  "status": "PARTIAL",
-  "current": "Criteria carries all eight plus novelty, failure frequency and urgency; tested that novelty alone never outranks. qip-expansion is library-only: no composition root constructs a ResearchQueue (its own lib.rs:13-17 says so, and grep of backend/crates/apps and runtime finds only the unused anomaly_to_observation in qip-deepbrain/src/signal_mapper.rs, which nothing calls).",
+  "status": "COMPLETE",
+  "current": "backend/crates/services/qip-expansion/src/desk.rs:115 every candidate scored on the eight criteria plus novelty/failure/urgency; curriculum rank in backend/crates/services/qip-expansion/src/curriculum.rs:166 gives novelty no standalone weight",
   "evidence": [
-   "backend/crates/services/qip-expansion/src/curriculum.rs:47",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:257",
-   "backend/crates/services/qip-expansion/tests/expansion.rs:519 licence/jurisdiction refusal"
+   "backend/crates/services/qip-expansion/tests/expansion.rs:257 novelty_alone_never_outranks_a_candidate_with_economic_value_and_information_gain",
+   "backend/crates/services/qip-expansion/tests/expansion.rs:202 a_scored_candidate_holds_all_eleven_inputs_and_one_missing_any_of_them_is_refused_by_name",
+   "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
   ],
-  "gap": "Integration.",
+  "gap": "",
   "implemented": true,
   "tested": true,
-  "integrated": false,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1352,19 +1350,21 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: the scoring runs on every offered gap in the deep brain. Several inputs are proxies (see 6048)."
  },
  {
   "id": "R12-EXPAND-6064",
-  "status": "PARTIAL",
-  "current": "Anomaly-to-gap mapping exists in qip-deepbrain/signal_mapper.rs but nothing calls it.",
+  "status": "COMPLETE",
+  "current": "backend/crates/services/qip-expansion/src/detectors.rs:422 anomaly_clusters raises one investigation for several subjects sharing a symptom, called in the sweep (backend/crates/apps/qip-deepbrain/src/research.rs:446)",
   "evidence": [
-   "backend/crates/apps/qip-deepbrain/src/signal_mapper.rs:28"
+   "backend/crates/services/qip-expansion/tests/loop.rs:214 several_subjects_showing_one_symptom_surface_one_investigation_nobody_asked_for",
+   "backend/crates/apps/qip-deepbrain/tests/research.rs:194 price_jumps_on_several_subjects_reach_the_queue_through_the_anomaly_mapper_as_one_cluster",
+   "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
   ],
-  "gap": "Caller and clustering.",
+  "gap": "",
   "implemented": true,
-  "tested": false,
-  "integrated": false,
+  "tested": true,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1372,16 +1372,16 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: clustering and a deep-brain caller exist and an end-to-end test reaches the queue."
  },
  {
   "id": "R12-EXPAND-6065",
   "status": "PARTIAL",
-  "current": "Kernel source discovery treats a universe entity with no close as a gap until a bar arrives; no coverage-to-research-task path.",
+  "current": "backend/crates/services/qip-expansion/src/detectors.rs:356 coverage over asset classes from the universe (backend/crates/apps/qip-deepbrain/src/main.rs:219)",
   "evidence": [
-   "backend/crates/runtime/qip-kernel/tests/source_discovery.rs:237"
+   "backend/crates/apps/qip-deepbrain/tests/research.rs:103 an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router"
   ],
-  "gap": "Coverage metric driving queue items.",
+  "gap": "Coverage only over asset classes; geographies, languages, venues and causal drivers are not measured.",
   "implemented": true,
   "tested": true,
   "integrated": true,
@@ -1392,16 +1392,17 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. One of five coverage dimensions integrated."
  },
  {
   "id": "R12-EXPAND-6066",
   "status": "PARTIAL",
-  "current": "Failed-thesis clusters become research prompts; vetoes, sagas and reconciliation breaks do not.",
+  "current": "backend/crates/services/qip-expansion/src/detectors.rs:177 repeated_vetoes and :219 refusal_clusters, low_confidence for forecasts, all in the sweep",
   "evidence": [
-   "backend/crates/runtime/qip-kernel/tests/learning.rs:99"
+   "backend/crates/services/qip-expansion/tests/loop.rs:147 a_gate_whose_declines_repeatedly_would_have_earned_becomes_one_learning_objective",
+   "backend/crates/services/qip-expansion/tests/loop.rs:173 a_venue_refusing_one_constraint_repeatedly_becomes_an_execution_gap"
   ],
-  "gap": "Other failure sources.",
+  "gap": "Adverse selection, failed arbitrage sagas and reconciliation breaks raise no learning objective.",
   "implemented": true,
   "tested": true,
   "integrated": true,
@@ -1412,17 +1413,19 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Partially covered sources."
  },
  {
   "id": "R12-EXPAND-6067",
-  "status": "MISSING",
-  "current": "No path from a persistent discrepancy to a curriculum item.",
-  "evidence": [],
-  "gap": "All of it.",
-  "implemented": false,
-  "tested": false,
-  "integrated": false,
+  "status": "PARTIAL",
+  "current": "backend/crates/services/qip-expansion/src/detectors.rs:481 PersistenceTracker raises MissedOpportunity when a flagged subject persists for PERSIST_SWEEPS, called at backend/crates/apps/qip-deepbrain/src/research.rs:450",
+  "evidence": [
+   "backend/crates/services/qip-expansion/tests/loop.rs:194 a_discrepancy_persisting_for_the_stated_sweeps_raises_exactly_once_and_resets_on_absence"
+  ],
+  "gap": "Persistence is over price-anomaly flags, not price-vs-belief discrepancies; the queued item triggers no specialist, simulator, feed or model family.",
+  "implemented": true,
+  "tested": true,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1430,20 +1433,21 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "L",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: MISSING->PARTIAL. Moved MISSING->PARTIAL: a persistence trigger exists and runs; it is not a belief discrepancy."
  },
  {
   "id": "R12-EXPAND-6068",
-  "status": "PARTIAL",
-  "current": "Admission blocks a task on an unregistered tool and queues a ToolBuild item and a proposal (tested); library-only.",
+  "status": "COMPLETE",
+  "current": "backend/crates/services/qip-expansion/src/desk.rs:310 a plan whose tool is not in the registry (backend/crates/apps/qip-deepbrain/src/research.rs:330 registered_tools) is blocked and the tool is queued as its own build task",
   "evidence": [
-   "backend/crates/services/qip-expansion/tests/expansion.rs:450",
-   "backend/crates/services/qip-expansion/src/curriculum.rs:427 proposals"
+   "backend/crates/services/qip-expansion/tests/loop.rs:379 a_gap_whose_tool_is_missing_is_blocked_and_the_tool_becomes_a_build_task_of_its_own",
+   "backend/crates/services/qip-expansion/tests/expansion.rs:495 a_task_needing_an_unregistered_parser_is_blocked_on_it_and_a_tool_proposal_and_build_item_are_queued",
+   "backend/crates/apps/qip-deepbrain/src/node.rs:450 ResearchLoop::maybe_sweep in the deep brain run loop (backend/crates/apps/qip-deepbrain/src/main.rs:662)"
   ],
-  "gap": "Integration.",
+  "gap": "",
   "implemented": true,
   "tested": true,
-  "integrated": false,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1451,20 +1455,19 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->COMPLETE. Moved PARTIAL->COMPLETE: the desk runs in the deep brain against its real tool registry."
  },
  {
   "id": "R12-EXPAND-6069",
   "status": "PARTIAL",
-  "current": "TickCampaignDetector raises campaigns on slippage and venue triggers; library-only.",
+  "current": "backend/crates/apps/qip-deepbrain/src/research.rs:497 TickCampaignDetector observes new venues and fill-prediction residuals from fill scores",
   "evidence": [
-   "backend/crates/services/qip-expansion/src/campaigns.rs:106",
-   "backend/crates/services/qip-expansion/src/campaigns.rs:127"
+   "backend/crates/services/qip-expansion/tests/loop.rs:262 lead_lag_and_reaction_residuals_open_a_campaign_past_their_threshold"
   ],
-  "gap": "Integration and lead/lag, reaction residual triggers.",
+  "gap": "Production feeds only NewVenue and FillPredictionError; slippage, queue error, lead/lag and reaction residuals are never observed; an opened campaign is a counter with no tick replay behind it.",
   "implemented": true,
   "tested": true,
-  "integrated": false,
+  "integrated": true,
   "deployable": false,
   "e2e": false,
   "depends_on": [],
@@ -1472,7 +1475,7 @@
   "verification": "cargo test -p qip-expansion",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Two of seven triggers integrated."
  },
  {
   "id": "R12-EXPAND-6070",
@@ -1938,15 +1941,15 @@
  {
   "id": "R12-AGENCY-6091",
   "status": "PARTIAL",
-  "current": "Two registries exist (qip-agency tools.rs, qip-contracts action.rs ToolRegistry with audit), both library-only; engine::execute does not consult either. No adapter exists, so nothing acts.",
+  "current": "backend/crates/services/qip-agency/src/tools.rs:12 re-exports the one qip_contracts::action::ToolRegistry; ActionGuard::preflight refuses unregistered tools (backend/crates/services/qip-agency/src/guard.rs:139) and authorise audits each call",
   "evidence": [
-   "backend/crates/services/qip-agency/src/tools.rs:47",
-   "backend/crates/libs/qip-contracts/src/action.rs:298 register",
-   "backend/crates/libs/qip-contracts/src/action.rs:339 authorise audits",
-   "backend/crates/services/qip-agency/src/engine.rs:207 execute (no registry check)",
-   "backend/crates/apps/qip-cli/src/agency.rs:32-41 Unwired adapter"
+   "backend/crates/services/qip-agency/src/guard.rs:139 unregistered tool refused",
+   "backend/crates/services/qip-agency/src/guard.rs:221 authorise via registry",
+   "backend/crates/services/qip-agency/tests/agency.rs:408 a_tripped_rate_limit_or_revocation_refuses_the_next_call_and_every_decision_is_audited",
+   "backend/crates/services/qip-agency/tests/agency.rs:1518 an_adapter_is_never_called_without_a_guard_even_at_narrow_reversible_authority",
+   "backend/crates/apps/qip-cli/src/agency.rs:48 the only binary caller runs engine::run with no policy (shadow) and an adapter that refuses every call; guards come from the request and are optional"
   ],
-  "gap": "execute must consult one tool registry; consolidate the two registries.",
+  "gap": "No binary composes an ActionGuard: qip-cli shadow is the only caller and the guard is optional there (its own test request carries none); no external adapter exists in any composition root. A second ToolRegistry remains in backend/crates/libs/qip-agents/src/tools.rs:75 (used by the deep brain research desk).",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -1957,7 +1960,7 @@
   "verification": "cargo test -p qip-agency -p qip-contracts --test action",
   "work_item": "",
   "size": "M",
-  "notes": "Two independent tool registries for the same §24.4/§25 obligation (qip-agency/src/tools.rs and qip-contracts/src/action.rs)."
+  "notes": "Two independent tool registries for the same §24.4/§25 obligation (qip-agency/src/tools.rs and qip-contracts/src/action.rs). Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Agency registries consolidated and execute consults it; still no production action path. Unchanged."
  },
  {
   "id": "R12-AGENCY-6092",
@@ -2198,12 +2201,12 @@
  {
   "id": "R12-AGENCY-6103",
   "status": "PARTIAL",
-  "current": "ActionPolicy::widen requires an identified attribution and approver authority (tested); library-only, no production caller.",
+  "current": "backend/crates/services/qip-agency/src/autonomy.rs:87 ActionPolicy::widen refuses an unidentified attribution; backend/crates/services/qip-agency/src/engine.rs:359 widen",
   "evidence": [
-   "backend/crates/services/qip-agency/src/autonomy.rs:87",
-   "backend/crates/services/qip-agency/tests/agency.rs:1153"
+   "backend/crates/services/qip-agency/tests/agency.rs:1229 autonomy_widens_only_on_an_identified_attribution_and_operator_authority_together",
+   "backend/crates/services/qip-agency/tests/agency.rs:1869 widening_leaves_a_record_of_its_evidence_and_approver_and_refuses_a_correlation"
   ],
-  "gap": "Integration.",
+  "gap": "No composition root calls widen; the CLI shadow pass never acts, learns or widens.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2214,19 +2217,17 @@
   "verification": "cargo test -p qip-agency --test agency",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Library behaviour tested; integration still absent. Unchanged."
  },
  {
   "id": "R12-AGENCY-6104",
   "status": "PARTIAL",
-  "current": "qip-agency EffectAttribution requires chain, confounders, competing explanations and confidence but has no horizons; qip-contracts EffectAttribution has per-horizon observations but no causal chain or competing explanations. Both library-only.",
+  "current": "backend/crates/libs/qip-contracts/src/expansion.rs:442 EffectAttribution with validate (chain, confounders, rivals, horizons); re-exported by backend/crates/services/qip-agency/src/attribution.rs",
   "evidence": [
-   "backend/crates/services/qip-agency/src/attribution.rs:35-88",
-   "backend/crates/libs/qip-contracts/src/expansion.rs:183 HorizonObservation",
-   "backend/crates/libs/qip-contracts/src/expansion.rs:190 EffectAttribution",
-   "backend/crates/services/qip-agency/tests/agency.rs:458"
+   "backend/crates/libs/qip-contracts/src/expansion.rs:466 validate",
+   "backend/crates/services/qip-agency/tests/agency.rs:471 an_attribution_without_a_chain_confounders_rivals_or_horizons_is_refused"
   ],
-  "gap": "One attribution contract with both halves, integrated.",
+  "gap": "No production path measures effects or builds an attribution; nothing in a binary reaches it.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2237,7 +2238,7 @@
   "verification": "cargo test -p qip-agency -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement."
+  "notes": "Two EffectAttribution types with different, non-overlapping halves of the requirement. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Contract and refusal tested; not integrated. Unchanged."
  },
  {
   "id": "R12-AGENCY-6105",
@@ -2287,13 +2288,11 @@
  {
   "id": "R12-AGENCY-6107",
   "status": "PARTIAL",
-  "current": "ActionOutcomeMemory enforces the nine fields and is bounded (tested); no production caller.",
+  "current": "backend/crates/services/qip-agency/src/memory.rs:70 ActionOutcomeDraft::build refuses a missing field; backend/crates/services/qip-agency/src/memory.rs:117 record",
   "evidence": [
-   "backend/crates/services/qip-agency/src/memory.rs:21-79",
-   "backend/crates/services/qip-agency/src/memory.rs:100",
-   "backend/crates/services/qip-agency/tests/agency.rs:1352"
+   "backend/crates/services/qip-agency/tests/agency.rs:1419 an_action_outcome_missing_any_of_its_nine_fields_or_its_audience_or_delay_is_refused_and_not_remembered"
   ],
-  "gap": "Integration.",
+  "gap": "The learn stage runs only after an executed act; the only binary (qip-cli shadow) never acts, so nothing in production writes the memory.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2304,17 +2303,17 @@
   "verification": "cargo test -p qip-agency --test agency",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: library-only."
  },
  {
   "id": "R12-AGENCY-6108",
   "status": "PARTIAL",
-  "current": "recommend uses mean observed-minus-counterfactual per environment state with a support floor (tested); no delay learning ('the record carries no delay field today'), library-only.",
+  "current": "backend/crates/services/qip-agency/src/memory.rs:142 recommend and :164 recommend_for (per state/audience, learned delay)",
   "evidence": [
-   "backend/crates/services/qip-agency/src/memory.rs:127",
-   "backend/crates/services/qip-agency/tests/agency.rs:1391"
+   "backend/crates/services/qip-agency/tests/agency.rs:1461 the_learned_policy_selects_an_action_where_it_measurably_worked_and_no_action_where_it_did_not",
+   "backend/crates/services/qip-agency/tests/agency.rs:1486 what_worked_for_one_audience_is_not_recommended_for_another_and_the_delay_is_learned"
   ],
-  "gap": "Delay and audience dimensions; integration.",
+  "gap": "No composition root records outcomes or asks for a recommendation.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2325,17 +2324,18 @@
   "verification": "cargo test -p qip-agency --test agency",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Audience and delay dimensions now present and tested; integration still absent, so still PARTIAL."
  },
  {
   "id": "R12-CONTRACT-6109",
   "status": "PARTIAL",
-  "current": "ForecastLattice (feature key, forecast instant, distributions, disagreement) and an uncertainty-kind enum exist separately; no single type with target, horizon, confidence, split uncertainty and expiry.",
+  "current": "backend/crates/libs/qip-contracts/src/forecast.rs:309 ForecastState = Validated<ForecastStateFields>, deny_unknown_fields decode and invariant checks",
   "evidence": [
-   "backend/crates/libs/qip-contracts/src/feature.rs:413 ForecastLattice",
-   "backend/crates/libs/qip-contracts/src/policy.rs:344 uncertainty kind"
+   "backend/crates/libs/qip-contracts/src/forecast.rs:309 type",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:335 a_forecast_state_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:342 a_forecast_state_refuses_each_broken_invariant"
   ],
-  "gap": "A ForecastState type with exactly these fields, strict decode, and use at the seam that needs it.",
+  "gap": "No production seam constructs or consumes ForecastState (grep of ForecastStateFields outside qip-contracts finds nothing).",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2346,17 +2346,18 @@
   "verification": "cargo test -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ForecastState exists and is tested; nothing in production constructs or decodes it."
  },
  {
   "id": "R12-CONTRACT-6110",
   "status": "PARTIAL",
-  "current": "WorldModelBranch has parent_id and hypothesis; qip-prediction Branch exists; neither carries probability, causal deltas and unresolved evidence together.",
+  "current": "backend/crates/libs/qip-contracts/src/world_model.rs:173 WorldBranch = Validated<WorldBranchFields>, deny_unknown_fields decode and invariant checks",
   "evidence": [
-   "backend/crates/services/qip-world-model/src/spawning.rs:15",
-   "backend/crates/services/qip-prediction/src/belief.rs:190"
+   "backend/crates/libs/qip-contracts/src/world_model.rs:173 type",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:387 a_world_branch_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:401 a_world_branch_refuses_each_broken_invariant"
   ],
-  "gap": "A WorldBranch type with exactly these fields, strict decode, and use at the seam that needs it.",
+  "gap": "No production seam constructs or consumes WorldBranch (grep of WorldBranchFields outside qip-contracts finds nothing).",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2367,16 +2368,18 @@
   "verification": "cargo test -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding WorldBranch exists and is tested; nothing in production constructs or decodes it."
  },
  {
   "id": "R12-CONTRACT-6111",
   "status": "PARTIAL",
-  "current": "qip-world-model InformationRequest carries only proposition and models.",
+  "current": "backend/crates/libs/qip-contracts/src/control.rs:48 InformationRequest = Validated<InformationRequestFields>, deny_unknown_fields decode and invariant checks",
   "evidence": [
-   "backend/crates/services/qip-world-model/src/federation.rs:252"
+   "backend/crates/libs/qip-contracts/src/control.rs:48 type",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:452 an_information_request_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:462 an_information_request_refuses_each_broken_invariant"
   ],
-  "gap": "A InformationRequest type with exactly these fields, strict decode, and use at the seam that needs it.",
+  "gap": "No production seam constructs or consumes InformationRequest (grep of InformationRequestFields outside qip-contracts finds nothing). Production uses qip_contracts::ambient::InfoRequest and services/qip-world-model/src/federation.rs:258 InformationRequest instead.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2387,16 +2390,18 @@
   "verification": "cargo test -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding InformationRequest exists and is tested; nothing in production constructs or decodes it."
  },
  {
   "id": "R12-CONTRACT-6112",
   "status": "PARTIAL",
-  "current": "ScoredView carries model, probability and predictive performance; no version, regime, score history or compute cost.",
+  "current": "backend/crates/libs/qip-contracts/src/control.rs:107 ModelVote = Validated<ModelVoteFields>, deny_unknown_fields decode and invariant checks",
   "evidence": [
-   "backend/crates/services/qip-world-model/src/federation.rs:232 ScoredView"
+   "backend/crates/libs/qip-contracts/src/control.rs:107 type",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:506 a_model_vote_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:515 a_model_vote_refuses_each_broken_invariant"
   ],
-  "gap": "A ModelVote type with exactly these fields, strict decode, and use at the seam that needs it.",
+  "gap": "No production seam constructs or consumes ModelVote (grep of ModelVoteFields outside qip-contracts finds nothing).",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2407,17 +2412,18 @@
   "verification": "cargo test -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ModelVote exists and is tested; nothing in production constructs or decodes it."
  },
  {
   "id": "R12-CONTRACT-6113",
   "status": "PARTIAL",
-  "current": "DecisionRequest and RoutingDecision record classical vs quantum results; no CPU/GPU/TPU candidates, budget or verifier field.",
+  "current": "backend/crates/libs/qip-contracts/src/control.rs:192 ComputePlan = Validated<ComputePlanFields>, deny_unknown_fields decode and invariant checks",
   "evidence": [
-   "backend/crates/libs/qip-contracts/src/quantum.rs:21",
-   "backend/crates/libs/qip-contracts/src/quantum.rs:208"
+   "backend/crates/libs/qip-contracts/src/control.rs:192 type",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:578 a_compute_plan_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:589 a_compute_plan_refuses_each_broken_invariant_including_a_missing_or_quantum_baseline"
   ],
-  "gap": "A ComputePlan type with exactly these fields, strict decode, and use at the seam that needs it.",
+  "gap": "No production seam constructs or consumes ComputePlan (grep of ComputePlanFields outside qip-contracts finds nothing).",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2428,16 +2434,18 @@
   "verification": "cargo test -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding ComputePlan exists and is tested; nothing in production constructs or decodes it."
  },
  {
   "id": "R12-CONTRACT-6114",
   "status": "PARTIAL",
-  "current": "HedgeProposal carries exposure, instrument, notional and reasoning; no scenarios protected, liquidity or rollback fields.",
+  "current": "backend/crates/libs/qip-contracts/src/control.rs:316 HedgePlan = Validated<HedgePlanFields>, deny_unknown_fields decode and invariant checks",
   "evidence": [
-   "backend/crates/libs/qip-risk/src/hedge.rs:347"
+   "backend/crates/libs/qip-contracts/src/control.rs:316 type",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:656 a_hedge_plan_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:665 a_hedge_plan_refuses_each_broken_invariant"
   ],
-  "gap": "A HedgePlan type with exactly these fields, strict decode, and use at the seam that needs it.",
+  "gap": "No production seam constructs or consumes HedgePlan (grep of HedgePlanFields outside qip-contracts finds nothing).",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2448,17 +2456,18 @@
   "verification": "cargo test -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding HedgePlan exists and is tested; nothing in production constructs or decodes it."
  },
  {
   "id": "R12-CONTRACT-6115",
   "status": "PARTIAL",
-  "current": "CapitalEnvelope carries strategy, cell, gross/order/loss limits, venues, expiry, approver and signature; no region, risk budget or liquidity reserve. The name CapitalGrant in code is an admission verdict enum, not this contract.",
+  "current": "backend/crates/libs/qip-contracts/src/capital.rs:316 CapitalGrant = Validated<CapitalGrantFields>, deny_unknown_fields decode and invariant checks",
   "evidence": [
-   "backend/crates/libs/qip-contracts/src/capital.rs:20 CapitalEnvelope",
-   "backend/crates/libs/qip-contracts/src/capital.rs:161 CapitalGrant is a verdict enum"
+   "backend/crates/libs/qip-contracts/src/capital.rs:316 type",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:732 a_capital_grant_round_trips_and_refuses_a_missing_unknown_or_foreign_field",
+   "backend/crates/libs/qip-contracts/tests/control_contracts.rs:764 a_capital_grant_refuses_each_broken_invariant"
   ],
-  "gap": "A CapitalGrant type with exactly these fields, strict decode, and use at the seam that needs it.",
+  "gap": "No production seam constructs or consumes CapitalGrant (grep of CapitalGrantFields outside qip-contracts finds nothing). The cell still enforces CapitalEnvelope (libs/qip-contracts/src/capital.rs:23).",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2469,7 +2478,7 @@
   "verification": "cargo test -p qip-contracts",
   "work_item": "",
   "size": "M",
-  "notes": "Name collision: qip_contracts::capital::CapitalGrant already means something else."
+  "notes": "Name collision: qip_contracts::capital::CapitalGrant already means something else. Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Unchanged: typed, strict-decoding CapitalGrant exists and is tested; nothing in production constructs or decodes it."
  },
  {
   "id": "R12-GOV-6116",
@@ -2629,15 +2638,15 @@
  {
   "id": "R12-GOV-6123",
   "status": "PARTIAL",
-  "current": "qip-contracts ToolRegistry enforces all fields, rate, budget, channel and revocation with audit (tested); qip-agency ToolRegistry enforces a similar set. Neither has a production caller.",
+  "current": "One ToolRegistry inside ActionGuard is consulted before every adapter call; the only production path is the CLI shadow pass, where nothing is called and the guard is optional in the request document; ActionGuard::revoke has no production caller.",
   "evidence": [
-   "backend/crates/libs/qip-contracts/src/action.rs:298",
-   "backend/crates/libs/qip-contracts/src/action.rs:328",
-   "backend/crates/libs/qip-contracts/tests/action.rs:49",
-   "backend/crates/libs/qip-contracts/tests/action.rs:140",
-   "backend/crates/services/qip-agency/tests/agency.rs:380"
+   "backend/crates/services/qip-agency/src/engine.rs:299 no guard + acting authority refused; :311 guard.preflight; :330 authorise before adapter.call",
+   "backend/crates/services/qip-agency/src/guard.rs:141 check_justification, registry lookup, approval chain",
+   "backend/crates/apps/qip-cli/src/agency.rs:48 only production caller: engine::run with no action policy (shadow) and an adapter that refuses every call",
+   "backend/crates/services/qip-agency/src/guard.rs:119 revoke (no non-test caller)",
+   "backend/crates/services/qip-agency/tests/agency.rs:1678 a_guard_kept_across_passes_holds_the_rate_window_and_the_revocation"
   ],
-  "gap": "One registry, consulted by the only adapter caller.",
+  "gap": "A production action path with registered tools and a reachable revocation; the guard is optional in the shadow request.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2648,17 +2657,20 @@
   "verification": "cargo test -p qip-contracts --test action",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Registry now consulted in front of adapter calls, but no production adapter or revocation path exists."
  },
  {
   "id": "R12-GOV-6124",
   "status": "PARTIAL",
-  "current": "GoalApproval -> PlanApproval -> ExecutionRecord chain exists and is tested; library-only, not journaled by any path.",
+  "current": "ApprovalChain builds goal approval, plan approval and (when acting) an execution record with actors and times, refusing out-of-order times and self-approval; records are returned, not journaled, and execution never happens in production (shadow only).",
   "evidence": [
-   "backend/crates/libs/qip-contracts/src/action.rs:412-520",
-   "backend/crates/libs/qip-contracts/tests/action.rs:170"
+   "backend/crates/services/qip-agency/src/engine.rs:299 no guard + acting authority refused; :311 guard.preflight; :330 authorise before adapter.call",
+   "backend/crates/services/qip-agency/src/guard.rs:141 check_justification, registry lookup, approval chain",
+   "backend/crates/apps/qip-cli/src/agency.rs:48 only production caller: engine::run with no action policy (shadow) and an adapter that refuses every call",
+   "backend/crates/services/qip-agency/src/guard.rs:236 approve refuses self-approval and execution before plan approval",
+   "backend/crates/services/qip-agency/tests/agency.rs:1650 an_executed_pass_leaves_three_linked_approval_records_and_an_audited_registry_decision"
   ],
-  "gap": "Journal these from the agency path.",
+  "gap": "Journal the three records from a production agency path.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2669,7 +2681,7 @@
   "verification": "cargo test -p qip-contracts --test action",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Chain is built in the engine; still not journaled and no production execution."
  },
  {
   "id": "R12-GOV-6125",
@@ -2720,12 +2732,14 @@
  {
   "id": "R12-GOV-6127",
   "status": "PARTIAL",
-  "current": "check_justification refuses grounds without an independent evidence ground (tested); library-only.",
+  "current": "check_justification refuses profit/price-impact-only grounds in preflight before any adapter call; reached only from the CLI shadow pass when a guard is supplied, and not in front of market-facing order paths.",
   "evidence": [
-   "backend/crates/libs/qip-contracts/src/action.rs:393",
-   "backend/crates/libs/qip-contracts/tests/action.rs:155"
+   "backend/crates/services/qip-agency/src/engine.rs:299 no guard + acting authority refused; :311 guard.preflight; :330 authorise before adapter.call",
+   "backend/crates/services/qip-agency/src/guard.rs:141 check_justification, registry lookup, approval chain",
+   "backend/crates/apps/qip-cli/src/agency.rs:48 only production caller: engine::run with no action policy (shadow) and an adapter that refuses every call",
+   "backend/crates/services/qip-agency/tests/agency.rs:1545 each_guard_check_alone_withholds_the_plan_before_any_adapter_call"
   ],
-  "gap": "Integration ahead of any market-facing action.",
+  "gap": "Apply ahead of any real market-facing action; guard mandatory in production.",
   "implemented": true,
   "tested": true,
   "integrated": false,
@@ -2736,6 +2750,6 @@
   "verification": "cargo test -p qip-contracts --test action",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded 2026-10-11 after the v12 wave-0/1 lanes, by an independent audit: PARTIAL->PARTIAL. Wired into the agency engine; no production market-facing action consults it."
  }
 ]

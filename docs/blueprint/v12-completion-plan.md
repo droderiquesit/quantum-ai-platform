@@ -75,10 +75,50 @@ suggests some PARTIAL rows are MISSING too. **W0.10** below re-audits every
 COMPLETE row with the same method before anyone quotes a percentage
 externally.
 
+## Round 1 — what landed (2026-10-11)
+
+Twelve parallel lanes implemented W0.1–W0.9, most of Wave 1, W2.1–W2.5,
+W3.5/W3.9/W3.10 starts, W4.2/W4.6 and W5.2 (merged as `3ab3595c` …
+`7d3be4e7`), then a gate pass fixed 33 failures (`0a233b40` … `6bbf5b88`).
+Gate on the final tree: `cargo clippy --workspace --all-targets -D warnings`
+exit 0; `cargo test --workspace --no-fail-fast` 761 binaries, **8,685
+passed, 0 failed, 0 ignored**; fmt, dependency policy (11 packages, all
+permitted) and secret scan clean.
+
+Two independent auditors then re-graded the 186 rows the round touched,
+strictly (a test that fails without the behaviour, and a traced path from a
+binary's composition root). 64 moved. The register now reads **154
+COMPLETE, 1,126 PARTIAL, 181 MISSING, 53 BLOCKED, 3 INCORRECT, 1
+NEEDS-VALIDATION**; integrated 689, deployable 184, end-to-end 0.
+
+The decisions table below is resolved: ADRs 0109–0115 were accepted on
+2026-10-11 (audited crates from an allow-list, tokio permitted, KMS signing,
+fabric P0/P1 replication on Spanner, mTLS through rustls, Spanner ledger,
+GKE controllers-only, external action refused, single build registry).
+Paper trading is unchanged (ADR 0003, 0108).
+
+**Round 2 starts with what the audit found the lanes had not finished** —
+each is a library that works and that no binary yet calls, or a claim the
+code does not bear out:
+
+| Item | Rows | What |
+|---|---|---|
+| R2.1 Install the Risk Gate in the edge node | RISK-4093, 7205 | `Cell::with_risk_gate` exists and is tested, but no app installs a `CellRiskGate`; the node sends orders without it. `order_route_risk_gate.rs` checks source text, not behaviour — make it behavioural. The repricer's replacement order also bypasses the gate. **P0.** |
+| R2.2 Ledger state import | LEDGER-5001 (now INCORRECT) | `qip-ledgerd` `store.rs:907` `import_state` writes balances directly, outside the event history, and silently skips every account key containing more than one colon. Remove or confine it to replay. **P0.** |
+| R2.3 Wire the conduct gate into a binary | AGENCY-1056…1069 | The only binary caller (`qip-cli shadow`) runs with no policy and an optional guard. |
+| R2.4 Forward evidence | EVID-2031…2039 | `drain_evidence` / `absorb_evidence` are never called, so the world model and poisoning detector read an empty fabric. |
+| R2.5 Adopt the §27 contracts | CONTRACT rows | 21 `Validated<…>` contracts with no production producer or consumer. |
+| R2.6 Turn quantum on somewhere | QUANT-4052, 7206, 1076 | No app sets `quantum_enabled`; the async gateway never runs in production. |
+| R2.7 Survival policy and curiosity rank in a binary | CAPITAL-4089, AMBIENT-3106 | `set_survival_policy` and `rank_acquisitions` have no caller. |
+| R2.8 SAST that can block | CICD-9105 | Deploy waits for CodeQL to finish, not for it to find nothing. |
+| R2.9 Catalogue says what it means | FABRIC-8086 | `streams.local.json` still declares `"quorum"`; replace with `archived` and stop accepting the alias silently. |
+| R2.10 Private build pool | CICD-9097 | Builds run on GitHub-hosted runners, not a Cloud Build private pool. |
+
 ## Decisions only the owner can take
 
-Each blocks a cluster below. None is a code change; each needs an ADR or an
-explicit "no".
+*Resolved 2026-10-11 by ADRs 0109–0115; kept for the record.* Each blocked
+a cluster below. None was a code change; each needed an ADR or an explicit
+"no".
 
 | # | Decision | Blocks | Standing position |
 |---|---|---|---|
