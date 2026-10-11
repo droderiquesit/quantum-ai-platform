@@ -60,6 +60,7 @@ fn cell() -> Result<Cell> {
 fn live_peer_endpoint() -> PeerEndpoint {
     let leg = |id: &str, node: &str| EpochLeg {
         leg: id.into(),
+        execution: None,
         node: node.into(),
         size: Decimal::from_int(100),
         unwind_loss: Decimal::from_int(2),

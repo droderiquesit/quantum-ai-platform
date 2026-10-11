@@ -104,6 +104,28 @@ pub const MAX_EDGE_PEERS: usize = 64;
 /// leg, which epoch — travels in its own field at full length.
 pub const MAX_DECLINE_REASON: usize = 256;
 
+/// How long one clock sample stands for a peer's offset (MESH-007). Clocks
+/// drift and a sample is a measurement of one instant, so an old one is
+/// refused as unknown rather than trusted: a node that measured its peer
+/// once at start-up and then drifted would join epochs on a figure that
+/// stopped being true hours ago.
+pub const CLOCK_SAMPLE_TTL: Duration = Duration::from_secs(10);
+
+/// Samples kept per peer. The offset used is the one measured over the
+/// shortest round trip among the fresh ones: its uncertainty, half that round
+/// trip, is the smallest, and a single sample delayed by a busy wire would
+/// otherwise widen the bound for every epoch until the next one landed.
+pub const CLOCK_SAMPLES_PER_PEER: usize = 8;
+
+/// Probes this endpoint has sent and not yet heard echoed. The oldest is
+/// forgotten past this, so an echo to it is refused as unknown rather than
+/// the table growing for a peer that never answers.
+pub const MAX_PENDING_PROBES: usize = 16;
+
+/// Echoes waiting to be sent. A probe beyond this is not answered this
+/// turn; its sender probes again.
+pub const MAX_PENDING_ECHOES: usize = MAX_EDGE_PEERS;
+
 /// The blueprint's time lanes this module has to tell apart (§4).
 ///
 /// Only the two that matter to the mesh are named. Lane 0 is the reflex hot
@@ -197,6 +219,44 @@ pub struct EpochLeg {
     pub node: String,
     pub size: Decimal,
     pub unwind_loss: Decimal,
+    /// What the leg trades, where, which way and at what limit, when the
+    /// epoch was originated from executable edge states (MESH-5060). A
+    /// participant's gate judges its leg against this and nothing else: a
+    /// leg that names only a size could be reserved against any book the
+    /// node holds, which is a reservation nobody can check afterwards.
+    /// Absent on an epoch written before legs carried it, and then omitted
+    /// from the encoding, so such an epoch's identity is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<LegExecution>,
+}
+
+/// Which way a leg trades.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegSide {
+    Buy,
+    Sell,
+}
+
+impl LegSide {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "buy",
+            Self::Sell => "sell",
+        }
+    }
+}
+
+/// The venue, instrument, side and limit price of one leg.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegExecution {
+    pub venue: String,
+    pub instrument: String,
+    pub side: LegSide,
+    /// The worst price the leg may trade at: at most this for a buy, at
+    /// least this for a sell.
+    pub limit_price: Decimal,
 }
 
 /// The seven things MESH-005 names, plus the identity and fencing counter every
@@ -259,6 +319,17 @@ impl OpportunityEpoch {
             if !l.size.is_positive() || l.unwind_loss.is_negative() {
                 return Err(Error::invalid(format!(
                     "epoch leg `{}` needs a positive size and a non-negative unwind loss",
+                    l.leg
+                )));
+            }
+            if let Some(execution) = &l.execution
+                && (execution.venue.trim().is_empty()
+                    || execution.instrument.trim().is_empty()
+                    || !execution.limit_price.is_positive())
+            {
+                return Err(Error::invalid(format!(
+                    "epoch leg `{}` names its execution without a venue, an instrument or a \
+                     positive limit price; a leg nobody can price is refused",
                     l.leg
                 )));
             }
@@ -424,6 +495,26 @@ pub enum PeerMessage {
         sequence: u64,
         edges: Vec<ExecutableEdge>,
     },
+    /// `node` asks its peers to echo the instant it sent this (MESH-007).
+    /// The four-timestamp exchange is how a node learns a peer's clock
+    /// offset at all: until it has one it refuses every epoch by name
+    /// (`clock_unknown`), which before this kind existed was every epoch.
+    ClockProbe {
+        node: String,
+        nonce: u64,
+        sent_ns: i64,
+    },
+    /// `node`'s answer to `to`'s probe `nonce`: when the probe left `to`
+    /// (`origin_ns`, copied back), and when `node` received it and sent this,
+    /// each on `node`'s own clock.
+    ClockEcho {
+        node: String,
+        to: String,
+        nonce: u64,
+        origin_ns: i64,
+        received_ns: i64,
+        sent_ns: i64,
+    },
 }
 
 impl PeerMessage {
@@ -435,7 +526,10 @@ impl PeerMessage {
             Self::Token { .. } => MeshFunction::OpportunityToken,
             Self::Reserved { .. } | Self::Declined { .. } => MeshFunction::DistributedReservation,
             Self::Fire { .. } => MeshFunction::MultiLegCoordination,
-            Self::Fill { .. } | Self::EdgeState { .. } => MeshFunction::PeerReflexMessage,
+            Self::Fill { .. }
+            | Self::EdgeState { .. }
+            | Self::ClockProbe { .. }
+            | Self::ClockEcho { .. } => MeshFunction::PeerReflexMessage,
             Self::Unwind { .. } => MeshFunction::HedgeUnwindCommand,
         }
     }
@@ -544,6 +638,11 @@ struct OpportunityState {
     /// Legs whose node declined to reserve, with why. Final for this epoch:
     /// only a newer token clears it.
     declined: BTreeMap<String, String>,
+    /// The node that sent the token, when the wire authenticated it, or this
+    /// node when it opened the epoch itself. A FIRE is admitted only from
+    /// it: any other participant declaring FIRE is a node deciding a cycle
+    /// it does not coordinate.
+    coordinator: Option<String>,
 }
 
 impl OpportunityState {
@@ -610,6 +709,46 @@ pub struct PeerEndpoint {
     /// Measured offset of this node's clock from the reference, in nanoseconds.
     /// `None` until something measures it, and `None` is refused, not zero.
     clock_offset_nanos: Option<i64>,
+    /// Each peer's clock as this node measured it by probe and echo, newest
+    /// last, at most [`CLOCK_SAMPLES_PER_PEER`] per peer and
+    /// [`MAX_EDGE_PEERS`] peers.
+    peer_clocks: BTreeMap<String, Vec<ClockSample>>,
+    /// Probes sent and not yet echoed: nonce to the instant sent.
+    probes: BTreeMap<u64, i64>,
+    next_nonce: u64,
+    /// Echoes owed to peers that probed this node, stamped and framed when
+    /// they are taken so the send instant is the one the echo reports.
+    echoes: Vec<PendingEcho>,
+}
+
+/// One measurement of a peer's clock against this node's (MESH-007).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClockSample {
+    /// The peer's clock minus this node's, in nanoseconds.
+    pub offset_nanos: i64,
+    /// The round trip net of the peer's own holding time. Half of it bounds
+    /// how wrong `offset_nanos` can be, whatever the path's asymmetry.
+    pub round_trip_nanos: i64,
+    /// When this node completed the measurement, on its own clock.
+    pub measured_at: Timestamp,
+}
+
+impl ClockSample {
+    /// The most this peer's clock can differ from this node's, given the
+    /// sample: the measured offset plus its uncertainty.
+    pub fn worst_offset_nanos(&self) -> u64 {
+        self.offset_nanos
+            .unsigned_abs()
+            .saturating_add(self.round_trip_nanos.unsigned_abs() / 2)
+    }
+}
+
+#[derive(Debug)]
+struct PendingEcho {
+    to: String,
+    nonce: u64,
+    origin_ns: i64,
+    received_ns: i64,
 }
 
 impl PeerEndpoint {
@@ -621,7 +760,86 @@ impl PeerEndpoint {
             refusals: Vec::new(),
             edge_states: BTreeMap::new(),
             clock_offset_nanos: None,
+            peer_clocks: BTreeMap::new(),
+            probes: BTreeMap::new(),
+            next_nonce: 0,
+            echoes: Vec::new(),
         }
+    }
+
+    /// This node's name.
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
+    /// A probe for every peer to echo (MESH-007). Remembers the nonce and the
+    /// instant, forgetting the oldest past [`MAX_PENDING_PROBES`].
+    pub fn clock_probe_frame(&mut self, now: Timestamp) -> Result<Vec<u8>> {
+        self.next_nonce = self.next_nonce.wrapping_add(1);
+        let nonce = self.next_nonce;
+        let frame = encode(
+            &PeerMessage::ClockProbe {
+                node: self.node.clone(),
+                nonce,
+                sent_ns: now.as_nanos(),
+            },
+            self.limits.max_frame,
+        )?;
+        self.probes.insert(nonce, now.as_nanos());
+        while self.probes.len() > MAX_PENDING_PROBES {
+            self.probes.pop_first();
+        }
+        Ok(frame)
+    }
+
+    /// Every echo owed to a peer that probed this node, as `(peer, frame)`,
+    /// each stamped with `now` as the instant it is sent.
+    pub fn take_echoes(&mut self, now: Timestamp) -> Vec<(String, Vec<u8>)> {
+        let max = self.limits.max_frame;
+        let node = self.node.clone();
+        std::mem::take(&mut self.echoes)
+            .into_iter()
+            .filter_map(|echo| {
+                encode(
+                    &PeerMessage::ClockEcho {
+                        node: node.clone(),
+                        to: echo.to.clone(),
+                        nonce: echo.nonce,
+                        origin_ns: echo.origin_ns,
+                        received_ns: echo.received_ns,
+                        // Never before the receipt it reports, even on a
+                        // clock read out of order; a negative holding time
+                        // would shrink the peer's uncertainty below the truth.
+                        sent_ns: now.as_nanos().max(echo.received_ns),
+                    },
+                    max,
+                )
+                .ok()
+                .map(|frame| (echo.to, frame))
+            })
+            .collect()
+    }
+
+    /// `peer`'s clock as the freshest, tightest sample shows it, or `None`
+    /// when no sample younger than [`CLOCK_SAMPLE_TTL`] exists.
+    pub fn peer_clock(&self, peer: &str, now: Timestamp) -> Option<ClockSample> {
+        self.peer_clocks
+            .get(peer)?
+            .iter()
+            .filter(|sample| {
+                now.since(sample.measured_at).as_nanos() <= CLOCK_SAMPLE_TTL.as_nanos()
+            })
+            .min_by_key(|sample| sample.round_trip_nanos)
+            .copied()
+    }
+
+    /// Every peer with a fresh clock sample, in name order.
+    pub fn clocked_peers(&self, now: Timestamp) -> Vec<String> {
+        self.peer_clocks
+            .keys()
+            .filter(|peer| self.peer_clock(peer, now).is_some())
+            .cloned()
+            .collect()
     }
 
     /// Record the latest measured offset of this node's clock (MESH-007).
@@ -634,18 +852,87 @@ impl PeerEndpoint {
         self.clock_offset_nanos = None;
     }
 
-    fn clock_in_bound(&self) -> std::result::Result<(), Rejected> {
-        let bound = self.limits.max_clock_offset.as_nanos();
+    /// This node's own offset against the reference, when one was observed:
+    /// out of bound refuses, and its absence is for the caller to judge.
+    fn reference_clock(&self) -> std::result::Result<bool, Rejected> {
+        let bound = self.limits.max_clock_offset.as_nanos().unsigned_abs();
         match self.clock_offset_nanos {
+            Some(o) if o.unsigned_abs() > bound => Err((
+                "clock_out_of_bound",
+                format!("clock offset {o} ns is beyond the {bound} ns bound; resynchronise first"),
+            )),
+            Some(_) => Ok(true),
+            None => Ok(false),
+        }
+    }
+
+    /// The clock check for an action on `epoch` (MESH-007).
+    ///
+    /// Every other node holding a leg of it must have a fresh sample whose
+    /// offset *plus its uncertainty* is inside the bound, or this node must
+    /// hold a reference offset that is. A sample out of bound refuses even
+    /// when a reference offset is held: two measurements disagreeing about
+    /// the same peer is a reason to stop, not to pick the kinder one. A peer
+    /// never measured is `clock_unknown`, naming it — never treated as zero.
+    fn clock_in_bound_for(
+        &self,
+        epoch: &OpportunityEpoch,
+        now: Timestamp,
+    ) -> std::result::Result<(), Rejected> {
+        let reference = self.reference_clock()?;
+        let bound = self.limits.max_clock_offset.as_nanos().unsigned_abs();
+        let counterparties: BTreeSet<&str> = epoch
+            .legs
+            .iter()
+            .map(|l| l.node.as_str())
+            .filter(|n| *n != self.node)
+            .collect();
+        let mut unknown = Vec::new();
+        for peer in &counterparties {
+            match self.peer_clock(peer, now) {
+                Some(sample) if sample.worst_offset_nanos() > bound => {
+                    return Err((
+                        "clock_out_of_bound",
+                        format!(
+                            "`{peer}`'s clock is {} ns from this node's, ±{} ns, beyond the {bound} \
+                             ns bound; resynchronise first",
+                            sample.offset_nanos,
+                            sample.round_trip_nanos / 2
+                        ),
+                    ));
+                }
+                Some(_) => {}
+                None => unknown.push(format!("`{peer}`")),
+            }
+        }
+        if reference || (unknown.is_empty() && !counterparties.is_empty()) {
+            return Ok(());
+        }
+        Err((
+            "clock_unknown",
+            if unknown.is_empty() {
+                "this node's clock offset is unknown; measure it before joining an epoch".into()
+            } else {
+                format!(
+                    "this node's clock offset to {} is unknown; measure it before joining an \
+                     epoch",
+                    unknown.join(", ")
+                )
+            },
+        ))
+    }
+
+    /// The clock check for an action on `opportunity`: against its epoch
+    /// when one is held, and otherwise against the reference alone, which is
+    /// what every check here did before peers were measured.
+    fn clock_for(&self, opportunity: &str, now: Timestamp) -> std::result::Result<(), Rejected> {
+        match self.opportunities.get(opportunity) {
+            Some(st) => self.clock_in_bound_for(&st.epoch, now),
+            None if self.reference_clock()? => Ok(()),
             None => Err((
                 "clock_unknown",
                 "this node's clock offset is unknown; measure it before joining an epoch".into(),
             )),
-            Some(o) if o.unsigned_abs() > bound.unsigned_abs() => Err((
-                "clock_out_of_bound",
-                format!("clock offset {o} ns is beyond the {bound} ns bound; resynchronise first"),
-            )),
-            Some(_) => Ok(()),
         }
     }
 
@@ -788,25 +1075,103 @@ impl PeerEndpoint {
 
     /// Accept one frame from a peer, or refuse and journal it. A refused
     /// frame changes no state.
+    ///
+    /// The sender is not known here, so nothing is checked against it; a
+    /// wire that authenticates its peers calls [`Self::receive_from`].
     pub fn receive(&mut self, frame: &[u8], now: Timestamp) -> Result<()> {
+        self.receive_checked(frame, None, now)
+    }
+
+    /// Accept one frame from `from`, a peer the wire authenticated (mutual
+    /// TLS, ADR 0112), refusing one whose content claims another sender.
+    ///
+    /// A certificate proves who opened the connection, not who the frame
+    /// says it is from. Without this check an admitted peer could publish an
+    /// edge state under a neighbour's name, reserve or fill a leg another
+    /// node holds, or declare FIRE on a cycle somebody else coordinates —
+    /// each a frame every rule below would accept on its content alone.
+    pub fn receive_from(&mut self, frame: &[u8], from: &str, now: Timestamp) -> Result<()> {
+        self.receive_checked(frame, Some(from), now)
+    }
+
+    fn receive_checked(&mut self, frame: &[u8], from: Option<&str>, now: Timestamp) -> Result<()> {
         let msg = match decode(frame, self.limits.max_frame) {
             Ok(m) => m,
             Err(e) => return Err(self.refuse(("malformed", e.to_string()))),
         };
-        match self.admit(msg, now) {
+        match self.admit(msg, from, now) {
             Ok(()) => Ok(()),
             Err(r) => Err(self.refuse(r)),
         }
     }
 
-    fn admit(&mut self, msg: PeerMessage, now: Timestamp) -> std::result::Result<(), Rejected> {
+    /// Refuse `claimed` as the sender of a frame that arrived from `from`.
+    fn sender_is(
+        from: Option<&str>,
+        claimed: &str,
+        what: &str,
+    ) -> std::result::Result<(), Rejected> {
+        match from {
+            Some(from) if from != claimed => Err((
+                "sender_mismatch",
+                format!(
+                    "{what} names `{claimed}` and arrived from `{from}`; a peer speaks only for \
+                     itself"
+                ),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn admit(
+        &mut self,
+        msg: PeerMessage,
+        from: Option<&str>,
+        now: Timestamp,
+    ) -> std::result::Result<(), Rejected> {
         let (opp, seq) = match &msg {
-            PeerMessage::Token { epoch } => return self.install(epoch.clone(), now),
+            PeerMessage::Token { epoch } => {
+                if let Some(from) = from
+                    && !epoch.legs.iter().any(|l| l.node == from)
+                {
+                    return Err((
+                        "sender_mismatch",
+                        format!(
+                            "token for `{}` arrived from `{from}`, which holds no leg of it; a \
+                             node coordinates only a cycle it trades in",
+                            epoch.opportunity
+                        ),
+                    ));
+                }
+                return self.install(epoch.clone(), from.map(str::to_string), now);
+            }
             PeerMessage::EdgeState {
                 node,
                 sequence,
                 edges,
-            } => return self.absorb_edges(node, *sequence, edges),
+            } => {
+                Self::sender_is(from, node, "an edge state")?;
+                return self.absorb_edges(node, *sequence, edges);
+            }
+            PeerMessage::ClockProbe {
+                node,
+                nonce,
+                sent_ns,
+            } => {
+                Self::sender_is(from, node, "a clock probe")?;
+                return self.answer_probe(node, *nonce, *sent_ns, now);
+            }
+            PeerMessage::ClockEcho {
+                node,
+                to,
+                nonce,
+                origin_ns,
+                received_ns,
+                sent_ns,
+            } => {
+                Self::sender_is(from, node, "a clock echo")?;
+                return self.absorb_echo(node, to, *nonce, *origin_ns, *received_ns, *sent_ns, now);
+            }
             PeerMessage::Reserved {
                 opportunity,
                 sequence,
@@ -836,6 +1201,33 @@ impl PeerEndpoint {
             .opportunities
             .get_mut(&opp)
             .ok_or(("unknown_opportunity", format!("no epoch held for `{opp}`")))?;
+        // Who may say what about a held epoch: a leg's own node reports its
+        // reservation, decline, fill and unwind, and the coordinator alone
+        // declares FIRE.
+        if let Some(from) = from {
+            match &msg {
+                PeerMessage::Reserved { leg, .. }
+                | PeerMessage::Declined { leg, .. }
+                | PeerMessage::Fill { leg, .. }
+                | PeerMessage::Unwind { leg, .. } => {
+                    if let Some(l) = st.leg(leg) {
+                        Self::sender_is(Some(from), &l.node, "a leg report")?;
+                    }
+                }
+                PeerMessage::Fire { .. } => {
+                    if st.coordinator.as_deref() != Some(from) {
+                        return Err((
+                            "sender_mismatch",
+                            format!(
+                                "FIRE for `{opp}` arrived from `{from}`, which did not \
+                                 coordinate it"
+                            ),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
         if st.epoch.sequence != seq {
             return Err((
                 "stale_epoch",
@@ -942,7 +1334,118 @@ impl PeerEndpoint {
                 }
                 st.unwound.insert(leg, realized_loss);
             }
-            PeerMessage::Token { .. } | PeerMessage::EdgeState { .. } => {}
+            PeerMessage::Token { .. }
+            | PeerMessage::EdgeState { .. }
+            | PeerMessage::ClockProbe { .. }
+            | PeerMessage::ClockEcho { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn answer_probe(
+        &mut self,
+        node: &str,
+        nonce: u64,
+        sent_ns: i64,
+        now: Timestamp,
+    ) -> std::result::Result<(), Rejected> {
+        if node == self.node {
+            return Err((
+                "own_state",
+                "a clock probe naming this node arrived from a peer".to_string(),
+            ));
+        }
+        if self.echoes.len() >= MAX_PENDING_ECHOES {
+            return Err((
+                "clock_echoes",
+                format!(
+                    "{MAX_PENDING_ECHOES} echoes already wait to be sent; `{node}`'s probe is \
+                     not answered this turn"
+                ),
+            ));
+        }
+        self.echoes.push(PendingEcho {
+            to: node.to_string(),
+            nonce,
+            origin_ns: sent_ns,
+            received_ns: now.as_nanos(),
+        });
+        Ok(())
+    }
+
+    /// Complete one four-timestamp measurement: `origin` and `now` on this
+    /// node's clock, `received` and `sent` on the peer's.
+    #[allow(clippy::too_many_arguments)]
+    fn absorb_echo(
+        &mut self,
+        node: &str,
+        to: &str,
+        nonce: u64,
+        origin_ns: i64,
+        received_ns: i64,
+        sent_ns: i64,
+        now: Timestamp,
+    ) -> std::result::Result<(), Rejected> {
+        // Every peer hears every echo on a broadcast wire; one meant for a
+        // neighbour is not this node's measurement and changes nothing.
+        if to != self.node {
+            return Ok(());
+        }
+        if node == self.node {
+            return Err((
+                "own_state",
+                "a clock echo naming this node arrived from a peer".to_string(),
+            ));
+        }
+        if self.probes.get(&nonce) != Some(&origin_ns) {
+            return Err((
+                "unknown_probe",
+                format!(
+                    "clock echo {nonce} from `{node}` answers no probe this node has \
+                     outstanding; a replayed or forged echo would set an offset nobody measured"
+                ),
+            ));
+        }
+        let (t1, t2, t3, t4) = (
+            i128::from(origin_ns),
+            i128::from(received_ns),
+            i128::from(sent_ns),
+            i128::from(now.as_nanos()),
+        );
+        let round_trip = (t4 - t1) - (t3 - t2);
+        if t3 < t2 || t4 < t1 || round_trip < 0 {
+            return Err((
+                "clock_echo",
+                format!(
+                    "clock echo {nonce} from `{node}` has a negative holding time or round \
+                     trip; it measures nothing"
+                ),
+            ));
+        }
+        let offset = ((t2 - t1) + (t3 - t4)) / 2;
+        let (Ok(offset_nanos), Ok(round_trip_nanos)) =
+            (i64::try_from(offset), i64::try_from(round_trip))
+        else {
+            return Err((
+                "clock_echo",
+                format!("clock echo {nonce} from `{node}` implies an offset beyond any clock"),
+            ));
+        };
+        if !self.peer_clocks.contains_key(node) && self.peer_clocks.len() >= MAX_EDGE_PEERS {
+            return Err((
+                "edge_peers",
+                format!("a clock sample from `{node}` would exceed {MAX_EDGE_PEERS} peers"),
+            ));
+        }
+        self.probes.remove(&nonce);
+        let samples = self.peer_clocks.entry(node.to_string()).or_default();
+        samples.push(ClockSample {
+            offset_nanos,
+            round_trip_nanos,
+            measured_at: now,
+        });
+        if samples.len() > CLOCK_SAMPLES_PER_PEER {
+            samples.remove(0);
         }
         Ok(())
     }
@@ -991,9 +1494,10 @@ impl PeerEndpoint {
     fn install(
         &mut self,
         epoch: OpportunityEpoch,
+        coordinator: Option<String>,
         now: Timestamp,
     ) -> std::result::Result<(), Rejected> {
-        self.clock_in_bound()?;
+        self.clock_in_bound_for(&epoch, now)?;
         epoch
             .validate(self.limits.ttl_ceiling)
             .map_err(|e| ("invalid_epoch", e.to_string()))?;
@@ -1024,6 +1528,7 @@ impl PeerEndpoint {
                 filled: BTreeMap::new(),
                 unwound: BTreeMap::new(),
                 declined: BTreeMap::new(),
+                coordinator,
             },
         );
         Ok(())
@@ -1063,7 +1568,7 @@ impl PeerEndpoint {
         book: &mut ReservationBook,
         gate: &dyn Fn(&EpochLeg) -> Result<()>,
     ) -> std::result::Result<ReservationOutcome, Rejected> {
-        self.clock_in_bound()?;
+        self.clock_for(opportunity, now)?;
         let max = self.limits.max_frame;
         let st = self.opportunities.get_mut(opportunity).ok_or((
             "unknown_opportunity",
@@ -1190,7 +1695,7 @@ impl PeerEndpoint {
         now: Timestamp,
     ) -> std::result::Result<Vec<u8>, Rejected> {
         let max = self.limits.max_frame;
-        self.clock_in_bound()?;
+        self.clock_for(opportunity, now)?;
         let st = self.opportunities.get_mut(opportunity).ok_or((
             "unknown_opportunity",
             format!("no epoch held for `{opportunity}`"),
@@ -1263,7 +1768,7 @@ impl PeerEndpoint {
         now: Timestamp,
         gate: &dyn Fn(&EpochLeg) -> Result<()>,
     ) -> std::result::Result<(), Rejected> {
-        self.clock_in_bound()?;
+        self.clock_for(opportunity, now)?;
         let st = self.opportunities.get_mut(opportunity).ok_or((
             "unknown_opportunity",
             format!("no epoch held for `{opportunity}`"),
@@ -1297,6 +1802,201 @@ impl PeerEndpoint {
         st.sent.insert(l.leg);
         Ok(())
     }
+
+    /// Open an epoch this node coordinates (MESH-046): install it under the
+    /// same rules as a token received — clock, contract, expiry, fencing —
+    /// and return the token frame for the other legs' nodes.
+    ///
+    /// Refused, and journaled, when this node holds no leg of it: a node
+    /// that coordinated a cycle it did not trade in would be a broker, which
+    /// is the hop §16 removes.
+    pub fn open_epoch(&mut self, epoch: OpportunityEpoch, now: Timestamp) -> Result<Vec<u8>> {
+        if !epoch.legs.iter().any(|l| l.node == self.node) {
+            return Err(self.refuse((
+                "no_own_leg",
+                format!(
+                    "this node holds no leg of `{}` and does not coordinate it",
+                    epoch.opportunity
+                ),
+            )));
+        }
+        let frame = match encode(
+            &PeerMessage::Token {
+                epoch: epoch.clone(),
+            },
+            self.limits.max_frame,
+        ) {
+            Ok(frame) => frame,
+            Err(e) => return Err(self.refuse(("malformed", e.to_string()))),
+        };
+        let node = self.node.clone();
+        match self.install(epoch, Some(node), now) {
+            Ok(()) => Ok(frame),
+            Err(r) => Err(self.refuse(r)),
+        }
+    }
+
+    /// Record a fill of one of this node's own legs, which it sent, and
+    /// return the `Fill` frame its counterparties are owed (MESH-5065).
+    ///
+    /// A fill may arrive after the epoch's expiry — the leg was sent before
+    /// it — so expiry does not refuse here; a leg never sent, a quantity
+    /// that is not positive or exceeds the leg, and a leg of another node do.
+    pub fn record_own_fill(
+        &mut self,
+        opportunity: &str,
+        leg: &str,
+        quantity: Decimal,
+    ) -> Result<Vec<u8>> {
+        match self.try_record_own_fill(opportunity, leg, quantity) {
+            Ok(frame) => Ok(frame),
+            Err(r) => Err(self.refuse(r)),
+        }
+    }
+
+    fn try_record_own_fill(
+        &mut self,
+        opportunity: &str,
+        leg: &str,
+        quantity: Decimal,
+    ) -> std::result::Result<Vec<u8>, Rejected> {
+        let max = self.limits.max_frame;
+        let node = self.node.clone();
+        let st = self.opportunities.get_mut(opportunity).ok_or((
+            "unknown_opportunity",
+            format!("no epoch held for `{opportunity}`"),
+        ))?;
+        let l = st
+            .leg(leg)
+            .filter(|l| l.node == node)
+            .cloned()
+            .ok_or(("unknown_leg", format!("`{leg}` is not a leg of this node")))?;
+        if !st.sent.contains(leg) || !quantity.is_positive() || quantity > l.size {
+            return Err((
+                "fill",
+                format!(
+                    "fill of {quantity} on `{leg}` of `{opportunity}` was never sent or exceeds \
+                     the leg's {}",
+                    l.size
+                ),
+            ));
+        }
+        let frame = encode(
+            &PeerMessage::Fill {
+                opportunity: opportunity.into(),
+                sequence: st.epoch.sequence,
+                leg: leg.into(),
+                quantity,
+            },
+            max,
+        )
+        .map_err(|e| ("malformed", e.to_string()))?;
+        st.filled.insert(leg.to_string(), quantity);
+        Ok(frame)
+    }
+
+    /// Record the unwind of one of this node's own filled legs and return
+    /// the `Unwind` frame. Refused, naming the bound, when the realized loss
+    /// exceeds the unwind loss declared before FIRE: the cost model was
+    /// wrong, and that is reported rather than absorbed.
+    pub fn record_own_unwind(
+        &mut self,
+        opportunity: &str,
+        leg: &str,
+        realized_loss: Decimal,
+    ) -> Result<Vec<u8>> {
+        match self.try_record_own_unwind(opportunity, leg, realized_loss) {
+            Ok(frame) => Ok(frame),
+            Err(r) => Err(self.refuse(r)),
+        }
+    }
+
+    fn try_record_own_unwind(
+        &mut self,
+        opportunity: &str,
+        leg: &str,
+        realized_loss: Decimal,
+    ) -> std::result::Result<Vec<u8>, Rejected> {
+        let max = self.limits.max_frame;
+        let node = self.node.clone();
+        let st = self.opportunities.get_mut(opportunity).ok_or((
+            "unknown_opportunity",
+            format!("no epoch held for `{opportunity}`"),
+        ))?;
+        let l = st
+            .leg(leg)
+            .filter(|l| l.node == node)
+            .cloned()
+            .ok_or(("unknown_leg", format!("`{leg}` is not a leg of this node")))?;
+        if !st.filled.contains_key(leg) {
+            return Err((
+                "unwind",
+                format!("`{leg}` of `{opportunity}` has no fill to unwind"),
+            ));
+        }
+        if realized_loss.is_negative() || realized_loss > l.unwind_loss {
+            return Err((
+                "loss_bound",
+                format!(
+                    "realized unwind loss {realized_loss} on `{leg}` exceeds the {} declared \
+                     before FIRE; the cost model is wrong, halt the cell",
+                    l.unwind_loss
+                ),
+            ));
+        }
+        let frame = encode(
+            &PeerMessage::Unwind {
+                opportunity: opportunity.into(),
+                sequence: st.epoch.sequence,
+                leg: leg.into(),
+                realized_loss,
+            },
+            max,
+        )
+        .map_err(|e| ("malformed", e.to_string()))?;
+        st.unwound.insert(leg.to_string(), realized_loss);
+        Ok(frame)
+    }
+
+    /// The epoch held for `opportunity`.
+    pub fn epoch(&self, opportunity: &str) -> Option<&OpportunityEpoch> {
+        self.opportunities.get(opportunity).map(|s| &s.epoch)
+    }
+
+    /// Every opportunity held, in name order.
+    pub fn opportunities(&self) -> Vec<String> {
+        self.opportunities.keys().cloned().collect()
+    }
+
+    /// Whether this node opened `opportunity` and so declares its FIRE.
+    pub fn coordinates(&self, opportunity: &str) -> bool {
+        self.opportunities
+            .get(opportunity)
+            .is_some_and(|s| s.coordinator.as_deref() == Some(self.node.as_str()))
+    }
+
+    /// Whether every leg of `opportunity` is held at its full size.
+    pub fn every_leg_reserved(&self, opportunity: &str) -> bool {
+        self.opportunities
+            .get(opportunity)
+            .is_some_and(OpportunityState::every_leg_reserved)
+    }
+
+    /// Whether any leg of `opportunity` was declined by its node.
+    pub fn any_leg_declined(&self, opportunity: &str) -> bool {
+        self.opportunities
+            .get(opportunity)
+            .is_some_and(|s| !s.declined.is_empty())
+    }
+
+    /// The realized unwind loss on one leg, if it was unwound.
+    pub fn unwound(&self, opportunity: &str, leg: &str) -> Option<Decimal> {
+        self.opportunities
+            .get(opportunity)?
+            .unwound
+            .get(leg)
+            .copied()
+    }
 }
 
 /// What a participant's attempt to reserve its own legs produced, as the
@@ -1325,6 +2025,13 @@ impl ReservationBook {
             grant,
             held: BTreeMap::new(),
         }
+    }
+
+    /// Replace the grant, keeping what is held. A grant cut below what is
+    /// held refuses new holds until enough is released; it never cancels a
+    /// hold a coordinator was already told about.
+    pub fn set_grant(&mut self, grant: Decimal) {
+        self.grant = grant;
     }
 
     /// Grant not yet reserved.

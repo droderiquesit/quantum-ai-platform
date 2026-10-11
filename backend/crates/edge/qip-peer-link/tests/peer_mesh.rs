@@ -81,6 +81,7 @@ fn deliver(session: &mut PeerSession, now: Timestamp) -> usize {
 fn leg(id: &str, node: &str, unwind: i64) -> EpochLeg {
     EpochLeg {
         leg: id.into(),
+        execution: None,
         node: node.into(),
         size: Decimal::from_int(100),
         unwind_loss: Decimal::from_int(unwind),
