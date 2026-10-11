@@ -32,7 +32,7 @@
  *
  * Dev tooling. Node built-ins only.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,10 +127,12 @@ export function readSarifDirectory(dir) {
   const documents = [];
   const problems = [];
   const walk = (path) => {
-    for (const entry of readdirSync(path)) {
-      const full = join(path, entry);
-      if (statSync(full).isDirectory()) walk(full);
-      else if (entry.endsWith(".sarif")) {
+    // The directory entry's own type, not a second stat of its path: a stat
+    // followed by a read is a check-then-use the path can change between.
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const full = join(path, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(".sarif")) {
         try {
           documents.push({ name: full, sarif: JSON.parse(readFileSync(full, "utf8")) });
         } catch (cause) {

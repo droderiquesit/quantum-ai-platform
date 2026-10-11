@@ -162,8 +162,26 @@ export function sumSeries(samples, name, labels = {}) {
   return matching.length === 0 ? null : matching.reduce((total, s) => total + s.value, 0);
 }
 
-/** One HTTP GET with a hard timeout. Resolves `{ status, body }`, or `{ status: 0, error }`. */
+/**
+ * Whether `url` is a plain-HTTP address on this machine's loopback. A game
+ * day drives binaries the harness started itself; a scenario file naming any
+ * other host would turn a drill into a request to somewhere nobody chose.
+ */
+export function isLoopbackUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname);
+}
+
+/** One HTTP GET with a hard timeout, to loopback only. Resolves `{ status, body }`, or `{ status: 0, error }`. */
 export async function get(url, { fetchImpl = fetch, timeoutMs = 2000 } = {}) {
+  if (!isLoopbackUrl(url)) {
+    return { status: 0, error: `refused: ${url} is not a loopback http address` };
+  }
   try {
     const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
     return { status: response.status, body: await response.text() };

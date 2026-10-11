@@ -346,9 +346,14 @@ mod production {
             "a body matching its own declaration earned authenticity: {:?}",
             verdict.authenticity
         );
-        assert_eq!(
-            verdict.authenticity.score,
-            qip_world_model::fabric::UNSIGNED_AUTHENTICITY
+        // The score is the constant itself when nothing was credited, so an
+        // exact comparison is meant; it is written as a tolerance only because
+        // float equality is linted (clippy::float_cmp).
+        assert!(
+            (verdict.authenticity.score - qip_world_model::fabric::UNSIGNED_AUTHENTICITY).abs()
+                < 1e-12,
+            "an uncredited body scored {} rather than the unsigned floor",
+            verdict.authenticity.score
         );
 
         // The source declared one body and these bytes arrived.

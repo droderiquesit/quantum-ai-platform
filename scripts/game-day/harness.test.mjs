@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkScenario, parsePrometheus, runScenario, sumSeries, validateResult } from "./harness.mjs";
+import { checkScenario, get, isLoopbackUrl, parsePrometheus, runScenario, sumSeries, validateResult } from "./harness.mjs";
 
 async function withScratch(fn) {
   const root = mkdtempSync(join(tmpdir(), "game-day-test-"));
@@ -174,5 +174,21 @@ test("every committed game-day result is in the committed format", () => {
   }
   for (const file of files) {
     assert.deepEqual(validateResult(JSON.parse(readFileSync(new URL(file, dir), "utf8"))), [], file);
+  }
+});
+
+// CodeQL flagged a scenario file's URL reaching an outbound request. A game
+// day only ever probes binaries the harness started on this machine, so any
+// other host is refused before a request is made, and nothing is fetched.
+test("the harness probes loopback only and refuses any other host before fetching", async () => {
+  assert.equal(isLoopbackUrl("http://127.0.0.1:9100/metrics"), true, "premise: loopback is admitted");
+  assert.equal(isLoopbackUrl("http://localhost:8080/healthz"), true);
+  for (const url of ["http://example.com/metrics", "https://127.0.0.1:9100/metrics", "http://10.0.0.5/", "not a url", "http://127.0.0.1.evil.test/"]) {
+    assert.equal(isLoopbackUrl(url), false, url);
+    let called = false;
+    const result = await get(url, { fetchImpl: async () => { called = true; return { status: 200, text: async () => "" }; } });
+    assert.equal(called, false, `fetched ${url}`);
+    assert.equal(result.status, 0);
+    assert.match(result.error, /not a loopback http address/);
   }
 });
