@@ -393,6 +393,7 @@ fn the_run_loop_runs_the_tick_desk_on_its_cadence() -> Result<()> {
             research: None,
             operations: None,
             tick: Some(&mut desk),
+            ambient: None,
         },
         |outcome| {
             assert!(

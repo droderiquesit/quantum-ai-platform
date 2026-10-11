@@ -754,6 +754,18 @@ fn run() -> Result<()> {
         "  compiler:         promoted research is distilled into bounded reflex packages; no \
          package signer is installed, so packages are held unsigned and none is published"
     );
+    // The ambient journal (`ambient_journal.rs`): every sweep's signals and
+    // attention events, on a hash-chained log as durable as the platform's.
+    // A blank variable, an unopenable file or a broken chain stops the
+    // process here rather than running a mesh whose attention nobody can
+    // attribute afterwards.
+    let ambient_destination = qip_deepbrain::ambient_journal::JournalDestination::resolve(
+        std::env::var(qip_deepbrain::ambient_journal::AMBIENT_JOURNAL_VARIABLE).ok(),
+        &config.event_log,
+    )
+    .map_err(configuration)?;
+    let mut ambient = qip_deepbrain::ambient_journal::AmbientJournal::open(&ambient_destination)?;
+    println!("  ambient journal:  {}", ambient_destination.describe());
     let mut operations = qip_deepbrain::operations::Operations::new(started)?;
     println!(
         "  operations:       level shifts in iteration time open an incident; the one runbook \
@@ -791,6 +803,7 @@ fn run() -> Result<()> {
             research: Some(&mut research),
             operations: Some(&mut operations),
             tick: Some(&mut tick_desk),
+            ambient: Some(&mut ambient),
         },
         |outcome| {
             println!();

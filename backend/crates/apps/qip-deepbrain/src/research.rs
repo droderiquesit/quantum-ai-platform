@@ -52,9 +52,9 @@
 //!   held unsigned and nothing is written.
 
 use qip_contracts::ambient::{
-    AcquisitionCriteria, Advisory, AmbientSignal, AttentionRouter, ComputeResourceType, Detection,
-    Disposition, InfoRequest, ModelReputation, Pathway, RoutingPolicy, SignalClass, Trigger,
-    rank_acquisitions,
+    AcquisitionCriteria, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
+    ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation, Pathway,
+    RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
 use qip_contracts::expansion::{CapabilityEntry, GapClass};
 use qip_core::error::{Error, Result};
@@ -436,6 +436,14 @@ pub struct ResearchRound {
     pub campaigns: BTreeMap<&'static str, usize>,
     /// Reflex packages, by outcome.
     pub packages: BTreeMap<&'static str, usize>,
+    /// Every ambient signal this sweep routed, in routing order, for the
+    /// ambient journal (`ambient_journal.rs`): a count on a cycle line is
+    /// not a record anybody can replay.
+    pub signals: Vec<AmbientSignal>,
+    /// Every attention event the router returned this sweep, in order.
+    pub attention_events: Vec<AttentionEvent>,
+    /// The specialist each activated NOW-surprise signal woke, by signal id.
+    pub woken: BTreeMap<String, &'static str>,
 }
 
 impl ResearchRound {
@@ -992,6 +1000,8 @@ impl ResearchLoop {
                 self.pending.insert(signal.id().to_string(), raised);
             }
             let events = self.router.route(&signal, now)?;
+            round.signals.push(signal.clone());
+            round.attention_events.extend(events.iter().cloned());
             if !events.iter().any(|e| e.signal_id == signal.id()) {
                 // Below materiality: not an activation and not a loss.
                 self.pending.remove(signal.id());
@@ -1013,6 +1023,9 @@ impl ResearchLoop {
                     }
                     Disposition::Activated => {
                         if let Some(specialist) = self.pending_wakes.remove(&event.signal_id) {
+                            round
+                                .woken
+                                .insert(event.signal_id.clone(), specialist.as_str());
                             *round.now_wakes.entry(specialist.as_str()).or_default() += 1;
                             metrics.count(
                                 crate::now::NOW_WAKES,
