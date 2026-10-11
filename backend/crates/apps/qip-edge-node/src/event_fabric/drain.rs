@@ -56,7 +56,9 @@ use qip_events::event_fabric::codec::Batch;
 use qip_events::event_fabric::policy::QosClass;
 use qip_storage::BlobStore;
 use qip_storage::lake::{Entitlement, Lake, Partition, RecordClass};
+use qip_storage::lake_codec::SegmentCodec;
 use qip_storage::segment::log::SegmentLog;
+use qip_storage::tick_capture::RetentionRight;
 use qip_transport::event_fabric::producer::Producer;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -425,21 +427,118 @@ impl Sink for FabricSink {
 
 // --- the tick lake -------------------------------------------------------------
 
+/// The variable naming which datasets' ticks the lake may keep, and how:
+/// `dataset=canonical[|raw];dataset=canonical;…` (R12-DATA-1039).
+pub const RETENTION_VARIABLE: &str = "QIP_TICK_RETENTION";
+
+/// The variable naming the codec new lake segments are sealed with:
+/// `identity` (the default), `zstd` or `zstd:<level>` (R12-TICK-2057, ADR
+/// 0113 §3 — off until a measurement says otherwise).
+pub const CODEC_VARIABLE: &str = "QIP_TICK_LAKE_CODEC";
+
+/// The retention policy a node starts with when nothing is configured: the
+/// simulator's own depth, canonical only, and nothing else.
+///
+/// The simulated dataset is generated in this process by the platform's own
+/// matching engine, so no venue's terms govern it and keeping it breaches
+/// nobody's rights. Every licensed dataset is absent until an operator names
+/// what its terms allow — rights nobody evaluated are not rights — and its
+/// ticks are used live and not kept.
+pub fn default_retention() -> BTreeMap<String, RetentionRight> {
+    BTreeMap::from([(
+        crate::feed::SIMULATED_DATASET.to_string(),
+        RetentionRight {
+            canonical: true,
+            raw: false,
+        },
+    )])
+}
+
+/// Parse [`RETENTION_VARIABLE`] over [`default_retention`]. Refuses a clause
+/// it cannot read and a right it does not know, by name: a typo that read as
+/// "retain nothing" would silently drop a licensed history the desk was
+/// promised, and one that read as "retain everything" would keep bytes the
+/// licence forbids.
+pub fn parse_retention(text: Option<&str>) -> Result<BTreeMap<String, RetentionRight>> {
+    let mut policy = default_retention();
+    let Some(text) = text else {
+        return Ok(policy);
+    };
+    for clause in text.split(';').map(str::trim).filter(|c| !c.is_empty()) {
+        let (dataset, rights) = clause.split_once('=').ok_or_else(|| {
+            Error::invalid(format!(
+                "{RETENTION_VARIABLE} clause {clause:?} is not dataset=canonical[|raw]"
+            ))
+        })?;
+        let dataset = dataset.trim();
+        if dataset.is_empty() {
+            return Err(Error::invalid(format!(
+                "{RETENTION_VARIABLE} clause {clause:?} names no dataset"
+            )));
+        }
+        let mut right = RetentionRight {
+            canonical: false,
+            raw: false,
+        };
+        for token in rights.split('|').map(str::trim).filter(|t| !t.is_empty()) {
+            match token {
+                "canonical" => right.canonical = true,
+                "raw" => right.raw = true,
+                "none" => {}
+                other => {
+                    return Err(Error::invalid(format!(
+                        "{RETENTION_VARIABLE} grants {dataset} the right {other:?}; the rights                          are canonical, raw and none"
+                    )));
+                }
+            }
+        }
+        if right.raw && !right.canonical {
+            return Err(Error::invalid(format!(
+                "{RETENTION_VARIABLE} lets {dataset} keep raw bytes and not the canonical \
+                 record; the lake keeps raw bytes only beside the record they decode to"
+            )));
+        }
+        policy.insert(dataset.to_string(), right);
+    }
+    Ok(policy)
+}
+
 /// Delivers the market events in P2 batches to the tick lake, one sealed
 /// segment per spool offset per partition. Every other record is not the
 /// lake's: a journal entry is the platform's own record and reaches the lake
 /// through the central archive, not from a cell.
+///
+/// What is kept is the retention policy's to decide, per dataset
+/// (R12-DATA-1039): a tick whose dataset has no right, or a right that does
+/// not permit the canonical record, is used live and not written, and is
+/// counted in [`LakeSink::withheld`]. The batch still completes — withholding
+/// is the policy working, not a failed delivery, and retrying it would stall
+/// the spool until the cell halted.
 #[derive(Debug)]
 pub struct LakeSink {
     store: Arc<dyn BlobStore>,
     cell: String,
+    retention: BTreeMap<String, RetentionRight>,
+    codec: SegmentCodec,
+    withheld: u64,
 }
 
 impl LakeSink {
-    /// A lake sink for `cell`. Refuses a cell id the lake cannot put in a
-    /// segment id — refused here at start, rather than as a sink that
-    /// refuses every batch and lets the spool fill until the cell halts.
-    pub fn new(store: Arc<dyn BlobStore>, cell: impl Into<String>) -> Result<Self> {
+    /// A lake sink for `cell`, keeping what `retention` permits and sealing
+    /// with `codec`. Refuses a cell id the lake cannot put in a segment id —
+    /// refused here at start, rather than as a sink that refuses every batch
+    /// and lets the spool fill until the cell halts.
+    ///
+    /// The policy and codec are arguments rather than defaults so that no
+    /// caller can build a sink without having stated what it keeps; a
+    /// caller with nothing configured passes [`default_retention`] and
+    /// [`SegmentCodec::Identity`] and says so.
+    pub fn new(
+        store: Arc<dyn BlobStore>,
+        cell: impl Into<String>,
+        retention: BTreeMap<String, RetentionRight>,
+        codec: SegmentCodec,
+    ) -> Result<Self> {
         let cell = cell.into();
         if cell.is_empty()
             || !cell
@@ -451,7 +550,18 @@ impl LakeSink {
                  '-'"
             )));
         }
-        Ok(Self { store, cell })
+        Ok(Self {
+            store,
+            cell,
+            retention,
+            codec,
+            withheld: 0,
+        })
+    }
+
+    /// Ticks the retention policy kept out of the lake so far.
+    pub const fn withheld(&self) -> u64 {
+        self.withheld
     }
 }
 
@@ -474,6 +584,14 @@ impl Sink for LakeSink {
                 continue;
             }
             let tick: MarketEvent = market_event(&event)?;
+            let permitted = self
+                .retention
+                .get(tick.entitlement().dataset())
+                .is_some_and(|right| right.canonical);
+            if !permitted {
+                self.withheld = self.withheld.saturating_add(1);
+                continue;
+            }
             let line = tick_line(&tick)?;
             let key = (
                 tick.origin().venue.as_str().to_string(),
@@ -485,9 +603,13 @@ impl Sink for LakeSink {
             body.extend_from_slice(line.as_bytes());
             body.push(b'\n');
         }
-        let lake = Lake::new(self.store.as_ref());
+        let lake = Lake::new(self.store.as_ref()).with_codec(self.codec);
         let segment_id = format!("{}-o{offset:020}", self.cell);
         for ((venue, date, instrument, dataset), canonical) in by_partition {
+            // The sink holds decoded events, not the venue's wire bytes, so
+            // there is no raw payload to keep here; the partition still
+            // records what the dataset's right would have allowed.
+            let raw_retention_permitted = self.retention.get(&dataset).is_some_and(|r| r.raw);
             let partition = Partition::new(
                 RecordClass::Market,
                 &venue,
@@ -495,7 +617,7 @@ impl Sink for LakeSink {
                 &instrument,
                 Entitlement {
                     id: dataset,
-                    raw_retention_permitted: false,
+                    raw_retention_permitted,
                 },
             )?;
             match lake.write_segment(&partition, &segment_id, canonical, None) {

@@ -931,6 +931,61 @@ fn the_twins_entry_price_error_against_the_actual_fill_is_recorded_per_venue() -
     Ok(())
 }
 
+/// R12-TICK-2080: the twin is recalibrated from the fills it mispriced, and
+/// the calibration is what its next pricing on that venue uses.
+///
+/// Mutation: delete the `fill_calibration.observe` call in `score_filled` —
+/// the venue holds no calibration. Mutation: price with
+/// `CostModel::liquid_equity()` again instead of the calibrated model — the
+/// spread assertion still passes here, so the observation count and bias
+/// are the guard on the first half and `qip-twin`'s
+/// `after_fills_with_a_systematic_error_the_twins_spread_moves_toward_the_observed_fills`
+/// on the second.
+#[test]
+fn a_fill_the_twin_mispriced_moves_that_venues_calibrated_spread_toward_the_fill() -> Result<()> {
+    let mut platform = platform()?;
+    let mut tape = quiet_bars("AAA", 90);
+    let last = tape.pop().expect("ninety bars");
+    let last_at = match &last {
+        SensedRecord::Bar(bar) => bar.open_time,
+        _ => unreachable!("quiet_bars produces bars"),
+    };
+    tape.push(bar("AAA", last_at, 90.0, 90.0));
+    platform.observe(tape);
+    fill_one(&mut platform, "prop-filled", start())?;
+    assert!(
+        platform
+            .fill_calibration()
+            .venue("simulated-venue")
+            .is_none(),
+        "the premise failed: the venue was calibrated before any fill was priced"
+    );
+    platform.observe(flat_bars_after("AAA", start(), 5, 100.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let error = platform.fill_scores()[0]
+        .trade_error_bps
+        .expect("the fill was priced");
+    let calibration = platform
+        .fill_calibration()
+        .venue("simulated-venue")
+        .expect("the priced fill calibrated its venue");
+    assert_eq!(calibration.observations, 1);
+    assert!(
+        (calibration.bias_bps - 0.2 * error).abs() < 1e-9,
+        "one fifth of the way to the observed error {error}: {}",
+        calibration.bias_bps
+    );
+    let base = qip_simulation_engine::costs::CostModel::liquid_equity();
+    let calibrated = platform
+        .fill_calibration()
+        .cost_model(&base, "simulated-venue");
+    assert!(
+        calibrated.half_spread_bps > base.half_spread_bps,
+        "a twin that filled better than the venue now pays a wider spread there"
+    );
+    Ok(())
+}
+
 #[test]
 fn a_twin_that_is_wildly_wrong_about_fills_never_withdraws_a_venue() -> Result<()> {
     // The "diagnostic only" guarantee of ADR 0062. `qip_venue_fill_error_bps`

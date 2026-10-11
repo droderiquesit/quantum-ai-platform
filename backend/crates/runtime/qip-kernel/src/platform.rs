@@ -521,6 +521,12 @@ pub struct Platform {
     /// was from the venue's — most recent last, bounded by
     /// [`DECLINED_HISTORY`].
     fill_scores: Vec<FillScore>,
+    /// The twin's per-venue fill calibration (R12-TICK-2080): each fill
+    /// error `score_filled` measures moves the venue's bias, and the next
+    /// pricing on that venue uses a cost model carrying it. Before it, the
+    /// error was charted and read by nothing, so a twin that was wrong about
+    /// a venue stayed wrong by the same amount for ever.
+    fill_calibration: qip_twin::calibration::FillCalibration,
     /// The recent feasibility refusals from both seams — the desk's order
     /// manager and the cells' reports — each naming its venue and gate,
     /// oldest first and bounded by [`FEASIBILITY_WINDOW`]. A rate window,
@@ -4771,6 +4777,7 @@ impl Platform {
             declined_scores: Vec::new(),
             filled: Vec::new(),
             fill_scores: Vec::new(),
+            fill_calibration: qip_twin::calibration::FillCalibration::default(),
             feasibility_refusals: Vec::new(),
             withdrawn_venues: Self::resume_withdrawn_venues(&event_log)?,
             venue_ladder: qip_lifecycle::venue_ladder::VenueLadder::new(),
@@ -18262,18 +18269,16 @@ impl Platform {
                 continue;
             };
             let path = self.filled[index].clone();
+            // The cost model as calibrated to this venue's fills so far.
+            let cost_model = self
+                .fill_calibration
+                .cost_model(&CostModel::liquid_equity(), path.venue.as_str());
             let priced = self
                 .bar_history
                 .get(path.object_id.as_str())
                 .cloned()
                 .ok_or_else(|| Error::not_found(format!("no bars are held for {}", path.object_id)))
-                .and_then(|bars| {
-                    TwinMarket::new(
-                        bars,
-                        CostModel::liquid_equity(),
-                        COUNTERFACTUAL_IMPACT_WINDOW,
-                    )
-                })
+                .and_then(|bars| TwinMarket::new(bars, cost_model, COUNTERFACTUAL_IMPACT_WINDOW))
                 .and_then(|mut market| self.evaluate_alternatives(&order_id, &mut market));
             // Priced or refused, the path leaves the queue, as a declined
             // path does.
@@ -18376,6 +18381,12 @@ impl Platform {
                             error_bps,
                             Histogram::signed_basis_points,
                         );
+                        if let Err(error) = self
+                            .fill_calibration
+                            .observe(path.venue.as_str(), error_bps)
+                        {
+                            problems.push(format!("fill calibration: {}", error.message()));
+                        }
                     }
                     scored += 1;
                     self.fill_scores.push(FillScore {
@@ -18434,6 +18445,12 @@ impl Platform {
     /// What the twin found about each priced fill, most recent last.
     pub fn fill_scores(&self) -> &[FillScore] {
         &self.fill_scores
+    }
+
+    /// The twin's per-venue fill calibration, as the scored fills have moved
+    /// it (R12-TICK-2080).
+    pub fn fill_calibration(&self) -> &qip_twin::calibration::FillCalibration {
+        &self.fill_calibration
     }
 
     /// How many filled orders are waiting for their horizon or their bars.

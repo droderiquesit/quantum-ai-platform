@@ -140,6 +140,7 @@ pub mod estimators;
 pub mod job;
 pub mod labels;
 pub mod local;
+pub mod microstructure;
 pub mod serve;
 pub mod vertex;
 

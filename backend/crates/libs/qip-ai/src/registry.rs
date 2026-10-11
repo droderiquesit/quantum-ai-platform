@@ -15,7 +15,7 @@ use crate::serving::ModelArtifact;
 use qip_core::error::{Error, Result};
 use qip_core::{Duration, ModelId, Timestamp};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The functional category of a model or reasoner.
 ///
@@ -221,6 +221,18 @@ pub struct ModelCard {
     /// [`ModelRegistry::record_alias_move`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alias_moves: Vec<AliasMove>,
+    /// The licensed market-data entitlements the model was trained on
+    /// (R12-TICK-2091). Empty means the card records no licensed data —
+    /// which is a claim, and [`ModelCard::authorise_location`] reads it as
+    /// one, so a card trained on licensed data must say so here.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub data_entitlements: BTreeSet<String>,
+    /// Where the artifact and its outputs may run or be used, as the
+    /// intersection of what every entitlement above permits. A model trained
+    /// on data licensed for one region and run in another breaches the
+    /// licence invisibly; this is the field that makes it visible.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub permitted_locations: BTreeSet<String>,
 }
 
 /// A declared ceiling on what a model may consume. A ceiling set at
@@ -282,7 +294,63 @@ impl ModelCard {
             resource_budget: None,
             rollback_parent: None,
             alias_moves: Vec::new(),
+            data_entitlements: BTreeSet::new(),
+            permitted_locations: BTreeSet::new(),
         }
+    }
+
+    /// Record the entitlements the model was trained under and the locations
+    /// the artifact may run in. Refuses entitlements with no permitted
+    /// location: a model nobody may run anywhere is a licence misread, not a
+    /// model, and recording it would hide that.
+    pub fn with_data_entitlements(
+        mut self,
+        entitlements: BTreeSet<String>,
+        permitted_locations: BTreeSet<String>,
+    ) -> Result<Self> {
+        if entitlements.iter().any(|e| e.trim().is_empty())
+            || permitted_locations.iter().any(|l| l.trim().is_empty())
+        {
+            return Err(Error::invalid(
+                "a model card's entitlements and permitted locations are named, never blank",
+            ));
+        }
+        if !entitlements.is_empty() && permitted_locations.is_empty() {
+            return Err(Error::invalid(format!(
+                "{} was trained on licensed data ({}) whose terms permit no location; resolve \
+                 the licence before registering the model",
+                self.reference(),
+                entitlements.iter().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+        self.data_entitlements = entitlements;
+        self.permitted_locations = permitted_locations;
+        Ok(self)
+    }
+
+    /// Refuse to deploy, ship or use this model's outputs at `location`
+    /// unless its training entitlements permit it there. A card recording
+    /// no licensed data is not restricted by licence; every other card is
+    /// restricted to exactly its permitted locations.
+    pub fn authorise_location(&self, location: &str) -> Result<()> {
+        if self.data_entitlements.is_empty() || self.permitted_locations.contains(location) {
+            return Ok(());
+        }
+        Err(Error::denied(format!(
+            "{} was trained on {} and may run only in {}; {location} is not among them, and \
+             running it there would breach the data licence",
+            self.reference(),
+            self.data_entitlements
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            self.permitted_locations
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
     }
 
     pub fn with_benchmark(mut self, benchmark: impl Into<String>) -> Self {

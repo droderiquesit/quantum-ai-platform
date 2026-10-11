@@ -126,6 +126,10 @@ pub struct StepOutcome {
     pub research: Option<crate::research::ResearchRound>,
     /// What the operations loop observed of this iteration (`operations.rs`).
     pub operations: Option<crate::operations::OperationsRound>,
+    /// What the tick desk's round did, on the cycles where one ran
+    /// (`tick_desk.rs`): the replay of recorded market history and every
+    /// label, model, fusion and future grown from it.
+    pub tick: Option<crate::tick_desk::TickRound>,
     /// A research sweep or operations pass that failed. Reported on the cycle
     /// line rather than stopping the node: both loops are advisory, and a
     /// node that stopped researching because a detector refused a reading
@@ -178,6 +182,7 @@ pub fn step(platform: &mut Platform, now: Timestamp, interval: Duration) -> Step
         discovery: None,
         research: None,
         operations: None,
+        tick: None,
         side_failures: Vec::new(),
     }
 }
@@ -295,6 +300,9 @@ pub fn should_stop(
 pub struct Loops<'a> {
     pub research: Option<&'a mut crate::research::ResearchLoop>,
     pub operations: Option<&'a mut crate::operations::Operations>,
+    /// The tick desk (`tick_desk.rs`). Advisory like research: a round that
+    /// fails is a side failure on the cycle line, never a stopped node.
+    pub tick: Option<&'a mut crate::tick_desk::TickDesk>,
 }
 
 /// [`run_with`] and no research or operations loop.
@@ -452,6 +460,15 @@ pub fn run_with(
                 Err(error) => outcome
                     .side_failures
                     .push(format!("research: {}", error.message())),
+            }
+        }
+        if let Some(desk) = loops.tick.as_deref_mut() {
+            let world = platform.world();
+            match desk.maybe_round(world.graph(), cycles, now) {
+                Ok(round) => outcome.tick = round,
+                Err(error) => outcome
+                    .side_failures
+                    .push(format!("tick desk: {}", error.message())),
             }
         }
         if let Some(operations) = loops.operations.as_deref_mut() {

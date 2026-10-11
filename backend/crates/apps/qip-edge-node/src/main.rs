@@ -931,9 +931,38 @@ fn run() -> Result<()> {
             std::time::Duration::from_secs(5),
         )?,
     )?;
+    // What the lake may keep is the retention policy's (R12-DATA-1039): the
+    // simulator's own depth by default, and every licensed dataset only as
+    // QIP_TICK_RETENTION grants it. The codec is identity unless
+    // QIP_TICK_LAKE_CODEC says otherwise (ADR 0113 §3). Both refuse a value
+    // they cannot read, here, before the drain starts.
+    let retention = qip_edge_node::event_fabric::drain::parse_retention(
+        std::env::var(qip_edge_node::event_fabric::drain::RETENTION_VARIABLE)
+            .ok()
+            .as_deref(),
+    )?;
+    let lake_codec = qip_storage::lake_codec::SegmentCodec::parse(
+        &std::env::var(qip_edge_node::event_fabric::drain::CODEC_VARIABLE).unwrap_or_default(),
+    )?;
+    println!(
+        "qip-edge-node: tick lake keeps {} dataset(s) [{}], segments sealed {:?}",
+        retention.len(),
+        retention
+            .iter()
+            .map(|(dataset, right)| format!(
+                "{dataset}:{}{}",
+                if right.canonical { "canonical" } else { "none" },
+                if right.raw { "+raw" } else { "" }
+            ))
+            .collect::<Vec<_>>()
+            .join(", "),
+        lake_codec
+    );
     let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         config.storage.blobs(LAKE_NAMESPACE)?,
         &config.cell_id,
+        retention,
+        lake_codec,
     )?)];
     match config.fabric.take() {
         Some(fabric) => {

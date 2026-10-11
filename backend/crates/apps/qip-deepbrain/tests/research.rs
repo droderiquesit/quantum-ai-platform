@@ -267,6 +267,7 @@ fn the_run_loop_sweeps_research_and_observes_operations_every_cycle() {
         Loops {
             research: Some(&mut research),
             operations: Some(&mut operations),
+            tick: None,
         },
         |outcome| {
             researched += usize::from(outcome.research.is_some());
