@@ -300,6 +300,7 @@ dependencies = [
  "qip-market-ingestion",
  "qip-mesh",
  "qip-numerics",
+ "qip-storage",
  "qip-transport",
  "serde",
  "serde_json",
@@ -633,6 +634,7 @@ dependencies = [
  "qip-sequencing",
  "qip-storage",
  "qip-transport",
+ "qip-world-model",
  "serde",
  "serde_json",
 ]
@@ -818,7 +820,9 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "qip-numerics",
+ "qip-storage",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

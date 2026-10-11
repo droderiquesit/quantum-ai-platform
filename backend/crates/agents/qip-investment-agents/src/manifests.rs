@@ -48,6 +48,7 @@ pub mod ids {
     pub const EXECUTION: &str = "execution-trader";
     pub const LEARNING: &str = "learning-attribution";
     pub const COMPLIANCE: &str = "compliance-control";
+    pub const POISONING: &str = "poisoning-detector";
 }
 
 /// Owning teams. Used by the governance rules to check independence, so these
@@ -114,6 +115,29 @@ pub fn chief(reviewed_at: Timestamp) -> AgentManifest {
     ])
     .with_owner(owners::PLATFORM)
     .requiring_human()
+}
+
+/// The source-poisoning specialist (R12-EVID-2039). Reads only the world
+/// model, where the evidence fabric lives; proposes nothing and holds no
+/// veto, because a poisoning finding is a reason to distrust a source, not
+/// a trading decision.
+pub fn poisoning_detector(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::POISONING,
+        "Source Poisoning Detector",
+        "scans the evidence fabric for coordinated campaigns, repeatedly contradicted sources, spoofed identities, fabricated timelines and floods",
+        owners::REVIEW,
+        reviewed_at,
+        &[],
+    )
+    .with_competencies(vec![
+        "identical text from independent fetches inside a short spread".into(),
+        "sources that keep losing the contests they enter".into(),
+    ])
+    .with_limitations(vec![
+        "sees only claims the evidence fabric holds; a source nothing forwards is invisible".into(),
+        "verifies no signature: a signed claim is weighed as unsigned".into(),
+    ])
 }
 
 pub fn macro_analyst(reviewed_at: Timestamp) -> AgentManifest {

@@ -23,6 +23,10 @@
 //! lineage survives, and the bytes are not stored. Compression is not done
 //! here: it needs a codec and the workspace has two dependencies.
 //!
+//! Market events reach the lake through [`crate::tick_capture::TickLakeWriter`],
+//! which seals them with [`Lake::write_market_segment`] under the retention
+//! right of the entitlement they were obtained under.
+//!
 //! The platform's own outcomes reach the lake through
 //! [`Lake::seal_internal_outcomes`], called by [`crate::ChainArchive::absorb`]
 //! at the same hand-over that archives the event log (blueprint TICK-065).
@@ -161,7 +165,7 @@ impl Partition {
         })
     }
 
-    fn prefix(&self) -> String {
+    pub(crate) fn prefix(&self) -> String {
         format!(
             "lake/class={}/venue={}/date={}/instrument={}/entitlement={}",
             self.class.as_str(),
@@ -206,7 +210,7 @@ pub struct Materialized {
 /// Writes and reads the lake over any [`BlobStore`].
 #[derive(Debug)]
 pub struct Lake<'a> {
-    store: &'a dyn BlobStore,
+    pub(crate) store: &'a dyn BlobStore,
 }
 
 impl<'a> Lake<'a> {

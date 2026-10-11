@@ -6,6 +6,7 @@
 
 use qip_core::error::{Error, Result};
 use qip_core::time::Timestamp;
+use serde::Serialize;
 use std::collections::BTreeMap;
 
 /// A claim extracted from a world source, wrapped in complete provenance.
@@ -14,7 +15,7 @@ use std::collections::BTreeMap;
 /// location, extraction method, authenticity signals, licence, confidence, and links to
 /// the evidence that corroborates or contradicts it. A claim that cannot be given these
 /// fields is refused and does not enter the world model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EvidenceRecord {
     /// Unique identifier for this evidence item.
     pub id: String,
@@ -185,7 +186,11 @@ impl EvidenceRecord {
     /// naming an ID not in it cannot be judged, and the result says
     /// `Unverifiable` rather than `Consistent`, because a check that could
     /// not run is not a check that passed.
-    pub fn check_temporal_consistency(&self, prior: &[EvidenceRecord]) -> TemporalConsistency {
+    pub fn check_temporal_consistency<'a>(
+        &self,
+        prior: impl IntoIterator<Item = &'a EvidenceRecord>,
+    ) -> TemporalConsistency {
+        let prior: Vec<&EvidenceRecord> = prior.into_iter().collect();
         // Ingested before it was published: no possible timeline.
         if self.ingestion_timestamp < self.source_timestamp {
             return TemporalConsistency::ViolatesPhysicalTimeline {
@@ -202,7 +207,7 @@ impl EvidenceRecord {
                 published_at: self.source_timestamp,
             };
         }
-        let find = |id: &str| prior.iter().find(|p| p.id == id);
+        let find = |id: &str| prior.iter().copied().find(|p| p.id == id);
         let mut unverifiable = false;
         for cause_id in &self.caused_by {
             let (Some(cause), Some(effect_at)) = (find(cause_id), self.claimed_at) else {
@@ -249,6 +254,109 @@ impl EvidenceRecord {
         self
     }
 
+    /// The instant the claim is about: its own date if it gives one, else
+    /// its publication.
+    pub fn claim_instant(&self) -> Timestamp {
+        self.claimed_at.unwrap_or(self.source_timestamp)
+    }
+
+    /// The subject this claim is about, from [`META_SUBJECT`].
+    pub fn subject(&self) -> Option<&str> {
+        self.metadata.get(META_SUBJECT).map(String::as_str)
+    }
+
+    /// Check this claim's location, movement and jurisdiction against the
+    /// geographic claims already held about the same subject (EVID-011).
+    ///
+    /// Until 2026-10-11 the evidence type had a slot for this outcome and a
+    /// setter, and nothing computed it; a vessel reported in Rotterdam and
+    /// in Singapore an hour apart read as two sound claims. The checks, in
+    /// the order the first failure is reported:
+    ///
+    /// * **jurisdiction** — the claim names a governing jurisdiction
+    ///   ([`META_JURISDICTION`]) and a country of location ([`META_COUNTRY`])
+    ///   that differ;
+    /// * **location** — another claim about the same subject at the same
+    ///   instant puts it more than [`GEO_SAME_PLACE_KM`] away. From the same
+    ///   source that is the source disagreeing with itself; from another it
+    ///   is a contradiction naming the other location;
+    /// * **routing** — two claims about the same subject at different
+    ///   instants imply a speed above [`META_MAX_SPEED_KMH`] (default
+    ///   [`DEFAULT_MAX_SPEED_KMH`], faster than anything that ships cargo).
+    ///
+    /// A claim with no parseable `geo:lat,lon` location and no jurisdiction
+    /// pair, or with no prior positioned claim about its subject, is
+    /// `Unverifiable` — a check that could not run is not a check that
+    /// passed. Weather is not checked: nothing on the ingestion path yet
+    /// carries a weather claim to compare against, and `ContradicsWeather`
+    /// is never produced rather than produced from a guess.
+    pub fn check_geographic_consistency<'a>(
+        &self,
+        prior: impl IntoIterator<Item = &'a EvidenceRecord>,
+    ) -> GeographicConsistency {
+        let jurisdiction = self.metadata.get(META_JURISDICTION);
+        let country = self.metadata.get(META_COUNTRY);
+        if let (Some(jurisdiction), Some(country)) = (jurisdiction, country)
+            && !jurisdiction.eq_ignore_ascii_case(country)
+        {
+            return GeographicConsistency::ViolatesJurisdiction;
+        }
+        let point = self.location.as_deref().and_then(GeoPoint::parse);
+        let (Some(point), Some(subject)) = (point, self.subject()) else {
+            return if jurisdiction.is_some() && country.is_some() {
+                GeographicConsistency::Consistent
+            } else {
+                GeographicConsistency::Unverifiable
+            };
+        };
+        let max_speed = self
+            .metadata
+            .get(META_MAX_SPEED_KMH)
+            .and_then(|text| text.parse::<f64>().ok())
+            .filter(|speed| speed.is_finite() && *speed > 0.0)
+            .unwrap_or(DEFAULT_MAX_SPEED_KMH);
+        let mut compared = false;
+        for other in prior {
+            if other.id == self.id || other.subject() != Some(subject) {
+                continue;
+            }
+            let Some(other_point) = other.location.as_deref().and_then(GeoPoint::parse) else {
+                continue;
+            };
+            compared = true;
+            let distance = point.distance_km(&other_point);
+            let elapsed_hours = (self.claim_instant().as_nanos() - other.claim_instant().as_nanos())
+                .unsigned_abs() as f64
+                / 3.6e12;
+            if elapsed_hours == 0.0 {
+                if distance > GEO_SAME_PLACE_KM {
+                    return if other.source_identity == self.source_identity {
+                        GeographicConsistency::InternalGeographicConflict
+                    } else {
+                        GeographicConsistency::ContradicsLocation {
+                            conflicting_location: other.location.clone().unwrap_or_default(),
+                        }
+                    };
+                }
+                continue;
+            }
+            if distance > GEO_SAME_PLACE_KM && distance / elapsed_hours > max_speed {
+                return GeographicConsistency::ViolatesRouting;
+            }
+        }
+        if compared {
+            GeographicConsistency::Consistent
+        } else {
+            GeographicConsistency::Unverifiable
+        }
+    }
+
+    /// Run [`Self::check_geographic_consistency`] and record the outcome.
+    pub fn geo_checked(mut self, prior: &[EvidenceRecord]) -> Self {
+        self.geographic_consistency = Some(self.check_geographic_consistency(prior));
+        self
+    }
+
     /// Verify all required fields are present. Used to refuse claims
     /// with incomplete provenance before they enter the world model.
     pub fn is_complete(&self) -> bool {
@@ -261,8 +369,64 @@ impl EvidenceRecord {
     }
 }
 
+/// Metadata key naming the subject a claim is about — the platform's id for
+/// it, the same one a reference ledger and a feature store key on.
+pub const META_SUBJECT: &str = "subject";
+/// Metadata key naming what about the subject is claimed (`price`, `level`).
+pub const META_ATTRIBUTE: &str = "attribute";
+/// Metadata key holding the claimed value in canonical text.
+pub const META_VALUE: &str = "value";
+/// Metadata key naming the jurisdiction a claim says governs its subject.
+pub const META_JURISDICTION: &str = "jurisdiction";
+/// Metadata key naming the country a claim places its subject in.
+pub const META_COUNTRY: &str = "country";
+/// Metadata key overriding the fastest plausible movement of a subject.
+pub const META_MAX_SPEED_KMH: &str = "max_speed_kmh";
+/// Two positions closer than this are the same place for the location check.
+pub const GEO_SAME_PLACE_KM: f64 = 1.0;
+/// Faster than any vessel, train or freight aircraft: an implied speed above
+/// it means one of two position claims is wrong.
+pub const DEFAULT_MAX_SPEED_KMH: f64 = 1_000.0;
+
+/// A position on the earth, parsed from a `geo:lat,lon` location.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GeoPoint {
+    pub latitude: f64,
+    pub longitude: f64,
+}
+
+impl GeoPoint {
+    /// Parse `geo:lat,lon` (RFC 5870's scheme, without its parameters).
+    /// Anything else — a region name, an out-of-range coordinate — is not a
+    /// position, and returns `None` rather than a guess.
+    pub fn parse(location: &str) -> Option<Self> {
+        let rest = location.trim().strip_prefix("geo:")?;
+        let rest = rest.split(';').next()?;
+        let (lat, lon) = rest.split_once(',')?;
+        let latitude: f64 = lat.trim().parse().ok()?;
+        let longitude: f64 = lon.trim().parse().ok()?;
+        ((-90.0..=90.0).contains(&latitude) && (-180.0..=180.0).contains(&longitude)).then_some(
+            Self {
+                latitude,
+                longitude,
+            },
+        )
+    }
+
+    /// Great-circle distance in kilometres (haversine, mean earth radius).
+    pub fn distance_km(&self, other: &Self) -> f64 {
+        const EARTH_RADIUS_KM: f64 = 6_371.0;
+        let (phi1, phi2) = (self.latitude.to_radians(), other.latitude.to_radians());
+        let d_phi = (other.latitude - self.latitude).to_radians();
+        let d_lambda = (other.longitude - self.longitude).to_radians();
+        let a =
+            (d_phi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (d_lambda / 2.0).sin().powi(2);
+        2.0 * EARTH_RADIUS_KM * a.sqrt().min(1.0).asin()
+    }
+}
+
 /// An authenticity signal: proof the claim came from a legitimate source.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub enum AuthenticitySignal {
     /// TLS certificate verification succeeded.
     TlsVerified { domain: String },
@@ -281,7 +445,7 @@ pub enum AuthenticitySignal {
 /// Records whether a claim is consistent with known prior state, event ordering,
 /// and physically possible timelines, and on failure names the conflicting fact.
 /// EVID-010 requires this check to be recorded on every evidence item.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub enum TemporalConsistency {
     /// Claim is consistent with prior known state and event ordering.
     Consistent,
@@ -315,7 +479,7 @@ pub enum TemporalConsistency {
 /// Records whether a claim about location, routing, shipping, weather, or
 /// jurisdiction is consistent with other geographic claims. EVID-011 requires
 /// this check to be recorded on every evidence item.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub enum GeographicConsistency {
     /// Claim is consistent with other geographic evidence.
     Consistent,

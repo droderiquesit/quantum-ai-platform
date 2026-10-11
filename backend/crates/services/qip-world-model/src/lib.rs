@@ -22,6 +22,7 @@ pub mod confounder;
 pub mod evidence;
 pub mod execution_state;
 pub mod exposure;
+pub mod fabric;
 pub mod falsification;
 pub mod features;
 pub mod federation;
@@ -31,6 +32,7 @@ pub mod inference;
 pub mod lead_lag;
 pub mod liquidity;
 pub mod order_flow;
+pub mod poisoning;
 pub mod price_impact;
 pub mod reaction;
 pub mod relationship;
@@ -50,12 +52,16 @@ pub use causal::{
 };
 pub use confounder::{Confounder, ConfounderSet, ConfounderStanding};
 pub use evidence::{
-    AuthenticitySignal, EvidenceRecord, GeographicConsistency, TemporalConsistency,
+    AuthenticitySignal, EvidenceRecord, GeoPoint, GeographicConsistency, TemporalConsistency,
 };
 pub use execution_state::{ExecutionRecord, ExecutionState, VenueExecutionStats};
 pub use exposure::{
     ConcentrationReport, Exposure, ExposureSet, SecondOrderReview, SharedDriver, UnheldDependency,
     hidden_concentration, instruments_exposed_to, second_order_exposure, unheld_dependencies,
+};
+pub use fabric::{
+    Authenticity, ClaimKey, Contest, EvidenceFabric, EvidenceVerdict, KeyOutcome, KnowledgeDelta,
+    ProvenanceEdge, ProvenanceGraph, ProvenanceNode, SourceHistory,
 };
 pub use falsification::{
     Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,
@@ -79,6 +85,7 @@ pub use liquidity::{
     VenueShift,
 };
 pub use order_flow::{FlowDirection, FlowObservation, OrderFlowState};
+pub use poisoning::{PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning};
 pub use price_impact::{ImpactMap, ImpactObservation, ImpactState, VenueImpactModel};
 pub use reaction::ReactionEpisode;
 pub use relationship::{Relationship, RelationshipKind};

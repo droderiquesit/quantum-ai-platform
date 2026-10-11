@@ -568,7 +568,11 @@ impl RestMarketDataAdapter {
             object_id: instrument.object_id.clone(),
             venue: instrument.venue.clone(),
             at: wire.at,
-            capture_time: None,
+            // Knowable no earlier than the configured publication delay
+            // after the print: stamping the event instant here would file
+            // the record as known the moment it happened.
+            capture_time: wire.at.saturating_add(self.config.publication_delay),
+            sequence: None,
             bid: wire.bid,
             ask: wire.ask,
             bid_size: wire.bid_size,
@@ -585,7 +589,11 @@ impl RestMarketDataAdapter {
             object_id: instrument.object_id.clone(),
             venue: instrument.venue.clone(),
             at: wire.at,
-            capture_time: None,
+            // Knowable no earlier than the configured publication delay
+            // after the print: stamping the event instant here would file
+            // the record as known the moment it happened.
+            capture_time: wire.at.saturating_add(self.config.publication_delay),
+            sequence: None,
             price: wire.price,
             size: wire.size,
             aggressor: wire.aggressor.as_deref().map(side_from_code).transpose()?,

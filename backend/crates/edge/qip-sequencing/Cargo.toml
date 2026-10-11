@@ -12,6 +12,12 @@ serde.workspace = true
 qip-core.workspace = true
 qip-numerics.workspace = true
 qip-contracts.workspace = true
+# The capture path (`capture.rs`) shapes disciplined market events for the
+# Tick Lake writer in `qip-storage` — an edge crate depending on a library,
+# the legal direction — and serialises the canonical payload with
+# `serde_json`, one of the workspace's two permitted crates.
+qip-storage.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

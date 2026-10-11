@@ -39,6 +39,7 @@
 
 pub mod align;
 pub mod arbitration;
+pub mod capture;
 pub mod clock;
 pub mod failover;
 pub mod identity;
@@ -46,6 +47,7 @@ pub mod tracker;
 
 pub use align::{Alignment, AsOf, Order, Placed, align, as_of};
 pub use arbitration::{ArbitrationEvent, ArbitrationOutcome, LineArbiter, LineHealth};
+pub use capture::{CaptureStream, DisciplineSettings, MAX_CAPTURE_STREAMS};
 pub use clock::{
     ClockCorrection, ClockDiscipline, ClockEstimate, ClockObservation, CorrectionKind,
     DisciplinedTime,

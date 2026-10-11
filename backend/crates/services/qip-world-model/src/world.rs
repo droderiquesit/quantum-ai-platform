@@ -1,6 +1,8 @@
 //! The world model: the aggregate that absorbs observations and answers
 //! questions about what the platform believes.
 
+use crate::evidence::EvidenceRecord;
+use crate::fabric::{EvidenceFabric, EvidenceVerdict, KeyOutcome};
 use qip_ai::embedding::{Embedder, HashingEmbedder};
 use qip_ai::retrieval::{Document, RetrievalResult, SearchIndex};
 use qip_core::error::{Error, Result};
@@ -81,6 +83,9 @@ pub struct WorldModel {
     /// The causal evidence absorbed so far, newest last, capped at
     /// [`CAUSAL_SUPPORT_RETAINED`]. What [`CausalGraph::reestimate`] reads.
     causal_support: VecDeque<SupportingClaim>,
+    /// Every world-source claim admitted so far, checked, linked and
+    /// weighed — see [`crate::fabric`]. Bounded by its own capacity.
+    evidence: EvidenceFabric,
 }
 
 impl Default for WorldModel {
@@ -100,6 +105,7 @@ impl WorldModel {
             index: SearchIndex::new().with_embedder(embedder),
             journal: Vec::new(),
             causal_support: VecDeque::new(),
+            evidence: EvidenceFabric::default(),
         };
         model.define_standard_features();
         model
@@ -176,6 +182,27 @@ impl WorldModel {
                 .with_staleness(Duration::from_days(30)),
             );
         }
+    }
+
+    /// The evidence fabric: what the poisoning detector and the REASON
+    /// stage read claims, contests and source records from.
+    pub fn evidence(&self) -> &EvidenceFabric {
+        &self.evidence
+    }
+
+    /// Admit one world-source claim through the evidence fabric — the
+    /// temporal, geographic, authenticity and contradiction checks, and the
+    /// provenance graph — and return what the fabric decided.
+    ///
+    /// The seam a composition root forwards the connector runtime's
+    /// evidence through (`qip_market_ingestion`'s `PollReport::evidence`).
+    pub fn absorb_evidence(
+        &mut self,
+        record: EvidenceRecord,
+        document_hash: Option<&str>,
+        now: Timestamp,
+    ) -> Result<(EvidenceVerdict, KeyOutcome)> {
+        self.evidence.admit(record, document_hash, now)
     }
 
     pub fn graph(&self) -> &KnowledgeGraph {

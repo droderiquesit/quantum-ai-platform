@@ -28,6 +28,7 @@ use super::backoff::{BackoffLadder, FailureKind, RetryDecision};
 use super::checkpoint::{Checkpoint, Cursor, CursorPosition};
 use super::dedup::{DedupWindow, Novelty};
 use super::envelope::{MarketEventEnvelope, RawEvent};
+use super::evidence::{CheckedEvidence, ParserLineage, evidence_of};
 use super::heartbeat::{FeedHeartbeat, Liveness};
 use super::manifest::SourceManifest;
 use super::quarantine::{Quarantine, QuarantineReason};
@@ -39,8 +40,9 @@ use qip_core::error::{Error, Result};
 use qip_core::{Duration, Timestamp};
 use qip_financial::quality::DataQuality;
 use qip_transport::{Sleeper, ThreadSleeper};
+use qip_world_model::{ClaimKey, EvidenceFabric, KnowledgeDelta};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// How the runtime is sized and seeded.
 ///
@@ -64,6 +66,11 @@ pub struct RuntimeConfig {
     /// `qip_transport::RecordingSleeper` under test, so a test asserts the
     /// schedule instead of spending it.
     pub sleeper: Arc<dyn Sleeper>,
+    /// The evidence fabric this runtime checks every admitted event against.
+    /// `None` gives the runtime its own, bounded at the fabric's default
+    /// capacity; a composition root polling several sources hands each the
+    /// same one so a contradiction *between* sources is seen.
+    pub evidence: Option<Arc<Mutex<EvidenceFabric>>>,
 }
 
 impl std::fmt::Debug for RuntimeConfig {
@@ -83,6 +90,7 @@ impl Default for RuntimeConfig {
             dedup_capacity: 8_192,
             quarantine_capacity: 256,
             sleeper: Arc::new(ThreadSleeper),
+            evidence: None,
         }
     }
 }
@@ -97,6 +105,12 @@ impl RuntimeConfig {
 
     pub fn with_sleeper(mut self, sleeper: Arc<dyn Sleeper>) -> Self {
         self.sleeper = sleeper;
+        self
+    }
+
+    /// Check this runtime's evidence against `fabric`, shared with others.
+    pub fn with_evidence_fabric(mut self, fabric: Arc<Mutex<EvidenceFabric>>) -> Self {
+        self.evidence = Some(fabric);
         self
     }
 
@@ -162,6 +176,18 @@ pub struct PollReport {
     /// Surfaced here and on [`RuntimeStats::unreferenced`] so a root can say
     /// so rather than an auditor discovering it.
     pub unreferenced: bool,
+    /// The evidence each admitted record was checked as, in admission
+    /// order and one per record in `admitted`. See [`super::evidence`].
+    pub evidence: Vec<CheckedEvidence>,
+    /// What this poll changed in what the fabric believes.
+    pub knowledge_delta: KnowledgeDelta,
+    /// The delta as a knowledge pack, when it changed anything.
+    pub knowledge_pack: Option<qip_contracts::knowledge_pack::KnowledgePack>,
+    /// The encoded pack's size beside the fetched body's — the durable
+    /// knowledge layer is meant to be smaller than the source it was
+    /// derived from (R12-DATA-1041), and this is where that is measured
+    /// rather than asserted. `(pack bytes, body bytes)`.
+    pub knowledge_footprint: Option<(u64, u64)>,
 }
 
 impl PollReport {
@@ -177,6 +203,10 @@ impl PollReport {
             liveness,
             digest: None,
             unreferenced: false,
+            evidence: Vec::new(),
+            knowledge_delta: KnowledgeDelta::default(),
+            knowledge_pack: None,
+            knowledge_footprint: None,
         }
     }
 }
@@ -251,6 +281,8 @@ pub struct ConnectorRuntime {
     stats: RuntimeStats,
     sleeper: Arc<dyn Sleeper>,
     connected: bool,
+    evidence: Arc<Mutex<EvidenceFabric>>,
+    lineage: ParserLineage,
 }
 
 impl ConnectorRuntime {
@@ -262,6 +294,7 @@ impl ConnectorRuntime {
         let dedup = DedupWindow::new(config.dedup_capacity)?;
         let quarantine = Quarantine::new(&manifest.source_id, config.quarantine_capacity)?;
         let heartbeat = FeedHeartbeat::new(&manifest.source_id, manifest.freshness_sla());
+        let lineage = ParserLineage::of(&manifest);
         Ok(Self {
             manifest,
             guard,
@@ -274,6 +307,10 @@ impl ConnectorRuntime {
             stats: RuntimeStats::default(),
             sleeper: config.sleeper,
             connected: false,
+            evidence: config
+                .evidence
+                .unwrap_or_else(|| Arc::new(Mutex::new(EvidenceFabric::default()))),
+            lineage,
         })
     }
 
@@ -303,6 +340,16 @@ impl ConnectorRuntime {
 
     pub const fn limiter(&self) -> &RateLimiter {
         &self.limiter
+    }
+
+    /// The evidence fabric this runtime checks against.
+    pub fn evidence_fabric(&self) -> Arc<Mutex<EvidenceFabric>> {
+        Arc::clone(&self.evidence)
+    }
+
+    /// The parser lineage stamped on everything this runtime extracts.
+    pub const fn parser_lineage(&self) -> &ParserLineage {
+        &self.lineage
     }
 
     pub const fn is_connected(&self) -> bool {
@@ -642,6 +689,13 @@ impl ConnectorRuntime {
         // dedup window admitted anything this time. A mapping that fails is
         // no subject; for an event the gates admit, `admit` quarantines the
         // failure exactly as it did when it mapped the event itself.
+        // The body's hash, taken once for the evidence stage's provenance:
+        // every claim extracted below names the document it came from. The
+        // digest further down hashes the same bytes for the reference
+        // ledger; two SHA-256 passes over one bounded body is the price of
+        // keeping the digest an observation that cannot gate the poll.
+        let body_hash = qip_core::sha256_hex(response.body.as_bytes());
+        let version_before = self.evidence.lock().map_or(0, |fabric| fabric.version());
         let mut cursor_newest: Option<Timestamp> = None;
         let mut subjects: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for event in &events {
@@ -651,7 +705,7 @@ impl ConnectorRuntime {
             {
                 subjects.insert(subject.to_string());
             }
-            let withheld = self.admit(connector, event, mapped, at, &mut report);
+            let withheld = self.admit(connector, event, mapped, at, &body_hash, &mut report);
             if !withheld {
                 cursor_newest = Some(match cursor_newest {
                     Some(previous) if previous > event.event_time => previous,
@@ -680,10 +734,34 @@ impl ConnectorRuntime {
             subjects,
             at,
         )
-        .ok();
+        .ok()
+        .map(|digest| digest.with_etag(response.etag.clone()));
         if report.digest.is_none() && !events.is_empty() {
             report.unreferenced = true;
             self.stats.unreferenced = self.stats.unreferenced.saturating_add(1);
+        }
+
+        if !report.knowledge_delta.is_empty() {
+            let version_after = self
+                .evidence
+                .lock()
+                .map_or(version_before, |fabric| fabric.version());
+            let pack = report.knowledge_delta.to_pack(
+                format!(
+                    "{}:{}:{}",
+                    self.manifest.source_id,
+                    at.as_nanos(),
+                    &body_hash[..12]
+                ),
+                at,
+                version_before,
+                version_after,
+            );
+            if let Ok(encoded) = pack.encode() {
+                report.knowledge_footprint =
+                    Some((encoded.len() as u64, response.body.len() as u64));
+            }
+            report.knowledge_pack = Some(pack);
         }
 
         let position = cursor_newest.map_or_else(
@@ -692,6 +770,10 @@ impl ConnectorRuntime {
         );
         let accepted = report.admitted.len() as u64;
         self.cursor = connector.advance(&self.cursor, position, accepted);
+        report.digest = report
+            .digest
+            .take()
+            .map(|digest| digest.with_cursor(self.cursor.position.describe()));
         self.stats.admitted = self.stats.admitted.saturating_add(accepted);
         self.stats.duplicates = self.stats.duplicates.saturating_add(report.duplicates);
         self.stats.withheld = self.stats.withheld.saturating_add(report.withheld);
@@ -721,6 +803,7 @@ impl ConnectorRuntime {
         event: &RawEvent,
         mapped: Result<SensedRecord>,
         at: Timestamp,
+        body_hash: &str,
         report: &mut PollReport,
     ) -> bool {
         let knowable_at = event
@@ -737,7 +820,7 @@ impl ConnectorRuntime {
             return false;
         }
 
-        let record = match mapped {
+        let mut record = match mapped {
             Ok(record) => record,
             Err(error) => {
                 self.hold(
@@ -765,14 +848,49 @@ impl ConnectorRuntime {
             return false;
         }
 
-        match MarketEventEnvelope::new(
-            &self.manifest,
+        // The capture gate (R12-TICK-2049, 2087): a central tick, quote or
+        // trade is stamped with the instant this runtime received it and,
+        // where the feed numbers nothing, a per-feed sequence continuing the
+        // cursor's monotone count — so the number survives a restart with
+        // the checkpoint and is unwound with it.
+        let sequence = self
+            .cursor
+            .events_seen
+            .saturating_add(report.admitted.len() as u64)
+            .saturating_add(1);
+        stamp_capture(&mut record, at, sequence);
+
+        let quality = connector.quality_of(event);
+        let checked = match self.check_evidence(
             event,
-            record,
+            &fingerprint,
+            &record,
+            knowable_at,
             at,
-            connector.quality_of(event),
+            body_hash,
+            quality.confidence,
+            report,
         ) {
-            Ok(envelope) => report.admitted.push(envelope),
+            Ok(checked) => checked,
+            Err(issue) => {
+                self.hold(
+                    &event.key,
+                    QuarantineReason::ValidationFailure {
+                        issues: vec![issue],
+                    },
+                    &event.body.to_string(),
+                    at,
+                    report,
+                );
+                return false;
+            }
+        };
+
+        match MarketEventEnvelope::new(&self.manifest, event, record, at, quality) {
+            Ok(envelope) => {
+                report.admitted.push(envelope);
+                report.evidence.push(checked);
+            }
             Err(error) => self.hold(
                 &event.key,
                 QuarantineReason::MappingFailure {
@@ -784,6 +902,73 @@ impl ConnectorRuntime {
             ),
         }
         false
+    }
+
+    /// The evidence-check stage for one event. Returns the checked
+    /// evidence, or the sentence the event is quarantined under.
+    ///
+    /// Fails closed: an evidence record that cannot be formed, a fabric
+    /// whose lock is poisoned, and a claim on a physically impossible
+    /// timeline each stop the event rather than release it unchecked. A
+    /// claim the fabric already holds — the same event re-fetched after the
+    /// caller refused a poll's reference and the runtime unwound — reuses
+    /// the verdict it was given, because admitting it again would have it
+    /// corroborate itself.
+    #[allow(clippy::too_many_arguments)]
+    fn check_evidence(
+        &self,
+        event: &RawEvent,
+        fingerprint: &super::dedup::EventFingerprint,
+        record: &SensedRecord,
+        knowable_at: Timestamp,
+        at: Timestamp,
+        body_hash: &str,
+        confidence: f64,
+        report: &mut PollReport,
+    ) -> std::result::Result<CheckedEvidence, String> {
+        let evidence = evidence_of(
+            &self.manifest,
+            &self.lineage,
+            fingerprint.as_str(),
+            &event.key,
+            record,
+            knowable_at,
+            at,
+            body_hash,
+            confidence,
+        )
+        .map_err(|error| format!("evidence could not be formed: {}", error.message()))?;
+        let mut fabric = self.evidence.lock().map_err(|_| {
+            "the evidence fabric is unavailable (a previous check panicked holding it), so no \
+             claim can be checked and none is released unchecked"
+                .to_string()
+        })?;
+        if let Some(held) = fabric.get(&evidence.id) {
+            return Ok(CheckedEvidence {
+                record: held.record.clone(),
+                document_hash: body_hash.to_string(),
+                verdict: held.verdict.clone(),
+            });
+        }
+        let key = ClaimKey::of(&evidence).map(|(key, _)| key);
+        let (verdict, outcome) = fabric
+            .admit(evidence.clone(), Some(body_hash), at)
+            .map_err(|error| format!("evidence refused: {}", error.message()))?;
+        report.knowledge_delta.absorb(&verdict, outcome, key);
+        if !verdict.admissible {
+            return Err(format!(
+                "evidence on an impossible timeline: {:?}",
+                verdict.temporal
+            ));
+        }
+        let record = fabric
+            .get(&verdict.id)
+            .map_or(evidence, |held| held.record.clone());
+        Ok(CheckedEvidence {
+            record,
+            document_hash: body_hash.to_string(),
+            verdict,
+        })
     }
 
     fn hold(
@@ -850,4 +1035,29 @@ impl ConnectorRuntime {
 /// Not `DataQuality::default`, which asserts a perfect measurement.
 pub(crate) fn measured_quality() -> DataQuality {
     DataQuality::clean()
+}
+
+/// Stamp a central tick, quote or trade with the instant the capture gate
+/// received it and, where the feed gave none, `sequence`.
+///
+/// The connector's own `capture_time` is overwritten: it is the connector's
+/// claim about an instant only this runtime observes, and the runtime's
+/// horizon is the one the knowability gate already judged the event by.
+/// The feed's own sequence number is kept where it gave one.
+pub fn stamp_capture(record: &mut SensedRecord, at: Timestamp, sequence: u64) {
+    match record {
+        SensedRecord::Tick(tick) => {
+            tick.capture_time = at;
+            tick.sequence = tick.sequence.or(Some(sequence));
+        }
+        SensedRecord::Quote(quote) => {
+            quote.capture_time = at;
+            quote.sequence = quote.sequence.or(Some(sequence));
+        }
+        SensedRecord::Trade(trade) => {
+            trade.capture_time = at;
+            trade.sequence = trade.sequence.or(Some(sequence));
+        }
+        _ => {}
+    }
 }

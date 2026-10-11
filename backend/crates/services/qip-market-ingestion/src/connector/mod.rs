@@ -73,6 +73,7 @@ pub mod dedup;
 pub mod digest;
 pub mod emulator;
 pub mod envelope;
+pub mod evidence;
 pub mod harness;
 pub mod heartbeat;
 pub mod journal;

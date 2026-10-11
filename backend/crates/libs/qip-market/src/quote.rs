@@ -8,6 +8,24 @@ use serde::{Deserialize, Serialize};
 /// Which side of the book an order or trade sits on.
 pub use crate::book::Side;
 
+/// Refuse a record whose capture instant precedes its event instant.
+///
+/// A record the platform received before it happened is a decoder reading
+/// the wrong field or a clock running behind, and admitting it would put a
+/// negative arrival latency into every point-in-time read that keys on the
+/// capture instant. Returns the problem as a sentence for a validation list,
+/// so it is reported with the record's other structural issues.
+pub fn check_capture_order(at: Timestamp, capture_time: Timestamp) -> Option<String> {
+    (capture_time < at).then(|| {
+        format!(
+            "captured at {} before it occurred at {}; a record cannot be received before it \
+             happens, so its capture or event instant is wrong",
+            capture_time.to_rfc3339(),
+            at.to_rfc3339()
+        )
+    })
+}
+
 /// Top-of-book quote.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Quote {
@@ -15,10 +33,28 @@ pub struct Quote {
     pub venue: String,
     /// When the event occurred in the market (event time).
     pub at: Timestamp,
-    /// When the event was captured by the platform (known-at time).
-    /// Bitemporal: distinguishes when something was true from when it became knowable.
+    /// When this platform received the record — the instant it became
+    /// knowable here, as distinct from `at`, when it was true at the venue.
+    ///
+    /// Required, and deliberately without `#[serde(default)]`. It was an
+    /// `Option` until 2026-10-11, every constructor but two wrote `None`, and
+    /// the kernel read `capture_time.unwrap_or(at)` — so a record with no
+    /// capture instant was filed as knowable the moment it happened, which is
+    /// point-in-time leakage of exactly the feed-arrival delay (R12-TICK-2087).
+    /// A record that cannot say when it arrived does not decode, and one
+    /// that says it arrived before it happened is refused by
+    /// [`check_capture_order`].
+    pub capture_time: Timestamp,
+    /// The feed's own sequence number for this record, where the feed
+    /// numbers its messages, or the number the capture gate assigned in
+    /// arrival order where it does not. `None` only for a record that never
+    /// crossed a capture gate (a fixture, a simulator's own print).
+    ///
+    /// Carried so a replay can restore arrival order among records sharing
+    /// an instant, and so a gap in a numbered feed is visible after the
+    /// fact rather than only to the session that saw it (R12-TICK-2049).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_time: Option<Timestamp>,
+    pub sequence: Option<u64>,
     pub bid: Decimal,
     pub ask: Decimal,
     pub bid_size: Decimal,
@@ -104,6 +140,7 @@ impl Quote {
         if self.bid_size.is_negative() || self.ask_size.is_negative() {
             issues.push("negative size".into());
         }
+        issues.extend(check_capture_order(self.at, self.capture_time));
         issues
     }
 }
@@ -170,10 +207,28 @@ pub struct Trade {
     pub venue: String,
     /// When the trade executed in the market (event time).
     pub at: Timestamp,
-    /// When the trade was captured by the platform (known-at time).
-    /// Bitemporal: distinguishes when something was true from when it became knowable.
+    /// When this platform received the record — the instant it became
+    /// knowable here, as distinct from `at`, when it was true at the venue.
+    ///
+    /// Required, and deliberately without `#[serde(default)]`. It was an
+    /// `Option` until 2026-10-11, every constructor but two wrote `None`, and
+    /// the kernel read `capture_time.unwrap_or(at)` — so a record with no
+    /// capture instant was filed as knowable the moment it happened, which is
+    /// point-in-time leakage of exactly the feed-arrival delay (R12-TICK-2087).
+    /// A record that cannot say when it arrived does not decode, and one
+    /// that says it arrived before it happened is refused by
+    /// [`check_capture_order`].
+    pub capture_time: Timestamp,
+    /// The feed's own sequence number for this record, where the feed
+    /// numbers its messages, or the number the capture gate assigned in
+    /// arrival order where it does not. `None` only for a record that never
+    /// crossed a capture gate (a fixture, a simulator's own print).
+    ///
+    /// Carried so a replay can restore arrival order among records sharing
+    /// an instant, and so a gap in a numbered feed is visible after the
+    /// fact rather than only to the session that saw it (R12-TICK-2049).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_time: Option<Timestamp>,
+    pub sequence: Option<u64>,
     pub price: Decimal,
     pub size: Decimal,
     /// Side the aggressor was on, where the venue reports it.
@@ -194,6 +249,14 @@ pub struct Trade {
 }
 
 impl Trade {
+    /// Structural problems with the trade: today, only a capture instant
+    /// that precedes the print.
+    pub fn validate(&self) -> Vec<String> {
+        check_capture_order(self.at, self.capture_time)
+            .into_iter()
+            .collect()
+    }
+
     pub fn notional(&self) -> Decimal {
         self.price * self.size
     }
@@ -235,10 +298,28 @@ pub struct Tick {
     pub venue: String,
     /// When the tick occurred in the market (event time).
     pub at: Timestamp,
-    /// When the tick was captured by the platform (known-at time).
-    /// Bitemporal: distinguishes when something was true from when it became knowable.
+    /// When this platform received the record — the instant it became
+    /// knowable here, as distinct from `at`, when it was true at the venue.
+    ///
+    /// Required, and deliberately without `#[serde(default)]`. It was an
+    /// `Option` until 2026-10-11, every constructor but two wrote `None`, and
+    /// the kernel read `capture_time.unwrap_or(at)` — so a record with no
+    /// capture instant was filed as knowable the moment it happened, which is
+    /// point-in-time leakage of exactly the feed-arrival delay (R12-TICK-2087).
+    /// A record that cannot say when it arrived does not decode, and one
+    /// that says it arrived before it happened is refused by
+    /// [`check_capture_order`].
+    pub capture_time: Timestamp,
+    /// The feed's own sequence number for this record, where the feed
+    /// numbers its messages, or the number the capture gate assigned in
+    /// arrival order where it does not. `None` only for a record that never
+    /// crossed a capture gate (a fixture, a simulator's own print).
+    ///
+    /// Carried so a replay can restore arrival order among records sharing
+    /// an instant, and so a gap in a numbered feed is visible after the
+    /// fact rather than only to the session that saw it (R12-TICK-2049).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_time: Option<Timestamp>,
+    pub sequence: Option<u64>,
     pub price: Decimal,
     #[serde(default)]
     pub volume: Decimal,
@@ -248,6 +329,16 @@ pub struct Tick {
     /// that says nothing about its quality would therefore decode as one that
     /// measured everything perfectly, so it does not decode at all.
     pub quality: DataQuality,
+}
+
+impl Tick {
+    /// Structural problems with the tick: today, only a capture instant
+    /// that precedes the print.
+    pub fn validate(&self) -> Vec<String> {
+        check_capture_order(self.at, self.capture_time)
+            .into_iter()
+            .collect()
+    }
 }
 
 impl EventBody for Tick {

@@ -53,9 +53,10 @@
 //! because a control consulted once is a control that cannot fire.
 
 use qip_contracts::governance::Usage;
-use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
+use qip_core::{Duration, Timestamp};
 use qip_financial::quality::LicensingClass;
+use qip_market_ingestion::connector::manifest::Region;
 use qip_market_ingestion::connector::{FieldKind, SchemaContract, SourceManifest};
 use qip_market_ingestion::connector_feed::KNOWN_SOURCES;
 use serde::Serialize;
@@ -857,6 +858,12 @@ pub struct AdmittedSource {
     /// from this source shares.
     endpoint: String,
     admitted_at: Timestamp,
+    /// Where the source's data originates, from the manifest — what a
+    /// reference from this door records as its geography (R12-DATA-1033).
+    region: Region,
+    /// How long a fetch from this source stays fresh, from the manifest's
+    /// SLA — what a reference's expiry is computed from (R12-DATA-1035).
+    freshness_sla: Duration,
 }
 
 impl AdmittedSource {
@@ -914,6 +921,8 @@ impl AdmittedSource {
             schema: schema_of_contract(&manifest.schema),
             endpoint: endpoint_of(manifest),
             admitted_at: decision.decided_at,
+            region: manifest.region,
+            freshness_sla: manifest.freshness_sla(),
         })
     }
 
@@ -931,6 +940,24 @@ impl AdmittedSource {
 
     pub fn endpoint(&self) -> &str {
         &self.endpoint
+    }
+
+    /// The licensing class the admission was decided under.
+    pub const fn class(&self) -> LicensingClass {
+        self.class
+    }
+
+    /// The licence identifier the admission was decided under.
+    pub fn licence(&self) -> &str {
+        &self.licence
+    }
+
+    pub const fn region(&self) -> Region {
+        self.region
+    }
+
+    pub const fn freshness_sla(&self) -> Duration {
+        self.freshness_sla
     }
 
     /// One line for a banner: the licence, the class and the category the

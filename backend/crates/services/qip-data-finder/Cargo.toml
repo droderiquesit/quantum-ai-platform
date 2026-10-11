@@ -29,5 +29,11 @@ qip-numerics.workspace = true
 # reviewed, and nothing else.
 qip-transport.workspace = true
 
+[dev-dependencies]
+# The watcher persists through the `qip_core::kv` port; its test needs *an*
+# adapter, and `MemoryKeyValueStore` is the one the workspace ships. A test
+# edge only: the crate needs the port, not the adapter.
+qip-storage.workspace = true
+
 [lints]
 workspace = true

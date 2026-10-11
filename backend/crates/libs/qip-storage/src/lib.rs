@@ -69,6 +69,7 @@ pub mod repository;
 pub mod rowkey;
 pub mod segment;
 pub mod settings;
+pub mod tick_capture;
 
 pub use blob::{BlobStore, FileBlobStore, MemoryBlobStore};
 pub use chain::{ArchivedRecord, ChainArchive};

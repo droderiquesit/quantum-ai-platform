@@ -109,6 +109,12 @@ pub struct SourceResponse {
     /// serve again and the ladder is only a guess.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after: Option<Duration>,
+    /// The source's own version tag for what it served (`etag`), where it
+    /// sends one. Carried to the data reference so a later re-fetch can be
+    /// compared against the source's own claim of change as well as the
+    /// hash (R12-DATA-1033's etag field, never filled before 2026-10-11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
 }
 
 impl SourceResponse {
@@ -119,7 +125,13 @@ impl SourceResponse {
             body: body.into(),
             latency,
             retry_after: None,
+            etag: None,
         }
+    }
+
+    pub fn with_etag(mut self, etag: impl Into<String>) -> Self {
+        self.etag = Some(etag.into());
+        self
     }
 
     pub fn with_retry_after(mut self, wait: Duration) -> Self {
@@ -386,6 +398,11 @@ impl SourceTransport for HttpSourceTransport {
             body,
             latency,
             retry_after: response.header("retry-after").and_then(parse_retry_after),
+            etag: response
+                .header("etag")
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_string),
         })
     }
 }

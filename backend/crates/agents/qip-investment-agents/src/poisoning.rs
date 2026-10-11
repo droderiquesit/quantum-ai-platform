@@ -4,43 +4,50 @@
 //! sources, time and positions. A detection at the evidence layer (EVID-012)
 //! judges one item at a time; this specialist looks for campaigns that no single
 //! item reveals.
+//!
+//! Until 2026-10-11 `analyse` returned no data unconditionally, and the three
+//! tests below it asserted on `PoisoningFinding`s they had written by hand —
+//! a test named "a coordinated campaign is detected" that would have passed
+//! with the detector deleted, because there was none. The detection now lives
+//! in `qip_world_model::poisoning`, beside the evidence fabric it reads, and
+//! this agent runs it over the fabric the world model holds and reports what
+//! it found. The classes and the finding type are that module's, re-exported,
+//! so there is one definition of what a poisoning finding is.
 
 use crate::desk::Desk;
-use crate::support::no_data;
-use qip_agents::finding::{AgentBrief, AgentFinding};
+use crate::support::{FindingBuilder, computed, no_data};
+use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
 use qip_agents::runtime::{Agent, AgentContext};
 use qip_core::error::Result;
 use std::sync::Arc;
+
+pub use qip_world_model::poisoning::{
+    PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
+};
 
 /// Hunts for manipulation and source poisoning across the evidence fabric.
 #[derive(Debug)]
 pub struct PoisoningDetector {
     manifest: AgentManifest,
     desk: Arc<Desk>,
+    thresholds: PoisoningThresholds,
 }
 
 impl PoisoningDetector {
     pub fn new(manifest: AgentManifest, desk: Arc<Desk>) -> Self {
-        Self { manifest, desk }
+        Self {
+            manifest,
+            desk,
+            thresholds: PoisoningThresholds::default(),
+        }
     }
-}
 
-/// One poisoning finding the detector identified.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PoisoningFinding {
-    pub source_id: String,
-    pub poisoning_class: PoisoningClass,
-    pub evidence: String,
-}
-
-/// Categories of source poisoning that can be detected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PoisoningClass {
-    /// Coordinated manipulation campaign across multiple outlets.
-    CoordinatedManipulation,
-    /// Single source publishing contradicted or false claims.
-    SourcePoisoning,
+    /// Judge against `thresholds` rather than the defaults.
+    pub fn with_thresholds(mut self, thresholds: PoisoningThresholds) -> Self {
+        self.thresholds = thresholds;
+        self
+    }
 }
 
 impl Agent for PoisoningDetector {
@@ -49,123 +56,206 @@ impl Agent for PoisoningDetector {
     }
 
     fn analyse(&self, ctx: &mut AgentContext, brief: &AgentBrief) -> Result<AgentFinding> {
-        // Placeholder implementation. The full detector will:
-        // - Track source credibility based on past corroboration/contradiction
-        // - Identify coordinated publication patterns (same timing, near-identical text)
-        // - Detect syndication chains (shared origin detection)
-        // - Monitor for sudden changes in source behavior
-        let _market = self.desk.market.get(ctx)?;
-
-        Ok(no_data(
-            ctx,
-            brief.as_of,
-            "source poisoning detection requires evidence scoring infrastructure (EVID-012)",
-        ))
+        let world = self.desk.world.get(ctx)?;
+        let fabric = world.evidence();
+        if fabric.is_empty() {
+            // An empty fabric is not a clean one: nothing was checked, and a
+            // finding of "no poisoning" would read as a source given a pass.
+            return Ok(no_data(
+                ctx,
+                brief.as_of,
+                "the evidence fabric holds no claims, so there is nothing to scan for poisoning",
+            ));
+        }
+        let findings = detect_poisoning(fabric, brief.as_of, &self.thresholds);
+        let implicated: std::collections::BTreeSet<&str> = findings
+            .iter()
+            .flat_map(|finding| finding.sources.iter().map(String::as_str))
+            .collect();
+        let (direction, conviction, claim) = if findings.is_empty() {
+            (
+                Direction::Neutral,
+                0.0,
+                format!(
+                    "{} claim(s) from {} source(s) scanned; no poisoning pattern found",
+                    fabric.len(),
+                    fabric.sources().len()
+                ),
+            )
+        } else {
+            (
+                Direction::Negative,
+                1.0,
+                format!(
+                    "{} poisoning finding(s) implicating {} source(s): {}",
+                    findings.len(),
+                    implicated.len(),
+                    findings
+                        .iter()
+                        .map(|finding| finding.class.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+        };
+        let evidence = findings
+            .iter()
+            .map(|finding| {
+                format!(
+                    "poisoning:{}:{}: {}",
+                    finding.class.as_str(),
+                    finding
+                        .sources
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    finding.evidence
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut builder = FindingBuilder::new(ctx, brief.as_of, claim)
+            .direction(direction, conviction)
+            .fact(computed(
+                ctx,
+                "claims_scanned",
+                fabric.len() as f64,
+                "count",
+                &["evidence_fabric"],
+            ))
+            .fact(computed(
+                ctx,
+                "poisoning_findings",
+                findings.len() as f64,
+                "count",
+                &["evidence_fabric"],
+            ))
+            .caveats(vec![
+                "sees only claims the evidence fabric holds, bounded by its capacity".to_string(),
+            ]);
+        if !evidence.is_empty() {
+            builder = builder.evidence(evidence).falsifiers(vec![
+                "the implicated sources' later claims win the contests they enter".to_string(),
+            ]);
+        }
+        builder.build()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    //! The detector these tests used to describe does not exist. `analyse` is
-    //! a placeholder that reads the market and returns a no-view finding;
-    //! nothing constructs a `PoisoningFinding`, and no manifest in
-    //! `manifests.rs` or agent in the roster runs it. The three tests that
-    //! stood here built `PoisoningFinding` values by hand and asserted the
-    //! fields they had just set — they passed with `analyse` deleted. These
-    //! drive `analyse` through `AgentHost`, the way the organisation would,
-    //! and assert what it actually does. **Production gap**: coordinated-
-    //! campaign and contradicted-source detection (EVID-012 follow-on).
     use super::*;
+    use crate::desk::Desk;
     use crate::manifests;
-    use qip_agents::finding::{AgentBrief, FindingStatus};
-    use qip_agents::runtime::{AgentHost, RunStatus};
-    use qip_core::ids::AgentRunId;
-    use qip_core::lineage::{CorrelationId, Lineage};
-    use qip_core::time::{Duration, Timestamp};
-
-    /// The exact reason `analyse` gives. Compared by equality, not by a
-    /// substring, so a placeholder that changed its wording is noticed.
-    const REASON: &str =
-        "source poisoning detection requires evidence scoring infrastructure (EVID-012)";
+    use qip_agents::finding::FindingStatus;
+    use qip_agents::runtime::AgentHost;
+    use qip_core::{AgentRunId, CorrelationId, Duration, Lineage, Timestamp};
+    use qip_world_model::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
+    use qip_world_model::{EvidenceRecord, WorldModel};
 
     fn now() -> Timestamp {
-        Timestamp::from_secs(1_760_000_000)
+        Timestamp::from_secs(1_800_000_000)
     }
 
-    fn run(detector: &PoisoningDetector) -> qip_agents::runtime::AgentRunRecord {
+    fn claim(id: &str, source: &str, statement: &str) -> EvidenceRecord {
+        EvidenceRecord::new(
+            id.into(),
+            source.into(),
+            now(),
+            now(),
+            "test".into(),
+            "commercial".into(),
+            statement.into(),
+            0.9,
+        )
+        .unwrap()
+        .with_metadata(META_SUBJECT.into(), "ACME".into())
+        .with_metadata(META_ATTRIBUTE.into(), "event".into())
+        .with_metadata(META_VALUE.into(), "x".into())
+    }
+
+    fn run(world: WorldModel) -> AgentFinding {
+        let mut desk = Desk::empty(now());
+        desk.world = qip_agents::runtime::Gated::new(
+            world,
+            qip_agents::capability::Capability::ReadWorldModel,
+            "world-model",
+        );
+        let agent = PoisoningDetector::new(manifests::poisoning_detector(now()), Arc::new(desk));
         let brief = AgentBrief::new(
-            "is any source feeding the desk a coordinated campaign",
+            "are our sources being poisoned",
             now(),
             Duration::from_days(1),
         );
-        AgentHost::new(1).run(
-            detector,
+        let record = AgentHost::new(1).run(
+            &agent,
             &brief,
             now(),
-            Lineage::root(CorrelationId::from_string("cor-poison"), "test"),
-            AgentRunId::from_string("run-poison"),
-        )
+            Lineage::root(CorrelationId::from_string("cor-1"), "test"),
+            AgentRunId::from_string("run-1"),
+        );
+        record.finding.expect("the detector produced a finding")
     }
 
-    /// GAP PIN. Run through the host with a manifest that may read the
-    /// market, the detector succeeds and says it has no view, naming the
-    /// missing layer, with zero conviction. It never claims to have looked
-    /// for a campaign and found none.
-    ///
-    /// Mutation: replace `no_data(...)` in `analyse` with
-    /// `crate::support::out_of_scope(...)` — the status becomes `Deferred`
-    /// and the `NoView` assertion fires. Changing the reason text fails the
-    /// claim equality. Implementing real detection that returns a view also
-    /// fails it, which is intended: rewrite this test to the requirement.
+    /// The test that used to assert on two hand-built findings. Now the
+    /// agent runs the detector over a world model holding a real campaign.
     #[test]
-    fn the_poisoning_detector_reports_no_view_naming_its_missing_evidence_layer() {
-        let detector = PoisoningDetector::new(
-            manifests::macro_analyst(now()),
-            Arc::new(Desk::empty(now())),
-        );
-        let record = run(&detector);
+    fn a_coordinated_manipulation_campaign_across_sources_is_detected() {
+        let mut world = WorldModel::new();
+        let hashes = ["a".repeat(64), "b".repeat(64), "c".repeat(64)];
+        for (i, hash) in hashes.iter().enumerate() {
+            world
+                .absorb_evidence(
+                    claim(
+                        &format!("k{i}"),
+                        &format!("https://site{i}.example"),
+                        "Acme CEO arrested",
+                    ),
+                    Some(hash),
+                    now(),
+                )
+                .unwrap();
+        }
+        assert_eq!(world.evidence().len(), 3, "premise: the campaign is held");
+        let finding = run(world);
+        assert_eq!(finding.direction, Direction::Negative, "{finding:?}");
+        assert_eq!(finding.evidence.len(), 1, "{:?}", finding.evidence);
         assert!(
-            matches!(record.status, RunStatus::Succeeded),
-            "premise: the run was admitted and completed: {:?}",
-            record.status
+            finding.evidence[0].starts_with("poisoning:coordinated_manipulation:"),
+            "{:?}",
+            finding.evidence
         );
-        let finding = record.finding.expect("a completed run carries a finding");
-        assert_eq!(finding.status, FindingStatus::NoView);
-        assert_eq!(finding.claim, REASON);
-        assert!(qip_core::testing::is_exactly_zero(
-            finding.effective_conviction()
-        ));
     }
 
-    /// The placeholder's one live line is the market read, which goes through
-    /// the desk's capability gate. A manifest without `ReadMarketData` must
-    /// therefore not complete — proving the detector is a governed agent and
-    /// not a constant, and that the gate is not bypassed.
-    ///
-    /// Mutation: delete `let _market = self.desk.market.get(ctx)?;` from
-    /// `analyse` — the ungranted run then succeeds and the assertion fires.
     #[test]
-    fn the_poisoning_detector_cannot_run_without_the_market_read_grant() {
-        let granted = manifests::macro_analyst(now());
-        // Premise: the granted manifest really holds the capability, so the
-        // ungranted one below differs in exactly that respect.
-        assert!(
-            granted
-                .capabilities
-                .contains(qip_agents::capability::Capability::ReadMarketData)
+    fn a_clean_episode_with_no_poisoning_injected_produces_no_findings() {
+        let mut world = WorldModel::new();
+        for (i, text) in ["rate 1.10", "euro at one ten", "fixing 1.10"]
+            .iter()
+            .enumerate()
+        {
+            world
+                .absorb_evidence(
+                    claim(&format!("ok{i}"), &format!("https://s{i}.example"), text),
+                    None,
+                    now(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            world.evidence().len(),
+            3,
+            "premise: the fabric is not empty"
         );
-        let ungranted =
-            granted
-                .clone()
-                .with_capabilities(qip_agents::capability::CapabilitySet::of([
-                    qip_agents::capability::Capability::PublishHypothesis,
-                ]));
-        let detector = PoisoningDetector::new(ungranted, Arc::new(Desk::empty(now())));
-        let record = run(&detector);
-        assert!(
-            !matches!(record.status, RunStatus::Succeeded),
-            "a detector without the market grant completed: {:?}",
-            record.status
-        );
+        let finding = run(world);
+        assert_eq!(finding.direction, Direction::Neutral, "{finding:?}");
+        assert!(finding.evidence.is_empty(), "{:?}", finding.evidence);
+        assert_ne!(finding.status, FindingStatus::NoView);
+    }
+
+    #[test]
+    fn an_empty_fabric_is_reported_as_no_data_rather_than_as_clean() {
+        let finding = run(WorldModel::new());
+        assert_eq!(finding.status, FindingStatus::NoView, "{finding:?}");
     }
 }
