@@ -74,6 +74,10 @@ qip-reasoning-engine.workspace = true
 # Both workspace-internal; not third-party dependencies.
 qip-opportunity-engine.workspace = true
 qip-expansion.workspace = true
+# The outcome record's `Action` enum, matched to read each paper fill's
+# slippage into the tick-campaign detector (R12-EXPAND-6069). The kernel
+# holds the record and does not re-export the enum. Workspace-internal.
+qip-twin.workspace = true
 
 [dev-dependencies]
 # The campaign tests decode the closed-manifest record straight off the
@@ -84,6 +88,9 @@ qip-streaming.workspace = true
 # The operations tests build the router's typed quantum dispatch record, which
 # the kernel journals but does not re-export.
 qip-optimization-engine.workspace = true
+# The research tests build the evidence records a connector would forward,
+# to prove a poisoned feed in the world fabric reaches the research loop.
+qip-world-model.workspace = true
 
 [lints]
 workspace = true

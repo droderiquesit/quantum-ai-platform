@@ -22,16 +22,25 @@
 //! * [`promotion`] holds the four-environment campaign, the nine-criterion
 //!   evaluation, and the only road from closed research to a capability.
 //!
+//! * [`executor`] carries out a started item's acquisition, research only,
+//!   and — for the one campaign measurable from recorded fills — the
+//!   four-environment campaign and its nine-criterion evaluation;
+//! * [`meta`] is the Meta-Intelligence market that decides which work gets
+//!   the next unit of CPU, GPU, TPU or QPU by its marginal value, measures
+//!   what each unit realised, and retires work that stops yielding.
+//!
 //! Status: `qip-deepbrain`'s research loop holds an [`desk::ExpansionDesk`]
-//! and sweeps platform state into it every cycle. The promotion road has no
-//! production caller: nothing in the tree yet produces a nine-criterion
-//! evaluation, and inventing one to exercise the road would be the failure
-//! [`promotion`] exists to refuse.
+//! and a [`meta::MetaIntelligence`] and sweeps platform state into them
+//! every cycle; a fill-bias campaign that passes all nine criteria is
+//! concluded through [`desk::ExpansionDesk::conclude`]. Every other
+//! acquisition is recorded as not executable rather than faked.
 
 pub mod campaigns;
 pub mod curriculum;
 pub mod desk;
 pub mod detectors;
+pub mod executor;
 pub mod gap;
+pub mod meta;
 pub mod plan;
 pub mod promotion;

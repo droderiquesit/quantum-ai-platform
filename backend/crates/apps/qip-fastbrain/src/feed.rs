@@ -575,6 +575,18 @@ impl Feed {
         }
         Ok(batch)
     }
+
+    /// The checked evidence the connector arm released since the last call,
+    /// for `Platform::absorb_evidence` (R12-EVID-2031). Empty for every other
+    /// arm: a synthetic, replayed or tape record is not a claim anybody made.
+    pub fn drain_evidence(
+        &mut self,
+    ) -> Vec<qip_market_ingestion::connector::evidence::CheckedEvidence> {
+        match self {
+            Self::Connector { feed, .. } => feed.drain_evidence(),
+            Self::Synthetic(_) | Self::Replay(_) | Self::Tape(_) | Self::Live(_) => Vec::new(),
+        }
+    }
 }
 
 /// Where every catalogued source stands, one banner line each.

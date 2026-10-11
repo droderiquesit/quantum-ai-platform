@@ -343,6 +343,8 @@ dependencies = [
  "qip-streaming",
  "qip-training",
  "qip-transport",
+ "qip-twin",
+ "qip-world-model",
  "serde",
  "serde_json",
 ]
@@ -458,6 +460,7 @@ dependencies = [
  "qip-contracts",
  "qip-core",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -791,6 +794,7 @@ version = "0.1.0"
 dependencies = [
  "qip-agents",
  "qip-ai",
+ "qip-contracts",
  "qip-core",
  "qip-numerics",
  "qip-transport",

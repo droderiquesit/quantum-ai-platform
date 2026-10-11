@@ -46,6 +46,7 @@ pub mod counterfactual_trial;
 pub mod cross_margin;
 pub mod cycle;
 pub mod decision_record;
+pub mod evidence_intake;
 pub mod exploration;
 pub mod fabric_declaration;
 pub mod falsification;

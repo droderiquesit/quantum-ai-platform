@@ -447,6 +447,19 @@ impl ResearchQueue {
     /// Start the highest-ranked eligible items the budget covers and defer the
     /// rest by name. A blocked or already started item is not eligible.
     pub fn schedule(&mut self, budget: Budget) -> Result<Round> {
+        self.schedule_within(budget, None)
+    }
+
+    /// [`Self::schedule`], starting only items named in `allowed` when it is
+    /// given: the Meta-Intelligence market's grant (`meta.rs`). An eligible
+    /// item it did not grant is deferred with that reason rather than
+    /// started on the curriculum's rank alone, so the market's decision is
+    /// the one that holds and not a second opinion beside it.
+    pub fn schedule_within(
+        &mut self,
+        budget: Budget,
+        allowed: Option<&std::collections::BTreeSet<String>>,
+    ) -> Result<Round> {
         if budget.compute.is_negative() || budget.capital.is_negative() {
             return Err(Error::invalid(
                 "an expansion budget cannot be negative; state zero to start nothing",
@@ -468,6 +481,13 @@ impl ResearchQueue {
             else {
                 continue;
             };
+            if allowed.is_some_and(|granted| !granted.contains(&question)) {
+                entry.state = State::Deferred {
+                    reason: "the compute market granted it no unit this round".to_string(),
+                };
+                round.deferred.push(question);
+                continue;
+            }
             let (cost, hold) = (entry.score.compute_data_cost, entry.item.budget);
             match (compute.checked_sub(cost), capital.checked_sub(hold)) {
                 (Some(c), Some(k)) if !c.is_negative() && !k.is_negative() => {

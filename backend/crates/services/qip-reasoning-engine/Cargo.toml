@@ -24,6 +24,10 @@ qip-transport.workspace = true
 # type here would be one a caller has to convert, wrongly, at the seam. In-tree
 # and already reached through `qip-world-model`, so no new crate is reachable.
 qip-numerics.workspace = true
+# The §27 contracts the Cognitive Compiler produces (`compiler.rs`): the
+# SymbolicDerivation it formalises a discovery as and the ReflexPackage it
+# distils it into. Workspace-internal; a lib, so an inward edge.
+qip-contracts.workspace = true
 
 [lints]
 workspace = true

@@ -850,7 +850,7 @@ pub struct Platform {
     /// 0.36 against a 0.50 bar. No running binary had ever produced an order,
     /// and the reason was a cold copy, not a control. The platform writes
     /// between cycles, in `observe`, and never while a dispatch is reading.
-    world: Upstream<WorldModel>,
+    pub(crate) world: Upstream<WorldModel>,
     /// The market view the agents read through the desk's `read_market_data`
     /// gate — the snapshot [`Platform::observe`] applies every bar, quote,
     /// trade and book to, beside the reference universe.

@@ -546,6 +546,13 @@ fn run() -> Result<()> {
     // this is the one brain that can reach the vendor its manifest names
     // (ADR 0024). None in every environment today.
     let mut connector_banner = Vec::new();
+    // What the tick lake may keep per licensing class, when the operator has
+    // read the terms and said so; unset, no arm captures. Read before any
+    // arm opens so a malformed value stops the process with nothing to
+    // release.
+    let tick_lake =
+        qip_deepbrain::connectors::TickLakeSettings::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
     if let Some(settings) = &config.connector_feed {
         let registrations = platform
             .config()
@@ -582,6 +589,26 @@ fn run() -> Result<()> {
                     ));
                 }
             };
+            // The lake the arm seals its released market events into, one
+            // writer per arm over the node's one lake namespace. A store
+            // that cannot be opened releases what is open, like the journal
+            // failure below.
+            if let Some(lake) = &tick_lake {
+                match config
+                    .storage
+                    .blobs(qip_storage::lake::LAKE_NAMESPACE)
+                    .and_then(|store| lake.writer(store))
+                {
+                    Ok(writer) => arm = arm.with_tick_lake(writer),
+                    Err(error) => {
+                        let release = fold_releases(
+                            arm.shutdown(clock.now()),
+                            evolution.shutdown_connectors(clock.now()),
+                        );
+                        return Err(with_release(configuration(error), release));
+                    }
+                }
+            }
             let journaled = config
                 .storage
                 .key_value(StreamJournal::NAMESPACE)
@@ -606,8 +633,18 @@ fn run() -> Result<()> {
                 }
             };
             connector_banner.push(format!(
-                "  connector:        {}; {}",
+                "  connector:        {}; evidence forwarded to the world fabric every poll; {}; {}",
                 arm.describe(),
+                match &tick_lake {
+                    Some(lake) => format!(
+                        "ticks sealed into the lake for {:?}",
+                        lake.retention.keys().collect::<Vec<_>>()
+                    ),
+                    None => format!(
+                        "no tick lake ({} unset)",
+                        qip_deepbrain::connectors::TICK_LAKE_RETENTION_VARIABLE
+                    ),
+                },
                 match resumed {
                     0 => "nothing resumed, so this is a first session (or the last checkpoint \
                           carried nothing) and the next poll republishes whatever the source \
@@ -645,16 +682,36 @@ fn run() -> Result<()> {
             "disabled (QIP_DEEPBRAIN_RESEARCH_EVERY=0)".to_string()
         } else {
             format!(
-                "every {} cycle(s) under jurisdiction {}, {} compute unit(s) a sweep; outputs \
-                 advisory, nothing promoted",
+                "every {} cycle(s) under jurisdiction {}; the compute market grants {} CPU and \
+                 {} GPU unit(s) and {} QPU unit(s) a sweep by marginal value (a QPU unit only \
+                 with its classical baseline); {} bp of information acquisitions a sweep in \
+                 curiosity-rank order; capabilities paper and shadow only",
                 research_config.every_cycles,
                 research_config.jurisdiction,
-                research_config.compute_per_sweep
+                research_config.compute_per_sweep,
+                research_config.compute_per_sweep,
+                research_config.qpu_per_sweep,
+                research_config.acquisition_budget_bp
             )
         }
     );
+    // Reflex packages the Cognitive Compiler distils from promoted research
+    // are published here only once signed. No signer is installed: ADR
+    // 0110's KMS signer is a separate lane, and the in-tree alternative — an
+    // HMAC under a seed-derived key — is the defect W1.4 exists to remove.
+    // Until it lands every package is compiled, counted as `held_unsigned`,
+    // and written nowhere.
     let mut research =
-        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?;
+        qip_deepbrain::research::ResearchLoop::new(research_config, research_coverage)?
+            .with_package_store(
+                config
+                    .storage
+                    .blobs(qip_deepbrain::research::REFLEX_PACKAGES_NAMESPACE)?,
+            );
+    println!(
+        "  compiler:         promoted research is distilled into bounded reflex packages; no \
+         package signer is installed, so packages are held unsigned and none is published"
+    );
     let mut operations = qip_deepbrain::operations::Operations::new(started)?;
     println!(
         "  operations:       level shifts in iteration time open an incident; the one runbook \

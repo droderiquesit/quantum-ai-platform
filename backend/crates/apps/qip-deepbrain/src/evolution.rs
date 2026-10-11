@@ -3469,4 +3469,97 @@ mod tests {
     fn engine_with_every(every: u64) -> EvolutionEngine {
         engine(every)
     }
+
+    /// A vendor's print reaches the world model's evidence fabric through the
+    /// node's own poll (R12-EVID-2031, 2039). The audit's finding was that
+    /// `drain_evidence` had no caller, so the fabric the poisoning detector
+    /// reads was empty in every binary; the premise below is that finding.
+    ///
+    /// Mutated by deleting the `platform.absorb_evidence(..)` line in
+    /// `ConnectorArm::poll` — `evidence_held` stays 0 and the arm's
+    /// `last_evidence` reports nothing admitted, so both assertions fail.
+    #[test]
+    fn a_connector_poll_forwards_its_checked_evidence_into_the_world_fabric() -> Result<()> {
+        let mut platform = platform()?;
+        assert_eq!(
+            platform.evidence_held(),
+            0,
+            "premise: the world fabric holds nothing before a connector is polled"
+        );
+        let subject = ObjectId::from_string("BTC-USD");
+        let now = start().saturating_add(Duration::from_mins(1));
+        let mut engine = engine(1).with_connector(coinbase_arm(&subject, now)?);
+
+        engine.sense(&mut platform, now)?;
+
+        assert!(
+            platform.evidence_held() >= 1,
+            "the poll's evidence never reached the world fabric"
+        );
+        let arm = engine
+            .connectors()
+            .first()
+            .ok_or_else(|| Error::not_found("the arm"))?;
+        assert!(
+            arm.last_evidence().admitted >= 1,
+            "{:?}",
+            arm.last_evidence()
+        );
+        Ok(())
+    }
+
+    /// A released print is sealed into the tick lake at shutdown when the
+    /// operator has granted its licensing class a retention right, and the
+    /// lake receives nothing when no right was granted — the second half is
+    /// what distinguishes a policy from a writer that keeps everything.
+    ///
+    /// Mutated by deleting the `flush_tick_lake` call from
+    /// `ConnectorArm::shutdown` — the batch of 512 is never reached by one
+    /// print, nothing is sealed, and the first assertion fails.
+    #[test]
+    fn an_arm_with_a_tick_lake_seals_what_it_released_only_under_a_granted_right() -> Result<()> {
+        use crate::connectors::TickLakeSettings;
+        use qip_storage::{BlobStore, MemoryBlobStore};
+        let subject = ObjectId::from_string("BTC-USD");
+        let now = start().saturating_add(Duration::from_mins(1));
+        let entitlement = format!(
+            "{:?}",
+            qip_market_ingestion::connectors::CoinbaseTickerConnector::shipped_manifest()?
+                .licensing
+        )
+        .to_ascii_lowercase();
+
+        let sealed = |granted: &str| -> Result<usize> {
+            let lookup = |name: &str| {
+                (name == crate::connectors::TICK_LAKE_RETENTION_VARIABLE)
+                    .then(|| format!("{granted}=canonical"))
+            };
+            let settings = TickLakeSettings::from_lookup(&lookup)?
+                .ok_or_else(|| Error::not_found("settings"))?;
+            let store = std::sync::Arc::new(MemoryBlobStore::new());
+            let mut platform = platform()?;
+            let mut arm =
+                coinbase_arm(&subject, now)?.with_tick_lake(settings.writer(store.clone())?);
+            let delivered = arm.poll(&mut platform, now)?;
+            assert!(!delivered.is_empty(), "premise: the arm released a print");
+            arm.shutdown(now)?;
+            Ok(store.list("")?.len())
+        };
+
+        assert!(
+            sealed(&entitlement)? >= 1,
+            "a granted class sealed nothing into the lake"
+        );
+        let other = if entitlement == "restricted" {
+            "public"
+        } else {
+            "restricted"
+        };
+        assert_eq!(
+            sealed(other)?,
+            0,
+            "a class with no granted right was kept anyway"
+        );
+        Ok(())
+    }
 }

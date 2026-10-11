@@ -288,9 +288,22 @@ pub fn unexplained_residuals(
                     GapTrigger::UnexplainedPnl,
                     // The twin that predicted the fill is the model missing.
                     Wanting::Model,
-                    format!("fills at `{subject}` miss the twin by {mean:.1} bps on average over {n} fill(s), past {threshold_bps:.1}"),
+                    // The measurement rides in the evidence and the text
+                    // stays fixed: the text is the research question, and a
+                    // question that changed with every sweep's mean was a
+                    // new item each sweep while the item started on the
+                    // last one went quiet — a campaign could never reach
+                    // its paper stage on a question that kept renaming
+                    // itself.
+                    format!(
+                        "fills at `{subject}` miss the twin past {threshold_bps:.1} bps on average"
+                    ),
                     "execution",
-                    vec![format!("fill_scores:{subject}")],
+                    vec![
+                        format!("fill_scores:{subject}"),
+                        format!("mean_abs_bps:{mean:.1}"),
+                        format!("fills:{n}"),
+                    ],
                     (mean / (10.0 * threshold_bps)).min(1.0),
                 )
             })
