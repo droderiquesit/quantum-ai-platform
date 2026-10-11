@@ -394,6 +394,25 @@ impl Producer {
     /// batch — offset zero, archive empty — was reported archive-safe before
     /// any segment had been sealed, and every later one a segment early.
     fn await_ack_profile(&mut self, ack: ProduceAck) -> Result<ProduceAck> {
+        // ADR 0111: a managed-majority producer accepts only an answer the
+        // managed consensus committed. A broker running the stream on its
+        // own disk answers without the epoch, and that answer is refused
+        // rather than taken for "survives a zone" — the producer keeps the
+        // batch in its spool and the mismatch is named.
+        if matches!(self.ack_profile, AckProfile::ManagedMajority) {
+            if ack.managed_commit_epoch().is_none() {
+                return Err(Error::denied(format!(
+                    "produce to {}:{} was acknowledged at offset {} without a managed commit, \
+                     and this producer requires managed_majority (ADR 0111); the broker is \
+                     running the stream on one disk. Keep the batch and fix the broker's \
+                     managed-log configuration or the stream's declaration",
+                    self.stream,
+                    self.partition,
+                    ack.base_offset()
+                )));
+            }
+            return Ok(ack);
+        }
         if !matches!(self.ack_profile, AckProfile::Archived)
             || ack.archived_through() > ack.base_offset()
         {

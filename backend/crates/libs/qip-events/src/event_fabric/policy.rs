@@ -6,7 +6,9 @@
 //! a broker default, and FABRIC-049 adds the per-producer quotas and lag
 //! limit. `StreamPolicy` has no `Default` and its only constructor,
 //! [`StreamPolicy::new`], refuses a value that is present but wrong — a
-//! replication factor besides one, a mirroring policy besides none, an
+//! replication claim no mechanism honours (anything but RF1, except a P0 or
+//! P1 stream committed to the managed consensus at RF3, ADR 0111), a
+//! mirroring policy besides none, an
 //! acknowledgement profile weaker than its class's floor — rather than a
 //! value that is merely absent, which is [`crate::event_fabric::catalogue`]'s
 //! job: it parses a committed catalogue's text form, where a field can be
@@ -175,14 +177,48 @@ pub enum AckProfile {
     /// failure the rename removes: a reader of a P1 policy saw "quorum" and
     /// reasoned about surviving a broker loss that nothing guarded against.
     ///
-    /// Serialised as `archived`. The old spelling `quorum` is still read, as
-    /// this variant, so a stored policy or committed catalogue written before
-    /// the rename keeps loading; nothing writes it any more. When replication
-    /// with majority acknowledgement exists, it gets a new variant above this
-    /// one rather than re-using either name.
-    #[serde(alias = "quorum")]
+    /// Serialised as `archived`. The old spelling `quorum` is **not** read as
+    /// this variant any more (FABRIC-8086, R2.9): reading a word that promises
+    /// a replica majority as one disk and an archive copy was the INCORRECT
+    /// verdict itself, carried forward by a compatibility alias. `quorum` now
+    /// means what it says and is read as [`Self::ManagedMajority`], which
+    /// [`StreamPolicy::new`] admits only on a stream whose replication can
+    /// honour a majority — so an old catalogue that wrote `quorum` on a
+    /// replication-factor-one stream is refused by name rather than loaded
+    /// as something weaker than it claims.
     Archived,
+    /// ADR 0111 §1: the batch was committed by a Spanner read-write
+    /// transaction, under the partition's leadership lease, before the
+    /// producer was answered. A Spanner commit is a Paxos write acknowledged
+    /// by a majority of a regional instance's three read-write replicas in
+    /// three zones, so an acknowledged record survives the loss of a broker,
+    /// a disk or a zone. That is the property FABRIC-7035 and FABRIC-8086
+    /// name, bought rather than built (ADR 0100's refusal of in-tree
+    /// replication stands).
+    ///
+    /// Admitted only for P0 and P1 at [`MANAGED_REPLICATION_FACTOR`]
+    /// (ADR 0111 §3). Above [`Self::Archived`] in the order: an answer that
+    /// survives a zone is stronger than one that survives the broker's own
+    /// disk via an archive copy. Serialised `managed_majority`; the
+    /// pre-rename `quorum` is read as this variant and nothing else.
+    #[serde(alias = "quorum")]
+    ManagedMajority,
 }
+
+impl AckProfile {
+    /// Whether this acknowledgement is a replicated (majority) one, so a
+    /// stream declaring it must declare the replication that backs it.
+    pub const fn is_replicated(&self) -> bool {
+        matches!(self, Self::ManagedMajority)
+    }
+}
+
+/// The replication factor a [`AckProfile::ManagedMajority`] stream declares:
+/// a regional Spanner instance's three read-write replicas, one per zone
+/// (ADR 0111 §1). A managed stream declaring any other number is refused —
+/// the declaration is a claim about where the record lives, and a claim the
+/// mechanism does not match is FABRIC-8086's INCORRECT verdict again.
+pub const MANAGED_REPLICATION_FACTOR: u32 = 3;
 
 /// FABRIC-057's declared ordering semantics.
 ///
@@ -197,9 +233,9 @@ pub enum Ordering {
     PerPartition,
 }
 
-/// ADR 0100 §3: replication and mirroring are both refused down to a single
-/// value today, because consensus (C2) and a mirror target (C8) are both
-/// unbuilt. The rejected variants still exist so a catalogue can *state*
+/// ADR 0100 §3 and ADR 0111 §4: mirroring is refused down to a single value
+/// today, because a mirror target (C8) is unbuilt and ADR 0111 left
+/// cross-region placement to ADR 0113. The rejected variants still exist so a catalogue can *state*
 /// what it wants and be refused by name, rather than the concept having no
 /// representation to refuse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,7 +382,8 @@ pub struct StreamPolicySpec {
 ///
 /// Every field is mandatory and there is no `Default`. [`StreamPolicy::new`]
 /// is the only constructor, and it is where a value that is present but
-/// wrong is refused: a replication factor besides one (ADR 0100 §3, C2), a
+/// wrong is refused: a replication factor besides one unless the stream is a
+/// P0 or P1 stream acknowledged `managed_majority` at RF3 (ADR 0111 §3), a
 /// mirroring policy besides none (C8), and an acknowledgement profile weaker
 /// than the class's floor (FABRIC-067). `seal_age_ms` and
 /// `peak_bytes_per_second` are the single source of seal cadence and peak
@@ -377,13 +414,37 @@ impl StreamPolicy {
                 "a stream policy must name a non-empty partition key",
             ));
         }
-        // ADR 0100 §3: in-tree replication with in-sync replicas was
-        // proposed and rejected as "ADR 0009's mistake wearing different
-        // clothes"; replication waits for C2's consensus record, so RF1 is
-        // the only value this build can honestly run.
-        if spec.replication_factor != 1 {
+        // ADR 0111 §3 resolves C2 for P0 and P1 only: their batches may be
+        // committed to Spanner before acknowledgement, and that — and only
+        // that — is what a replication factor above one may claim. Every
+        // other stream stays RF1: ADR 0100 §3's refusal of in-tree
+        // replication is kept, and a policy that said RF3 while one disk held
+        // the data is FABRIC-8086's INCORRECT verdict.
+        if spec.ack_profile.is_replicated() {
+            if !matches!(spec.qos_class, QosClass::P0Control | QosClass::P1Outcomes) {
+                return Err(Error::denied(format!(
+                    "ack profile {:?} is refused for {} (ADR 0111 §2): only P0 control and P1 \
+                     outcomes are committed to the managed consensus; P2 to P4 stay at \
+                     replication factor one and no mechanism honours a replicated \
+                     acknowledgement for them",
+                    spec.ack_profile,
+                    spec.qos_class.as_str()
+                )));
+            }
+            if spec.replication_factor != MANAGED_REPLICATION_FACTOR {
+                return Err(Error::denied(format!(
+                    "replication factor {} is refused for a managed_majority stream: the \
+                     managed consensus is a regional Spanner instance's \
+                     {MANAGED_REPLICATION_FACTOR} read-write replicas, so declare \
+                     {MANAGED_REPLICATION_FACTOR} (ADR 0111 §1)",
+                    spec.replication_factor
+                )));
+            }
+        } else if spec.replication_factor != 1 {
             return Err(Error::denied(format!(
-                "replication factor {} is refused (C2): the fabric has no consensus record yet and can only run at replication factor one",
+                "replication factor {} is refused (C2): only a P0 or P1 stream acknowledged \
+                 managed_majority is replicated (ADR 0111); every other stream runs on one \
+                 broker at replication factor one",
                 spec.replication_factor
             )));
         }
@@ -478,5 +539,13 @@ impl StreamPolicy {
     /// from [`Self::retention`].
     pub const fn archive_required(&self) -> bool {
         self.retention.archive_required()
+    }
+
+    /// Whether this stream's batches are committed to the managed consensus
+    /// before a producer is answered (ADR 0111 §1). Derived from the
+    /// acknowledgement profile rather than carried as a second field: two
+    /// declarations of one fact are two claims that can disagree.
+    pub const fn is_managed(&self) -> bool {
+        self.ack_profile.is_replicated()
     }
 }

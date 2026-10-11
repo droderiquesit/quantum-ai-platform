@@ -36,6 +36,10 @@ pub struct Health {
     /// is. A catalogue the broker refused changes nothing about who may do
     /// what, and this is where an operator finds out it was refused.
     catalogue_error: Mutex<Option<String>>,
+    /// The last lease pass, for a broker seated at the managed consensus
+    /// (ADR 0111): partitions led, followed and failed, and the first
+    /// failure. `None` on the local fabric, where there are no leases.
+    leases: Mutex<Option<serde_json::Value>>,
 }
 
 fn set(slot: &Mutex<Option<String>>, value: Option<String>) {
@@ -55,7 +59,27 @@ impl Health {
             archive_passes: AtomicU64::new(0),
             archive_error: Mutex::new(None),
             catalogue_error: Mutex::new(None),
+            leases: Mutex::new(None),
         }
+    }
+
+    /// Record one lease pass. A partition this instance cannot tend is named
+    /// here, because from outside it looks like a P0/P1 producer being
+    /// refused with nothing near the producer saying why.
+    pub fn lease_pass(
+        &self,
+        report: &qip_core::Result<qip_streaming::event_fabric::broker::LeaseReport>,
+    ) {
+        let body = match report {
+            Ok(report) => serde_json::json!({
+                "leading": report.leading.len(),
+                "following": report.following.len(),
+                "failed": report.failed.len(),
+                "first_failure": report.failed.values().next(),
+            }),
+            Err(error) => serde_json::json!({ "error": error.to_string() }),
+        };
+        *self.leases.lock().unwrap_or_else(|e| e.into_inner()) = Some(body);
     }
 
     pub fn storage_proven(&self) {
@@ -119,6 +143,7 @@ impl Health {
             "archive_passes": self.archive_passes(),
             "archive_error": get(&self.archive_error),
             "catalogue_error": get(&self.catalogue_error),
+            "leases": self.leases.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         });
         Response::json(if ready { 200 } else { 503 }, body.to_string())
     }

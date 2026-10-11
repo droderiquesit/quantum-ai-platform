@@ -128,14 +128,14 @@ fn catalogue_json(grants: &[(&str, &str, &str, &str)], journal_ack: &str) -> Str
             "p0_control",
             "irreplaceable",
             "refuse_producer",
-            "quorum",
+            "archived",
         ),
         stream_json(
             OUTCOMES,
             "p1_outcomes",
             "irreplaceable",
             "refuse_producer",
-            "quorum",
+            "archived",
         ),
         stream_json(
             JOURNAL,

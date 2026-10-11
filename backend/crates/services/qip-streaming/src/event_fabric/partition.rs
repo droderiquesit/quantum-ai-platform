@@ -238,6 +238,31 @@ impl PartitionLog {
             .collect()
     }
 
+    /// Every sealed segment as `(start, end)` — `end` exclusive — ascending,
+    /// with whether it is archived: what retention reads to decide which
+    /// local copies it may delete.
+    pub fn sealed_segments(&self) -> Result<Vec<(u64, u64, bool)>> {
+        let mut out = Vec::new();
+        for summary in self.log.segments() {
+            if summary.sealed {
+                out.push((
+                    summary.start_offset,
+                    summary.end_offset,
+                    self.log.is_archived(summary.start_offset)?,
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Delete the local copy of every sealed segment ending at or before
+    /// `boundary_offset` that the segment log's own rule allows (an
+    /// archive-required stream only loses archived segments). See
+    /// [`SegmentLog::retain_before`].
+    pub fn retain_before(&self, boundary_offset: u64) -> Result<u64> {
+        Ok(self.log.retain_before(boundary_offset)?.deleted.len() as u64)
+    }
+
     /// How many batches the active, not yet sealed segment holds.
     pub fn active_batches(&self) -> u64 {
         self.log
