@@ -84,6 +84,17 @@ env:
   # The automatic path goes to dev and nowhere else.
   TARGET_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
   DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  # The one environment whose registry every platform image is built into
+  # (R12 CICD-9097, CICD-9112). A commit is built once, there, by the
+  # automatic path; a dispatch for test, stage or prod finds that digest,
+  # scans it again and attests it with the target environment's own
+  # attestor — and never builds. Each environment used to build into its
+  # own `qip-<env>`, so every environment ran different bytes from the ones
+  # the environment before it tested, and Kargo promoted a digest into a
+  # registry that had never held it. A literal rather than a repository
+  # variable, for the reason the identity steps give; the registry's
+  # project and region are read from this environment's committed tfvars.
+  BUILD_ENVIRONMENT: dev
 
 jobs:
   # The gate. Everything else needs this job, so a failure here stops the
@@ -225,6 +236,47 @@ jobs:
           fi
           echo "ci succeeded for ${DEPLOY_SHA}"
 
+      # Static analysis passed, in the ci run being trusted (R12 CICD-9105).
+      # `ci.yml` calls CodeQL as its `sast` job, so ci's success already
+      # implies it — for a ci.yml that has the job. A commit from before it
+      # did has a successful ci run with no analysis in it, and "ci passed"
+      # would wave that commit through with SAST never having run. So the
+      # jobs are read by name: at least one `sast / …` job, and every one of
+      # them `success`. Zero is a refusal, not a pass.
+      - name: static analysis passed in that ci run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          THIS_REPOSITORY: ${{ github.repository }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          run_id="${TRIGGER_RUN_ID:-}"
+          if [ -z "$run_id" ]; then
+            run_id=$(gh api \
+              "repos/${THIS_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${DEPLOY_SHA}&status=success" \
+              --jq '.workflow_runs[0].id // empty')
+          fi
+          case "$run_id" in
+            ''|*[!0-9]*)
+              echo "no ci run id to read the static analysis from for ${DEPLOY_SHA}; nothing is deployed." >&2
+              exit 1
+              ;;
+          esac
+          conclusions=$(gh api --paginate \
+            "repos/${THIS_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+            --jq '.jobs[] | select(.name | startswith("sast / ")) | .conclusion')
+          if [ -z "$conclusions" ]; then
+            echo "ci run ${run_id} ran no static analysis (no 'sast / ...' job); nothing is deployed." >&2
+            echo "Re-run ci on a commit whose ci.yml calls CodeQL, then deploy that commit." >&2
+            exit 1
+          fi
+          if printf '%s\n' "$conclusions" | grep -qv '^success$'; then
+            echo "static analysis in ci run ${run_id} did not succeed:" >&2
+            printf '%s\n' "$conclusions" >&2
+            exit 1
+          fi
+          echo "static analysis succeeded in ci run ${run_id} for ${DEPLOY_SHA}"
+
   # One image per deployed artefact. Four of the five are workspace binaries
   # built from the one Dockerfile, so those four cannot drift apart.
   #
@@ -363,6 +415,29 @@ jobs:
             exit 1
           fi
           ring="qip-${TARGET_ENVIRONMENT}"
+
+          # The build registry, from the build environment's committed tfvars
+          # and under the same refusals: the one repository every platform
+          # image is built into and promoted from. `modules/registry` names
+          # it qip-<env>, and grants the later environments' CI accounts and
+          # Cloud Run agents read on it through `registry_promotion_readers`.
+          build_tfvars="infrastructure/environments/${BUILD_ENVIRONMENT}/terraform.tfvars"
+          [ -f "$build_tfvars" ] || { echo "no tfvars at $build_tfvars" >&2; exit 1; }
+          build_project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$build_tfvars" | head -1)"
+          build_region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$build_tfvars" | head -1)"
+          [ -n "$build_region" ] || build_region="europe-west2"
+          case "$build_project" in
+            ''|unprovisioned|*[!a-z0-9-]*)
+              echo "$build_tfvars names no provisioned project ('$build_project'); there is no build registry to build into or promote from." >&2
+              exit 1
+              ;;
+          esac
+          case "$build_region" in
+            *[!a-z0-9-]*)
+              echo "$build_tfvars names a region containing a character a region cannot: '$build_region'" >&2
+              exit 1
+              ;;
+          esac
           {
             echo "project=$project"
             echo "region=$region"
@@ -370,6 +445,8 @@ jobs:
             echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
             echo "attestor=${ring}-build"
             echo "key_version=projects/$project/locations/$region/keyRings/$ring/cryptoKeys/${ring}-attestor/cryptoKeyVersions/1"
+            echo "registry_host=${build_region}-docker.pkg.dev"
+            echo "registry=${build_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}"
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
@@ -383,7 +460,7 @@ jobs:
           install_components: beta
 
       - name: let docker push to artifact registry
-        run: gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
+        run: gcloud auth configure-docker "${{ steps.identity.outputs.registry_host }}" --quiet
 
       # Whether the registry already holds this commit's image.
       #
@@ -410,7 +487,7 @@ jobs:
         id: existing
         run: |
           set -euo pipefail
-          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${{ steps.identity.outputs.registry }}"
           digest="$(gcloud artifacts docker images describe \
             "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
             --format='value(image_summary.digest)' 2>/dev/null || true)"
@@ -420,6 +497,22 @@ jobs:
             echo "${{ matrix.binary }}:${DEPLOY_SHA} is not in the registry; building it."
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # A promotion never rebuilds (R12 CICD-9112). Only the build
+      # environment's run may produce bytes; a dispatch for any other
+      # environment attests the digest the build environment's run already
+      # pushed, or stops here. Rebuilding would hand test, stage or prod an
+      # image nobody tested — a second build of one commit is a second set
+      # of bytes unless the reproducibility step below has proved otherwise
+      # for that commit, and it has only ever proved it in the build run.
+      - name: a promotion attests the image built once and never builds one
+        if: steps.existing.outputs.digest == '' && env.TARGET_ENVIRONMENT != env.BUILD_ENVIRONMENT
+        run: |
+          set -euo pipefail
+          echo "${{ matrix.binary }}:${DEPLOY_SHA} is not in the build registry ${{ steps.identity.outputs.registry }}." >&2
+          echo "${TARGET_ENVIRONMENT} is promoted the digest ${BUILD_ENVIRONMENT} built, never a build of its own." >&2
+          echo "Let the ${BUILD_ENVIRONMENT} run for ${DEPLOY_SHA} finish, then dispatch this again." >&2
+          exit 1
 
       # Labelled with the commit it was built from and the repository it came
       # from, in the OCI names Kargo and a person both read. The Dockerfile
@@ -439,25 +532,87 @@ jobs:
       # about an argument no stage consumes. The branch is on whether the
       # matrix named a Dockerfile rather than on the image's name: a `case`
       # on `qip-portal` would be a second place the list of images lives.
+      #
+      # `SOURCE_DATE_EPOCH` is the commit's own timestamp, never the clock's
+      # (R12 CICD-9097). It was `$(date +%s)`, so two builds of one commit
+      # embedded two different times and could never share a digest — the
+      # pipeline's own input guaranteed the build was not reproducible.
+      # BuildKit takes the build argument as the image's creation time, and
+      # `rewrite-timestamp=true` clamps every file's mtime in every layer to
+      # it, so neither the checkout's time nor the build's reaches the bytes.
+      # Both shapes receive it; it is not a cargo-only concern.
       - name: build
-        if: steps.existing.outputs.digest == ''
+        id: build
+        if: steps.existing.outputs.digest == '' && env.TARGET_ENVIRONMENT == env.BUILD_ENVIRONMENT
         run: |
           set -euo pipefail
-          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${{ steps.identity.outputs.registry }}"
+          epoch="$(git log -1 --format=%ct "${DEPLOY_SHA}")"
+          case "$epoch" in
+            ''|*[!0-9]*)
+              echo "the commit time of ${DEPLOY_SHA} is not a number of seconds: '$epoch'" >&2
+              exit 1
+              ;;
+          esac
+          echo "epoch=$epoch" >> "$GITHUB_OUTPUT"
           dockerfile="${{ matrix.dockerfile }}"
           context="${{ matrix.context }}"
-          recipe=()
+          recipe=(--build-arg "SOURCE_DATE_EPOCH=${epoch}")
           if [ -n "${dockerfile}" ]; then
             recipe+=(--file "${dockerfile}")
           else
-            recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}" --build-arg "SOURCE_DATE_EPOCH=$(date +%s)")
+            recipe+=(--file infrastructure/docker/Dockerfile --build-arg "BINARY=${{ matrix.binary }}")
           fi
-          docker build \
+          docker buildx build \
             "${recipe[@]}" \
+            --output "type=docker,rewrite-timestamp=true" \
             --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
             --tag "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
             "${context:-.}"
+
+      # The check R12 CICD-9097 asks for: build the commit a second time,
+      # from nothing cached, and require the same image. A build that is not
+      # reproducible cannot be verified against its source — nobody can
+      # rebuild the commit and arrive at the bytes that ran — so a mismatch
+      # stops the line here, before anything is pushed, rather than being
+      # discovered by an auditor. The comparison is the image id, which is
+      # the digest of the image's configuration and therefore of every
+      # layer's content; the label and the tag are identical by
+      # construction and do not hide a difference.
+      #
+      # The workspace binaries only, and the exception is stated rather than
+      # hidden: `qip-portal` is a Next.js build, and Next stamps every build
+      # with a random build id unless `generateBuildId` is pinned, which
+      # `frontend/portal` does not do. Running this against it would fail
+      # every portal build for a known reason and make the console
+      # undeployable; skipping it silently would claim a property nobody
+      # measured. So the portal is built with the commit's epoch like
+      # everything else and its reproducibility is recorded as open work in
+      # infrastructure/gitops/kargo/README.md.
+      - name: a second build of the commit is the same image
+        if: steps.build.outcome == 'success' && matrix.dockerfile == ''
+        run: |
+          set -euo pipefail
+          prefix="${{ steps.identity.outputs.registry }}"
+          docker buildx build \
+            --no-cache \
+            --build-arg "SOURCE_DATE_EPOCH=${{ steps.build.outputs.epoch }}" \
+            --file infrastructure/docker/Dockerfile \
+            --build-arg "BINARY=${{ matrix.binary }}" \
+            --output "type=docker,rewrite-timestamp=true" \
+            --label "org.opencontainers.image.revision=${DEPLOY_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --tag "qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}" \
+            .
+          first="$(docker image inspect --format '{{.Id}}' "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}")"
+          second="$(docker image inspect --format '{{.Id}}' "qip-reproducibility/${{ matrix.binary }}:${DEPLOY_SHA}")"
+          if [ "$first" != "$second" ]; then
+            echo "two builds of ${DEPLOY_SHA} produced two images: ${first} and ${second}." >&2
+            echo "Nothing is pushed. An image nobody can rebuild from its commit cannot be verified against it." >&2
+            exit 1
+          fi
+          echo "two builds of ${DEPLOY_SHA} are the same image: ${first}"
 
       # Scan the image before it is pushed, signed, or attested. After the
       # push would be too late: a signed, attested, vulnerable image is
@@ -479,7 +634,7 @@ jobs:
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
             | sudo tee /etc/apt/sources.list.d/trivy.list >/dev/null
           sudo apt-get update -qq && sudo apt-get install -y -qq trivy
-          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${{ steps.identity.outputs.registry }}"
           trivy image \
               --no-progress \
             --severity CRITICAL,HIGH \
@@ -492,10 +647,10 @@ jobs:
       # rollback is a tag somebody can still find — and, since the step
       # above, one this job finds for itself and reuses.
       - name: push
-        if: steps.existing.outputs.digest == ''
+        if: steps.build.outcome == 'success'
         run: |
           set -euo pipefail
-          prefix="${{ steps.identity.outputs.region }}-docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${{ steps.identity.outputs.registry }}"
           docker push "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}"
 
       # Sign it. This is the step that makes every service's
@@ -523,10 +678,14 @@ jobs:
           BINAUTHZ_ATTESTOR: ${{ steps.identity.outputs.attestor }}
           BINAUTHZ_KEY_VERSION: ${{ steps.identity.outputs.key_version }}
           GCP_PROJECT: ${{ steps.identity.outputs.project }}
-          GCP_REGION: ${{ steps.identity.outputs.region }}
+          # The image is in the build registry for every environment; the
+          # attestor and its key are the target environment's own, so each
+          # environment's Binary Authorization policy still admits only what
+          # its own attestor signed. One set of bytes, four signatures.
+          BUILD_REGISTRY: ${{ steps.identity.outputs.registry }}
         run: |
           set -euo pipefail
-          prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${BUILD_REGISTRY}"
           digest=$(gcloud artifacts docker images describe \
             "${prefix}/${{ matrix.binary }}:${DEPLOY_SHA}" \
             --format='value(image_summary.digest)')
@@ -653,11 +812,32 @@ jobs:
             echo "environment '${TARGET_ENVIRONMENT}' is not provisioned." >&2
             exit 1
           fi
+          # The build registry, derived exactly as the images job derives it:
+          # what is recorded is what was attested, which is in the one
+          # registry every environment is promoted from.
+          build_tfvars="infrastructure/environments/${BUILD_ENVIRONMENT}/terraform.tfvars"
+          [ -f "$build_tfvars" ] || { echo "no tfvars at $build_tfvars" >&2; exit 1; }
+          build_project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$build_tfvars" | head -1)"
+          build_region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$build_tfvars" | head -1)"
+          [ -n "$build_region" ] || build_region="europe-west2"
+          case "$build_project" in
+            ''|unprovisioned|*[!a-z0-9-]*)
+              echo "$build_tfvars names no provisioned project ('$build_project')." >&2
+              exit 1
+              ;;
+          esac
+          case "$build_region" in
+            *[!a-z0-9-]*)
+              echo "$build_tfvars names a region containing a character a region cannot: '$build_region'" >&2
+              exit 1
+              ;;
+          esac
           {
             echo "project=$project"
             echo "region=$region"
             echo "provider=projects/$number/locations/global/workloadIdentityPools/qip-github-${TARGET_ENVIRONMENT}/providers/github"
             echo "account=qip-ci-${TARGET_ENVIRONMENT}@$project.iam.gserviceaccount.com"
+            echo "registry=${build_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}"
           } >> "$GITHUB_OUTPUT"
 
       - name: authenticate without a key
@@ -698,12 +878,11 @@ jobs:
       - name: record the attested digests
         id: record
         env:
-          GCP_PROJECT: ${{ steps.identity.outputs.project }}
-          GCP_REGION: ${{ steps.identity.outputs.region }}
+          BUILD_REGISTRY: ${{ steps.identity.outputs.registry }}
           PAIRS: ${{ steps.catalogue.outputs.pairs }}
         run: |
           set -euo pipefail
-          prefix="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT}/qip-${TARGET_ENVIRONMENT}"
+          prefix="${BUILD_REGISTRY}"
           {
             echo "## ${TARGET_ENVIRONMENT}: images attested for ${DEPLOY_SHA} by run ${GITHUB_RUN_ID}"
             echo
@@ -725,12 +904,12 @@ jobs:
           done
           {
             echo
-            echo "Nothing was deployed by this run. The Kargo warehouse on the"
-            echo "${TARGET_ENVIRONMENT} control plane discovers these digests from the"
-            echo "registry on its own poll; its promotion commits them into"
-            echo "infrastructure/gitops/envs/${TARGET_ENVIRONMENT}/kustomization.yaml —"
-            echo "automatically for dev, on a person's approval for test and stage,"
-            echo "never for prod — and Argo CD's post-sync hook proves the routed"
+            echo "Nothing was deployed by this run. The digests are in the one build"
+            echo "registry (${prefix}); this run attested them for ${TARGET_ENVIRONMENT}."
+            echo "The Kargo warehouse discovers them on its own poll and its promotions"
+            echo "carry the same digests along dev, test, replay, paper, stage, prod —"
+            echo "automatically into dev, on a person's approval for every later link,"
+            echo "never into prod — and Argo CD's post-sync hook proves the routed"
             echo "revision serves them. Kargo's API is not reachable from a runner"
             echo "(the control plane's endpoint is private), so this run notified"
             echo "nothing and says so (ADR 0036)."

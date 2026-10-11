@@ -1,9 +1,9 @@
-# Kargo on the dev control plane: the project, the warehouse pointed at
-# this environment's registry, and the four stages with this environment's
-# registry paths. The subscriptions' `allowTagsRegexes` admits only a tag
-# that is a commit sha — the immutable tag deploy.yml pushes — and the
-# freight-creation criteria refuse freight whose three images came from
-# different commits (ADR 0036 decision 6).
+# Kargo on the dev control plane. The project, the warehouse, the six-link
+# chain and both promotion tasks are the base's, unchanged: there is one
+# build registry, so nothing about where freight comes from or where a
+# promotion writes it differs between control planes (R12 CICD-9112). What
+# differs is which Argo CD this Kargo can reach — its own — so the one patch
+# names `qip-dev` as the application the `dev` stage notifies.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -12,41 +12,19 @@ patches:
 - target:
     kind: Stage
     name: dev
-  patch: "apiVersion: kargo.akuity.io/v1alpha1\nkind: Stage\nmetadata:\n  name: dev\n  namespace: qip\n\
-    spec:\n  promotionTemplate:\n    spec:\n      vars:\n      - name: registry\n        value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev\n\
-    \      - name: warehouseRegistry\n        value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev\n   \
-    \   - name: argocdApplication\n        value: qip-dev\n"
-- target:
+  patch: |-
+    apiVersion: kargo.akuity.io/v1alpha1
     kind: Stage
-    name: test
-  patch: "apiVersion: kargo.akuity.io/v1alpha1\nkind: Stage\nmetadata:\n  name: test\n  namespace: qip\n\
-    spec:\n  promotionTemplate:\n    spec:\n      vars:\n      - name: registry\n        value: europe-west2-docker.pkg.dev/unprovisioned/qip-test\n\
-    \      - name: warehouseRegistry\n        value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev\n   \
-    \   - name: argocdApplication\n        value: ''\n"
-- target:
-    kind: Stage
-    name: stage
-  patch: "apiVersion: kargo.akuity.io/v1alpha1\nkind: Stage\nmetadata:\n  name: stage\n  namespace: qip\n\
-    spec:\n  promotionTemplate:\n    spec:\n      vars:\n      - name: registry\n        value: europe-west2-docker.pkg.dev/unprovisioned/qip-stage\n\
-    \      - name: warehouseRegistry\n        value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev\n   \
-    \   - name: argocdApplication\n        value: ''\n"
-- target:
-    kind: Stage
-    name: prod
-  patch: "apiVersion: kargo.akuity.io/v1alpha1\nkind: Stage\nmetadata:\n  name: prod\n  namespace: qip\n\
-    spec:\n  promotionTemplate:\n    spec:\n      vars:\n      - name: registry\n        value: europe-west2-docker.pkg.dev/unprovisioned/qip-prod\n\
-    \      - name: warehouseRegistry\n        value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev\n   \
-    \   - name: argocdApplication\n        value: ''\n"
-- target:
-    kind: Warehouse
-    name: qip-images
-  patch: "apiVersion: kargo.akuity.io/v1alpha1\nkind: Warehouse\nmetadata:\n  name: qip-images\n  namespace:\
-    \ qip\nspec:\n  freightCreationCriteria:\n    expression: imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api').Tag\n\
-    \      == imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain').Tag\n      && imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain').Tag\n\
-    \      == imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain').Tag\n  subscriptions:\n\
-    \  - image:\n      repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api\n      imageSelectionStrategy:\
-    \ NewestBuild\n      allowTagsRegexes:\n      - ^[0-9a-f]{40}$\n      discoveryLimit: 5\n  - image:\n\
-    \      repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain\n      imageSelectionStrategy:\
-    \ NewestBuild\n      allowTagsRegexes:\n      - ^[0-9a-f]{40}$\n      discoveryLimit: 5\n  - image:\n\
-    \      repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain\n      imageSelectionStrategy:\
-    \ NewestBuild\n      allowTagsRegexes:\n      - ^[0-9a-f]{40}$\n      discoveryLimit: 5\n"
+    metadata:
+      name: dev
+      namespace: qip
+    spec:
+      promotionTemplate:
+        spec:
+          vars:
+          - name: registry
+            value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          - name: warehouseRegistry
+            value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          - name: argocdApplication
+            value: qip-dev

@@ -1601,3 +1601,21 @@ variable "dns_record_ttl_seconds" {
     error_message = "dns_record_ttl_seconds must be between 60 and 86400. Under a minute most resolvers floor it, so the number describes nothing; over a day a wrong record — and a certificate waiting on it — stays wrong for a day."
   }
 }
+
+variable "registry_promotion_readers" {
+  description = <<-EOT
+    Service accounts in later environments that read this environment's image
+    registry, as IAM members (`serviceAccount:…`). Meaningful only in the
+    build environment (`dev`), whose registry every platform image is built
+    into once and promoted from (R12 CICD-9112): each later environment's CI
+    account scans and attests the digest here, and its Cloud Run service
+    agent pulls it. `modules/registry` grants `artifactregistry.reader` and
+    nothing that writes, and refuses anything but a service account.
+
+    Empty everywhere today: no environment after dev is provisioned, and IAM
+    refuses a grant to an account that does not exist.
+  EOT
+  type        = set(string)
+  default     = []
+  nullable    = false
+}

@@ -7293,13 +7293,22 @@ fn every_workload_pulls_from_the_repository_the_pipeline_pushes_to() {
     // Terraform creates `qip-<env>`, and the catalogue reads the prefix from
     // the registry module. If any drifts, every pull in every environment
     // fails with a 404 that names neither of the two that disagree.
+    // Since R12 CICD-9112 the workflow builds into one registry — the build
+    // environment's `qip-<env>` — and every environment pulls the digest
+    // built there. The path is constructed once per job from the build
+    // environment's tfvars, and the per-environment form must not return.
     let deploy = read(".github/workflows/deploy.yml");
     assert!(
         deploy.contains(
-            "docker.pkg.dev/${{ steps.identity.outputs.project }}/qip-${TARGET_ENVIRONMENT}"
+            "registry=${build_region}-docker.pkg.dev/${build_project}/qip-${BUILD_ENVIRONMENT}"
         ),
-        "the pipeline no longer pushes to qip-<environment> in the project's \
+        "the pipeline no longer builds into qip-<build environment> in the build project's \
          Artifact Registry"
+    );
+    assert!(
+        !deploy.contains("/qip-${TARGET_ENVIRONMENT}"),
+        "the pipeline names a per-environment registry again; each environment would then run \
+         bytes it built for itself"
     );
     let registry = read("infrastructure/terraform/modules/registry/main.tf");
     assert!(
@@ -11068,5 +11077,156 @@ fn the_deployment_pipeline_passes_source_date_epoch_to_docker_build() {
         docker_build_section.contains("--build-arg")
             && docker_build_section.contains("SOURCE_DATE_EPOCH"),
         "deploy.yml must pass SOURCE_DATE_EPOCH as a --build-arg to docker build"
+    );
+}
+
+/// The non-comment lines of a workflow or Dockerfile, so a sentence
+/// explaining what used to be there cannot satisfy or trip a check.
+fn code_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect()
+}
+
+#[test]
+fn the_build_epoch_is_the_commit_time_and_never_the_clock() {
+    // R12 CICD-9097. `deploy.yml` passed `SOURCE_DATE_EPOCH=$(date +%s)` and
+    // the Dockerfile fell back to the same, so two builds of one commit
+    // embedded two times and could never share a digest: the pipeline's
+    // own input made the build unreproducible. The epoch is now the
+    // commit's timestamp, and the Dockerfile refuses a build without one.
+    let deploy = read(".github/workflows/deploy.yml");
+    let dockerfile = read("infrastructure/docker/Dockerfile");
+    // Premise: both files still build with an epoch at all.
+    assert!(
+        code_lines(&deploy)
+            .iter()
+            .any(|line| line.contains("SOURCE_DATE_EPOCH=${epoch}")),
+        "deploy.yml no longer passes the epoch it computes; this test's premise needs rewriting"
+    );
+    assert!(
+        code_lines(&dockerfile)
+            .iter()
+            .any(|line| line.trim() == "ARG SOURCE_DATE_EPOCH"),
+        "the Dockerfile no longer declares SOURCE_DATE_EPOCH"
+    );
+    assert!(
+        code_lines(&deploy)
+            .iter()
+            .any(|line| line.contains("epoch=\"$(git log -1 --format=%ct \"${DEPLOY_SHA}\")\"")),
+        "deploy.yml does not take the epoch from the commit being deployed"
+    );
+    for (file, text) in [
+        (".github/workflows/deploy.yml", &deploy),
+        ("infrastructure/docker/Dockerfile", &dockerfile),
+    ] {
+        assert!(
+            !code_lines(text)
+                .iter()
+                .any(|line| line.contains("date +%s")),
+            "{file} stamps a build with the clock again; two builds of one commit then differ"
+        );
+    }
+    assert!(
+        code_lines(&dockerfile)
+            .iter()
+            .any(|line| line.contains("test -n \"$SOURCE_DATE_EPOCH\"")),
+        "the Dockerfile builds without an epoch instead of refusing"
+    );
+    // The layers' file times are clamped to it too, or the commit's epoch
+    // fixes the config and leaves every file's mtime to the build.
+    assert!(
+        deploy.contains("--output \"type=docker,rewrite-timestamp=true\""),
+        "deploy.yml does not clamp layer timestamps to the epoch"
+    );
+    // And the check is made: a second, uncached build compared by image id.
+    assert!(
+        deploy.contains("name: a second build of the commit is the same image")
+            && deploy.contains("--no-cache")
+            && deploy.contains("if [ \"$first\" != \"$second\" ]; then"),
+        "deploy.yml no longer builds twice and compares; reproducibility is then asserted, not \
+         measured"
+    );
+}
+
+#[test]
+fn a_promotion_to_a_later_environment_never_builds() {
+    // R12 CICD-9112: rebuilding per environment is prohibited. Only the
+    // build environment's run may build or push; any other environment's
+    // dispatch attests the digest already in the build registry or stops.
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        code_lines(&deploy)
+            .iter()
+            .any(|line| line.trim() == "BUILD_ENVIRONMENT: dev"),
+        "deploy.yml names no build environment"
+    );
+    let build_condition = "if: steps.existing.outputs.digest == '' && env.TARGET_ENVIRONMENT == env.BUILD_ENVIRONMENT";
+    let refusal_condition = "if: steps.existing.outputs.digest == '' && env.TARGET_ENVIRONMENT != env.BUILD_ENVIRONMENT";
+    assert!(
+        deploy.lines().any(|line| line.trim() == build_condition),
+        "the build step can run for an environment other than the build environment"
+    );
+    assert!(
+        deploy.lines().any(|line| line.trim() == refusal_condition),
+        "nothing refuses a promotion whose digest the build environment never pushed"
+    );
+    // Push hangs off the build having happened, so it cannot run where the
+    // build was refused.
+    let push = deploy
+        .split("      - name: push\n")
+        .nth(1)
+        .expect("deploy.yml has a push step");
+    let push_condition = push.lines().next().unwrap_or_default().trim();
+    assert_eq!(
+        push_condition, "if: steps.build.outcome == 'success'",
+        "the push step runs on a condition other than the build having run"
+    );
+}
+
+#[test]
+fn static_analysis_gates_ci_and_deploy_reads_it_by_name() {
+    // R12 CICD-9105. CodeQL ran as a separate workflow and deploy.yml waited
+    // only on ci, so a CodeQL finding stopped nothing. ci now calls it as a
+    // job, and deploy's gate refuses a ci run with no successful `sast / …`
+    // job in it — which is what a commit from before the job existed has.
+    let ci = read(".github/workflows/ci.yml");
+    let codeql = read(".github/workflows/codeql-analysis.yml");
+    let deploy = read(".github/workflows/deploy.yml");
+    assert!(
+        codeql.contains("github/codeql-action/analyze"),
+        "codeql-analysis.yml no longer analyses; this test's premise needs rewriting"
+    );
+    assert!(
+        code_lines(&codeql)
+            .iter()
+            .any(|line| line.trim() == "workflow_call:"),
+        "codeql-analysis.yml cannot be called by ci"
+    );
+    let sast = ci
+        .split("\n  sast:\n")
+        .nth(1)
+        .expect("ci.yml declares a `sast` job");
+    assert!(
+        sast.lines()
+            .any(|line| line.trim() == "uses: ./.github/workflows/codeql-analysis.yml"),
+        "ci's sast job does not call the CodeQL workflow"
+    );
+    assert!(
+        deploy.contains("select(.name | startswith(\"sast / \"))")
+            && deploy.contains("ran no static analysis"),
+        "deploy.yml does not read the sast jobs of the ci run it trusts, or does not refuse a run \
+         with none"
+    );
+    // And the separate push/pull_request triggers are gone, so there is one
+    // CodeQL result per commit and it is the one ci gates on.
+    let triggers = codeql
+        .split("\non:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\npermissions:").next())
+        .unwrap_or_default();
+    assert!(
+        !triggers.contains("push:") && !triggers.contains("pull_request:"),
+        "codeql-analysis.yml triggers itself on push or pull request again: {triggers}"
     );
 }

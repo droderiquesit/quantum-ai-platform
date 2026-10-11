@@ -60,11 +60,17 @@ COPY backend/ .
 # --locked, because a build that resolves a different dependency graph from the
 # one the test suite ran against is not the thing that was tested.
 #
-# SOURCE_DATE_EPOCH is passed through for tools that honour it. It is not yet
-# shown to make the image byte-reproducible; CICD-048 stays PARTIAL until a
-# rebuild of one commit is compared digest for digest.
+# SOURCE_DATE_EPOCH is required and is the commit's own timestamp —
+# `deploy.yml` passes `git log -1 --format=%ct` (R12 CICD-9097). It used to
+# fall back to `$(date +%s)` when absent, and `deploy.yml` passed exactly
+# that, so two builds of one commit embedded two times and could never share
+# a digest. A build without it is refused rather than stamped with the
+# clock: an image whose timestamp is the build's is an image nobody can
+# rebuild. The pipeline also builds every image twice and compares, so
+# whether this is enough is checked on every build rather than asserted here.
 RUN test -n "$BINARY" \
-  && export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(date +%s)}" \
+  && test -n "$SOURCE_DATE_EPOCH" \
+  && export SOURCE_DATE_EPOCH \
   && cargo build --release --locked --bin "$BINARY" \
   && install -D "target/release/$BINARY" /out/qip
 

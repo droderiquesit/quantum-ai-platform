@@ -472,7 +472,26 @@ jobs:
           # edit rather than failing on a bucket that is not there.
           bake_cidr="$(sed -n 's/^image_bake_subnet_cidr[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$tfvars" | head -1)"
           ring="qip-${TARGET_ENVIRONMENT}"
+          # `qip-edge-node` is a platform image, built once into the build
+          # registry by deploy.yml and never per environment (R12
+          # CICD-9112), so it is read from there; the vendored Envoy is
+          # mirrored per environment and stays under `prefix`. Derived from
+          # the build environment's committed tfvars exactly as deploy.yml
+          # derives it, and refused on the same terms.
+          build_tfvars="infrastructure/environments/dev/terraform.tfvars"
+          build_project="$(sed -n 's/^project_id[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$build_tfvars" | head -1)"
+          build_region="$(sed -n 's/^region[[:space:]]*=[[:space:]]*"\(.*\)"/\1/p' "$build_tfvars" | head -1)"
+          [ -n "$build_region" ] || build_region="europe-west2"
+          for value in "$build_project" "$build_region"; do
+            case "$value" in
+              ''|unprovisioned|*[!a-z0-9-]*)
+                echo "$build_tfvars names no usable build project or region ('$value')." >&2
+                exit 1
+                ;;
+            esac
+          done
           {
+            echo "node_prefix=${build_region}-docker.pkg.dev/${build_project}/qip-dev"
             echo "project=$project"
             echo "region=$region"
             echo "zone=${region}-a"
@@ -500,7 +519,12 @@ jobs:
           install_components: beta
 
       - name: let crane read artifact registry
-        run: gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
+        run: |
+          set -euo pipefail
+          # The environment's own registry (the vendored Envoy) and the build
+          # registry (qip-edge-node), which may be in different regions.
+          gcloud auth configure-docker "${{ steps.identity.outputs.region }}-docker.pkg.dev" --quiet
+          gcloud auth configure-docker "$(echo "${{ steps.identity.outputs.node_prefix }}" | cut -d/ -f1)" --quiet
 
       # Pinned by version and checksum. A tool that copies bytes between
       # registries is exactly the wrong place to trust a moving tag.
@@ -533,6 +557,7 @@ jobs:
           GCP_PROJECT: ${{ steps.identity.outputs.project }}
           ATTESTOR: ${{ steps.identity.outputs.attestor }}
           PREFIX: ${{ steps.identity.outputs.prefix }}
+          NODE_PREFIX: ${{ steps.identity.outputs.node_prefix }}
         run: |
           set -euo pipefail
 
@@ -555,13 +580,13 @@ jobs:
           }
 
           node_digest="$(gcloud artifacts docker images describe \
-            "${PREFIX}/qip-edge-node:${BAKE_SHA}" \
+            "${NODE_PREFIX}/qip-edge-node:${BAKE_SHA}" \
             --format='value(image_summary.digest)' 2>/dev/null || true)"
           if [ -z "$node_digest" ]; then
             echo "the registry holds no qip-edge-node:${BAKE_SHA}. deploy.yml builds it; bake a commit it has already built." >&2
             exit 1
           fi
-          require_attested "${PREFIX}/qip-edge-node@${node_digest}" "qip-edge-node"
+          require_attested "${NODE_PREFIX}/qip-edge-node@${node_digest}" "qip-edge-node"
 
           # Envoy's digest comes out of the one committed list — the same file
           # vendor.yml mirrors from and modules/egress-proxy reads the running
@@ -597,12 +622,13 @@ jobs:
       - name: extract the binaries from the attested images
         env:
           PREFIX: ${{ steps.identity.outputs.prefix }}
+          NODE_PREFIX: ${{ steps.identity.outputs.node_prefix }}
           NODE_DIGEST: ${{ steps.artefacts.outputs.node_digest }}
           ENVOY_DIGEST: ${{ steps.artefacts.outputs.envoy_digest }}
         run: |
           set -euo pipefail
           mkdir -p payload
-          crane export --platform linux/amd64 "${PREFIX}/qip-edge-node@${NODE_DIGEST}" - \
+          crane export --platform linux/amd64 "${NODE_PREFIX}/qip-edge-node@${NODE_DIGEST}" - \
             | tar -xO qip > payload/qip-edge-node
           crane export --platform linux/amd64 "${PREFIX}/vendor/envoy@${ENVOY_DIGEST}" - \
             | tar -xO usr/local/bin/envoy > payload/envoy

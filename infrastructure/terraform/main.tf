@@ -522,6 +522,12 @@ module "registry" {
   ci_service_account = module.cicd.service_account_email
   project_number     = local.project_number
 
+  # The later environments' CI accounts and Cloud Run agents, read-only on
+  # this registry, because they are promoted the digest built here and never
+  # build their own (R12 CICD-9112). Empty in every environment until one
+  # after dev is provisioned.
+  promotion_readers = var.registry_promotion_readers
+
   # The ring every keyed store's key lives in; the two GENERIC repositories
   # are encrypted with a key the module creates there (SEC-046).
   key_ring_id          = module.secrets.key_ring_id
