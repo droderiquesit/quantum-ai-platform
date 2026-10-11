@@ -4773,6 +4773,35 @@ impl Cell {
         Some((venue, price))
     }
 
+    /// The price an order for `strategy` taking `side` of `object_id` at
+    /// `venue` would be sent at by [`Self::resolve_pricing`], read from the
+    /// same book: the touch for a marketable strategy, the mid for one that
+    /// rests there.
+    ///
+    /// A marketable strategy with nothing resting at the touch is charged at
+    /// `mid`. That order cannot be sent — `resolve_pricing` refuses it under
+    /// the depth gate and the hold is given back — and refusing it here
+    /// instead would refuse a contributor whose side a net may yet cancel.
+    fn sending_price(
+        &self,
+        strategy: &str,
+        venue: &VenueId,
+        object_id: &ObjectId,
+        side: BookSide,
+        mid: Decimal,
+    ) -> Decimal {
+        let Some(PricingPolicy::Marketable) = self.pricing_of(strategy) else {
+            return mid;
+        };
+        self.liquidity
+            .get(venue, object_id)
+            .and_then(|state| match side {
+                BookSide::Ask => state.best_ask(),
+                BookSide::Bid => state.best_bid(),
+            })
+            .map_or(mid, |touch| touch.price)
+    }
+
     /// Take one signal through every per-strategy gate to an intent, or
     /// refuse it.
     ///
@@ -4830,7 +4859,22 @@ impl Cell {
             );
             return Ok(None);
         }
-        let notional = desired * price;
+        // Admission and the region hold are priced where the order will be
+        // *sent*, not where the intent is reasoned. They were both charged at
+        // the mid while a marketable net goes out at the touch, and the Risk
+        // Gate measures the touch — so a buy committed half a spread more than
+        // the region held for it, and an allocation sized to its holds was
+        // spent past its bound by the sum of those half-spreads. One price for
+        // all three is what makes "the hold" and "what the gate sees" the
+        // same number.
+        let charged_at = self.sending_price(
+            signal.strategy.as_str(),
+            &venue,
+            &signal.object_id,
+            side,
+            price,
+        );
+        let notional = desired * charged_at;
         let key = signal.strategy.as_str().to_string();
         let Some(deployed) = self.deployed.get(&key) else {
             self.refuse(
@@ -4877,7 +4921,7 @@ impl Cell {
         {
             CapitalAdmission::Full => desired,
             CapitalAdmission::Reduced(cap) => {
-                let reduced = cap.checked_div(price).unwrap_or(Decimal::ZERO);
+                let reduced = cap.checked_div(charged_at).unwrap_or(Decimal::ZERO);
                 self.refuse(
                     report,
                     "capital_reduced",
@@ -4929,7 +4973,7 @@ impl Cell {
         // below if any gate between here and the venue refuses, and committed
         // when the order goes out.
         let pass = self.pass;
-        let Some(notional_held) = quantity.checked_mul(price) else {
+        let Some(notional_held) = quantity.checked_mul(charged_at) else {
             self.refuse(
                 report,
                 "region_reservation",

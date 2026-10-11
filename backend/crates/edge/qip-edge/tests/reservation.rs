@@ -532,3 +532,54 @@ fn a_cell_holding_no_region_allocation_says_so_in_its_series() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_marketable_order_holds_of_the_region_exactly_the_notional_it_is_sent_at() -> Result<()> {
+    // Round 2 found the region hold and the envelope admission charged at the
+    // mid while a marketable order went out at the touch, which the Risk Gate
+    // measures. A buy therefore committed half a spread more than the region
+    // held for it, and an allocation sized to its holds was overspent by the
+    // sum of those half-spreads. Both sides are driven: a buy takes the ask
+    // above the mid, a sale the bid below it, so a hold at the mid is wrong in
+    // opposite directions and a fix right for only one side still fails.
+    for (kind, touch) in [
+        (SignalKind::Enter, dec!("101")),
+        (SignalKind::Exit, dec!("99")),
+    ] {
+        let opening = dec!("100000000");
+        let mut cell = trading_cell(&[("alpha", kind, "100")], Some(opening), None)?;
+        let mut gateway = RecordingGateway::default();
+        let report = cell.work(t(50), &mut gateway)?;
+        assert_eq!(
+            report.orders.len(),
+            1,
+            "the premise failed: the {kind:?} pass placed no order: {:?}",
+            report.refusals
+        );
+        let order = &report.orders[0];
+        // Premise: the order went out at the touch, and the touch is not the
+        // mid. Against a book whose touch were the mid, a hold priced at the
+        // mid would agree with the order and this test would prove nothing.
+        assert_eq!(
+            order.price, touch,
+            "the {kind:?} order did not go out at the touch"
+        );
+        assert_ne!(
+            touch,
+            dec!("100"),
+            "the premise failed: the touch is the mid"
+        );
+
+        let held = opening
+            - cell
+                .region_allocation_free()
+                .expect("the cell was given an allocation");
+        assert_eq!(
+            held,
+            order.quantity * order.price,
+            "the {kind:?} order held a different notional of the region from the one it was \
+             sent at"
+        );
+    }
+    Ok(())
+}
