@@ -21,18 +21,18 @@ any document.
 
 | Status | Rows | Share |
 |---|---:|---:|
-| COMPLETE | 133 | 8.8% |
-| PARTIAL | 1,116 | 73.5% |
-| MISSING | 206 | 13.6% |
+| COMPLETE | 124 | 8.2% |
+| PARTIAL | 1,125 | 74.1% |
+| MISSING | 207 | 13.6% |
 | BLOCKED (live capital, external action, or a standing ADR refuses it) | 52 | 3.4% |
-| INCORRECT (code contradicts the requirement) | 10 | 0.7% |
+| INCORRECT (code contradicts the requirement) | 9 | 0.6% |
 | NEEDS-VALIDATION | 1 | 0.1% |
 
 | Measure | Rows |
 |---|---:|
 | Implemented (behaviour exists in code) | 1,250 (82%) |
 | Tested (a named test asserts it) | 1,134 (75%) |
-| Integrated (reached from a binary's composition root) | 659 (43%) |
+| Integrated (reached from a binary's composition root) | 656 (43%) |
 | Deployable from committed config | 184 (12%) |
 | Demonstrated end to end | 0 |
 
@@ -43,17 +43,37 @@ writing new subsystems. The v12.0 additions (NOW Brain, Forecast Lattice,
 Tournament, VOI, adversarial verification, Meta-Intelligence, Cognitive
 Compiler) are the genuinely new build, and all ten §31.1 targets are OPEN.
 
-By priority: P0 411 rows, of which 87 COMPLETE, 294 PARTIAL, 19 MISSING,
-5 INCORRECT, 6 BLOCKED. P0 is where the plan starts.
+By priority: P0 411 rows, of which 85 COMPLETE, 296 PARTIAL, 20 MISSING,
+4 INCORRECT, 6 BLOCKED. P0 is where the plan starts.
 
-The old (v11.6) register said 24.9% COMPLETE. This one says 8.8%. The drop is
+The old (v11.6) register said 24.9% COMPLETE. This one says 8.2%. The drop is
 the stricter test — COMPLETE now needs integration, and a test whose
 assertions would pass with the feature deleted no longer counts — plus the
 v12.0 additions. It is not lost work.
 
 ## How far to trust this register
 
-_Spot-check pending; see the section at the end._
+An independent reviewer that wrote none of the verdicts checked a random
+sample of 30 COMPLETE and all 10 INCORRECT rows against the code, running ten
+of the cited tests (all passed).
+
+- **COMPLETE: 21 of 30 confirmed (70%).** The nine others were re-graded to
+  PARTIAL in the register (ARCH-1185, CICD-9105, DATA-2020, DATA-2024,
+  FABRIC-8010, GCP-10008, LEDGER-5002, MODEL-4001, QUANT-1076), each with the
+  reviewer's reason in `gap` and `notes`.
+- **INCORRECT: 9 of 10 confirmed.** CONTRACT-7082 became MISSING: the code
+  is absent, not contradictory.
+- **The errors all run one way: optimistic.** Composition-root reach
+  asserted rather than traced; cited test files not opened; code that exists
+  read as code that runs; guards that pass vacuously accepted; multi-clause
+  requirements credited on their strongest clause.
+
+So read COMPLETE as an upper bound. At the sampled rate, roughly 30 of the
+remaining 94 unchecked COMPLETE rows are likely PARTIAL; the true figure is
+probably nearer 6% than 8%. PARTIAL and MISSING were not sampled; the bias
+suggests some PARTIAL rows are MISSING too. **W0.10** below re-audits every
+COMPLETE row with the same method before anyone quotes a percentage
+externally.
 
 ## Decisions only the owner can take
 
@@ -86,12 +106,13 @@ when code merges.
 | W0.1 Conduct checks that check nothing | AGENCY-1060, 1061 (INCORRECT), 1056–1069 | `check_market_conduct` ignores its rules and rejects only "guaranteed"; `check_audience_permissions` ignores the allow-list; `PreActionGate` check 6 and the action check match "wash"/"spoof" by substring. Make them evaluate the rules given; put `ConductGate` in front of every adapter call. | qip-agency, qip-contracts | M |
 | W0.2 Quantum on the cycle thread | QUANT-4029 (INCORRECT), 4046–4053 | The router calls the provider synchronously inside the cycle; `admit_job` has no production caller; default QAOA is unreachable (≥50 assets vs 24 qubits). Submit-and-poll with the classical answer standing. | qip-quantum, qip-cost-router, qip-kernel | M |
 | W0.3 Build once, promote the digest | CICD-9097, 9112 (INCORRECT) | Per-environment registries and `SOURCE_DATE_EPOCH=$(date +%s)`. One registry, commit-time epoch, promote by digest; add replay and paper stages. | deploy.yml, Dockerfile, Kargo | L |
-| W0.4 Contracts that are wrong or duplicated | CONTRACT-7082 (INCORRECT); AGENCY-6079, 6091, 6104 | `ActionIntent` lacks §27 fields; two `GoalSpec`, two tool registries, two `EffectAttribution`, two `ModelReputation`, two `StreamPolicy`, two `FabricEnvelope`. One of each. | qip-contracts, qip-agency, qip-events, qip-cost-router | M |
+| W0.4 Contracts that are wrong or duplicated | CONTRACT-7082 (MISSING); AGENCY-6079, 6091, 6104 | `ActionIntent` lacks §27 fields; two `GoalSpec`, two tool registries, two `EffectAttribution`, two `ModelReputation`, two `StreamPolicy`, two `FabricEnvelope`. One of each. | qip-contracts, qip-agency, qip-events, qip-cost-router | M |
 | W0.5 Curiosity ranking | AMBIENT-3106 (INCORRECT) | Additive score where §9.10 is multiplicative. | qip-contracts | S |
 | W0.6 Fabric "quorum" that is one broker | FABRIC-8086 (INCORRECT) | Rename the profile to what it is until D1 lands. | qip-streaming | S |
 | W0.7 Tests that assert nothing | see list below | Rewrite each to drive production code; mutation-verify. | qip-acceptance, qip-market, qip-data-finder | M |
 | W0.8 Unbounded metric label | OBS-3118 | `qip_belief_brier_score_by_horizon` labels with a runtime duration; bucket to an enum. | qip-kernel, qip-observability | S |
 | W0.9 Edge journal grows without bound | REFLEX (M5) | The node never enables journal trimming. | qip-edge-node | S |
+| W0.10 Re-audit every COMPLETE row | the 94 COMPLETE rows the spot-check did not sample | Trace the binary reach, open the cited test, run it; re-grade. | register | M |
 
 Tests found to pass with their feature deleted (W0.7):
 `qip-market/tests/tick_time_fields.rs`; `qip-acceptance/tests/tick_hot_replay_indexes.rs`;
@@ -106,7 +127,7 @@ substring); `qip-data-finder/src/references.rs:625`; `event_fabric_transport_and
 
 ### Wave 1 — Wire what is already built (largest COMPLETE yield)
 
-591 rows are implemented but not integrated. These are the big ones.
+594 rows are implemented but not integrated. These are the big ones.
 
 | Item | Rows | What | Crates | Size |
 |---|---|---|---|---|

@@ -24,7 +24,7 @@
   },
   {
     "id": "R12-LEDGER-5002",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "LedgerEvent::new (backend/crates/libs/qip-contracts/src/ledger.rs:202) refuses <2 postings, non-positive amounts and per-unit imbalance; deserialisation routed through it (LedgerEventWire, backend/crates/libs/qip-contracts/src/ledger.rs:160-170). Posting logic qip_portfolio::ledger::post (backend/crates/libs/qip-portfolio/src/ledger.rs:320).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ledger.rs:202 LedgerEvent::new refusals",
@@ -32,7 +32,7 @@
       "backend/crates/libs/qip-contracts/tests/ledger_event.rs balance refusals",
       "backend/crates/libs/qip-portfolio/tests/ledger_postings.rs"
     ],
-    "gap": "None at the type level; runtime integration depends on qip-ledgerd running (see the append-only requirement).",
+    "gap": "The cited tests/ledger_event.rs tests Settlement only; balance is tested at ledger.rs:400,436, and no test asserts the <2-postings or non-positive refusals. None at the type level; runtime integration depends on qip-ledgerd running (see the append-only requirement).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -43,7 +43,7 @@
     "verification": "cargo test -p qip-contracts --test ledger_event; cargo test -p qip-portfolio --test ledger_postings",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The cited tests/ledger_event.rs tests Settlement only; balance is tested at ledger.rs:400,436, and no test asserts the <2-postings or non-positive refusals."
   },
   {
     "id": "R12-LEDGER-5003",

@@ -1,7 +1,7 @@
 [
   {
     "id": "R12-MODEL-4001",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "lane_placement acceptance suite computes qip-edge-node's normal-dependency closure and requires it to equal the register's lane-0 set and to exclude qip-simulation-engine/qip-training/qip-twin/qip-world-model; qip-edge depends only on in-tree edge/lib crates. Inline models are DistilledModel with a validated cost bound.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:127-150 lane-0 set == reflex-node closure",
@@ -10,7 +10,7 @@
       "backend/crates/edge/qip-edge/Cargo.toml [dependencies] in-tree edge/lib crates only",
       "backend/crates/edge/qip-strategy/src/model.rs:175 DistilledModel::cost bound"
     ],
-    "gap": "None for the constraint as written; nothing is deployed (execution_nodes = {}), so it is proven structurally only.",
+    "gap": "Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0. None for the constraint as written; nothing is deployed (execution_nodes = {}), so it is proven structurally only.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -21,7 +21,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement",
     "work_item": "",
     "size": "S",
-    "notes": "Register is read from docs/architecture/lane-placement.md but the closure is computed from Cargo manifests, so the check is code-backed."
+    "notes": "Register is read from docs/architecture/lane-placement.md but the closure is computed from Cargo manifests, so the check is code-backed. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Closure holds, but bounded worst-case cost is shown only for DistilledModel (model.rs:175), not for all of lane 0."
   },
   {
     "id": "R12-MODEL-4002",

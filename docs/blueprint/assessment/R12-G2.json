@@ -2273,7 +2273,7 @@
  },
  {
   "id": "R12-CICD-9105",
-  "status": "COMPLETE",
+  "status": "PARTIAL",
   "current": "ci.yml secret scan job, CodeQL, cargo-audit/deny (SCA), Trivy in CI and again before sign in deploy.yml.",
   "evidence": [
    ".github/workflows/ci.yml:448",
@@ -2281,7 +2281,7 @@
    ".github/workflows/ci.yml:253",
    ".github/workflows/deploy.yml:462-495"
   ],
-  "gap": "None.",
+  "gap": "CodeQL (codeql-analysis.yml:14) is a separate workflow; deploy.yml waits only on ci, so SAST does not gate acceptance. None.",
   "implemented": true,
   "tested": true,
   "integrated": true,
@@ -2292,7 +2292,7 @@
   "verification": "inspection",
   "work_item": "",
   "size": "S",
-  "notes": ""
+  "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: CodeQL (codeql-analysis.yml:14) is a separate workflow; deploy.yml waits only on ci, so SAST does not gate acceptance."
  },
  {
   "id": "R12-CICD-9106",

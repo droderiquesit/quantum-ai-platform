@@ -145,7 +145,7 @@
   },
   {
     "id": "R12-GCP-10008",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "modules/network creates reflex, fabric and service VPCs plus data and engineering VPCs, each with a deny-ingress firewall; module network is instantiated unconditionally.",
     "evidence": [
       "infrastructure/terraform/modules/network/main.tf:26-31 networks reflex/fabric/service",
@@ -155,10 +155,10 @@
       "infrastructure/terraform/modules/network/tests/data-and-engineering-vpcs.tftest.hcl",
       "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:10844 trust_zones_are_not_one_flat_vpc_gcp_024"
     ],
-    "gap": "",
+    "gap": "data_vpc and engineering_vpc (network/main.tf:73,134) are empty and their outputs consumed nowhere; the acceptance test checks only the trust-zone map.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
@@ -166,7 +166,7 @@
     "verification": "terraform test in modules/network; cargo test -p qip-acceptance --test infrastructure trust_zones_are_not_one_flat_vpc_gcp_024",
     "work_item": "",
     "size": "S",
-    "notes": "Networks are provisioned in dev; no workload is attached to reflex/fabric VPCs because nothing is deployed there."
+    "notes": "Networks are provisioned in dev; no workload is attached to reflex/fabric VPCs because nothing is deployed there. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: data_vpc and engineering_vpc (network/main.tf:73,134) are empty and their outputs consumed nowhere; the acceptance test checks only the trust-zone map."
   },
   {
     "id": "R12-GCP-10009",

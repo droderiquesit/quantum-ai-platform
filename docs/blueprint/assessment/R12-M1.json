@@ -1658,17 +1658,17 @@
   },
   {
     "id": "R12-QUANT-1076",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "PortfolioAllocation is registered with classical baseline and benchmarked every cycle via ComputeRouter (simulated provider).",
     "evidence": [
       "backend/crates/libs/qip-quantum/src/foundry.rs:22 FamilyKind",
       "backend/crates/libs/qip-quantum/src/foundry.rs:166 platform() registers one family, records the rest not built",
       "backend/crates/runtime/qip-kernel/tests/solver_routing.rs:183"
     ],
-    "gap": "None for the in-process family (no real QPU).",
+    "gap": "No binary reaches it: quantum_enabled defaults false (config.rs:534), with_quantum is called only in tests, Foundry::platform has no production caller. None for the in-process family (no real QPU).",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": true,
     "e2e": false,
     "depends_on": [],
@@ -1676,7 +1676,7 @@
     "verification": "cargo test -p qip-quantum",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: No binary reaches it: quantum_enabled defaults false (config.rs:534), with_quantum is called only in tests, Foundry::platform has no production caller."
   },
   {
     "id": "R12-QUANT-1077",
@@ -3928,13 +3928,13 @@
   },
   {
     "id": "R12-ARCH-1185",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "Lane register checked against every crate and dependency direction.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:91 every crate has exactly one lane",
       "backend/crates/tests/qip-acceptance/tests/lane_placement.rs:178 no fast-lane crate depends on slower lane"
     ],
-    "gap": "None at crate granularity (function-level placement not checked).",
+    "gap": "lane_placement.rs:91 checks one lane per crate against a .md register; no check at function level and nothing checks 'fastest lane'. None at crate granularity (function-level placement not checked).",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -3945,7 +3945,7 @@
     "verification": "cargo test -p qip-acceptance --test lane_placement",
     "work_item": "",
     "size": "S",
-    "notes": "The register lives in docs/architecture/lane-placement.md; the test enforces it against Cargo manifests."
+    "notes": "The register lives in docs/architecture/lane-placement.md; the test enforces it against Cargo manifests. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: lane_placement.rs:91 checks one lane per crate against a .md register; no check at function level and nothing checks 'fastest lane'."
   },
   {
     "id": "R12-REFLEX-1186",

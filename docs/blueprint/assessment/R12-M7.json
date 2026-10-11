@@ -1745,12 +1745,12 @@
   },
   {
     "id": "R12-CONTRACT-7082",
-    "status": "INCORRECT",
+    "status": "MISSING",
     "current": "qip_contracts::action::ActionIntent holds only opportunity, instrument and action_class — a different concept (executable-scope intent).",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/action.rs:96-116"
     ],
-    "gap": "Define the §27 ActionIntent (identity, channel, disclosure, idempotency, lineage).",
+    "gap": "action.rs:96 ActionIntent is a different concept sharing the name; the §27 ActionIntent contract is absent rather than contradicted. Define the §27 ActionIntent (identity, channel, disclosure, idempotency, lineage).",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1761,7 +1761,7 @@
     "verification": "cargo test -p qip-contracts --test action",
     "work_item": "",
     "size": "M",
-    "notes": ""
+    "notes": "Re-graded INCORRECT->MISSING on 2026-10-11 by an independent spot-check: action.rs:96 ActionIntent is a different concept sharing the name; the §27 ActionIntent contract is absent rather than contradicted."
   },
   {
     "id": "R12-CONTRACT-7083",

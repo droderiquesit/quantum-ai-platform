@@ -440,7 +440,7 @@
   },
   {
     "id": "R12-DATA-2020",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "RegistrationDecision::registered is the only constructor of Registered and requires a permitting LegalAssessment; RegistrationRecord::new refuses a blank operator; Platform::assess_sources writes catalogue entries.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/decision.rs RegistrationDecision::registered",
@@ -448,7 +448,7 @@
       "backend/crates/services/qip-data-finder/tests/registration.rs",
       "backend/crates/runtime/qip-kernel/src/platform.rs:16871-16890 catalogue registration in assess_sources"
     ],
-    "gap": "None in code; not deployed.",
+    "gap": "Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356). None in code; not deployed.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -461,7 +461,7 @@
     "verification": "cargo test -p qip-data-finder --test registration",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: Catalogue entries from assess_sources (platform.rs:16875) carry owner config.owner = 'qip-platform' (config.rs:463), not a named operator; the operator record is a separate path (platform.rs:7356)."
   },
   {
     "id": "R12-DATA-2021",
@@ -531,7 +531,7 @@
   },
   {
     "id": "R12-DATA-2024",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "SourceHealth::over computes availability/error rate/latency over an explicit window; SourceScores carries reliability into the composite; the kernel reads health for references.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/health.rs:79-230 SourceHealth",
@@ -539,10 +539,10 @@
       "backend/crates/runtime/qip-kernel/src/references.rs SourceHealth use",
       "backend/crates/services/qip-data-finder/tests/scoring_and_routing.rs"
     ],
-    "gap": "None in code; not deployed.",
+    "gap": "The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller. None in code; not deployed.",
     "implemented": true,
     "tested": true,
-    "integrated": true,
+    "integrated": false,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -550,7 +550,7 @@
     "verification": "cargo test -p qip-data-finder --test source_alpha",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: The scorer that runs (finder.rs:1111) is 0.9/0.1 from one HEAD probe minus TLS/schema penalties; SourceHealth::over has no production caller."
   },
   {
     "id": "R12-DATA-2025",

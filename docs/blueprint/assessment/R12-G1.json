@@ -212,13 +212,13 @@
   },
   {
     "id": "R12-FABRIC-8010",
-    "status": "COMPLETE",
+    "status": "PARTIAL",
     "current": "No bridge exists; an acceptance scan refuses durable-state types in a bridge crate and any dependency on it.",
     "evidence": [
       "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:153 a_bridge_crate_if_one_exists_holds_no_durable_state",
       "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:193 the_scan_refuses_a_client_outside_the_bridge_and_a_dependency_on_it"
     ],
-    "gap": "None while no bridge exists.",
+    "gap": "bridge_boundary.rs:153 passes vacuously: no bridge exists, no premise check; its token list misses fs::write after use std::fs. None while no bridge exists.",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -229,7 +229,7 @@
     "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary",
     "work_item": "",
     "size": "S",
-    "notes": "Vacuously satisfied: the durable-state check only bites once a bridge crate exists; the self-test at :193 proves the scanner fires."
+    "notes": "Vacuously satisfied: the durable-state check only bites once a bridge crate exists; the self-test at :193 proves the scanner fires. Re-graded COMPLETE->PARTIAL on 2026-10-11 by an independent spot-check: bridge_boundary.rs:153 passes vacuously: no bridge exists, no premise check; its token list misses fs::write after use std::fs."
   },
   {
     "id": "R12-DATA-8011",
