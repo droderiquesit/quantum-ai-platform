@@ -532,3 +532,82 @@ fn a_tax_lot_is_read_from_its_postings_with_the_acquisition_time_its_opening_rec
     assert_eq!(store.tax_lots().expect("lots")[0].quantity, dec!("6"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// R12-CAPITAL-4087's ledger half: what the survival waterfall withholds is
+/// folded from booked postings. A pledge and a margin requirement recorded
+/// through the writer read back as collateral and margin; returning half the
+/// pledge moves the figure by exactly that; and the fills already booked
+/// contribute no settlement, because every fill settles `Simulated` at the
+/// fill — which is what this reading says, rather than a zero nobody read.
+///
+/// Mutation: in `LedgerObligations::from_balances`, drop the
+/// `Account::Collateral` arm — collateral reads zero and the first
+/// assertion fails.
+#[test]
+fn the_ledgers_pledged_collateral_and_booked_margin_are_what_survival_reads() {
+    let dir = booked("obligations");
+    let store = open(&dir).expect("opens");
+    let as_of = Timestamp::from_secs(1_790_000_200);
+    let before = store.obligations(UNIT, as_of).expect("reads");
+    assert_eq!(
+        before.collateral(),
+        Decimal::ZERO,
+        "premise: nothing pledged"
+    );
+
+    let operations = [
+        op(
+            "treasury-1",
+            OperationKind::TreasuryAllocation {
+                treasury: "paper-pool".to_string(),
+                book: book(),
+                unit: UNIT.to_string(),
+                amount: dec!("1000"),
+                phase: Phase::Establish,
+            },
+        ),
+        op(
+            "pledge-1",
+            OperationKind::CollateralPledge {
+                book: book(),
+                counterparty: "prime-broker".to_string(),
+                unit: UNIT.to_string(),
+                amount: dec!("300"),
+                phase: Phase::Establish,
+            },
+        ),
+        op(
+            "margin-1",
+            OperationKind::MarginRequirement {
+                venue: VENUE.to_string(),
+                unit: UNIT.to_string(),
+                amount: dec!("120"),
+                phase: Phase::Establish,
+            },
+        ),
+    ];
+    for operation in &operations {
+        store.record_operation(operation).expect("records");
+    }
+    let charged = store.obligations(UNIT, as_of).expect("reads");
+    assert_eq!(charged.collateral(), dec!("300"));
+    assert_eq!(charged.margin(), dec!("120"));
+    assert_eq!(charged.settlement(), Decimal::ZERO);
+
+    store
+        .record_operation(&op(
+            "pledge-1-return",
+            OperationKind::CollateralPledge {
+                book: book(),
+                counterparty: "prime-broker".to_string(),
+                unit: UNIT.to_string(),
+                amount: dec!("150"),
+                phase: Phase::Unwind,
+            },
+        ))
+        .expect("records the return");
+    assert_eq!(
+        store.obligations(UNIT, as_of).expect("reads").collateral(),
+        dec!("150")
+    );
+}

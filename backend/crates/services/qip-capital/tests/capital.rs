@@ -434,6 +434,7 @@ fn terms(gross: Decimal, validity: Duration) -> EnvelopeTerms {
         loss_fraction: dec!("0.2"),
         venues: vec![venue()],
         validity,
+        exposure: qip_capital::ExposureTerms::default(),
     }
 }
 

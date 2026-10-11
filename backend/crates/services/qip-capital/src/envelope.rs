@@ -55,11 +55,11 @@
 //! The shared-key issuer stays for the release ADR 0110 keeps HMAC for.
 
 use crate::allocation::Allocation;
-use qip_contracts::CapitalEnvelope;
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::trust::{ArtefactClass, ArtefactSigner, ArtefactVerifier, sign_artefact};
 use qip_contracts::venue::VenueId;
+use qip_contracts::{CapitalEnvelope, ExposureBounds};
 use qip_core::error::{Error, Result};
 use qip_core::hash::{constant_time_eq, from_hex, to_hex};
 use qip_core::{Decimal, Duration, Timestamp, hmac_sha256};
@@ -80,6 +80,41 @@ const DEFAULT_ORDER_FRACTION: Decimal = Decimal::from_raw(100_000_000);
 /// What fraction of an envelope may be lost before the cell stops itself.
 const DEFAULT_LOSS_FRACTION: Decimal = Decimal::from_raw(200_000_000);
 
+/// The largest share of the visible depth on the side an order takes that a
+/// grant lets one order ask for, by default: a quarter (R12-CAPITAL-4088).
+///
+/// Not calibrated to any venue, and said so; it is the restrictive standing
+/// figure a desk starts from, in the register of the order and loss
+/// fractions above. What it prevents is the position a disconnected cell
+/// could otherwise build inside its money limits: the whole of a thin book,
+/// taken in one order, with nobody left on the other side to exit to.
+pub const DEFAULT_MAX_PARTICIPATION_BP: u32 = 2_500;
+
+/// The gross a grant may carry over its remaining equity, by default: one,
+/// unlevered. With the capital equal to the gross limit this binds the moment
+/// the cell has realised a loss — the same gross on less equity is leverage,
+/// and the money limits alone would let the cell keep carrying it.
+pub const DEFAULT_MAX_LEVERAGE: Decimal = Decimal::ONE;
+
+/// The liquidity and leverage bounds a grant is issued under
+/// (R12-CAPITAL-4088). Not optional on [`EnvelopeTerms`]: every envelope the
+/// issuer signs carries them, so the centre cannot sign a grant the cell has
+/// to read as unbounded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExposureTerms {
+    pub max_participation_bp: u32,
+    pub max_leverage: Decimal,
+}
+
+impl Default for ExposureTerms {
+    fn default() -> Self {
+        Self {
+            max_participation_bp: DEFAULT_MAX_PARTICIPATION_BP,
+            max_leverage: DEFAULT_MAX_LEVERAGE,
+        }
+    }
+}
+
 /// The terms of one grant, separate from the signing of it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EnvelopeTerms {
@@ -95,6 +130,10 @@ pub struct EnvelopeTerms {
     /// [`CapitalEnvelope::permits_venue`].
     pub venues: Vec<VenueId>,
     pub validity: Duration,
+    /// The liquidity and leverage bounds the grant carries, measured against
+    /// a capital equal to the gross limit as signed — after any narrowing,
+    /// so a narrowed grant is backed by the narrowed figure.
+    pub exposure: ExposureTerms,
 }
 
 impl EnvelopeTerms {
@@ -108,7 +147,13 @@ impl EnvelopeTerms {
             loss_fraction: DEFAULT_LOSS_FRACTION,
             venues: vec![allocation.venue.clone()],
             validity,
+            exposure: ExposureTerms::default(),
         }
+    }
+
+    pub fn with_exposure(mut self, exposure: ExposureTerms) -> Self {
+        self.exposure = exposure;
+        self
     }
 
     pub fn with_order_fraction(mut self, fraction: Decimal) -> Self {
@@ -286,9 +331,18 @@ impl EnvelopeIssuer {
             .ok_or_else(|| Error::numeric("the loss limit overflowed"))?;
         let expires_at = now.saturating_add(terms.validity);
 
-        // Built once unsigned to obtain the payload, then rebuilt with the
-        // signature over it. The payload is a function of the fields, so the
-        // two constructions agree by construction.
+        // The bounds are validated before anything is signed: a participation
+        // of zero or a leverage below one is refused here, by name, rather
+        // than signed into a grant every cell would then refuse.
+        let exposure = ExposureBounds::bounded(
+            terms.exposure.max_participation_bp,
+            terms.exposure.max_leverage,
+            terms.gross_limit,
+        )?;
+
+        // Built unsigned to obtain the payload, then signed over it. The
+        // payload is a function of the fields, the exposure bounds included,
+        // so the signature covers every bound the cell will enforce.
         let unsigned = CapitalEnvelope::new(
             terms.strategy.clone(),
             terms.cell.clone(),
@@ -300,21 +354,10 @@ impl EnvelopeIssuer {
             expires_at,
             approval.approver.clone(),
             String::new(),
-        )?;
+        )?
+        .with_exposure(exposure)?;
         let signature = self.sign(&unsigned.signing_payload())?;
-
-        CapitalEnvelope::new(
-            terms.strategy.clone(),
-            terms.cell.clone(),
-            terms.gross_limit,
-            order_limit,
-            loss_limit,
-            terms.venues.clone(),
-            now,
-            expires_at,
-            approval.approver.clone(),
-            signature,
-        )
+        Ok(unsigned.signed(signature))
     }
 
     /// Verify a grant, refusing an unsigned, tampered or expired one.

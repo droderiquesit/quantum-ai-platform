@@ -972,6 +972,7 @@ impl LiveDemo {
             loss_fraction: dec!("0.02"),
             venues: vec![VenueId::new(VENUE)],
             validity: Duration::from_hours(8),
+            exposure: qip_capital::ExposureTerms::default(),
         };
         let approval = Approval::new(
             "capital grant for the live demonstration",

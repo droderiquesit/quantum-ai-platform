@@ -92,9 +92,17 @@ fn grant(strategy: &str) -> Result<VerifiedEnvelope> {
             signature,
         )
     };
-    let unsigned = build("unsigned")?;
-    let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
-    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, CELL, t(1))
+    // Bounded as the centre's issuer bounds every grant (R12-CAPITAL-4088):
+    // the cell `assemble` builds refuses an envelope without exposure bounds.
+    let unsigned = build("")?;
+    let capital = unsigned.gross_limit();
+    let unsigned = unsigned.with_exposure(qip_contracts::capital::ExposureBounds::bounded(
+        2_500,
+        qip_core::Decimal::ONE,
+        capital,
+    )?)?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
 
 /// The node's pieces, assembled the way `main.rs` assembles them — through

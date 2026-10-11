@@ -381,6 +381,23 @@ pub const GATE_VENUE_QUARANTINE: &str = "venue_quarantine";
 /// with no `WorkReport`.
 pub const GATE_VENUE_WITHDRAWAL: &str = "venue_withdrawal";
 
+/// The gate an order is refused under when it asks for more of the visible
+/// depth on the side it takes than its envelope's participation bound allows,
+/// or when there is no visible depth to measure it against
+/// (R12-CAPITAL-4088). A constant so the `gate` label stays bounded by source.
+pub const GATE_ENVELOPE_LIQUIDITY: &str = "envelope_liquidity";
+
+/// The gate an order is refused under when it would carry its envelope past
+/// the leverage the grant allows on the equity it has left after realised
+/// loss (R12-CAPITAL-4088).
+pub const GATE_ENVELOPE_LEVERAGE: &str = "envelope_leverage";
+
+/// The gate an order is refused under when the cell requires exposure bounds
+/// ([`CellConfig::with_exposure_bounds_required`]) and the envelope it would
+/// spend carries none — an envelope issued before the bounds existed, or one
+/// minted without them (R12-CAPITAL-4088).
+pub const GATE_ENVELOPE_UNBOUNDED: &str = "envelope_unbounded";
+
 /// How long a disposition's intent is good for once built. It enters the
 /// netting set in the same pass, so this is documentation of the intent's
 /// scope rather than a bound anything waits on: the instruction is re-read
@@ -501,6 +518,21 @@ pub struct CellConfig {
     /// pass in suites written before it existed. The composition root arms
     /// it with [`Self::with_venue_health`]; `qip-edge-node`'s `assemble` does.
     pub venue_health: Option<HealthPolicy>,
+    /// Whether an envelope without liquidity and leverage bounds is refused
+    /// (R12-CAPITAL-4088).
+    ///
+    /// Bounds an envelope *does* carry are enforced whatever this says; this
+    /// decides only what an envelope without them means. Off by default for
+    /// the reason [`Self::journal_wire`] is: every envelope a suite or the
+    /// demo minted before the bounds existed carries none, and arming the
+    /// refusal on every cell would stop them on a grant nobody re-signed.
+    /// That is a weaker library default than the deployment's, and it is
+    /// stated rather than hidden: the composition root arms it with
+    /// [`Self::with_exposure_bounds_required`] — `qip-edge-node`'s
+    /// `assemble` does — and the centre's issuer signs the bounds into every
+    /// envelope it issues, so on the binary path an unbounded envelope is
+    /// one the centre did not issue.
+    pub exposure_bounds_required: bool,
 }
 
 /// The rolling window §27.1's crossing cap is evaluated against.
@@ -547,7 +579,18 @@ impl CellConfig {
             journal_wire: false,
             journal_trimmed_on_ship: false,
             venue_health: None,
+            exposure_bounds_required: false,
         }
+    }
+
+    /// Refuse every order against an envelope that carries no liquidity and
+    /// leverage bounds (R12-CAPITAL-4088), under [`GATE_ENVELOPE_UNBOUNDED`].
+    /// The fail-closed reading of an absent bound: a grant signed over no
+    /// participation and no leverage authorises neither.
+    #[must_use]
+    pub fn with_exposure_bounds_required(mut self) -> Self {
+        self.exposure_bounds_required = true;
+        self
     }
 
     /// Quarantine a venue whose reject rate crosses `policy`'s line, for
@@ -4910,6 +4953,29 @@ impl Cell {
             return Ok(None);
         }
 
+        // The envelope's liquidity and leverage bounds (R12-CAPITAL-4088),
+        // after the money limits and before the region hold or any intent
+        // exists. The money limits bound how much; these bound whether the
+        // position can be exited and whether it is carried on equity the
+        // grant still has.
+        let verdict = self.deployed.get(&key).and_then(|deployed| {
+            exposure_verdict(
+                &self.liquidity,
+                self.config.exposure_bounds_required,
+                &deployed.envelope,
+                &venue,
+                &signal.object_id,
+                side,
+                quantity,
+                quantity.checked_mul(price),
+                &deployed.utilisation,
+            )
+        });
+        if let Some((gate, reason)) = verdict {
+            self.refuse(report, gate, &reason, now);
+            return Ok(None);
+        }
+
         if self.autonomy.level() == AutonomyLevel::Observation {
             self.refuse(
                 report,
@@ -7805,7 +7871,40 @@ impl Cell {
                 );
                 None
             }
-            Some(Some(CapitalAdmission::Full)) => Some(notional),
+            Some(Some(CapitalAdmission::Full)) => {
+                // The desk's envelope meets the same liquidity and leverage
+                // bounds a strategy's does (R12-CAPITAL-4088): a cycle leg
+                // that takes a thin book whole is the unexitable position
+                // the bound exists for, whoever sends it.
+                let verdict = self.desk.as_ref().and_then(|installed| {
+                    let desk = &installed.desk;
+                    let mut used = desk.utilisation().clone();
+                    used.gross_committed += pending;
+                    let side = if intent.signed_size.is_positive() {
+                        BookSide::Ask
+                    } else {
+                        BookSide::Bid
+                    };
+                    exposure_verdict(
+                        &self.liquidity,
+                        self.config.exposure_bounds_required,
+                        desk.envelope(),
+                        &intent.venue,
+                        &intent.object_id,
+                        side,
+                        intent.signed_size.abs(),
+                        Some(notional),
+                        &used,
+                    )
+                });
+                match verdict {
+                    Some((gate, reason)) => {
+                        self.refuse(report, gate, &reason, now);
+                        None
+                    }
+                    None => Some(notional),
+                }
+            }
             Some(Some(CapitalAdmission::Reduced(cap))) => {
                 self.refuse(
                     report,
@@ -10210,6 +10309,57 @@ struct SuspendedCycle {
 /// one intent per strategy, so the strategy is the rest of the key.
 fn region_hold_id(pass: u64, strategy: &str) -> String {
     format!("{pass}:strategy:{strategy}")
+}
+
+/// The envelope's liquidity and leverage verdict on one order
+/// (R12-CAPITAL-4088): `None` to admit, or the gate and reason to refuse.
+///
+/// A free function over the pieces it reads so the caller can journal the
+/// refusal through `&mut self` without holding a borrow of the envelope.
+/// `notional` is `None` when it could not be represented, which refuses
+/// under the leverage gate: a gross the cell cannot compute is not one it
+/// may assume fits. An envelope with no bounds is admitted here only when
+/// the cell does not require them; the money limits have already run.
+#[allow(clippy::too_many_arguments)]
+fn exposure_verdict(
+    liquidity: &CellLiquidity,
+    required: bool,
+    envelope: &VerifiedEnvelope,
+    venue: &VenueId,
+    object: &ObjectId,
+    side: BookSide,
+    quantity: Decimal,
+    notional: Option<Decimal>,
+    used: &Utilisation,
+) -> Option<(&'static str, String)> {
+    if envelope.exposure().is_none() && !required {
+        return None;
+    }
+    let Some(notional) = notional else {
+        return Some((
+            GATE_ENVELOPE_LEVERAGE,
+            "the order's notional cannot be represented, so its leverage cannot be checked"
+                .to_string(),
+        ));
+    };
+    // The whole visible side the order takes: what is resting there for it
+    // to trade against, and so what an exit on the other side of the same
+    // book would have to find again.
+    let depth = liquidity
+        .get(venue, object)
+        .map_or(Decimal::ZERO, |state| state.book().total_size(side));
+    match envelope.check_exposure(quantity, depth, notional, used) {
+        Ok(()) => None,
+        Err(qip_contracts::ExposureBreach::Unbounded(reason)) => {
+            Some((GATE_ENVELOPE_UNBOUNDED, reason))
+        }
+        Err(qip_contracts::ExposureBreach::Liquidity(reason)) => {
+            Some((GATE_ENVELOPE_LIQUIDITY, reason))
+        }
+        Err(qip_contracts::ExposureBreach::Leverage(reason)) => {
+            Some((GATE_ENVELOPE_LEVERAGE, reason))
+        }
+    }
 }
 
 /// The `capital` refusal of a commitment by an owner latched on a leg the

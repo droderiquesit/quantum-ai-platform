@@ -71,6 +71,7 @@ fn terms() -> EnvelopeTerms {
         loss_fraction: dec!("0.2"),
         venues: vec![VenueId::new("XLON")],
         validity: Duration::from_hours(2),
+        exposure: qip_capital::ExposureTerms::default(),
     }
 }
 

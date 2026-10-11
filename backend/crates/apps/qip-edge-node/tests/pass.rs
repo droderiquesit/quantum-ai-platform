@@ -126,9 +126,17 @@ fn grant_for(
             signature,
         )
     };
-    let unsigned = build("unsigned")?;
-    let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
-    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, cell, t(1))
+    // Bounded as the centre's issuer bounds every grant (R12-CAPITAL-4088):
+    // the cell `assemble` builds refuses an envelope without exposure bounds.
+    let unsigned = build("")?;
+    let capital = unsigned.gross_limit();
+    let unsigned = unsigned.with_exposure(qip_contracts::capital::ExposureBounds::bounded(
+        2_500,
+        qip_core::Decimal::ONE,
+        capital,
+    )?)?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, cell, t(1))
 }
 
 /// A verified payload for `cell` whose `capital_grants` slot names `grants`
@@ -3571,4 +3579,26 @@ fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
         0,
         "main.rs runs a pass of its own beside the decision loop's, which nothing times"
     );
+}
+
+/// R12-CAPITAL-4088: the cell `assemble` builds — the one `main.rs` runs —
+/// requires exposure bounds, so an envelope the centre did not bound is
+/// refused at the order rather than read as unbounded. The library default
+/// does not require them (`CellConfig::exposure_bounds_required`), which is
+/// why this is asserted on the assembled cell and not on the config type.
+///
+/// Mutation: delete `with_exposure_bounds_required` from `assemble_with_risk`
+/// — the assertion fails.
+#[test]
+fn the_assembled_cell_refuses_envelopes_without_exposure_bounds() -> Result<()> {
+    let premise = CellConfig::new(CELL, REGION).with_venue(venue());
+    assert!(
+        !premise.exposure_bounds_required,
+        "premise: the library default leaves it to the composition root"
+    );
+    let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
+    let allocation = RegionCapital::read(Some("1000000000"))?;
+    let node = assemble(premise, features, Arc::new(SystemClock), allocation, None)?;
+    assert!(node.cell.config().exposure_bounds_required);
+    Ok(())
 }

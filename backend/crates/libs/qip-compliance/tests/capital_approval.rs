@@ -39,6 +39,7 @@ fn request(gross: Decimal) -> CapitalRequest {
         venues: vec![VenueId::new("XETR")],
         expires_at: now().saturating_add(Duration::from_days(1)),
         requested_by: "r.mensah".to_string(),
+        exposure: None,
     }
 }
 

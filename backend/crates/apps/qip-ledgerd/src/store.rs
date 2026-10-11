@@ -93,6 +93,7 @@
 
 use crate::backend::{LedgerBackend, LedgerBatch, LocalBackend};
 use crate::telemetry::LedgerTelemetry;
+use qip_capital::LedgerObligations;
 use qip_contracts::ledger::{Account, Direction, LedgerEvent};
 use qip_contracts::ledger_operation::{LedgerOperation, OperationKind, Phase};
 use qip_contracts::reflex::{ChainSpan, Decision, OutcomeRecord};
@@ -1170,6 +1171,18 @@ impl LedgerStore {
         Ok(self
             .read::<BalanceRow>(&key)?
             .map_or(Decimal::ZERO, |row| row.amount))
+    }
+
+    /// Margin booked, collateral pledged and cash owed and not yet settled,
+    /// folded from the stored balances in `unit` as of `as_of` — the reading
+    /// the survival waterfall withholds from (R12-CAPITAL-4087,
+    /// `qip_kernel::Platform::observe_ledger_obligations`).
+    ///
+    /// Read from [`Self::balances`], which the store proved equal to the
+    /// refold of its history when it opened, so the figures are a fold of
+    /// booked postings and not a second account kept beside them.
+    pub fn obligations(&self, unit: &str, as_of: Timestamp) -> Result<LedgerObligations> {
+        LedgerObligations::from_balances(&self.balances()?, unit, as_of)
     }
 
     /// Query all chain records (postings).

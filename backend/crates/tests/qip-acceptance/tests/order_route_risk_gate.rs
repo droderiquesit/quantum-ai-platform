@@ -123,9 +123,16 @@ fn grant() -> Result<VerifiedEnvelope> {
             signature,
         )
     };
-    let unsigned = build("unsigned")?;
-    let signed = build(&sign_payload(ENVELOPE_KEY, &unsigned.signing_payload()))?;
-    VerifiedEnvelope::verify(signed, ENVELOPE_KEY, CELL, t(1))
+    // Bounded as the centre's issuer bounds every grant (R12-CAPITAL-4088):
+    // the node `assemble` builds refuses an envelope without exposure
+    // bounds, and this suite is about the risk gate, not that refusal.
+    let unsigned = build("")?.with_exposure(qip_contracts::capital::ExposureBounds::bounded(
+        qip_capital::DEFAULT_MAX_PARTICIPATION_BP,
+        qip_capital::DEFAULT_MAX_LEVERAGE,
+        dec!("1000000"),
+    )?)?;
+    let signature = sign_payload(ENVELOPE_KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(unsigned.signed(signature), ENVELOPE_KEY, CELL, t(1))
 }
 
 fn share_policy(grants: Vec<String>) -> Result<VerifiedPolicy> {

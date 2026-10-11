@@ -92,9 +92,17 @@ fn grant(expires: Timestamp) -> Result<VerifiedEnvelope> {
             signature,
         )
     };
-    let unsigned = build("unsigned")?;
-    let signed = build(&sign_payload(KEY, &unsigned.signing_payload()))?;
-    VerifiedEnvelope::verify(signed, KEY, CELL, t(1))
+    // Bounded as the centre's issuer bounds every grant (R12-CAPITAL-4088):
+    // the cell `assemble` builds refuses an envelope without exposure bounds.
+    let unsigned = build("")?;
+    let capital = unsigned.gross_limit();
+    let unsigned = unsigned.with_exposure(qip_contracts::capital::ExposureBounds::bounded(
+        2_500,
+        qip_core::Decimal::ONE,
+        capital,
+    )?)?;
+    let signature = sign_payload(KEY, &unsigned.signing_payload());
+    VerifiedEnvelope::verify(unsigned.signed(signature), KEY, CELL, t(1))
 }
 
 /// The last payload the centre shipped before it went quiet, with each

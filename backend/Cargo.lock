@@ -674,6 +674,7 @@ dependencies = [
 name = "qip-ledgerd"
 version = "0.1.0"
 dependencies = [
+ "qip-capital",
  "qip-contracts",
  "qip-core",
  "qip-events",

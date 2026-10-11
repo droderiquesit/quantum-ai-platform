@@ -199,3 +199,204 @@ fn the_shipped_survival_policy_lowers_the_ceiling_against_the_library_default() 
     assert_eq!(shipped, dec!("9500000"));
     Ok(())
 }
+
+/// Ledger balances in the shape `qip_ledgerd::LedgerStore::balances` returns.
+fn ledger_balances(
+    rows: &[(qip_contracts::ledger::Account, Decimal)],
+) -> std::collections::BTreeMap<(qip_contracts::ledger::Account, String), Decimal> {
+    rows.iter()
+        .map(|(account, amount)| ((account.clone(), "USD".to_string()), *amount))
+        .collect()
+}
+
+/// R12-CAPITAL-4087 through the platform: a ledger reading with cash owed
+/// and not yet settled, and collateral pledged beyond its margin, lowers the
+/// ceiling the Risk Gate reads by exactly what it withholds. Before the
+/// reading the platform's only source was the cross-margin review, which
+/// derives both as zero, so the same capital was released to opportunity.
+///
+/// Mutations, each fired and restored: drop the `ledger` argument from
+/// `survival_figures` (pass `None`) and the ceiling stays at ten million;
+/// remove the `seed_survival_ceiling` call from `observe_ledger_obligations`
+/// and the ceiling stays at ten million until the next construction; drop
+/// the stale-reading check and the older reading is accepted.
+#[test]
+fn unsettled_cash_and_pledged_collateral_on_the_ledger_lower_what_survival_releases() -> Result<()>
+{
+    use qip_contracts::ledger::Account;
+    let mut platform = platform()?;
+    let open = platform.survival_gross_ceiling().expect("seeded");
+    assert_eq!(open, dec!("10000000"), "premise: nothing is withheld yet");
+
+    // Settlement alone: two hundred and fifty thousand owed on a funding
+    // accrual, and an interest receivable that must not offset it.
+    let owed = qip_capital::LedgerObligations::from_balances(
+        &ledger_balances(&[
+            (
+                Account::Accrual {
+                    accrual_type: "funding".to_string(),
+                },
+                dec!("-250000"),
+            ),
+            (
+                Account::Accrual {
+                    accrual_type: "interest".to_string(),
+                },
+                dec!("90000"),
+            ),
+        ]),
+        "USD",
+        start(),
+    )?;
+    platform.observe_ledger_obligations(owed)?;
+    assert_eq!(
+        platform.survival_gross_ceiling().expect("re-seeded"),
+        dec!("9750000"),
+        "unsettled cash is withheld and a receivable does not release it"
+    );
+
+    // A later reading: the accrual has settled, and three hundred thousand
+    // is pledged against a hundred thousand of booked margin. Margin and
+    // the excess pledge are withheld; the covered part once, not twice.
+    let pledged = qip_capital::LedgerObligations::from_balances(
+        &ledger_balances(&[
+            (
+                Account::Margin {
+                    venue: "XNYS".to_string(),
+                },
+                dec!("100000"),
+            ),
+            (
+                Account::Collateral {
+                    counterparty: "prime-broker".to_string(),
+                },
+                dec!("300000"),
+            ),
+        ]),
+        "USD",
+        start().saturating_add(Duration::from_secs(60)),
+    )?;
+    platform.observe_ledger_obligations(pledged)?;
+    assert_eq!(
+        platform.survival_gross_ceiling().expect("re-seeded"),
+        dec!("9700000")
+    );
+
+    // An older reading delivered late is refused, and the held one stands.
+    let stale =
+        qip_capital::LedgerObligations::from_balances(&ledger_balances(&[]), "USD", start())?;
+    let refused = platform
+        .observe_ledger_obligations(stale)
+        .expect_err("a reading older than the one held");
+    assert!(refused.message().contains("older"), "{refused}");
+    assert_eq!(
+        platform.survival_gross_ceiling().expect("unchanged"),
+        dec!("9700000")
+    );
+
+    // A reading in a unit the waterfall does not size in is refused.
+    let euros = qip_capital::LedgerObligations::from_balances(
+        &std::collections::BTreeMap::new(),
+        "EUR",
+        start().saturating_add(Duration::from_secs(120)),
+    )?;
+    assert!(platform.observe_ledger_obligations(euros).is_err());
+    Ok(())
+}
+
+/// R12-CAPITAL-4087's settlement tier from the platform's own state: the
+/// desk venue is declared T+1 in the settlement book at assembly, and a sale
+/// there books its cash at the fill. Until the calendar's settlement
+/// instant the proceeds are withheld from survival sizing — the ceiling the
+/// gate reads is lower by exactly them — and once it passes they are
+/// released. Before this the waterfall read settlement as zero while the
+/// pre-positioning planner quoted the same venue T+1.
+///
+/// Mutations, each fired and restored: return early from
+/// `register_settlement` (nothing is withheld and the first assertion
+/// fails); pass `Decimal::ZERO` as `unsettled_sales` in `survival_figures`
+/// (the ceiling does not fall); treat every sale as available at the fill
+/// (nothing is in flight an hour on).
+#[test]
+fn a_sale_on_the_desk_venues_t_plus_one_calendar_is_withheld_until_it_settles() -> Result<()> {
+    let config = PlatformConfig::default();
+    let (context, clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(config, context, Telemetry::silent(), universe(), wide())?;
+    platform.observe(
+        (0..30)
+            .map(|i| {
+                let at = start().saturating_sub(Duration::from_days(30 - i));
+                SensedRecord::Bar(Box::new(Bar {
+                    object_id: object(),
+                    venue: "XNYS".to_string(),
+                    interval: Interval::Day,
+                    open_time: at,
+                    open: dec!("100"),
+                    high: dec!("100.5"),
+                    low: dec!("99.5"),
+                    close: dec!("100"),
+                    volume: dec!("1000000"),
+                    trade_count: 5_000,
+                    vwap: Some(dec!("100")),
+                    quality: DataQuality::default(),
+                }))
+            })
+            .collect(),
+    );
+    buy(&mut platform, dec!("1000"))?;
+    assert_eq!(
+        platform.unsettled_sale_proceeds(start())?,
+        Decimal::ZERO,
+        "premise: a purchase owes nothing later — the broker debited it"
+    );
+    let bought: Decimal = platform
+        .orders()
+        .fills()
+        .iter()
+        .map(|fill| fill.quantity)
+        .sum();
+    assert!(bought.is_positive(), "premise: the buy filled");
+
+    // Sell what filled, at 08:53 UTC on a Thursday: inside the 16:00
+    // cut-off, so T+1 settles on Friday at 09:00.
+    let sell = platform.order_from(
+        object(),
+        Side::Sell,
+        bought,
+        dec!("100"),
+        "prop-survival",
+        vec!["hyp-survival".to_string()],
+        start(),
+    );
+    let bought_fills = platform.orders().fills().len();
+    platform.submit_order(sell, start())?;
+    let proceeds: Decimal = platform.orders().fills()[bought_fills..]
+        .iter()
+        .map(|fill| fill.price * fill.quantity - fill.costs)
+        .sum();
+    assert!(proceeds.is_positive(), "premise: the sale filled");
+    // An hour on — after the fill, still the day before settlement — the
+    // proceeds are in flight.
+    let an_hour_on = start().saturating_add(Duration::from_hours(1));
+    assert_eq!(platform.unsettled_sale_proceeds(an_hour_on)?, proceeds);
+
+    clock.set(an_hour_on);
+    let policy = *platform.survival_policy();
+    platform.set_survival_policy(policy);
+    let in_flight = platform.survival_gross_ceiling().expect("seeded");
+
+    // Friday 09:00 has passed: the venue's calendar has made them usable.
+    clock.set(start().saturating_add(Duration::from_days(2)));
+    assert_eq!(
+        platform.unsettled_sale_proceeds(start().saturating_add(Duration::from_days(2)))?,
+        Decimal::ZERO
+    );
+    platform.set_survival_policy(policy);
+    let settled = platform.survival_gross_ceiling().expect("re-seeded");
+    assert_eq!(
+        settled - in_flight,
+        proceeds,
+        "the ceiling did not fall by the proceeds in settlement and rise by them once settled"
+    );
+    Ok(())
+}
