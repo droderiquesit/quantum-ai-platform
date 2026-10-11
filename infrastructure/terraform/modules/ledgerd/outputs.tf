@@ -5,7 +5,7 @@ output "service_account_email" {
 
 output "read_api" {
   description = "The read-side API's internal address and port."
-  value       = "${google_compute_address.ledgerd.address}:${var.listen_port}"
+  value       = "${var.internal_address}:${var.listen_port}"
 }
 
 output "instance_name" {

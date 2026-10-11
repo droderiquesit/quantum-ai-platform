@@ -26,6 +26,11 @@ run "the_ledger_is_one_machine_with_no_external_address_on_its_own_archive_disk"
   }
 
   assert {
+    condition     = google_compute_instance.ledgerd.network_interface[0].network_ip == "10.0.21.10"
+    error_message = "The ledger machine is not on the stable internal address its read API is published at."
+  }
+
+  assert {
     condition     = google_compute_instance.ledgerd.attached_disk[0].device_name == "qip-ledger"
     error_message = "The archive disk is not attached as `qip-ledger`, so the startup script mounts nothing."
   }

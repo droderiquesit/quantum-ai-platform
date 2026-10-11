@@ -14,20 +14,8 @@
 # environment that could push here could replace the bytes the earlier ones
 # tested, which is the failure the single registry exists to remove.
 
-variable "promotion_readers" {
-  description = "Principals in later environments granted roles/artifactregistry.reader on the image repository, as IAM members (`serviceAccount:…`). Read only, never writer."
-  type        = set(string)
-  default     = []
-  nullable    = false
-
-  validation {
-    condition = alltrue([
-      for member in var.promotion_readers :
-      can(regex("^serviceAccount:[a-z0-9-]+@[a-z0-9.-]+\\.iam\\.gserviceaccount\\.com$", member))
-    ])
-    error_message = "Every promotion reader is one service account, written `serviceAccount:<name>@<domain>.iam.gserviceaccount.com`. A user, a group, a domain, allUsers or allAuthenticatedUsers is refused: the build registry is read by pipelines and service agents, not by people."
-  }
-}
+# `var.promotion_readers` is declared in variables.tf with the module's other
+# inputs, where `terraform_contract.rs` (and a reader) looks for them.
 
 resource "google_artifact_registry_repository_iam_member" "promotion_read" {
   for_each = var.promotion_readers

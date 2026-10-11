@@ -2261,6 +2261,14 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         // use to prove they hold no authority over capital envelopes or custodial
         // resources (GOV-026). It has no roles on capital or custody resources.
         ("terraform".to_string(), "agent_identity".to_string()),
+        // The event-fabric broker, `qip-fabricd` (ADR 0100 §2): the broker
+        // template runs as it, passed into `modules/event-fabric-broker` as
+        // `service_account_email` by the root's `fabric.tf`. Logs and metrics
+        // only. Added with the broker's Terraform (`d7675f60`); bound below.
+        ("terraform".to_string(), "fabricd".to_string()),
+        // The ledger writer, `qip-ledgerd` (ADR 0100 §2): its one machine runs
+        // as it. Logs and metrics only. Added in `d7675f60`; bound below.
+        ("ledgerd".to_string(), "ledgerd".to_string()),
     ];
     expected.sort();
     assert_eq!(
@@ -2347,6 +2355,53 @@ fn every_service_account_terraform_creates_runs_something_or_signs_something() {
         "{CONTROL_PLANE_MODULE}'s cluster does not run its nodes as \
          google_service_account.nodes, so that account is an identity with nothing attached \
          and the nodes run as the project's default compute identity"
+    );
+
+    // The two fabric identities lane C added (`d7675f60`) are held the same
+    // way, end to end, because each is attached by one line whose loss leaves
+    // the account existing, granted, and listed above while the machine runs
+    // as the default compute identity. `terraform.fabricd`: the root passes
+    // its email into the broker module, and the module's template runs as
+    // what it is passed.
+    let fabric = without_comments(&read("infrastructure/terraform/fabric.tf"));
+    let broker_call = fabric
+        .split("module \"event_fabric_broker\" {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .unwrap_or_else(|| panic!("fabric.tf no longer instantiates modules/event-fabric-broker"));
+    assert!(
+        broker_call.lines().any(|line| collapsed(line)
+            == "service_account_email = google_service_account.fabricd[0].email"),
+        "fabric.tf does not hand google_service_account.fabricd to the broker module, so the \
+         fabricd account is an identity with nothing attached"
+    );
+    let broker = without_comments(&read(
+        "infrastructure/terraform/modules/event-fabric-broker/main.tf",
+    ));
+    let template = terraform_resources(&broker, "google_compute_instance_template")
+        .into_iter()
+        .find(|(name, _)| name == "event_fabric_broker")
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| panic!("the broker module declares no instance template"));
+    assert!(
+        template
+            .lines()
+            .any(|line| collapsed(line) == "email = var.service_account_email"),
+        "the broker template does not run as the service_account_email it is given"
+    );
+    // `ledgerd.ledgerd`: the module's own machine runs as it.
+    let ledgerd = without_comments(&read("infrastructure/terraform/modules/ledgerd/main.tf"));
+    let machine = terraform_resources(&ledgerd, "google_compute_instance")
+        .into_iter()
+        .find(|(name, _)| name == "ledgerd")
+        .map(|(_, body)| body)
+        .unwrap_or_else(|| panic!("modules/ledgerd declares no ledgerd machine"));
+    assert!(
+        machine
+            .lines()
+            .any(|line| collapsed(line) == "email = google_service_account.ledgerd.email"),
+        "the ledger machine does not run as google_service_account.ledgerd, so that account \
+         is an identity with nothing attached"
     );
 }
 
@@ -4391,14 +4446,116 @@ fn the_pipeline_starts_with_the_least_permission_it_can() {
     );
 }
 
+/// The dependency policy is enforced by a script that refuses, not by prose.
+///
+/// **What changed (`ebe92f0e`, ADR 0109, accepted 2026-10-11).** The script
+/// held its permitted set in-line as `readonly PERMITTED=(serde serde_json)`,
+/// and this test asserted that array existed. ADR 0109 moved the set to a
+/// committed allow-list, `scripts/dependency-allowlist.txt`, one package per
+/// line with the record that admitted it, so the array is gone by design. The
+/// old test only asserted spellings in the script; this one keeps those
+/// structural checks against the new mechanism and adds what the old one never
+/// had — it **runs** the script, against a copy of the real allow-list and a
+/// fabricated lockfile, and proves it refuses an unlisted package (direct or
+/// transitive: the lockfile holds both), refuses an allow-list line with no
+/// reason, refuses a missing allow-list, and admits a lockfile it should.
+///
+/// Mutation: make the violations branch `exit 0` — the refusal assertion
+/// fires. Drop the unexplained-line check — the reason assertion fires.
 #[test]
 fn the_dependency_policy_is_enforced_rather_than_documented() {
     let script = read("scripts/check-dependencies.sh");
     assert!(script.contains("set -euo pipefail"));
-    assert!(script.contains("readonly PERMITTED"));
-    // And it actually reads the lockfile rather than the manifests, so a
-    // transitive dependency cannot slip past.
-    assert!(script.contains("Cargo.lock"));
+    // It reads the lockfile rather than the manifests, so a transitive
+    // dependency cannot slip past, and the committed allow-list rather than a
+    // list nobody reviews.
+    assert!(script.contains("backend/Cargo.lock"));
+    assert!(script.contains("scripts/dependency-allowlist.txt"));
+    let allowlist = read("scripts/dependency-allowlist.txt");
+    // The decision core is still listed by name, each with its reason.
+    for core in ["serde", "serde_json"] {
+        assert!(
+            allowlist.lines().any(|line| {
+                let mut words = line.split_whitespace();
+                words.next() == Some(core) && line.contains("# ADR")
+            }),
+            "the allow-list does not admit `{core}` with the record that admitted it"
+        );
+    }
+
+    // Behaviour, not spelling: run the real script from a scratch tree whose
+    // only difference is the lockfile (and, for two cases, the allow-list).
+    let tree = std::env::temp_dir().join(format!(
+        "qip-dependency-policy-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&tree);
+    std::fs::create_dir_all(tree.join("scripts")).expect("scratch scripts directory");
+    std::fs::create_dir_all(tree.join("backend")).expect("scratch backend directory");
+    std::fs::write(tree.join("scripts/check-dependencies.sh"), &script).expect("copy the script");
+    let run = |allowlist: Option<&str>, lock: &str| {
+        let list = tree.join("scripts/dependency-allowlist.txt");
+        match allowlist {
+            Some(text) => std::fs::write(&list, text).expect("write the allow-list"),
+            None => {
+                let _ = std::fs::remove_file(&list);
+            }
+        }
+        std::fs::write(tree.join("backend/Cargo.lock"), lock).expect("write the lockfile");
+        let output = std::process::Command::new("bash")
+            .arg(tree.join("scripts/check-dependencies.sh"))
+            .output()
+            .expect("bash runs");
+        (
+            output.status.success(),
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )
+    };
+    let lock = |packages: &[&str]| {
+        packages
+            .iter()
+            .map(|name| format!("[[package]]\nname = \"{name}\"\nversion = \"1.0.0\"\n\n"))
+            .collect::<String>()
+    };
+
+    let (ok, said) = run(
+        Some(&allowlist),
+        &lock(&["qip-core", "serde", "serde_json"]),
+    );
+    assert!(
+        ok,
+        "premise: a lockfile of listed packages is admitted: {said}"
+    );
+    assert!(said.contains("all permitted"), "{said}");
+
+    let (ok, said) = run(
+        Some(&allowlist),
+        &lock(&["qip-core", "serde", "an-unlisted-transitive-crate"]),
+    );
+    assert!(
+        !ok,
+        "an unlisted package in the lockfile was admitted: {said}"
+    );
+    assert!(said.contains("an-unlisted-transitive-crate"), "{said}");
+
+    let (ok, said) = run(
+        Some(&format!("{allowlist}\nunexplained-crate\n")),
+        &lock(&["serde"]),
+    );
+    assert!(
+        !ok,
+        "an allow-list line with no reason was admitted: {said}"
+    );
+
+    let (ok, said) = run(None, &lock(&["serde"]));
+    assert!(!ok, "a missing allow-list permitted everything: {said}");
+
+    let _ = std::fs::remove_dir_all(&tree);
 }
 
 // --- the evidence store -----------------------------------------------------
@@ -4487,8 +4644,34 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
     // An append-only store whose writer holds a delete permission is not
     // append-only; it is a store nobody has deleted from yet. Each of the roles
     // below carries `storage.objects.delete`.
-    for path in files_with_extension("infrastructure/terraform", "tf") {
-        let content = without_comments(&std::fs::read_to_string(&path).expect("readable"));
+    //
+    // What a `validation` block says is not a grant, and since `3ab4245b` the
+    // root's `pam_entitlements` refuses the basic roles by naming them —
+    // `setintersection(e.roles, ["roles/owner", ...]) == 0` — which a bare
+    // substring search read as the root granting `roles/owner`. So validation
+    // blocks are set aside before the search (they can only refuse; nothing in
+    // one reaches IAM), and in exchange the refusal is asserted to exist, and
+    // the per-environment tfvars — where an entitlement's roles would actually
+    // be written — are now searched too, which this test never did.
+    let mut refusals = 0usize;
+    let mut sources = files_with_extension("infrastructure/terraform", "tf");
+    sources.extend(files_with_extension(
+        "infrastructure/environments",
+        "tfvars",
+    ));
+    assert!(
+        sources
+            .iter()
+            .any(|path| path.extension().is_some_and(|ext| ext == "tfvars")),
+        "premise: no environment tfvars was found, so the tfvars half searches nothing"
+    );
+    for path in sources {
+        let (content, validations) = without_validation_blocks(&without_comments(
+            &std::fs::read_to_string(&path).expect("readable"),
+        ));
+        if validations.contains("\"roles/owner\"") && validations.contains("== 0") {
+            refusals += 1;
+        }
         for role in [
             "roles/storage.objectAdmin",
             "roles/storage.objectUser",
@@ -4506,12 +4689,45 @@ fn no_workload_identity_can_delete_from_the_evidence_bucket() {
         }
     }
 
+    // The refusal that made the validation carve-out necessary is still there:
+    // if it goes, the carve-out has nothing left to justify it.
+    assert!(
+        refusals >= 1,
+        "no validation refuses a basic role any more; `pam_entitlements` in \
+         infrastructure/terraform/variables.tf should refuse roles/owner, roles/editor \
+         and roles/viewer"
+    );
+
     // And what is granted is the narrow one.
     let evidence = read("infrastructure/terraform/modules/evidence/main.tf");
     assert!(
         evidence.contains("roles/storage.objectCreator"),
         "the evidence writers hold something other than object creation"
     );
+}
+
+/// A Terraform file split into everything outside its `validation { ... }`
+/// blocks, and the text of those blocks. A validation can only refuse a
+/// value; nothing written inside one reaches IAM, so a search for a granted
+/// role reads the first half and a search for a refusal the second.
+fn without_validation_blocks(content: &str) -> (String, String) {
+    let mut kept = Vec::new();
+    let mut validations = Vec::new();
+    let mut depth = 0i64;
+    for line in content.lines() {
+        if depth == 0 && collapsed(line) == "validation {" {
+            depth = 1;
+            validations.push(line);
+            continue;
+        }
+        if depth > 0 {
+            depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+            validations.push(line);
+            continue;
+        }
+        kept.push(line);
+    }
+    (kept.join("\n"), validations.join("\n"))
 }
 
 #[test]

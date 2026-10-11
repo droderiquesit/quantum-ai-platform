@@ -61,15 +61,6 @@ resource "google_compute_disk" "archive" {
   labels = merge(var.labels, { component = "ledgerd", qip_journal = "true" })
 }
 
-resource "google_compute_address" "ledgerd" {
-  project      = var.project_id
-  name         = "qip-${var.environment}-ledgerd"
-  region       = join("-", slice(split("-", var.zone), 0, 2))
-  subnetwork   = var.subnet_id
-  address_type = "INTERNAL"
-  address      = var.internal_address
-}
-
 resource "google_compute_instance" "ledgerd" {
   project      = var.project_id
   name         = "qip-${var.environment}-ledgerd"
@@ -92,10 +83,20 @@ resource "google_compute_instance" "ledgerd" {
 
   # No `access_config`: no external address, so nothing outside the VPC can
   # reach the read API and the machine has no route out but the VPC's.
+  #
+  # The stable internal address is the interface's own `network_ip`, as the
+  # broker's is, and not a `google_compute_address`. A reserved regional
+  # address was declared here once; in this tree every regional
+  # `google_compute_address` is a NAT gateway's external IP, and
+  # `security_controls.rs` refuses one held by anything else, because a
+  # reserved address on a machine is the shape of internet egress with no
+  # gateway in front. An INTERNAL reservation is not that, but it is one
+  # attribute away from it, and the machine needs no reservation to keep the
+  # address it is created with.
   network_interface {
     network    = var.network_id
     subnetwork = var.subnet_id
-    network_ip = google_compute_address.ledgerd.address
+    network_ip = var.internal_address
     stack_type = "IPV4_ONLY"
   }
 

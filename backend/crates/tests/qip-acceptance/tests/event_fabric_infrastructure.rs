@@ -248,41 +248,91 @@ fn hcl_block(source: &str, opening: &str) -> Option<Vec<String>> {
     Some(block)
 }
 
-/// FABRIC-085, what holds today. The broker template's only disk is a
-/// persistent disk whose type defaults to `hyperdisk-balanced`, and no
-/// local-SSD (`SCRATCH`) disk is declared anywhere in the module.
+/// FABRIC-085, what holds today. The broker journals on its **own**
+/// persistent disk — one non-boot `disk` block, attached as `qip-journal`,
+/// never auto-deleted — beside a boot disk, both of the module's `disk_type`,
+/// which defaults to `hyperdisk-balanced`; and no local-SSD (`SCRATCH`) disk
+/// is declared anywhere in the module.
 ///
-/// **Two gaps, asserted rather than described.** The journal is the *boot*
-/// disk — there is no separate journal disk — and `disk_type` carries no
-/// validation, so `pd-standard` or a local-SSD type would be accepted. The
-/// test pins both; either closing makes it fail and it should then assert the
-/// fix.
+/// **What changed (`d7675f60`, lane C), and why this test changed with it.**
+/// Until then the template declared a boot disk and nothing else, and this
+/// test pinned that as a gap: "the journal is the boot disk". Worse than a
+/// gap, the startup script was told to mount `/dev/sdb`, a disk the template
+/// did not declare, so the journal device the broker was given did not exist.
+/// The lane closed it with a second, non-boot disk named by `device_name`,
+/// and `qip_storage_journal_device` now defaults to the stable name Google
+/// gives that disk. This test asserts the fix rather than the gap, and pins
+/// the wiring end to end — the disk's name and the device path the script
+/// mounts — because either half alone is the `/dev/sdb` failure again.
+///
+/// **One gap remains, asserted rather than described:** `disk_type` carries
+/// no validation, so `pd-standard` or a local-SSD type would be accepted.
+/// Closing it makes this test fail, and it should then assert the fix.
 ///
 /// Mutation: add a `disk { type = "SCRATCH" ... }` block to the template — the
-/// scratch assertion fires. Change the `disk_type` default to `pd-balanced` —
-/// the default assertion fires.
+/// disk-count and scratch assertions fire. Change the `disk_type` default to
+/// `pd-balanced` — the default assertion fires. Set the journal disk's
+/// `auto_delete = true` — the persistence assertion fires. Point
+/// `qip_storage_journal_device` back at `/dev/sdb` — the wiring assertion
+/// fires.
 #[test]
 fn fabric_085_the_broker_template_journals_on_one_persistent_hyperdisk_and_declares_no_local_ssd() {
     let main = broker_module("main.tf");
     let variables = broker_module("variables.tf");
     let template = hcl_block(&main, "resource \"google_compute_instance_template\"")
         .expect("premise: the broker module declares an instance template");
-    let disks: Vec<&String> = template
-        .iter()
-        .filter(|line| norm(line) == "disk {")
-        .collect();
-    assert_eq!(disks.len(), 1, "exactly one disk block: {template:#?}");
+
+    // Every `disk` block in the template, each as its own lines.
+    let mut disks: Vec<Vec<String>> = Vec::new();
+    let mut rest = template.join("\n");
+    while let Some(block) = hcl_block(&rest, "disk {") {
+        let consumed = block.join("\n");
+        let at = rest.find(&consumed).expect("the block came from this text") + consumed.len();
+        disks.push(block);
+        rest = rest[at..].to_string();
+    }
+    assert_eq!(
+        disks.len(),
+        2,
+        "exactly two disk blocks, a boot disk and the journal: {template:#?}"
+    );
+    let has = |disk: &[String], want: &str| disk.iter().any(|line| norm(line) == want);
+    let boot: Vec<&Vec<String>> = disks.iter().filter(|d| has(d, "boot = true")).collect();
+    let journal: Vec<&Vec<String>> = disks.iter().filter(|d| has(d, "boot = false")).collect();
+    assert_eq!(boot.len(), 1, "exactly one boot disk: {disks:#?}");
+    assert_eq!(journal.len(), 1, "exactly one journal disk: {disks:#?}");
+    let journal = journal[0];
+    assert!(
+        has(journal, "device_name = \"qip-journal\""),
+        "the journal disk is not attached as `qip-journal`: {journal:#?}"
+    );
+    assert!(
+        has(journal, "auto_delete = false"),
+        "the journal disk is deleted with its machine, so a replaced broker loses its journal: \
+         {journal:#?}"
+    );
+    for disk in &disks {
+        assert!(
+            has(disk, "disk_type = var.disk_type"),
+            "premise: every disk's type is the module variable: {disk:#?}"
+        );
+    }
     assert!(
         !main
             .lines()
             .any(|line| line.contains("\"SCRATCH\"") || line.contains("local-ssd")),
         "a local-SSD disk is declared in the broker module"
     );
+
+    // The wiring: the device the startup script mounts is the disk above.
+    let device = hcl_block(&variables, "variable \"qip_storage_journal_device\"")
+        .expect("premise: the journal device variable exists");
     assert!(
-        template
+        device
             .iter()
-            .any(|line| norm(line) == "disk_type = var.disk_type"),
-        "premise: the disk's type is the module variable"
+            .any(|line| norm(line) == "default = \"/dev/disk/by-id/google-qip-journal\""),
+        "the startup script is told to mount a device other than the `qip-journal` disk: \
+         {device:#?}"
     );
 
     let disk_type = hcl_block(&variables, "variable \"disk_type\"")
@@ -293,8 +343,7 @@ fn fabric_085_the_broker_template_journals_on_one_persistent_hyperdisk_and_decla
             .any(|line| norm(line) == "default = \"hyperdisk-balanced\""),
         "{disk_type:#?}"
     );
-    // GAP: the journal is the boot disk, and nothing refuses a non-Hyperdisk type.
-    assert!(template.iter().any(|line| norm(line) == "boot = true"));
+    // GAP: nothing refuses a non-Hyperdisk type.
     assert!(
         !disk_type.iter().any(|line| norm(line) == "validation {"),
         "disk_type gained a validation — FABRIC-085 may be closing; assert it here"
@@ -387,32 +436,82 @@ fn fabric_106_the_broker_template_has_no_external_address_and_the_module_is_not_
     );
 }
 
-/// FABRIC-095 does not apply as written: there is no GKE in this platform
-/// (ADR 0024 — Cloud Run for warm binaries, Compute Engine for execution).
-/// The test asserts that truthfully — no node pool or cluster is declared
-/// anywhere under `infrastructure/terraform` — so a cluster added without
-/// revisiting the requirement is noticed.
+/// FABRIC-095 does not apply as written: no trading or warm service runs on
+/// GKE (ADR 0024 — Cloud Run for warm binaries, Compute Engine for
+/// execution). The test asserts that truthfully, so a cluster or node pool
+/// added without revisiting the requirement is noticed.
+///
+/// **What changed, and why.** This test said "no node pool or cluster is
+/// declared anywhere under `infrastructure/terraform`", which was never true
+/// of the tree it ran on: ADR 0036 (accepted) put Config Connector, Argo CD
+/// and Kargo on a control-plane cluster that runs no `qip-*` image, ADR 0093
+/// suspended it in `dev`, and ADR 0114 (accepted 2026-10-11) confirmed it as
+/// the one deliberate exception — controllers only, Autopilot, no node pool.
+/// So the property is now that exception, narrowly: exactly one
+/// `google_container_cluster` in the whole tree, `control_plane` in
+/// `modules/gitops-control-plane/main.tf`, with `enable_autopilot = true`;
+/// and **no** `google_container_node_pool` anywhere, because a node pool is
+/// where a warm service would be scheduled by hand. Any other cluster, in
+/// any module, still fails — as does a second cluster in the control-plane
+/// module or the control plane losing Autopilot.
 ///
 /// Mutation: add a `resource "google_container_node_pool"` to any module —
-/// the assertion fires.
+/// the node-pool assertion fires. Add a `resource "google_container_cluster"`
+/// to any other module — the cluster assertion fires. Delete
+/// `enable_autopilot = true` from the control plane — the Autopilot
+/// assertion fires.
 #[test]
 fn fabric_095_no_gke_node_pool_exists_because_warm_services_run_on_cloud_run() {
+    const CONTROL_PLANE: &str = "modules/gitops-control-plane/main.tf";
     let files = qip_acceptance::files_with_extension("infrastructure/terraform", "tf");
     assert!(files.len() > 10, "premise: the Terraform tree was walked");
-    let offenders: Vec<String> = files
-        .iter()
-        .filter(|path| {
-            std::fs::read_to_string(path).is_ok_and(|text| {
-                text.lines().any(|line| {
-                    let line = line.trim_start();
-                    line.starts_with("resource \"google_container_node_pool\"")
-                        || line.starts_with("resource \"google_container_cluster\"")
-                })
-            })
-        })
-        .map(|path| path.display().to_string())
-        .collect();
-    assert!(offenders.is_empty(), "GKE declared in {offenders:?}");
+
+    let mut node_pools: Vec<String> = Vec::new();
+    let mut clusters: Vec<String> = Vec::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let shown = path.display().to_string().replace('\\', "/");
+        for line in text.lines() {
+            let line = line.trim_start();
+            if line.starts_with("resource \"google_container_node_pool\"") {
+                node_pools.push(format!("{shown}: {line}"));
+            }
+            if line.starts_with("resource \"google_container_cluster\"") {
+                clusters.push(format!("{shown}: {}", norm(line)));
+            }
+        }
+    }
+    assert!(
+        node_pools.is_empty(),
+        "a GKE node pool is declared — somewhere to schedule a warm service by hand: {node_pools:?}"
+    );
+    assert_eq!(
+        clusters.len(),
+        1,
+        "exactly one GKE cluster may exist, ADR 0036's controllers-only control plane: {clusters:?}"
+    );
+    assert!(
+        clusters[0].ends_with(&format!(
+            "{CONTROL_PLANE}: resource \"google_container_cluster\" \"control_plane\" {{"
+        )),
+        "the one GKE cluster is not ADR 0036's control plane: {clusters:?}"
+    );
+
+    let control_plane = qip_acceptance::read(&format!("infrastructure/terraform/{CONTROL_PLANE}"));
+    let cluster = hcl_block(
+        &control_plane,
+        "resource \"google_container_cluster\" \"control_plane\"",
+    )
+    .expect("premise: the control-plane cluster block is readable");
+    assert!(
+        cluster
+            .iter()
+            .any(|line| norm(line) == "enable_autopilot = true"),
+        "the control-plane cluster is not Autopilot, so it can carry hand-scheduled node pools: \
+         {cluster:#?}"
+    );
 }
 
 /// FABRIC-100, the half that exists: a partition whose hot segment files are

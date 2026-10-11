@@ -98,6 +98,41 @@ without a person's act. The owner deciding the platform should act externally
 — then a record per surface, with its own preconditions, supersedes this
 section.
 
+## What it costs
+
+- **A cluster that bills while it delivers nothing to trading.** D4 keeps
+  ADR 0036's control-plane cluster in the tree, so resuming it brings back
+  its standing control-plane and controller cost (ADR 0036's own cost list),
+  and while ADR 0093 keeps it suspended it is a configuration nobody runs.
+  Keeping it is chosen over retiring it; that is a cost, not a saving.
+- **Every GKE-placed R12 row stays BLOCKED.** The G1/G2/G3 rows ADR 0101
+  C3/C7 names are not unblocked by this record and will be scored BLOCKED
+  until a runtime record with a measurement argues otherwise. A reader
+  counting open rows sees them as open by decision, and the count does not
+  improve.
+- **v3.0's GKE-first shape is not adopted.** Twenty-seven services the
+  blueprint places on regional GKE must instead be argued onto Cloud Run or a
+  bare node one by one, each against ADR 0091, which is slower than adopting
+  the blueprint's placement wholesale.
+- **A test and a prose rule carry a named exception.** "No GKE" is no longer
+  a flat refusal in `event_fabric_infrastructure.rs` or in `CLAUDE.md`'s
+  shorthand: the controllers-only cluster is the one admitted declaration,
+  and every other GKE resource is still refused. An exception is a place a
+  later change can widen, and the test has to name it narrowly to hold.
+- **Agents draft and people act.** D8 leaves publishing, outreach, product
+  pricing and operational change as manual work: each needs a person to read
+  an agent's draft and act through their own credential, which is slower and
+  does not scale with the number of agents.
+
+## What would make this wrong
+
+Each decision states its own reversal condition above, under **What would
+make this wrong**; in short: a `qip-*` image in any Pod spec, a measurement
+that Cloud Run cannot meet a warm service's need that GKE does, the cluster
+staying suspended indefinitely, an adapter in `qip-agency` calling an outside
+system on an agent's initiative, an agent-drafted artefact sent without a
+person's act, or the owner deciding the platform should act externally.
+
 ## Dependency direction
 
 Nothing moves. No code, no crate, no Terraform. The D4 decision keeps
