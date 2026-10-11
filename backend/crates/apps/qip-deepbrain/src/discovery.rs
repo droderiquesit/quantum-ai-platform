@@ -47,9 +47,12 @@
 use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::catalogue::CandidateEntry;
+use qip_data_finder::discovery_targets::{
+    CandidateLocation, DiscoveryQuery, EntityProfile, locations_for, queries_for,
+};
 use qip_data_finder::probe::{NetworkProbe, SourceProbe};
 use qip_kernel::{Platform, SourceAssessment};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How this platform identifies itself to a publisher it probes.
 ///
@@ -124,6 +127,51 @@ pub struct DiscoveryDesk {
     /// Sources that passed the licensing gate and were catalogued. Updated
     /// after each discovery pass (EXPAND-060).
     licensed_sources: BTreeSet<String>,
+    /// What an operator has stated about each entity discovery may target:
+    /// its geographies, domains and languages (R12-DATA-2016). Keyed by
+    /// entity, so one entity has one profile.
+    profiles: BTreeMap<String, EntityProfile>,
+    /// The latest pass's queries and the catalogued locations that could
+    /// answer them.
+    queries: Vec<DiscoveryQuery>,
+    locations: Vec<CandidateLocation>,
+    /// Targets the latest pass had no profile for, so generated no query.
+    unprofiled: Vec<String>,
+}
+
+/// Parse an operator's entity profiles (R12-DATA-2016): a JSON array of
+/// [`EntityProfile`]. Refuses an empty list, an entity named twice, and any
+/// profile [`queries_for`] would refuse, at load rather than at the first
+/// pass that targets it — a profile missing its language is a query nobody
+/// can send, and finding that out on the pass the platform most needed the
+/// source is finding it out too late.
+pub fn parse_profiles(text: &str) -> Result<BTreeMap<String, EntityProfile>> {
+    let profiles: Vec<EntityProfile> = serde_json::from_str(text).map_err(|error| {
+        qip_core::error::Error::invalid(format!(
+            "this is not a list of discovery entity profiles: {error}"
+        ))
+    })?;
+    if profiles.is_empty() {
+        return Err(qip_core::error::Error::invalid(
+            "the discovery profile list is empty; unset the variable rather than mounting an \
+             empty file, which reads the same as a file nobody mounted",
+        ));
+    }
+    let mut by_entity = BTreeMap::new();
+    for profile in profiles {
+        let probe = qip_data_finder::discovery_targets::DiscoveryTarget {
+            entity: profile.entity.clone(),
+            reason: qip_data_finder::discovery_targets::TargetReason::KnowledgeGap,
+        };
+        queries_for(&probe, &profile)?;
+        let entity = profile.entity.clone();
+        if by_entity.insert(entity.clone(), profile).is_some() {
+            return Err(qip_core::error::Error::invalid(format!(
+                "{entity} is profiled twice; one entity has one profile"
+            )));
+        }
+    }
+    Ok(by_entity)
 }
 
 impl std::fmt::Debug for DiscoveryDesk {
@@ -144,6 +192,10 @@ impl DiscoveryDesk {
             entries,
             probe: None,
             licensed_sources: BTreeSet::new(),
+            profiles: BTreeMap::new(),
+            queries: Vec::new(),
+            locations: Vec::new(),
+            unprofiled: Vec::new(),
         }
     }
 
@@ -160,7 +212,36 @@ impl DiscoveryDesk {
             entries,
             probe: Some(probe),
             licensed_sources: BTreeSet::new(),
+            profiles: BTreeMap::new(),
+            queries: Vec::new(),
+            locations: Vec::new(),
+            unprofiled: Vec::new(),
         }
+    }
+
+    /// Generate queries for the targets these profiles describe (see
+    /// [`parse_profiles`]).
+    pub fn with_profiles(mut self, profiles: BTreeMap<String, EntityProfile>) -> Self {
+        self.profiles = profiles;
+        self
+    }
+
+    /// The latest pass's discovery queries, one per geography, domain and
+    /// language of each profiled target, in target order.
+    pub fn queries(&self) -> &[DiscoveryQuery] {
+        &self.queries
+    }
+
+    /// The catalogued candidates the latest pass's queries could be answered
+    /// from. Empty for a query is the finding that the catalogue has nowhere
+    /// to look — CRAWL (DATA-020) does not exist to look further.
+    pub fn locations(&self) -> &[CandidateLocation] {
+        &self.locations
+    }
+
+    /// Targets the latest pass had no profile for.
+    pub fn unprofiled(&self) -> &[String] {
+        &self.unprofiled
     }
 
     pub const fn every_cycles(&self) -> u64 {
@@ -214,15 +295,45 @@ impl DiscoveryDesk {
         // DATA-020), so a target no entry declares is reported on the pass
         // and answered by nobody — which is the finding, not a failure.
         let targets = platform.discovery_targets(now)?;
+        // R12-DATA-2016: each profiled target becomes one query per
+        // geography, domain and language, and each query is answered from the
+        // catalogue where a candidate declares the entity and serves the
+        // geography. A candidate a query located goes before one that merely
+        // declares the entity in some other region.
+        let catalogue: Vec<_> = self
+            .entries
+            .iter()
+            .map(|entry| entry.candidate.clone())
+            .collect();
+        let mut queries = Vec::new();
+        let mut locations = Vec::new();
+        let mut unprofiled = Vec::new();
+        for target in &targets {
+            let Some(profile) = self.profiles.get(&target.entity) else {
+                unprofiled.push(target.entity.clone());
+                continue;
+            };
+            for query in queries_for(target, profile)? {
+                locations.extend(locations_for(&query, &catalogue)?);
+                queries.push(query);
+            }
+        }
+        let located: BTreeSet<&str> = locations
+            .iter()
+            .map(|location| location.source_id.as_str())
+            .collect();
         let mut order: Vec<&CandidateEntry> = self.entries.iter().collect();
         order.sort_by_key(|entry| {
-            !targets.iter().any(|target| {
-                entry
-                    .candidate
-                    .declared_coverage()
-                    .instruments()
-                    .contains(&target.entity)
-            })
+            (
+                !located.contains(entry.candidate.id()),
+                !targets.iter().any(|target| {
+                    entry
+                        .candidate
+                        .declared_coverage()
+                        .instruments()
+                        .contains(&target.entity)
+                }),
+            )
         });
         let mut merged = SourceAssessment {
             targets,
@@ -258,6 +369,9 @@ impl DiscoveryDesk {
         // passed the licensing gate and were catalogued. These become the
         // licensed_sources set for ResearchQueue::admit.
         self.licensed_sources = merged.catalogued.iter().cloned().collect();
+        self.queries = queries;
+        self.locations = locations;
+        self.unprofiled = unprofiled;
         Ok(Some(merged))
     }
 }
@@ -309,9 +423,18 @@ mod tests {
     }
 
     fn entry_covering(id: &str, route: &str, instrument: &str) -> Result<CandidateEntry> {
+        entry_in(id, route, instrument, SourceRegion::Europe)
+    }
+
+    fn entry_in(
+        id: &str,
+        route: &str,
+        instrument: &str,
+        region: SourceRegion,
+    ) -> Result<CandidateEntry> {
         let coverage = SourceCoverage::new(
             [AssetClass::Equity],
-            [SourceRegion::Europe],
+            [region],
             [instrument.to_string()],
             UpdateFrequency::Minutely,
         )?
@@ -543,6 +666,160 @@ mod tests {
             "the candidate that could answer the target was not asked first: {asked:?}"
         );
         Ok(())
+    }
+
+    /// Spike the platform's forecasts on `entity`, which nothing covers, so
+    /// the next pass targets it.
+    fn spike_on(platform: &mut Platform, entity: &str, now: Timestamp) -> Result<()> {
+        use qip_kernel::source_discovery::{ThesisClaim, ThesisOutcome as Outcome};
+        let scored = |id: &str, subject: &str, realised_bps: f64| {
+            (
+                ThesisClaim {
+                    hypothesis_id: id.to_string(),
+                    class: "momentum".to_string(),
+                    subject: subject.to_string(),
+                    formed_at: start(),
+                    resolves_at: start().saturating_add(Duration::from_secs(60)),
+                    direction: 1.0,
+                    expected_move_bps: 100.0,
+                    confidence: 0.6,
+                    falsifiers: vec![],
+                    contributors: vec![],
+                },
+                Outcome {
+                    hypothesis_id: id.to_string(),
+                    observed_at: start().saturating_add(Duration::from_secs(61)),
+                    realised_move_bps: realised_bps,
+                    realised_pnl: 0.0,
+                    falsifiers_triggered: vec![],
+                    mechanism_confirmed: None,
+                },
+            )
+        };
+        let (claims, outcomes): (Vec<_>, Vec<_>) = [
+            scored("h1", "ent-quiet-1", 110.0),
+            scored("h2", "ent-quiet-2", 110.0),
+            scored("h3", "ent-quiet-3", 110.0),
+            scored("h4", entity, 600.0),
+        ]
+        .into_iter()
+        .unzip();
+        platform.learn_from(&claims, &outcomes, now)?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_profiled_target_yields_a_query_per_geography_domain_and_language_and_the_located_candidate_goes_first()
+    -> Result<()> {
+        // R12-DATA-2016, through the desk `main.rs` builds. `queries_for` and
+        // `locations_for` were tested and called by nothing outside their
+        // crate: a target became a reorder of the operator's list by
+        // instrument alone, and a candidate in the wrong region was asked
+        // first because it happened to be written first.
+        let mut platform = platform();
+        let now = start().saturating_add(Duration::from_secs(120));
+        spike_on(&mut platform, "ent-northwind", now)?;
+
+        let profiles = parse_profiles(
+            r#"[{"entity":"ent-northwind","geographies":["europe"],
+                 "domains":["rates","filings"],"languages":["en","de"]}]"#,
+        )?;
+        let script = std::sync::Arc::new(std::sync::Mutex::new(
+            qip_data_finder::probe::InMemoryProbe::new(),
+        ));
+        let watch = Watched(script.clone());
+        // Both declare the entity; only the second serves the profiled
+        // geography, and catalogue order puts the other one first.
+        let mut desk = DiscoveryDesk::with_probe(
+            DiscoveryConfig {
+                every_cycles: 1,
+                eligible_jurisdictions: BTreeSet::from(["US".to_string()]),
+            },
+            vec![
+                entry_in(
+                    "a-northwind-apac",
+                    "http://127.0.0.1:9",
+                    "ent-northwind",
+                    SourceRegion::Apac,
+                )?,
+                entry_in(
+                    "z-northwind-eu",
+                    "http://127.0.0.1:9",
+                    "ent-northwind",
+                    SourceRegion::Europe,
+                )?,
+            ],
+            Box::new(Watched(script)),
+        )
+        .with_profiles(profiles);
+        let pass = desk
+            .maybe_run(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a pass on its own cadence produced nothing"))?;
+        assert_eq!(pass.targets.len(), 1, "premise: one target");
+
+        // 1 geography x 2 domains x 2 languages, every one fully tagged.
+        let queries = desk.queries();
+        assert_eq!(queries.len(), 4, "{queries:?}");
+        let mut tags: Vec<(&str, &str, &str)> = queries
+            .iter()
+            .map(|q| (q.geography.as_str(), q.domain.as_str(), q.language.as_str()))
+            .collect();
+        tags.sort_unstable();
+        assert_eq!(
+            tags,
+            [
+                ("europe", "filings", "de"),
+                ("europe", "filings", "en"),
+                ("europe", "rates", "de"),
+                ("europe", "rates", "en"),
+            ]
+        );
+        assert!(queries.iter().all(|q| q.entity == "ent-northwind"));
+        assert!(desk.unprofiled().is_empty());
+
+        // Every query is answered from the European candidate alone.
+        let located: BTreeSet<&str> = desk
+            .locations()
+            .iter()
+            .map(|l| l.source_id.as_str())
+            .collect();
+        assert_eq!(desk.locations().len(), 4);
+        assert_eq!(located, BTreeSet::from(["z-northwind-eu"]));
+
+        let asked = watch.script()?.calls().to_vec();
+        assert!(
+            asked
+                .first()
+                .is_some_and(|call| call.contains("z-northwind-eu")),
+            "the candidate a query located was not asked first: {asked:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_profile_missing_a_dimension_or_named_twice_is_refused_at_load() {
+        for (text, why) in [
+            ("[]", "empty"),
+            (
+                r#"[{"entity":"e","geographies":["europe"],"domains":["rates"],"languages":[]}]"#,
+                "no language",
+            ),
+            (
+                r#"[{"entity":"e","geographies":["europe"],"domains":["rates"],"languages":["en"]},
+                    {"entity":"e","geographies":["apac"],"domains":["rates"],"languages":["en"]}]"#,
+                "twice",
+            ),
+            (r#"[{"entity":"e"}]"#, "malformed"),
+        ] {
+            assert!(parse_profiles(text).is_err(), "{why} was admitted");
+        }
+        assert!(
+            parse_profiles(
+                r#"[{"entity":"e","geographies":["europe"],"domains":["rates"],"languages":["en"]}]"#
+            )
+            .is_ok_and(|profiles| profiles.len() == 1),
+            "a complete profile was refused"
+        );
     }
 
     #[test]

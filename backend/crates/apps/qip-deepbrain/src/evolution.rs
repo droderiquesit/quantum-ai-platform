@@ -2961,6 +2961,85 @@ mod tests {
         )
     }
 
+    /// R12-DATA-1031, through the arm `main.rs` builds for every catalogued
+    /// connector: a source that sends a version tag has that tag, and the
+    /// instant it was retrieved, on the reference the platform journals.
+    /// Until this test the only assertion anywhere on a reference's etag was
+    /// `is_none()` — the kernel's reference test builds its digest outside a
+    /// runtime — so a poll path that dropped the header between the
+    /// transport and the ledger would have passed everything.
+    ///
+    /// Mutated by making `DataReference::from_digest` set `etag: None`:
+    /// this fails on the journaled reference's etag, then restored.
+    #[test]
+    fn a_polled_sources_etag_and_retrieval_instant_reach_the_journaled_reference() -> Result<()> {
+        use qip_data_finder::registration::RegistrationRegistry;
+        use qip_events::Topic;
+        use qip_kernel::references::DataReferenceRecorded;
+        use qip_market_ingestion::connector::emulator::{
+            RecordedAnswer, RecordedExchange, SourceEmulator,
+        };
+        use qip_market_ingestion::connectors::CoinbaseTickerConnector;
+        use qip_streaming::envelope::StreamEnvelope;
+        const ETAG: &str = "\"rev-1031\"";
+
+        let mut platform = platform()?;
+        let at = start().saturating_add(Duration::from_mins(1));
+        let subject = ObjectId::from_string("BTC-USD");
+        let mut manifest = CoinbaseTickerConnector::shipped_manifest()?;
+        manifest.endpoint.base_url = Some("http://127.0.0.1:1".to_string());
+        let connector = CoinbaseTickerConnector::new(
+            manifest.clone(),
+            "BTC-USD",
+            subject,
+            CoinbaseTickerConnector::VENUE,
+        )?;
+        let body = format!(
+            r#"{{"ask":"64231.55","bid":"64230.11","volume":"9184.4","trade_id":712553481,"price":"64230.99","size":"0.0018","time":"{}"}}"#,
+            at.to_rfc3339()
+        );
+        let mut arm = ConnectorArm::over_transport(
+            Box::new(connector),
+            manifest.clone(),
+            Box::new(SourceEmulator::new(vec![RecordedExchange::always(
+                manifest.endpoint.path.clone(),
+                RecordedAnswer::json(200, body).with_etag(ETAG),
+            )])),
+            &RegistrationRegistry::shipped(),
+            7,
+            at,
+        )?;
+        let delivered = arm.poll(&mut platform, at)?;
+        assert!(!delivered.is_empty(), "premise: the arm delivered records");
+
+        let references: Vec<DataReferenceRecorded> = platform
+            .event_log()
+            .by_topic(Topic::DataReferenceRecorded)
+            .into_iter()
+            .map(|frame| {
+                Ok(StreamEnvelope::from_frame(frame)?
+                    .decode::<DataReferenceRecorded>()?
+                    .body)
+            })
+            .collect::<Result<_>>()?;
+        assert_eq!(references.len(), 1, "premise: one fetch, one reference");
+        let reference = &references[0].reference;
+        assert_eq!(reference.source_id(), "coinbase-spot-ticker");
+        assert_eq!(
+            reference.etag(),
+            Some(ETAG),
+            "the source's version tag did not survive to the journaled reference"
+        );
+        assert_eq!(reference.retrieved_at(), at);
+        assert!(
+            reference
+                .re_fetch_instructions()
+                .is_some_and(|text| text.contains(ETAG)),
+            "the re-fetch instruction does not name the version to compare against"
+        );
+        Ok(())
+    }
+
     /// The ECB rates source — its shipped manifest, its schema-valid table,
     /// its real gate — mapped onto `subject` by the stand-in, with the
     /// table's date a day back so the manifest's sixteen-hour publication

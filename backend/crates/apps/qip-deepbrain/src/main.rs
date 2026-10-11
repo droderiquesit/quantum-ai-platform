@@ -577,10 +577,21 @@ fn run() -> Result<()> {
             )
         }
     );
-    evolution = evolution.with_discovery(qip_deepbrain::discovery::DiscoveryDesk::new(
-        discovery_config,
-        source_candidates,
-    ));
+    // Entity profiles turn each discovery target into tagged queries
+    // (R12-DATA-2016); unset, no target generates one and the pass says so.
+    let discovery_profiles = load_discovery_profiles()?;
+    println!(
+        "  discovery queries: {}",
+        if discovery_profiles.is_empty() {
+            "none (QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH unset)".to_string()
+        } else {
+            format!("{} profiled entit(y/ies)", discovery_profiles.len())
+        }
+    );
+    evolution = evolution.with_discovery(
+        qip_deepbrain::discovery::DiscoveryDesk::new(discovery_config, source_candidates)
+            .with_profiles(discovery_profiles),
+    );
     // The catalogued connectors this node polls beside its own stream, each
     // through the licensing gate before any socket, each with its stream's
     // durable record opened before the first poll — see
@@ -1274,6 +1285,33 @@ fn load_source_candidates(
         ))
     })?;
     parse_source_candidates(&text, &path, now)
+}
+
+/// The discovery entity profiles `QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH`
+/// names (R12-DATA-2016), or none where the variable is unset or empty.
+/// Present but unreadable or malformed stops the process, as an unreadable
+/// candidate catalogue does: a pass that silently generated no queries would
+/// read the same as a platform with nothing to look for.
+fn load_discovery_profiles()
+-> Result<std::collections::BTreeMap<String, qip_data_finder::discovery_targets::EntityProfile>> {
+    let path = std::env::var("QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let Some(path) = path else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let text = std::fs::read_to_string(&path).map_err(|error| {
+        Error::io(format!(
+            "configuration: QIP_DEEPBRAIN_DISCOVERY_PROFILES_PATH names {path}, which cannot be \
+             read: {error}"
+        ))
+    })?;
+    qip_deepbrain::discovery::parse_profiles(&text).map_err(|error| {
+        Error::invalid(format!(
+            "configuration: {path} does not hold valid discovery profiles: {}",
+            error.message()
+        ))
+    })
 }
 
 /// The parsing half of [`load_source_candidates`], split out for the same
