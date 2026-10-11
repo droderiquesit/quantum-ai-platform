@@ -47,8 +47,8 @@ The research and risk desk operating it. Not external customers, not retail.
 
 ## How progress is measured
 
-Not by feature count. By how much of `../DELIVERY-STATUS.md`
-is *Complete and verified* in `../DELIVERY-STATUS.md` —
+Not by feature count. By how much of the blueprint of record
+(`../blueprint/README.md`) is *Complete and verified* in its register —
 which requires both an implementation path and a named passing test, and which
 caps any component no deployable binary composes at *Implemented but
 unverified*.

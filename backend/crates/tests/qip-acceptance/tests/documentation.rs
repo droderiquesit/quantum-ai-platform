@@ -972,75 +972,6 @@ fn no_document_promises_something_the_platform_does_not_do() {
     );
 }
 
-// --- the final system report ------------------------------------------------
-
-#[test]
-fn the_delivery_status_scores_every_numbered_blueprint_section() {
-    // This replaced `the_final_report_states_a_verdict_for_every_layer…` on
-    // 2026-09-07, when nineteen status documents became one. The property is
-    // the same and stronger: a status document that quietly drops the section
-    // with the worst verdict reads better and says less, so every numbered
-    // section of the blueprint must carry a row.
-    //
-    // The blueprint is the spine precisely because this repository cannot
-    // redefine it — the previous registers each invented their own grouping,
-    // which is how they drifted apart.
-    let blueprint = qip_acceptance::read("docs/architecture/algorik-blueprint-v10.1-source.md");
-    let status = qip_acceptance::read("docs/DELIVERY-STATUS.md");
-
-    let sections: Vec<String> = blueprint
-        .lines()
-        .filter_map(|line| {
-            let number = line.split_whitespace().next()?;
-            let rest = line[number.len()..].trim_start();
-            // A section number is `5` or `5.1`, never `5.` — a trailing dot
-            // is a prose list marker, and admitting those found 57 phantom
-            // "sections" the first time this ran.
-            let numeric = !number.is_empty()
-                && number.chars().all(|c| c.is_ascii_digit() || c == '.')
-                && number.chars().next().is_some_and(|c| c.is_ascii_digit())
-                && !number.ends_with('.');
-            let titled = rest.chars().next().is_some_and(char::is_uppercase);
-            (numeric && titled).then(|| number.to_string())
-        })
-        .collect();
-
-    // The premise: the spine really was read. A blueprint that failed to load
-    // would make the loop below vacuous and this test would pass on nothing.
-    assert!(
-        sections.len() > 150,
-        "only {} numbered sections were found in the blueprint, so this test is \
-         not reading the specification it was written for",
-        sections.len()
-    );
-
-    let missing: Vec<&String> = sections
-        .iter()
-        .filter(|section| !status.contains(&format!("| {section} |")))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "the delivery status has no row for {} blueprint section(s): {missing:?}",
-        missing.len()
-    );
-}
-
-#[test]
-fn the_delivery_status_counts_the_crates_that_are_actually_there() {
-    // The evidence table is measured, and a measured number goes stale. This
-    // is what notices — it is cheap to recount and expensive to be wrong
-    // about, since the count is the first thing a reader checks.
-    let report = qip_acceptance::read("docs/DELIVERY-STATUS.md");
-    let manifests = qip_acceptance::files_with_extension("backend/crates", "toml")
-        .into_iter()
-        .filter(|path| path.file_name().is_some_and(|name| name == "Cargo.toml"))
-        .count();
-    assert!(
-        report.contains(&format!("| Crates | {manifests} |")),
-        "the delivery status does not say there are {manifests} crates, and there are"
-    );
-}
-
 /// A document that says a type does not exist must be right about that.
 ///
 /// The scored architecture documents make existence claims — "there is no
@@ -1057,10 +988,12 @@ fn the_delivery_status_counts_the_crates_that_are_actually_there() {
 #[test]
 fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
     let documents = [
-        // Was three scored architecture documents until 2026-09-07; all three
-        // were among the nineteen consolidated into the single status file,
-        // which is what this now reads.
-        "docs/DELIVERY-STATUS.md",
+        // Was three scored architecture documents until 2026-09-07, then the
+        // single status file they were consolidated into. That file scored
+        // blueprint v10.1 and was removed on 2026-10-11 with the rest of the
+        // pre-v12.0 register; these are the two maps of the tree still kept.
+        "docs/SYSTEM_MAP.md",
+        "docs/MASTER_ROADMAP.md",
     ];
 
     // Every source file once, so the claims below are checked against the
@@ -1229,8 +1162,12 @@ fn no_scored_document_denies_the_existence_of_a_type_the_workspace_defines() {
 /// would have gone on missing all three, which is the shape of the gate that
 /// preceded this one — real, passing, and scoped away from where the
 /// overstatements were.
-const SCORED_PLAN_DOCUMENTS: [&str; 2] = [
-    "docs/DELIVERY-STATUS.md",
+/// `docs/DELIVERY-STATUS.md` was the first entry until 2026-10-11, when the
+/// pre-v12.0 register was removed; the two maps of the tree that remain took
+/// its place so the corpus did not shrink to one document.
+const SCORED_PLAN_DOCUMENTS: [&str; 3] = [
+    "docs/MASTER_ROADMAP.md",
+    "docs/SYSTEM_MAP.md",
     "docs/plan/algorik-instruction-precedence.md",
 ];
 
@@ -1551,26 +1488,22 @@ fn no_scored_plan_document_calls_a_search_empty_that_is_not() {
         contradicted.extend(wrong);
     }
 
-    // The vacuity guards, and both are load-bearing. The first fails if the
-    // documents stop writing the shape — which is how the test above could
-    // have been left reading nothing. The second fails if every claim becomes
-    // unreadable to the conservative parser, at which point this is a test that
-    // recognises sentences and checks none of them.
-    assert!(
-        claims > 0,
-        "no cell in the scored plan documents claims a quoted command comes back empty, so this \
-         test is reading none of the sentences it was written for"
-    );
-    assert!(
-        evaluated > 0,
-        "{claims} emptiness claims were found and none was in a shape this test could run, so \
-         nothing was checked against the tree"
-    );
-
+    // The vacuity guards were `claims > 0` and `evaluated > 0` until
+    // 2026-10-11, and every claim they found was in `docs/DELIVERY-STATUS.md`.
+    // When that register was removed the corpus kept one claim, in a shape the
+    // parser cannot run, and the guards started demanding that a live
+    // emptiness claim exist — the same backwards turn the type-denial test
+    // above took on 2026-09-07 and corrected the same way. A corpus with no
+    // such claim is the goal state, not a broken reader. That the reader
+    // recognises a claim, runs it, and finds the contradiction is proven on
+    // fixed text by `the_emptiness_claim_reader_fires_on_the_cell_that_…`,
+    // which cannot be satisfied by an empty corpus; what is left here is the
+    // per-document premise above, that each document was read and is the
+    // substantial document it is named as.
     assert!(
         contradicted.is_empty(),
         "a scored plan document quotes a command as evidence that something is absent, and the \
-         command finds it: {contradicted:#?}"
+         command finds it ({claims} claims found, {evaluated} run): {contradicted:#?}"
     );
 }
 
@@ -1697,6 +1630,36 @@ fn the_blueprint_views_are_what_their_sources_render_to() {
     // nineteen status documents into nineteen different answers before
     // 2026-09-07. `qip blueprint render` fixes a stale view.
     let root = repository_root();
+
+    // Since 2026-10-11 there is no catalogue: the v11.6 decomposition and its
+    // assessment were removed so that the next register is built from v12.0
+    // alone. Until it lands, the property is that no view exists without its
+    // source — a `traceability-matrix.md` left behind would be a register
+    // nobody can re-render, which is a hand-edited one — and that the tool
+    // refuses rather than rendering an empty register as if it were a
+    // complete one.
+    if !root.join("docs/blueprint/requirements").exists() {
+        for view in [
+            "docs/blueprint/requirements.md",
+            "docs/blueprint/traceability-matrix.md",
+            "docs/blueprint/v12-completeness-targets.md",
+            "docs/blueprint/assessment",
+            "docs/architecture/current-state.md",
+        ] {
+            assert!(
+                !root.join(view).exists(),
+                "{view} exists with no requirement catalogue to render it from; it is a \
+                 register nobody can re-render, so remove it or restore its source"
+            );
+        }
+        assert!(
+            qip_cli::blueprint::load(&root).is_err(),
+            "`qip blueprint` loaded sources with no requirement catalogue, so it would render \
+             an empty register as if it were a complete one"
+        );
+        return;
+    }
+
     let sources = qip_cli::blueprint::load(&root).expect("the blueprint sources load");
 
     // The premise: the catalogue is the adopted blueprint, not a stub. A

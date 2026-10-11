@@ -9,8 +9,8 @@ refuses a row naming a test that file does not hold, a measurement that file
 makes without a row here, and any edit that drops the caveats in this
 paragraph.
 
-The traceability document
-([`../DELIVERY-STATUS.md`](../DELIVERY-STATUS.md))
+The v10.1 traceability document (`docs/DELIVERY-STATUS.md`, removed
+2026-10-11, in history at `f65c2c48`)
 scored the execution plane's capabilities as TESTED and none as MEASURED
 until its re-score of 2026-09-05, which cites this document. This document
 is the first set of numbers, and it is important to be exact

@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 18] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 17] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -139,7 +139,6 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 18] = [
     ".claude/hooks/test_guard_dangerous_command.py",
     ".claude/hooks/test_hooks.py",
     "scripts/audit-dead-code.py",
-    "scripts/audit-register.py",
     "scripts/check-manifests.py",
     // The ADR 0102 fleet: the worker runs as a Cloud Run Job task in a
     // container holding a Node runtime and no Rust toolchain, and it calls
@@ -213,8 +212,8 @@ fn the_non_rust_tooling_outside_the_browser_layer_is_exactly_the_accepted_set() 
         "the non-Rust tooling outside the browser layer no longer matches the \
          set §2.1 records as this repository's accepted deviation from rule 1. \
          New: {added:?}. Gone: {removed:?}. If a file is new, say in the same \
-         commit why the platform's own language could not do the job, update \
-         the §2.1 row in docs/DELIVERY-STATUS.md, and raise an ADR if it sits \
+         commit why the platform's own language could not do the job, say it \
+         again beside the file's entry in this list, and raise an ADR if it sits \
          on a workflow path as scripts/terraform-undeletable.py does. If a \
          file is gone, strike it from this list so the set stops describing a \
          tree nobody has"

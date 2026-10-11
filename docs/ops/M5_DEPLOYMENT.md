@@ -400,6 +400,5 @@ After M5 is verified locally and in dev:
 
 - ADR 0100: Event fabric design and M5 specification
 - ADR 0103–0106: M5-specific sub-decisions
-- `docs/implementation/critical-path.md`: M5 packet breakdown
 - `docs/ops/deployment-path.md`: Full production deployment flow
 - `docs/operations/RUNBOOK.md`: Operator playbooks

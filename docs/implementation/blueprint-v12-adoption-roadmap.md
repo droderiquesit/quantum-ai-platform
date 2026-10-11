@@ -125,10 +125,8 @@ The roadmap is organized by:
 
 ### Deliverables
 
-- [ ] Update `docs/architecture/current-state.md` with v12.0 components
-- [ ] Update `docs/architecture/target-state.md` with v12.0 placement
+- [ ] Write a v12.0 current-state map (`docs/architecture/current-state/*.json`, rendered by `qip blueprint render`) — the v11.6 map and target-state were removed 2026-10-11
 - [ ] Update `docs/architecture/lane-placement.md` with new lanes
-- [ ] Update `docs/architecture/current-state/*.json` component models
 - [ ] Add `.claude/rules/architecture/v12-adoption.md` with transition rules
 
 ### Current State Additions

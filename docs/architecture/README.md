@@ -132,12 +132,10 @@ This document is the shape of the system. Two companions carry the rest:
    several are settled: reopening one takes a new ADR, not an argument. Count
    them with `ls docs/adr/ | grep -c '^0[0-9][0-9][0-9]-'` rather than trusting
    this sentence, which read "twenty-three" until 2026-09-07.
-2. **`../DELIVERY-STATUS.md` — the single status document.** ADR 0022 makes
-   the Algorik Master Blueprint v10.1-4 and its companion diagram the
-   architecture of record, so that file says how far the tree is from where it
-   is meant to be: all 181 numbered blueprint sections, one verdict each, every
-   claim carrying a runnable command. **Score new work there, and nowhere
-   else.**
+2. **`../blueprint/README.md` — the blueprint of record.** Master Blueprint
+   v12.0 and GCP v3.0. Its register is to be rebuilt from those two alone;
+   the v10.1 and v11.6 registers were removed on 2026-10-11. **Score new work
+   there, and nowhere else.**
 
 This list held seven entries until 2026-09-07. Five of them were separate
 status documents — a component scorecard, a superseded diagram manifest, a

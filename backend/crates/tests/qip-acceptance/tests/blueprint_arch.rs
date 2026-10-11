@@ -207,15 +207,16 @@ fn section_31_1_targets() -> Vec<String> {
 }
 
 #[test]
-fn the_ten_v12_completeness_targets_are_the_blueprints_own_words_and_each_is_scored_from_requirements_it_cites()
- {
-    // ARCH-074. The failure this prevents has two halves. A list of targets
-    // paraphrased from the blueprint drifts until it scores something the
-    // blueprint never asked for; and a target with nothing cited under it is
-    // scored on its own text. So the list is held to the source word for
-    // word, and every entry must rest on requirement rows the register
-    // actually holds — whose statuses the rendered view then quotes, and
-    // which `documentation.rs` refuses to let go stale.
+fn the_v12_blueprint_source_holds_the_ten_completeness_targets_of_section_31_1() {
+    // ARCH-074, as far as it can be held with no register. Until 2026-10-11
+    // this also held `docs/blueprint/v12-completeness-targets.json` to these
+    // words and required each target to cite requirement rows; that register
+    // scored the v11.6 decomposition and was removed with it, and the
+    // targets are to be re-cited against the v12.0 one when it exists. What
+    // stays true without it is that the source text is the one the targets
+    // will be scored from: a `.txt` re-extracted with a different layout, or
+    // a different edition dropped in under the same name, would make that
+    // future citation quote sentences the blueprint does not say.
     let from_source = section_31_1_targets();
     assert_eq!(
         from_source.len(),
@@ -224,59 +225,14 @@ fn the_ten_v12_completeness_targets_are_the_blueprints_own_words_and_each_is_sco
          is not reading the section: {from_source:?}",
         from_source.len()
     );
-
-    let root = qip_acceptance::repository_root();
-    let sources = qip_cli::blueprint::load(&root).expect("the blueprint sources load");
-    let registered: Vec<String> = sources
-        .completeness_targets
-        .iter()
-        .map(|target| one_line(target["target"].as_str().unwrap_or_default()))
-        .collect();
-    assert_eq!(
-        registered, from_source,
-        "docs/blueprint/v12-completeness-targets.json does not list §31.1's ten targets in \
-         the blueprint's own words and order"
-    );
-
-    // `load` has already refused a target citing nothing or citing an id the
-    // catalogue does not hold; what it cannot know is which requirement makes
-    // the ninth target safe to adopt. "Can veto/reduce exposure" reads as a
-    // second enforcement path unless the veto is a limit the Risk Gate
-    // evaluates, and RISK-020 is the row that says enforcement is the Gate's.
-    let veto = sources
-        .completeness_targets
-        .iter()
-        .find(|target| {
-            target["target"]
-                .as_str()
-                .is_some_and(|text| text.contains("veto/reduce exposure"))
-        })
-        .expect("one of the ten is the veto target");
-    let cited: BTreeSet<&str> = veto["requirements"]
-        .as_array()
-        .expect("a list of ids")
-        .iter()
-        .filter_map(|id| id.as_str())
-        .collect();
+    // The ninth is the one that reads as a second enforcement path unless a
+    // later register ties it to the Risk Gate, so it is named here to keep
+    // that obligation visible to whoever rebuilds the citations.
     assert!(
-        cited.contains("RISK-020"),
-        "the veto target cites {cited:?} and not RISK-020; without the row that keeps \
-         enforcement with the Risk Gate, the target reads as a second enforcement path"
-    );
-
-    // And the view a reader opens carries one row per target.
-    let view = qip_cli::blueprint::render_views(&sources)
-        .into_iter()
-        .find(|view| view.path == "docs/blueprint/v12-completeness-targets.md")
-        .expect("the targets view is rendered");
-    let rows = view
-        .text
-        .lines()
-        .filter(|line| line.starts_with("| ") && !line.starts_with("| # "))
-        .count();
-    assert_eq!(
-        rows, 10,
-        "the rendered view does not hold one row per target"
+        from_source
+            .iter()
+            .any(|target| target.contains("can veto/reduce exposure")),
+        "none of the ten targets is the capital/risk veto target: {from_source:?}"
     );
 }
 

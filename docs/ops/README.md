@@ -15,7 +15,7 @@ not prove:
 * [Execution measurements](execution-measurements.md)
 
 Both registers of what is switched off or missing were consolidated into
-[`../DELIVERY-STATUS.md`](../DELIVERY-STATUS.md) on 2026-09-07 and deleted.
+`docs/DELIVERY-STATUS.md` on 2026-09-07 and deleted; that file was itself removed on 2026-10-11 and is in history at `f65c2c48`.
 They were "kept as a pair so that they cannot disagree about one switch",
 which is the argument for one document rather than two: what the architecture
 of record requires and the tree does not provide is now the §41–§46 rows of

@@ -53,8 +53,7 @@ base image already carries musl-dev and gcc in its own digest-pinned layers, so
 the line was removed rather than pinned (CICD-048); `Dockerfile` says why a
 version pin was the wrong fix. The acceptance suite's
 `the_build_stage_installs_nothing_the_digest_does_not_pin` refuses it returning.
-This does not make the image byte-reproducible on its own — see
-`docs/blueprint/assessment/CICD-b2.json`, CICD-048.
+This does not make the image byte-reproducible on its own.
 
 ## What is not here
 

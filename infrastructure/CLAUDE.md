@@ -110,7 +110,8 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   the workflow's own identity, an empty VPC and two subnets Google's
   `serverless-ipv4-*` addresses still hold — and nine KMS keys, five
   `force_destroy = false` buckets and the state bucket stand outside state.
-  The register in `docs/DELIVERY-STATUS.md` lists them.
+  They are listed here because the register that held them was removed
+  on 2026-10-11 (it is in history at `f65c2c48`).
   **Re-applied 2026-09-20**, and the two halves of that sentence do not
   agree the way a reader expects, so both are said: `infra.yml` run 52
   reports `Apply complete! Resources: 0 added, 1 changed, 0 destroyed` over
@@ -131,9 +132,9 @@ refusing a `qip-*` image in any Pod spec. Terraform's provider set is still
   ADR 0093 says what it would take to make the flag able to close.
   What is still
   true is the rule: an agent shows the plan and a person applies, and
-  `docs/DELIVERY-STATUS.md` records what each plan and each observation
-  found. It absorbed the missing-infrastructure register on 2026-09-07,
-  and this line pointed at the deleted path until 2026-09-08.
+  each plan and each observation is recorded in the commit or run that
+  produced it. `docs/DELIVERY-STATUS.md`, which held them until
+  2026-10-11, is in history at `f65c2c48`.
 - **Standing it back up is not a plain apply, and `infra.yml` now knows
   that.** Everything the teardown left in the project it also took out of
   state, so run 44 (`plan`, `dev`, 2026-09-15) returned `Plan: 184 to add, 0

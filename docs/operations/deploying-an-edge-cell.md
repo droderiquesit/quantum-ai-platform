@@ -23,8 +23,8 @@ This paragraph used to add "which has never been applied". That stopped being
 true and the clause outlived it: `dev` has been applied, by `infra.yml` runs 34
 through 38 under [ADR 0040](../adr/0040-the-owner-authorises-the-agent-to-apply-dev-and-what-that-authorisation-cannot-reach.md),
 taking state from 163 to 237 resources —
-`docs/DELIVERY-STATUS.md` (which absorbed the missing-infrastructure register on 2026-09-07) records each run, its plan and its
-terminal status. What has never been applied is **anything in this file**: no
+each run, its plan and its terminal status were recorded in `docs/DELIVERY-STATUS.md` (removed
+2026-10-11, in history at `f65c2c48`). What has never been applied is **anything in this file**: no
 `execution_nodes` entry has ever reached a plan, so every resource named below
 is a resource no plan has yet proposed. Two facts bound what it can promise:
 
@@ -109,7 +109,7 @@ between ADR 0035 and a node since it was written.
 4. **Dispatch `infra.yml` with `action=up`.** This is an apply, and under
    [ADR 0040](../adr/0040-the-owner-authorises-the-agent-to-apply-dev-and-what-that-authorisation-cannot-reach.md)
    the dispatch is the review; record the run URL and its terminal status in
-   `docs/DELIVERY-STATUS.md` (which absorbed the missing-infrastructure register on 2026-09-07) beside runs 34 to 38.
+   the commit that records the apply.
 
 5. **Dispatch `.github/workflows/image.yml`.** Manual dispatch only, `prod`
    refused twice over. Its inputs, and what each has to agree with:
