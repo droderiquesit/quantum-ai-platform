@@ -181,6 +181,16 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 30] = [
     "scripts/game-day/harness.test.mjs",
     "scripts/model-gateway.mjs",
     "scripts/model-gateway.test.mjs",
+    // The rule-citation gate (R12 GOV-9080), on ci.yml's `rule-citation`
+    // job: it reads the pull request's body from the event file and refuses
+    // one that changes a rule file without naming it. It must answer on a
+    // pull request before anything compiles, and the job installs Node and
+    // no Rust toolchain — a `qip` subcommand would mean building the
+    // workspace to read a JSON field — so it is in Node, built-ins only,
+    // beside the agent guard and the SAST gate. On a workflow path, so it
+    // owes an ADR on the same terms as those two; none is written yet.
+    "scripts/rule-citation.mjs",
+    "scripts/rule-citation.test.mjs",
     // The CodeQL blocking gate (R12 CICD-9105), on `codeql-analysis.yml`'s
     // path: it reads the SARIF the analysis wrote and fails the `sast` job
     // on a finding at or above `sast-policy.json`'s threshold. That job
@@ -188,17 +198,6 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 30] = [
     // analysis in the job that ran it, so it is in Node, built-ins only.
     // On a workflow path, so it owes an ADR on the same terms as the agent
     // guard above: ADR 0117, which records its policy file and threshold.
-    // A pull request that changes a rule names it (R12 GOV-9080), run by
-    // ci.yml's `rule-citation` job, which installs Node and no Rust
-    // toolchain: it reads the pull request body from the event file and the
-    // changed paths from `git diff`, and must refuse before anything is
-    // built, so a check that first compiled the workspace would be slower to
-    // say less. Built-ins only, nothing installed. It IS on a workflow path,
-    // so on the terms above it owes an ADR; none names it yet, which is why
-    // it is not in `WORKFLOW_PATH_TOOLING_ADR` below. Recording it there is
-    // the owner's decision, not this list's.
-    "scripts/rule-citation.mjs",
-    "scripts/rule-citation.test.mjs",
     "scripts/sast-gate.mjs",
     "scripts/sast-gate.test.mjs",
     // Sends the owner a text through a carrier email gateway over SMTP with
