@@ -310,12 +310,22 @@ impl DataFinder {
     /// above it, reliability scales by `budget / mean`.
     pub const LATENCY_BUDGET: Duration = Duration::from_secs(1);
 
-    /// Record health observations of `id`, oldest first. Observations not
-    /// newer than the newest already held are skipped, so a monitor handing
-    /// over an overlapping window does not count one attempt twice.
+    /// Record health observations of `id`. Observations not newer than the
+    /// newest already held are skipped, so a monitor handing over an
+    /// overlapping window does not count one attempt twice.
+    ///
+    /// The batch is put in time order first, by the instant each
+    /// observation states. It used to be taken in the order given, and the
+    /// skip above then read a newest-first batch as nine stale repeats of
+    /// its first entry: of nine failures handed over newest first, one was
+    /// kept, and a source failing most of its window scored 0.5 instead of
+    /// 0.18. Every observation carries its own time, so ordering them is
+    /// arithmetic on stated facts, not a guess about the caller.
     pub fn observe_health(&mut self, id: &str, observations: &[HealthObservation]) {
+        let mut observations = observations.to_vec();
+        observations.sort_by_key(|observation| observation.at);
         let held = self.observations.entry(id.to_string()).or_default();
-        for observation in observations {
+        for observation in &observations {
             if held
                 .back()
                 .is_some_and(|newest| observation.at <= newest.at)

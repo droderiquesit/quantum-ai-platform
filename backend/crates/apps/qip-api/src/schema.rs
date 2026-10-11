@@ -30,6 +30,9 @@
 //! reason. What is still invisible: the other variants of an enum the sample
 //! does not carry (only `CorporateActionKind::Split` is sampled), and any
 //! field a `#[serde(skip_serializing_if)]` omits on the sampled value.
+//! The tick, quote and trade samples carry `sequence: Some(1)` for exactly
+//! that reason: `sequence` is skipped when `None`, and a sample without it
+//! committed an id in which the field did not exist.
 
 use qip_core::error::{Error, Result};
 use qip_core::{Currency, Decimal, ObjectId, PortfolioId, Timestamp};
@@ -84,21 +87,21 @@ pub const COMMITTED_SCHEMAS: &[CommittedSchema] = &[
     },
     CommittedSchema {
         topic: "market.quote",
-        version: 1,
+        version: 2,
         type_name: "qip_market::quote::Quote",
-        schema_id: "63b1d394e2394072a33900fe9e489805794c2b676bd3114e0214bc5d407bb493",
+        schema_id: "90607ed66e54631c5ad66162f5b6170a40621ce050cdfc30895d542505412eca",
     },
     CommittedSchema {
         topic: "market.tick",
-        version: 1,
+        version: 2,
         type_name: "qip_market::quote::Tick",
-        schema_id: "cff724470b8d827eec4b642a920f61954403faf5e6f2b547e56c2a2007346f2e",
+        schema_id: "e1ad751af1b7e6ec233e0a69c35e372830cad543fc0a6dd8e5221f3dc99cf4a3",
     },
     CommittedSchema {
         topic: "market.trade",
-        version: 1,
+        version: 2,
         type_name: "qip_market::quote::Trade",
-        schema_id: "ac46b3c7e990b8cc909aeaa2a38b46033e6fd6347a8b0581901bd96a2b32fb33",
+        schema_id: "871fa3e5d2018b4d97709aa6686ce6594684ce2d868f4bb6cadaf56be4bbaca7",
     },
     CommittedSchema {
         topic: "pnl.updated",
@@ -129,7 +132,7 @@ pub fn initialize_schema_registry() -> Result<SchemaRegistry> {
         venue: "fixture".to_string(),
         at,
         capture_time: at,
-        sequence: None,
+        sequence: Some(1),
         price: Decimal::from(100),
         volume: Decimal::ZERO,
         quality: quality.clone(),
@@ -140,7 +143,7 @@ pub fn initialize_schema_registry() -> Result<SchemaRegistry> {
         venue: "fixture".to_string(),
         at,
         capture_time: at,
-        sequence: None,
+        sequence: Some(1),
         bid: Decimal::from(99),
         ask: Decimal::from(101),
         bid_size: Decimal::from(100),
@@ -153,7 +156,7 @@ pub fn initialize_schema_registry() -> Result<SchemaRegistry> {
         venue: "fixture".to_string(),
         at,
         capture_time: at,
-        sequence: None,
+        sequence: Some(1),
         price: Decimal::from(100),
         size: Decimal::from(10),
         aggressor: Some(Side::Buy),
@@ -364,6 +367,19 @@ mod tests {
         }
     }
 
+    /// The version `market.tick` is committed at. The tests below read it
+    /// rather than writing `1`: they hard-coded version 1, so when `Tick`
+    /// moved to version 2 (a required `capture_time`) the drift test's
+    /// "drift at the committed version" became a rollback, and every test
+    /// here failed on a premise rather than on the property it guards.
+    fn committed_tick_version() -> Result<u32> {
+        COMMITTED_SCHEMAS
+            .iter()
+            .find(|row| row.topic == "market.tick")
+            .map(|row| row.version)
+            .ok_or_else(|| Error::invalid("premise: market.tick has a committed row"))
+    }
+
     /// The registry with the `market.tick` descriptor replaced by one whose
     /// shape gained `extra` and whose version is `version` — what a build
     /// carries after a field is added to `Tick`, with or without the bump.
@@ -429,7 +445,7 @@ mod tests {
     /// at the version consumers already trust, and the process still serves.
     #[test]
     fn a_body_whose_shape_drifted_without_a_version_bump_is_refused_at_startup() -> Result<()> {
-        let drifted = with_tick_drifted(1)?;
+        let drifted = with_tick_drifted(committed_tick_version()?)?;
         let message = refusal(&drifted, COMMITTED_SCHEMAS)?;
         ensure(
             message.contains("(topic market.tick)"),
@@ -449,10 +465,14 @@ mod tests {
     /// table, not the type, is what consumers were promised.
     #[test]
     fn a_version_bump_with_no_committed_row_is_refused_naming_the_row_to_commit() -> Result<()> {
-        let bumped = with_tick_drifted(2)?;
+        let committed = committed_tick_version()?;
+        let bumped = with_tick_drifted(committed + 1)?;
         let message = refusal(&bumped, COMMITTED_SCHEMAS)?;
         ensure(
-            message.contains("is at version 2 but COMMITTED_SCHEMAS holds version 1"),
+            message.contains(&format!(
+                "is at version {} but COMMITTED_SCHEMAS holds version {committed}",
+                committed + 1
+            )),
             "the refusal names both versions",
         )?;
         let built = bumped
@@ -480,7 +500,10 @@ mod tests {
         )?;
         let message = refusal(&registry, &without_tick)?;
         ensure(
-            message.contains("(topic market.tick, version 1) is registered but has no row"),
+            message.contains(&format!(
+                "(topic market.tick, version {}) is registered but has no row",
+                committed_tick_version()?
+            )),
             "an unversioned registered body is refused",
         )?;
 

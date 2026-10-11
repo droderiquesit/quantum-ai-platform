@@ -163,7 +163,12 @@ fn resealing_identical_events_is_a_no_op_and_the_buffer_never_exceeds_its_bound(
     assert_eq!(sealed[0].key, resealed[0].key, "the id is the content's");
     assert_eq!(sealed[0].canonical_sha256, resealed[0].canonical_sha256);
 
-    let mut bounded = writer(&Arc::new(MemoryBlobStore::new()), 10, 3)?;
+    // Five instruments, one event each, so no partition ever reaches its
+    // batch of 3 and only the total bound can seal. This read `writer(.., 10,
+    // 3)` — a batch above the total, which the constructor refuses (as the
+    // last line here asserts), so the test errored before it measured the
+    // bound at all.
+    let mut bounded = writer(&Arc::new(MemoryBlobStore::new()), 3, 3)?;
     for (i, name) in ["A", "B", "C", "D", "E"].iter().enumerate() {
         bounded.capture(event(i as u64, name, "full"))?;
         assert!(

@@ -147,7 +147,11 @@ impl Quote {
 
 impl EventBody for Quote {
     const TOPIC: Topic = Topic::MarketQuote;
-    const SCHEMA_VERSION: u32 = 1;
+    /// 2 since `capture_time` became required and `sequence` was added: a
+    /// version-1 body carries no capture instant and does not decode at
+    /// this version, so serving the new shape under 1 told every consumer a
+    /// shape it already trusted had not moved.
+    const SCHEMA_VERSION: u32 = 2;
 
     fn idempotency_key(&self) -> Option<String> {
         // A venue may resend the same quote on reconnect; the instant plus the
@@ -282,7 +286,11 @@ impl Trade {
 
 impl EventBody for Trade {
     const TOPIC: Topic = Topic::MarketTrade;
-    const SCHEMA_VERSION: u32 = 1;
+    /// 2 since `capture_time` became required and `sequence` was added: a
+    /// version-1 body carries no capture instant and does not decode at
+    /// this version, so serving the new shape under 1 told every consumer a
+    /// shape it already trusted had not moved.
+    const SCHEMA_VERSION: u32 = 2;
 
     fn idempotency_key(&self) -> Option<String> {
         self.trade_id
@@ -343,7 +351,11 @@ impl Tick {
 
 impl EventBody for Tick {
     const TOPIC: Topic = Topic::MarketTick;
-    const SCHEMA_VERSION: u32 = 1;
+    /// 2 since `capture_time` became required and `sequence` was added: a
+    /// version-1 body carries no capture instant and does not decode at
+    /// this version, so serving the new shape under 1 told every consumer a
+    /// shape it already trusted had not moved.
+    const SCHEMA_VERSION: u32 = 2;
 
     fn idempotency_key(&self) -> Option<String> {
         Some(format!(

@@ -177,11 +177,18 @@ fn a_market_record_that_states_no_quality_does_not_decode() {
     );
 
     // Every market record type carries one, and every one of them refuses.
+    // `capture_time` is stated so that the only thing missing is the
+    // quality block: since `capture_time` became required, a quote without
+    // it fails to decode for that reason alone, and this assertion would
+    // pass whatever happened to quality. The error must name `quality`.
     let quote_json = r#"{"object_id":"obj-aapl","venue":"XNYS","at":"2026-08-22T00:00:00Z",
+        "capture_time":"2026-08-22T00:00:00Z",
         "bid":"10.00","ask":"10.02","bid_size":"100","ask_size":"100"}"#;
+    let error = serde_json::from_str::<Quote>(quote_json)
+        .expect_err("a quote with no quality block decoded as a perfect measurement");
     assert!(
-        serde_json::from_str::<Quote>(quote_json).is_err(),
-        "a quote with no quality block decoded as a perfect measurement"
+        error.to_string().contains("quality"),
+        "the failure has to name the missing quality block: {error}"
     );
     assert!(
         serde_json::from_str::<Trade>(&TRADE_JSON.replace(QUALITY_JSON, "null")).is_err(),
@@ -203,8 +210,11 @@ fn a_market_record_that_states_no_quality_does_not_decode() {
 const QUALITY_JSON: &str =
     r#"{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}"#;
 
-/// A trade as it is actually written, with every field the decoder requires.
+/// A trade as it is actually written, with every field the decoder requires —
+/// including `capture_time`, required since the capture instant stopped being
+/// an `Option` the kernel read as `unwrap_or(at)`.
 const TRADE_JSON: &str = r#"{"object_id":"obj-aapl","venue":"XNYS","at":"2026-08-22T00:00:00Z",
+    "capture_time":"2026-08-22T00:00:00.250Z",
     "price":"10.01","size":"100","condition":"regular","quality":{"completeness":1.0,"confidence":1.0,"validation_failures":0,"is_imputed":false}}"#;
 
 // --- order book -------------------------------------------------------------

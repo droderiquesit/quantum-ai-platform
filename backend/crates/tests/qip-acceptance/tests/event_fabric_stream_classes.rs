@@ -223,22 +223,43 @@ fn archive_requirement_follows_the_retention_class() {
     assert!(!transient.archive_required());
 }
 
-/// GAP PIN (FABRIC-049/050). ADR 0100 §5 says P0 and P1 are never dropped,
-/// and `OverloadPolicy` documents `RefuseProducer` as theirs — but
-/// `StreamPolicy::new` does not check the declared overload policy against
-/// the class. A P0 control stream declaring `SampleOrShed` is admitted today.
-/// This test asserts that, so the gap is evidence rather than a sentence.
+/// FABRIC-049/050. ADR 0100 §5 says P0 and P1 are never dropped, and
+/// `OverloadPolicy` documents `RefuseProducer` as theirs.
 ///
-/// Mutation that makes it fail (the intended one): add a refusal in
-/// `StreamPolicy::new` for a P0/P1 stream whose overload policy is not
-/// `RefuseProducer`. When that lands, invert this test.
+/// This was a gap pin, `gap_a_p0_control_stream_declaring_shed_first_overload_is_admitted`,
+/// which asserted that `StreamPolicy::new` admitted a P0 control stream
+/// declaring `SampleOrShed` — the gap as evidence rather than a sentence. The
+/// constructor now checks the declared overload policy against the class
+/// (`QosClass::permits_overload_policy`), so the pin is inverted as it said
+/// it would be: both never-dropped classes refuse every overload policy but
+/// `RefuseProducer`, by a refusal naming the policy, and still admit
+/// `RefuseProducer` — without that half a constructor refusing every P0
+/// stream would pass.
+///
+/// Mutation: make `permits_overload_policy` return `true` unconditionally —
+/// the `SampleOrShed` refusal assertion fires for P0.
 #[test]
-fn gap_a_p0_control_stream_declaring_shed_first_overload_is_admitted() {
-    let shed = StreamPolicy::new(StreamPolicySpec {
-        overload_policy: OverloadPolicy::SampleOrShed,
-        ..spec(QosClass::P0Control)
-    })
-    .expect("today the constructor does not check overload against class");
-    assert_eq!(shed.qos_class(), QosClass::P0Control);
-    assert_eq!(shed.overload_policy(), OverloadPolicy::SampleOrShed);
+fn a_never_dropped_stream_declaring_any_overload_but_refuse_producer_is_refused() {
+    for class in [QosClass::P0Control, QosClass::P1Outcomes] {
+        let admitted = StreamPolicy::new(spec(class)).expect("RefuseProducer is admitted");
+        assert_eq!(admitted.overload_policy(), OverloadPolicy::RefuseProducer);
+
+        for overload in [
+            OverloadPolicy::SampleOrShed,
+            OverloadPolicy::ThrottleWithGap,
+            OverloadPolicy::AllowBacklog,
+        ] {
+            let error = StreamPolicy::new(StreamPolicySpec {
+                overload_policy: overload,
+                ..spec(class)
+            })
+            .expect_err("a never-dropped stream declaring a lossy overload policy was admitted");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("overload policy {overload:?} is refused")),
+                "{class:?} {overload:?}: {error}"
+            );
+        }
+    }
 }
