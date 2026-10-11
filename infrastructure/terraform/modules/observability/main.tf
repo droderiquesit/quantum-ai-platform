@@ -480,3 +480,83 @@ resource "google_monitoring_alert_policy" "sign_off_withheld_on_liquidity" {
     mime_type = "text/markdown"
   }
 }
+
+# --- outcomes the ledger has not booked, and beliefs the platform overstates ---
+#
+# Both series below have a production caller rather than only a registered
+# constant: `CentralPlane::settle` writes the outcome backlog gauge on every
+# report it settles (reached from `Platform::ingest_cell_report`, which
+# `qip-api`'s mesh sink calls), and `Platform` writes the Brier score gauge in
+# LEARN whenever an informative evaluation resolved. Neither is named in this
+# comment on purpose: the acceptance scan reads names out of this file, and a
+# name in prose would satisfy it after the policy was gone. Gated on `workload_metrics_exist` like every policy here, because
+# a policy naming a descriptor Cloud Monitoring has never ingested cannot be
+# created.
+
+# Orders reported sent whose fills the centre has not booked, never once
+# returning to zero over an hour. A backlog that rises and drains is outcomes
+# arriving; one that never drains is fills nobody has booked.
+resource "google_monitoring_alert_policy" "outcome_backlog" {
+  count = var.workload_metrics_exist ? 1 : 0
+
+  project      = var.project_id
+  display_name = "qip ${var.environment}: outcomes have not reached the ledger for an hour"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "outcome-to-ledger backlog never drained"
+
+    condition_prometheus_query_language {
+      query               = "min_over_time(qip_central_outcome_backlog_orders[1h]) > 0"
+      duration            = "0s"
+      evaluation_interval = "60s"
+    }
+  }
+
+  notification_channels = var.notification_channels
+
+  documentation {
+    content   = <<-EOT
+      The central plane has held at least one sent order without a booked
+      outcome for a full hour. A resting order the venue has not filled reads
+      the same way, so check first whether the cell still reports the order
+      open; if it does not, outcomes are being lost between the cell and the
+      ledger and the books are understating what was traded.
+    EOT
+    mime_type = "text/markdown"
+  }
+}
+
+# Calibration as a production objective (`belief-calibration-within-tolerance`
+# in the observability crate's `slo` module): a Brier score above 0.25 is worse than a
+# forecaster that says fifty percent about everything.
+resource "google_monitoring_alert_policy" "belief_calibration" {
+  count = var.workload_metrics_exist ? 1 : 0
+
+  project      = var.project_id
+  display_name = "qip ${var.environment}: stated confidence is worse than a coin flip"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "belief Brier score above 0.25 for an hour"
+
+    condition_prometheus_query_language {
+      query               = "min_over_time(qip_belief_brier_score[1h]) > 0.25"
+      duration            = "0s"
+      evaluation_interval = "60s"
+    }
+  }
+
+  notification_channels = var.notification_channels
+
+  documentation {
+    content   = <<-EOT
+      Over the window of resolved theses the platform's stated confidence has
+      been less informative than saying fifty percent every time, for an
+      hour. Sizing that reads confidence is sizing on noise. Read
+      `qip_belief_confidence_adjustment` beside it: below one, the platform
+      is overconfident.
+    EOT
+    mime_type = "text/markdown"
+  }
+}

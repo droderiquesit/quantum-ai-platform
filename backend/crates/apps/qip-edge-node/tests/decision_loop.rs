@@ -211,6 +211,17 @@ fn rig(store: Arc<dyn KeyValueStore>, bound: usize, handoff_capacity: usize) -> 
         .with_venue(venue())
         .with_journal_trimmed_on_ship()
         .with_journal_wire();
+    rig_with(config, store, bound, handoff_capacity)
+}
+
+/// [`rig`] with the cell's configuration supplied, so a test can build the
+/// node the way `main.rs` must not.
+fn rig_with(
+    config: CellConfig,
+    store: Arc<dyn KeyValueStore>,
+    bound: usize,
+    handoff_capacity: usize,
+) -> Result<Rig> {
     let features = FeatureEngine::new(MarketState::default(), Duration::from_secs(5));
     let allocation = RegionCapital::read(Some("1000000000"))?;
     let mut node = assemble(config, features, Arc::new(SystemClock), allocation, None)?;
@@ -1147,4 +1158,28 @@ fn decisions_wire_reading(path: &std::path::Path) -> qip_edge_node::rollback::Ro
     qip_edge_node::rollback::RollbackRequest::at(path)
         .expect("an absolute path is accepted")
         .read()
+}
+
+#[test]
+fn a_decision_loop_refuses_a_cell_built_without_the_journal_wire() -> Result<()> {
+    // RES-10124: on fabric loss the cell spools boundedly and narrows on
+    // pressure only if the composition root arms the journal wire it feeds.
+    // `main.rs` arms it, and what keeps it armed is that the loop refuses a
+    // cell without it — a node whose spool fills while the cell trades at
+    // full size is the failure this wire exists to stop. Premise: the same
+    // rig with the wire armed assembles.
+    let wired = rig(Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64);
+    assert!(wired.is_ok(), "premise: the wired rig assembles");
+    let unwired = CellConfig::new(CELL, REGION)
+        .with_venue(venue())
+        .with_journal_trimmed_on_ship();
+    match rig_with(unwired, Arc::new(MemoryKeyValueStore::new()), 1 << 16, 64) {
+        Ok(_) => panic!("a decision loop accepted a cell with no journal wire"),
+        Err(error) => assert!(
+            error.message().contains("built without the journal wire"),
+            "refused for the wrong reason: {}",
+            error.message()
+        ),
+    }
+    Ok(())
 }
