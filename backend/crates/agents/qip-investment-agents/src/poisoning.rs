@@ -4,43 +4,50 @@
 //! sources, time and positions. A detection at the evidence layer (EVID-012)
 //! judges one item at a time; this specialist looks for campaigns that no single
 //! item reveals.
+//!
+//! Until 2026-10-11 `analyse` returned no data unconditionally, and the three
+//! tests below it asserted on `PoisoningFinding`s they had written by hand —
+//! a test named "a coordinated campaign is detected" that would have passed
+//! with the detector deleted, because there was none. The detection now lives
+//! in `qip_world_model::poisoning`, beside the evidence fabric it reads, and
+//! this agent runs it over the fabric the world model holds and reports what
+//! it found. The classes and the finding type are that module's, re-exported,
+//! so there is one definition of what a poisoning finding is.
 
 use crate::desk::Desk;
-use crate::support::no_data;
-use qip_agents::finding::{AgentBrief, AgentFinding};
+use crate::support::{FindingBuilder, computed, no_data};
+use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
 use qip_agents::runtime::{Agent, AgentContext};
 use qip_core::error::Result;
 use std::sync::Arc;
+
+pub use qip_world_model::poisoning::{
+    PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
+};
 
 /// Hunts for manipulation and source poisoning across the evidence fabric.
 #[derive(Debug)]
 pub struct PoisoningDetector {
     manifest: AgentManifest,
     desk: Arc<Desk>,
+    thresholds: PoisoningThresholds,
 }
 
 impl PoisoningDetector {
     pub fn new(manifest: AgentManifest, desk: Arc<Desk>) -> Self {
-        Self { manifest, desk }
+        Self {
+            manifest,
+            desk,
+            thresholds: PoisoningThresholds::default(),
+        }
     }
-}
 
-/// One poisoning finding the detector identified.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PoisoningFinding {
-    pub source_id: String,
-    pub poisoning_class: PoisoningClass,
-    pub evidence: String,
-}
-
-/// Categories of source poisoning that can be detected.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum PoisoningClass {
-    /// Coordinated manipulation campaign across multiple outlets.
-    CoordinatedManipulation,
-    /// Single source publishing contradicted or false claims.
-    SourcePoisoning,
+    /// Judge against `thresholds` rather than the defaults.
+    pub fn with_thresholds(mut self, thresholds: PoisoningThresholds) -> Self {
+        self.thresholds = thresholds;
+        self
+    }
 }
 
 impl Agent for PoisoningDetector {
@@ -49,124 +56,206 @@ impl Agent for PoisoningDetector {
     }
 
     fn analyse(&self, ctx: &mut AgentContext, brief: &AgentBrief) -> Result<AgentFinding> {
-        // Placeholder implementation. The full detector will:
-        // - Track source credibility based on past corroboration/contradiction
-        // - Identify coordinated publication patterns (same timing, near-identical text)
-        // - Detect syndication chains (shared origin detection)
-        // - Monitor for sudden changes in source behavior
-        let _market = self.desk.market.get(ctx)?;
-
-        Ok(no_data(
-            ctx,
-            brief.as_of,
-            "source poisoning detection requires evidence scoring infrastructure (EVID-012)",
-        ))
+        let world = self.desk.world.get(ctx)?;
+        let fabric = world.evidence();
+        if fabric.is_empty() {
+            // An empty fabric is not a clean one: nothing was checked, and a
+            // finding of "no poisoning" would read as a source given a pass.
+            return Ok(no_data(
+                ctx,
+                brief.as_of,
+                "the evidence fabric holds no claims, so there is nothing to scan for poisoning",
+            ));
+        }
+        let findings = detect_poisoning(fabric, brief.as_of, &self.thresholds);
+        let implicated: std::collections::BTreeSet<&str> = findings
+            .iter()
+            .flat_map(|finding| finding.sources.iter().map(String::as_str))
+            .collect();
+        let (direction, conviction, claim) = if findings.is_empty() {
+            (
+                Direction::Neutral,
+                0.0,
+                format!(
+                    "{} claim(s) from {} source(s) scanned; no poisoning pattern found",
+                    fabric.len(),
+                    fabric.sources().len()
+                ),
+            )
+        } else {
+            (
+                Direction::Negative,
+                1.0,
+                format!(
+                    "{} poisoning finding(s) implicating {} source(s): {}",
+                    findings.len(),
+                    implicated.len(),
+                    findings
+                        .iter()
+                        .map(|finding| finding.class.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+        };
+        let evidence = findings
+            .iter()
+            .map(|finding| {
+                format!(
+                    "poisoning:{}:{}: {}",
+                    finding.class.as_str(),
+                    finding
+                        .sources
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    finding.evidence
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut builder = FindingBuilder::new(ctx, brief.as_of, claim)
+            .direction(direction, conviction)
+            .fact(computed(
+                ctx,
+                "claims_scanned",
+                fabric.len() as f64,
+                "count",
+                &["evidence_fabric"],
+            ))
+            .fact(computed(
+                ctx,
+                "poisoning_findings",
+                findings.len() as f64,
+                "count",
+                &["evidence_fabric"],
+            ))
+            .caveats(vec![
+                "sees only claims the evidence fabric holds, bounded by its capacity".to_string(),
+            ]);
+        if !evidence.is_empty() {
+            builder = builder.evidence(evidence).falsifiers(vec![
+                "the implicated sources' later claims win the contests they enter".to_string(),
+            ]);
+        }
+        builder.build()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desk::Desk;
+    use crate::manifests;
+    use qip_agents::finding::FindingStatus;
+    use qip_agents::runtime::AgentHost;
+    use qip_core::{AgentRunId, CorrelationId, Duration, Lineage, Timestamp};
+    use qip_world_model::evidence::{META_ATTRIBUTE, META_SUBJECT, META_VALUE};
+    use qip_world_model::{EvidenceRecord, WorldModel};
 
-    #[test]
-    fn a_coordinated_manipulation_campaign_across_sources_is_detected() {
-        // When multiple sources publish contradicting claims in a coordinated
-        // pattern (same timing, near-identical text, shared upstream), the
-        // detector identifies them as CoordinatedManipulation rather than
-        // independent disagreement.
-        let findings = vec![
-            PoisoningFinding {
-                source_id: "reuters_feed_a".to_string(),
-                poisoning_class: PoisoningClass::CoordinatedManipulation,
-                evidence: "published at 14:32:00 UTC with 96.8% text match to source B".to_string(),
-            },
-            PoisoningFinding {
-                source_id: "bloomberg_feed_b".to_string(),
-                poisoning_class: PoisoningClass::CoordinatedManipulation,
-                evidence: "published at 14:32:02 UTC with 96.8% text match to source A".to_string(),
-            },
-        ];
-
-        // Assert we identified coordinated timing
-        assert!(
-            findings
-                .iter()
-                .all(|f| f.poisoning_class == PoisoningClass::CoordinatedManipulation),
-            "all sources in coordination campaign should be marked CoordinatedManipulation"
-        );
-
-        // Assert multiple sources identified
-        assert_eq!(
-            findings.len(),
-            2,
-            "coordinated campaign must involve multiple sources"
-        );
-
-        // Assert evidence mentions coordination signals
-        for finding in &findings {
-            assert!(
-                finding.evidence.contains("published at")
-                    || finding.evidence.contains("text match"),
-                "evidence must name coordination signal (timing or text similarity)"
-            );
-        }
+    fn now() -> Timestamp {
+        Timestamp::from_secs(1_800_000_000)
     }
 
+    fn claim(id: &str, source: &str, statement: &str) -> EvidenceRecord {
+        EvidenceRecord::new(
+            id.into(),
+            source.into(),
+            now(),
+            now(),
+            "test".into(),
+            "commercial".into(),
+            statement.into(),
+            0.9,
+        )
+        .unwrap()
+        .with_metadata(META_SUBJECT.into(), "ACME".into())
+        .with_metadata(META_ATTRIBUTE.into(), "event".into())
+        .with_metadata(META_VALUE.into(), "x".into())
+    }
+
+    fn run(world: WorldModel) -> AgentFinding {
+        let mut desk = Desk::empty(now());
+        desk.world = qip_agents::runtime::Gated::new(
+            world,
+            qip_agents::capability::Capability::ReadWorldModel,
+            "world-model",
+        );
+        let agent = PoisoningDetector::new(manifests::poisoning_detector(now()), Arc::new(desk));
+        let brief = AgentBrief::new(
+            "are our sources being poisoned",
+            now(),
+            Duration::from_days(1),
+        );
+        let record = AgentHost::new(1).run(
+            &agent,
+            &brief,
+            now(),
+            Lineage::root(CorrelationId::from_string("cor-1"), "test"),
+            AgentRunId::from_string("run-1"),
+        );
+        record.finding.expect("the detector produced a finding")
+    }
+
+    /// The test that used to assert on two hand-built findings. Now the
+    /// agent runs the detector over a world model holding a real campaign.
     #[test]
-    fn a_source_that_is_repeatedly_contradicted_by_events_is_flagged() {
-        // A source consistently publishing false claims is identified as
-        // poisoned when: corroboration tracking shows its claims never survive
-        // market resolution, drift to false over time, or are contradicted by
-        // authoritative sources.
-        let finding = PoisoningFinding {
-            source_id: "speculative_rumors_inc".to_string(),
-            poisoning_class: PoisoningClass::SourcePoisoning,
-            evidence:
-                "claims contradicted by authoritative sources in 12 of 13 recent predictions; \
-                      predicted $TECH earnings up 25%, actual down 8%; corroboration rate 2.3%"
-                    .to_string(),
-        };
-
-        // Assert source flagged as poisoned (not coordination)
-        assert_eq!(
-            finding.poisoning_class,
-            PoisoningClass::SourcePoisoning,
-            "repeatedly contradicted source must be flagged as SourcePoisoning"
-        );
-
-        // Assert evidence cites corroboration failure
+    fn a_coordinated_manipulation_campaign_across_sources_is_detected() {
+        let mut world = WorldModel::new();
+        let hashes = ["a".repeat(64), "b".repeat(64), "c".repeat(64)];
+        for (i, hash) in hashes.iter().enumerate() {
+            world
+                .absorb_evidence(
+                    claim(
+                        &format!("k{i}"),
+                        &format!("https://site{i}.example"),
+                        "Acme CEO arrested",
+                    ),
+                    Some(hash),
+                    now(),
+                )
+                .unwrap();
+        }
+        assert_eq!(world.evidence().len(), 3, "premise: the campaign is held");
+        let finding = run(world);
+        assert_eq!(finding.direction, Direction::Negative, "{finding:?}");
+        assert_eq!(finding.evidence.len(), 1, "{:?}", finding.evidence);
         assert!(
-            finding.evidence.contains("corroboration")
-                || finding.evidence.contains("contradicted")
-                || finding.evidence.contains("predicted"),
-            "evidence must name contradiction pattern or low corroboration rate"
-        );
-
-        // Assert we tracked multiple false predictions
-        assert!(
-            finding.evidence.contains("recent"),
-            "evidence must span time range"
+            finding.evidence[0].starts_with("poisoning:coordinated_manipulation:"),
+            "{:?}",
+            finding.evidence
         );
     }
 
     #[test]
     fn a_clean_episode_with_no_poisoning_injected_produces_no_findings() {
-        // Mutation test: verify no false positives on clean episodes without
-        // poisoning. Sources with normal disagreement, independent timing,
-        // and reasonable corroboration should produce no PoisoningFinding.
-        let findings: Vec<PoisoningFinding> = vec![];
-
-        // Assert no findings on clean episode
-        assert!(
-            findings.is_empty(),
-            "clean episode with no poisoning must produce zero findings"
-        );
-
-        // Verify the assertion actually fires by checking explicit empty state
+        let mut world = WorldModel::new();
+        for (i, text) in ["rate 1.10", "euro at one ten", "fixing 1.10"]
+            .iter()
+            .enumerate()
+        {
+            world
+                .absorb_evidence(
+                    claim(&format!("ok{i}"), &format!("https://s{i}.example"), text),
+                    None,
+                    now(),
+                )
+                .unwrap();
+        }
         assert_eq!(
-            findings.len(),
-            0,
-            "finding count must be zero on uncontaminated episode"
+            world.evidence().len(),
+            3,
+            "premise: the fabric is not empty"
         );
+        let finding = run(world);
+        assert_eq!(finding.direction, Direction::Neutral, "{finding:?}");
+        assert!(finding.evidence.is_empty(), "{:?}", finding.evidence);
+        assert_ne!(finding.status, FindingStatus::NoView);
+    }
+
+    #[test]
+    fn an_empty_fabric_is_reported_as_no_data_rather_than_as_clean() {
+        let finding = run(WorldModel::new());
+        assert_eq!(finding.status, FindingStatus::NoView, "{finding:?}");
     }
 }
