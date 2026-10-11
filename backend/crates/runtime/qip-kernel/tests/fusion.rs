@@ -217,6 +217,56 @@ fn a_measured_tick_reaction_moves_the_belief_it_tests() -> Result<()> {
         state.posteriors().contains_key("obj-ACME"),
         "the fused state's consumer form"
     );
+
+    // The price leaked: it fell 50 bp at 110, after the strike occurred
+    // (100) and before the platform could know of it (120), then a further
+    // 100 bp at 150. The reaction is measured from the mid at the knowable
+    // instant, and the leak is reported as priced before known. In the
+    // fixture above the mid is flat from 0 to 150, so a baseline taken when
+    // the event occurred read the same 100 and the round-2 mutation audit
+    // found that mutation survived; this half is what tells them apart.
+    let leaked = MarketTrace {
+        instrument: "obj-ACME".into(),
+        venue: "XLON".into(),
+        points: (0..=60)
+            .map(|i| {
+                let t = i * 10;
+                TracePoint {
+                    at: at(t),
+                    mid: match t {
+                        _ if t < 110 => 100.0,
+                        _ if t < 150 => 99.5,
+                        _ => 99.5 * 0.99,
+                    },
+                    spread_bps: 2.0,
+                }
+            })
+            .collect(),
+    };
+    let mut traces = traces;
+    traces.retain(|trace| trace.instrument != "obj-ACME");
+    traces.push(leaked);
+    let state = fuse(&graph, &traces, at(600), &config())?;
+    let reaction = &state
+        .events
+        .iter()
+        .find(|e| e.event == "evt-strike")
+        .expect("fused")
+        .reactions[0];
+    assert!(
+        (reaction.baseline_mid - 99.5).abs() < 1e-9,
+        "the baseline is the mid when the event became knowable: {}",
+        reaction.baseline_mid
+    );
+    assert!(
+        (reaction.move_bps + 100.0).abs() < 1e-6,
+        "the reaction after knowing is 100 bp: {}",
+        reaction.move_bps
+    );
+    let leak = reaction
+        .priced_before_known_bps
+        .expect("a move between occurring and knowing is reported");
+    assert!((leak + 50.0).abs() < 1e-6, "the leak is 50 bp: {leak}");
     Ok(())
 }
 

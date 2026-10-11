@@ -1017,8 +1017,10 @@ mod tests {
     /// waterfall from the obligation source, the two derivations still
     /// reconcile, and an obligation the ledger's `deployable` did not
     /// subtract is not silently ignored. Mutation: drop `figures.margin` from
-    /// the `.with_margin_required` call (pass zero) and the release does not
-    /// fall.
+    /// the `.with_margin_required` call (pass zero) and the waterfall no
+    /// longer reconciles with the ledger, so `size` refuses and the `unwrap`
+    /// fails — the reconciliation, not the release assertion, is what
+    /// catches it (round-2 mutation audit).
     #[test]
     fn margin_collateral_and_settlement_are_withheld_from_the_ledger_and_reconciled() {
         let mut governor = SurvivalGovernor::default();
@@ -1052,7 +1054,8 @@ mod tests {
 
     /// The emergency reserve is withheld before opportunity and reported as
     /// such. Mutation: pass `Decimal::ZERO` to `.with_nav_floor` and the
-    /// release does not fall.
+    /// waterfall no longer reconciles with the ledger, so `size` refuses and
+    /// the `unwrap` fails (round-2 mutation audit).
     #[test]
     fn the_emergency_reserve_is_withheld_before_opportunity() {
         let mut governor =

@@ -1028,8 +1028,12 @@ mod tests {
     /// The forecast distribution decides which instrument protects which
     /// future: a hedge that only moves in the crash cannot protect a world it
     /// does nothing in, and the pair search finds the two-instrument plan.
-    /// Mutation: score candidates on the crash world alone and the squeeze
-    /// world stays below the floor.
+    /// Mutation: skip the pair search (`.take(0)` on the second leg) and no
+    /// plan is found. Sizing a candidate on its worst world alone is not
+    /// enough on its own — `consider` re-checks every world before keeping a
+    /// plan, and the round-2 mutation audit found that mutation survives
+    /// unless that re-check is also removed, when the squeeze world is left
+    /// below the floor and this fails.
     #[test]
     fn different_worlds_are_protected_by_different_instruments() {
         let mut worlds = worlds();

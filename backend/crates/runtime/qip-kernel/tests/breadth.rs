@@ -113,7 +113,7 @@ fn factory_records(platform: &Platform) -> Result<Vec<MarketFactoryRecorded>> {
 /// hash-chained log, and the desk's venue shows the seeded book.
 ///
 /// Mutation: make `MarketFactory::seed` skip `venue.list_book(book)` and the
-/// venue's book is empty; drop the drain in `install_breadth` and the log
+/// venue rests no book (`Platform::listed_book` is `None`); drop the drain in `install_breadth` and the log
 /// holds no factory record.
 #[test]
 fn a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_journaled() -> Result<()>
@@ -138,6 +138,16 @@ fn a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_jour
         .expect("the planned market exists");
     assert_eq!(market.stage, MarketStage::Seeded);
     assert_eq!(market.inventory, dec!("30"));
+    // The venue itself rests the rule's ladder: three levels a side, the
+    // touch half a point either side of 100. Until the round-2 mutation
+    // audit nothing here read the venue, and a factory that journaled
+    // `Seeded` without listing the book passed.
+    let book = platform
+        .listed_book(PRODUCT)
+        .expect("the desk's venue rests the seeded book");
+    assert_eq!((book.bids.len(), book.asks.len()), (3, 3));
+    assert_eq!(book.bids[0].price, dec!("99.5"));
+    assert_eq!(book.asks[0].price, dec!("100.5"));
 
     let records = factory_records(&platform)?;
     let actions: Vec<FactoryAction> = records.iter().map(|r| r.record.action).collect();
