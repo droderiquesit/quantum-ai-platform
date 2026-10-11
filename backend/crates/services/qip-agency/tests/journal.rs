@@ -426,6 +426,34 @@ fn a_guard_resumed_from_the_journal_has_already_spent_what_the_journal_records()
     assert!(why.contains("rate limit"), "{why}");
     assert_eq!(adapter.attempts, 0);
 
+    // The window floor comes back from the journal too, not only from the
+    // pass this process began. A guard resumed and asked first for window 0
+    // has begun nothing, so only the journal can refuse it. Until this
+    // round's mutation pass the check below used `restarted`, which had just
+    // begun window 1 itself; deleting the floor in `ActionGuard::resume`
+    // passed the test, and a restart could have reopened window 0 with a
+    // full allowance.
+    let mut reopening = guard();
+    reopening
+        .resume(journal::resume(&log).unwrap().decisions)
+        .unwrap();
+    assert!(!reopening.in_pass(), "premise: nothing was begun");
+    let err = run_governed(
+        request(0),
+        Governance {
+            policy: Some(&policy),
+            guard: Some(&mut reopening),
+            eligibility: Some((&registry, Timestamp::from_secs(100))),
+        },
+        &mut adapter,
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("below window 1 already spent"),
+        "{err}"
+    );
+    assert_eq!(adapter.attempts, 0);
+
     // And going back to window 0 to get a fresh allowance is refused.
     let err = run_governed(
         request(0),
