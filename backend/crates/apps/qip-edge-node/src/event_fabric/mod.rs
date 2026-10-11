@@ -14,6 +14,9 @@ pub mod control;
 pub mod drain;
 pub mod inputs;
 pub mod mirror;
+/// Where the spool writer runs: pinned to a core when the deployment names
+/// one, and measured either way (FABRIC-7058).
+pub mod placement;
 pub mod pressure;
 pub mod relay;
 pub mod telemetry;

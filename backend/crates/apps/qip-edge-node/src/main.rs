@@ -61,6 +61,9 @@ use qip_edge_node::dark::DarkRegionWire;
 use qip_edge_node::event_fabric::drain::{Drain, DrainConfig, LakeSink, Sink};
 use qip_edge_node::event_fabric::inputs::RecordedInputs;
 use qip_edge_node::event_fabric::mirror::FabricMirror;
+use qip_edge_node::event_fabric::placement::{
+    Placement, WRITER_CPU_VARIABLE, current_placement, parse_writer_cpu, pin_current_thread,
+};
 use qip_edge_node::event_fabric::pressure::{PressureGauge, Thresholds};
 use qip_edge_node::event_fabric::relay::{JournalRelay, RelayConfig};
 use qip_edge_node::event_fabric::telemetry::OutboxTelemetry;
@@ -249,6 +252,9 @@ struct NodeConfig {
     /// coordinates with no other cell directly, announced — see
     /// `qip_edge_node::peer`.
     peers: Option<PeerSettings>,
+    /// The core the spool writer is pinned to, when the deployment names
+    /// one — see `qip_edge_node::event_fabric::placement`.
+    writer_cpu: Option<usize>,
 }
 
 impl NodeConfig {
@@ -381,6 +387,7 @@ impl NodeConfig {
         }
 
         let fabric = read_fabric(&|name| std::env::var(name).ok())?;
+        let writer_cpu = parse_writer_cpu(std::env::var(WRITER_CPU_VARIABLE).ok().as_deref())?;
         let peers = PeerSettings::read(
             &cell_id,
             std::env::var(LISTEN_VARIABLE).ok().as_deref(),
@@ -419,6 +426,7 @@ impl NodeConfig {
             risk_limits,
             standby,
             peers,
+            writer_cpu,
         })
     }
 }
@@ -856,9 +864,24 @@ fn run() -> Result<()> {
         WriterConfig::new(&config.cell_id, started, WRITER_POLL, WRITER_GROUP)?,
     )?;
     let session = spool_writer.session();
+    // The writer's placement is settled on its own thread before it takes
+    // a handoff, and reported back here before anything is served: pinned
+    // when a core is named, and a node that cannot have the core it was
+    // told to use stops rather than running on whatever the scheduler chose.
+    let (placed, placement) = std::sync::mpsc::sync_channel::<Result<Placement>>(1);
+    let writer_cpu = config.writer_cpu;
     std::thread::Builder::new()
         .name("qip-spool-writer".to_string())
         .spawn(move || {
+            let outcome = match writer_cpu {
+                Some(cpu) => pin_current_thread(cpu),
+                None => current_placement(),
+            };
+            let pinned = outcome.is_ok() || writer_cpu.is_none();
+            let _ = placed.send(outcome);
+            if !pinned {
+                return;
+            }
             // Returns only once every sender has gone and the spool holds
             // what it received, or with the write the spool refused; either
             // way its heartbeat has stopped and the gauge halts new exposure.
@@ -871,6 +894,33 @@ fn run() -> Result<()> {
             }
         })
         .map_err(|error| Error::io(format!("cannot start the spool writer: {error}")))?;
+    match placement.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(placement)) => println!(
+            "qip-edge-node: spool writer thread {} {} (allowed {:?}, last ran on CPU {})",
+            placement.tid,
+            match config.writer_cpu {
+                Some(cpu) => format!("pinned to CPU {cpu}"),
+                None => format!(
+                    "not pinned ({WRITER_CPU_VARIABLE} unset): the scheduler may run it on the \
+                     decision thread's core"
+                ),
+            },
+            placement.allowed,
+            placement.last_cpu
+        ),
+        // Unpinned, a placement that cannot be read is said and not fatal:
+        // nothing was asked of it.
+        Ok(Err(error)) if config.writer_cpu.is_none() => eprintln!(
+            "qip-edge-node: the spool writer's placement could not be read: {}",
+            error.message()
+        ),
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            return Err(Error::io(
+                "the spool writer did not report its placement within five seconds",
+            ));
+        }
+    }
     let relay = JournalRelay::spawn(
         from_mirror,
         to_writer,

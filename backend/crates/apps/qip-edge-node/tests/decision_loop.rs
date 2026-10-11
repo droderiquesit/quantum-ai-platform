@@ -668,3 +668,63 @@ fn an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal() 
     assert_eq!(decisions.cell().policy_sequence(), Some(2));
     Ok(())
 }
+
+/// The cell's acknowledgement of a policy it applied reaches the fabric's
+/// spool after the turn that flushed it, on the journal stream the drain
+/// delivers to `reflex-journal.local` (the policy-ack half of
+/// R12-REFLEX-5034; telemetry is not yet a fabric record).
+///
+/// Mutation: drop `Decision::PolicyApplied` entries in `SpoolWriter`'s
+/// journal handling (or stop flushing in `DecisionLoop::turn`) and the
+/// acknowledgement never reaches the spool.
+#[test]
+fn a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() -> Result<()> {
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    use qip_events::event_fabric::policy::QosClass;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let acknowledged = |spool: &SegmentLog| -> Result<Option<QosClass>> {
+        Ok(writer::records(spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .find(|record| {
+                writer::journal_entry(&record.event).is_ok_and(|entry| {
+                    matches!(entry.decision, Recorded::PolicyApplied { sequence: 7, .. })
+                })
+            })
+            .map(|record| record.stream))
+    };
+    // Premise: nothing has acknowledged sequence 7 before it is applied.
+    drive(&mut rig.decisions, 10, 2);
+    assert_eq!(acknowledged(&rig.spool)?, None);
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(7, CELL, t(20));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(20),
+    );
+    let policy = VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(20))?;
+    rig.decisions.cell_mut().apply_policy(policy, t(20))?;
+
+    let _watchdog = Watchdog::arm("the policy acknowledgement reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 21;
+    let stream = loop {
+        rig.decisions.turn(t(second))?;
+        second += 1;
+        if let Some(stream) = acknowledged(&rig.spool)? {
+            break stream;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the policy acknowledgement never reached the fabric spool"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(stream, QosClass::P2MarketJournal);
+    Ok(())
+}
