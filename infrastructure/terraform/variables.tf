@@ -1299,9 +1299,15 @@ variable "identity_authorized_domains" {
 }
 
 variable "identity_mfa_state" {
-  description = "Customer MFA posture: OFF, ENABLED (optional), or MANDATORY. MANDATORY locks out every unenrolled account when it applies."
+  description = "Customer MFA posture. MANDATORY only (W4.6): OFF and ENABLED (optional) are refused at plan, here and in modules/identity. Applying it where the posture was ENABLED locks out every account not yet enrolled."
   type        = string
-  default     = "ENABLED"
+  default     = "MANDATORY"
+  nullable    = false
+
+  validation {
+    condition     = var.identity_mfa_state == "MANDATORY"
+    error_message = "identity_mfa_state must be MANDATORY. Optional MFA leaves an account protected by a password alone; lowering it is an edit to modules/identity, reviewed, not a tfvars value."
+  }
 }
 
 variable "console_egress_cidr" {
@@ -1651,6 +1657,164 @@ variable "ledgerd" {
     fabric_consumer_group = optional(string, "qip-ledgerd")
   })
   default = null
+}
+
+# --- §15's security services (W4.6), every one off by default ----------------
+
+variable "pam_entitlements" {
+  description = <<-EOT
+    Privileged Access Manager entitlements (SEC-9123), keyed by a short name.
+    Each grants `roles` on this project for at most `max_request_duration`,
+    to one of `requesters`, after one of `approvers` approves with a
+    justification. Empty everywhere: no entitlement, no standing grant
+    either — the operator roles this platform has are the pipeline's.
+  EOT
+
+  type = map(object({
+    roles                = set(string)
+    requesters           = set(string)
+    approvers            = set(string)
+    max_request_duration = optional(string, "3600s")
+  }))
+  default  = {}
+  nullable = false
+
+  validation {
+    condition     = alltrue([for name, _ in var.pam_entitlements : can(regex("^[a-z][a-z0-9-]{0,40}$", name))])
+    error_message = "An entitlement's key is lowercase letters, digits and '-', at most 41 characters (it becomes part of the entitlement id)."
+  }
+
+  validation {
+    condition     = alltrue([for e in values(var.pam_entitlements) : length(e.approvers) > 0 && length(e.requesters) > 0 && length(e.roles) > 0])
+    error_message = "Every entitlement names at least one role, one requester and one approver. An entitlement nobody approves is a standing grant that takes an extra click."
+  }
+
+  validation {
+    condition     = alltrue([for e in values(var.pam_entitlements) : length(setintersection(e.requesters, e.approvers)) == 0])
+    error_message = "A principal may not both request and approve one entitlement; that is self-approval."
+  }
+
+  validation {
+    condition = alltrue([
+      for e in values(var.pam_entitlements) :
+      can(regex("^[0-9]+s$", e.max_request_duration)) && try(tonumber(trimsuffix(e.max_request_duration, "s")) <= 28800, false) && try(tonumber(trimsuffix(e.max_request_duration, "s")) >= 300, false)
+    ])
+    error_message = "max_request_duration is whole seconds such as \"3600s\", between 300s and 28800s (eight hours). Longer is a standing grant by another name."
+  }
+
+  validation {
+    condition     = alltrue([for e in values(var.pam_entitlements) : length(setintersection(e.roles, ["roles/owner", "roles/editor", "roles/viewer"])) == 0])
+    error_message = "A basic role (owner, editor, viewer) is refused: an elevation names the one role the task needs."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for e in values(var.pam_entitlements) : [
+        for p in setunion(e.requesters, e.approvers) :
+        can(regex("^(user|group|serviceAccount):[^,\\s]+@[^,\\s]+$", p))
+      ]
+    ]))
+    error_message = "Requesters and approvers are IAM principals written user:, group: or serviceAccount:. allUsers, allAuthenticatedUsers and domains are refused."
+  }
+}
+
+variable "certificate_authority" {
+  description = <<-EOT
+    A private Certificate Authority Service pool and root (SEC-9128), or null
+    for none. The pool issues leaf certificates only, for client and server
+    auth, for thirty days at most. `requesters` are the service accounts
+    granted `privateca.certificateRequester`. Null everywhere.
+  EOT
+
+  type = object({
+    location     = string
+    organization = string
+    requesters   = optional(set(string), [])
+  })
+  default = null
+
+  validation {
+    condition     = var.certificate_authority == null || can(regex("^[a-z]+-[a-z]+[0-9]+$", var.certificate_authority.location))
+    error_message = "certificate_authority.location is a region such as us-east4."
+  }
+
+  validation {
+    condition = var.certificate_authority == null || alltrue([
+      for member in try(var.certificate_authority.requesters, []) :
+      can(regex("^serviceAccount:[a-z0-9-]+@[a-z0-9.-]+\\.iam\\.gserviceaccount\\.com$", member))
+    ])
+    error_message = "Certificate requesters are service accounts, written serviceAccount:<email>. A person does not request a workload's certificate."
+  }
+}
+
+variable "vpc_service_controls" {
+  description = <<-EOT
+    A VPC Service Controls perimeter around this project (SEC-9129), or null
+    for none. `access_policy` is the organisation's access policy number —
+    organisation-scoped, so not created here. Enforced unless `enforced` is
+    false (dry run). `ingress_identities` are the service accounts allowed
+    in from outside (the pipeline's), by identity and nothing broader.
+    Null everywhere: the configuration has no organisation.
+  EOT
+
+  type = object({
+    access_policy = string
+    enforced      = optional(bool, true)
+    restricted_services = optional(set(string), [
+      "aiplatform.googleapis.com",
+      "bigquery.googleapis.com",
+      "bigtable.googleapis.com",
+      "secretmanager.googleapis.com",
+      "spanner.googleapis.com",
+      "storage.googleapis.com",
+    ])
+    ingress_identities = optional(set(string), [])
+  })
+  default = null
+
+  validation {
+    condition     = var.vpc_service_controls == null || can(regex("^[0-9]+$", var.vpc_service_controls.access_policy))
+    error_message = "vpc_service_controls.access_policy is the access policy's number."
+  }
+
+  validation {
+    condition     = var.vpc_service_controls == null || length(try(var.vpc_service_controls.restricted_services, [])) > 0
+    error_message = "A perimeter that restricts no service protects nothing and reads as protection. Name the services, or leave vpc_service_controls null."
+  }
+
+  validation {
+    condition = var.vpc_service_controls == null || alltrue([
+      for identity in try(var.vpc_service_controls.ingress_identities, []) :
+      can(regex("^serviceAccount:[a-z0-9-]+@[a-z0-9.-]+\\.iam\\.gserviceaccount\\.com$", identity))
+    ])
+    error_message = "Perimeter ingress is granted to service accounts by identity only. A user, group, domain or `*` would make the perimeter a door."
+  }
+}
+
+variable "sensitive_data_protection" {
+  description = <<-EOT
+    Sensitive Data Protection discovery over BigQuery and Cloud Storage
+    (SEC-9134), with an inspect template for `info_types` and a redaction
+    template, or null for none. Null everywhere.
+  EOT
+
+  type = object({
+    info_types = optional(set(string), [
+      "CREDIT_CARD_NUMBER",
+      "EMAIL_ADDRESS",
+      "IBAN_CODE",
+      "PERSON_NAME",
+      "PHONE_NUMBER",
+      "STREET_ADDRESS",
+      "SWIFT_CODE",
+    ])
+  })
+  default = null
+
+  validation {
+    condition     = var.sensitive_data_protection == null || length(try(var.sensitive_data_protection.info_types, [])) > 0
+    error_message = "A discovery scan that looks for no info type finds nothing and reads as a clean lake. Name the info types, or leave sensitive_data_protection null."
+  }
 }
 
 variable "registry_promotion_readers" {

@@ -68,10 +68,29 @@ resource "google_identity_platform_config" "algorik" {
   }
 
   mfa {
-    # OPTIONAL at launch: enrolment is offered and step-up honours it.
-    # MANDATORY is a product decision that locks out every unenrolled account
-    # at the moment it flips, so it is a variable, not a default.
+    # MANDATORY, and the variable admits nothing else (W4.6). This was
+    # ENABLED — optional — by default "at launch", which on a platform whose
+    # every decision has to be attributable to a person meant an account
+    # protected by a password alone was a normal account. A posture that can
+    # be lowered by a tfvars line is one a tfvars line will lower, so the
+    # refusal lives in the variable's validation and lowering it is an edit
+    # a reviewer sees. What it costs is stated plainly: the apply that flips
+    # an environment from ENABLED locks out every account not yet enrolled,
+    # which in dev — the one environment with identity on — is operators
+    # testing, not customers.
     state = var.mfa_state
+
+    # A second factor that is not a text message, beside the one that is.
+    # TOTP is the factor a SIM swap does not reach; SMS stays enabled so an
+    # account can enrol at all before an authenticator app exists for it.
+    enabled_providers = ["PHONE_SMS"]
+
+    provider_configs {
+      state = "ENABLED"
+      totp_provider_config {
+        adjacent_intervals = 1
+      }
+    }
   }
 
   quota {
