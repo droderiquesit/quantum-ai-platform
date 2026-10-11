@@ -12476,9 +12476,14 @@ impl Platform {
             // reads a pending episode before then.
             at: now,
             known_at: now,
-            // WORLD-063: model version and derived flag assigned at LEARN stage
-            // if causal edges were produced by the world model federation.
-            model_version: None,
+            // R12-GOV-6121: the world model the causal context above was
+            // read from, by content digest, so a later reader can tell which
+            // graph informed this decision. `model_derived` stays false: the
+            // episode's conclusion is the panel's, not the federation's.
+            model_version: Some(crate::decision_record::model_version(
+                self.world.read().causal(),
+                now,
+            )),
             model_derived: false,
         };
         draft.validate()?;
@@ -14311,6 +14316,14 @@ impl Platform {
         let hedges = self.review_hedges(now);
         detail.push_str(&format!("; {}", hedges.summary()));
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
+        // R12-GOV-6121: the five versions this DECIDE ran under, on the
+        // chain beside its decisions (`crate::decision_record`).
+        if let Err(error) = crate::decision_record::journal(self, now) {
+            outcome = outcome.with_problem(format!(
+                "the decision versions were not journaled, so this DECIDE cannot be \
+                 reproduced: {error}"
+            ));
+        }
         for problem in pre_positioning_problems {
             outcome = outcome.with_problem(problem);
         }

@@ -68,7 +68,9 @@ fn main() {
         "registrations" => registrations_command(&arguments[1..]),
         "replay" => replay_command(&arguments[1..]),
         "blueprint" => blueprint_command(&arguments[1..]),
-        "agency" => qip_cli::agency::run(&arguments[1..]),
+        // The agency's policy and journal may come from the environment;
+        // read here, the composition root, and nowhere below it.
+        "agency" => qip_cli::agency::run(&arguments[1..], &|name| std::env::var(name).ok()),
         // The whole family, once: a subcommand added to
         // `qip_cli::event_fabric` is reachable without this file changing,
         // and an unknown one is refused by the family naming its list.
@@ -111,10 +113,12 @@ fn print_help() {
     println!("  blueprint render|check [--root <path>]");
     println!("                    render the blueprint registers from their JSON sources,");
     println!("                    or exit 3 if a committed view is stale");
-    println!("  agency shadow --request <path>");
-    println!("                    run one shadow pass of the agency loop over a request");
-    println!("                    document and print what it would do and why. It calls");
-    println!("                    no adapter; exits 3 when the engine declines to act");
+    println!("  agency shadow --policy <path> --journal <path> --request <path> [...]");
+    println!("                    run agency passes under the configured conduct policy");
+    println!("                    (or QIP_AGENCY_POLICY_FILE), one guard across them,");
+    println!("                    journaling approvals and decisions on the hash-chained");
+    println!("                    log (or QIP_AGENCY_JOURNAL). Refuses without either.");
+    println!("                    No adapter is wired; exits 3 when any pass is declined");
     println!("  event-fabric grant --fixture <path> --peer <loopback-address:port>");
     println!(
         "  event-fabric isolate --peer <loopback-address:port> --stream <name> --partition <n> --operator <identity> --reason <why>"

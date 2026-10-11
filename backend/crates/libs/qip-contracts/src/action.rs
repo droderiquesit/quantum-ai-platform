@@ -372,12 +372,24 @@ pub struct ToolRegistration {
 }
 
 /// One audited tool decision.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Serialisable, and carrying what was charged — the channel, the rate
+/// window and the cost — because R12-AGENCY-1056..1069 journal every
+/// decision and [`ToolRegistry::resume`] rebuilds the rate and budget a
+/// registry had spent from those records. An audit line that named only the
+/// tool could say a call was admitted but not what it cost, and a process
+/// restarted on such a journal would start every budget full: a budget a
+/// re-invocation resets is not a budget.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolAudit {
     pub tool: String,
     pub at: Timestamp,
     pub admitted: bool,
     pub reason: String,
+    pub channel: String,
+    pub window: u64,
+    pub cost_units: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -549,8 +561,41 @@ impl ToolRegistry {
             at,
             admitted: verdict.is_ok(),
             reason: verdict.clone().err().unwrap_or_default(),
+            channel: channel.to_string(),
+            window,
+            cost_units: cost,
         });
         verdict.map_err(|why| Error::denied(format!("action refused: {why}")))
+    }
+
+    /// Re-apply one decision a previous process audited, so the rate and
+    /// budget it spent are spent again here before anything new is admitted.
+    ///
+    /// An admitted record is charged whatever today's verdict would be: the
+    /// call it records was made, and refusing to count it because the budget
+    /// has since been lowered would hand the tool the difference. A refused
+    /// record charges nothing. Both are kept in the audit, so the trail a
+    /// resumed registry shows is the whole trail. A record naming a tool this
+    /// registry does not hold is refused: the configuration it would resume
+    /// into is not the one that made the call.
+    pub fn resume(&mut self, record: ToolAudit) -> Result<()> {
+        let slot = self.tools.get_mut(&record.tool).ok_or_else(|| {
+            Error::invalid(format!(
+                "the journal records a decision on tool {}, which this registry does not \
+                 hold; resume against the configuration that made it",
+                record.tool
+            ))
+        })?;
+        if record.admitted {
+            if slot.window != record.window {
+                slot.window = record.window;
+                slot.in_window = 0;
+            }
+            slot.in_window = slot.in_window.saturating_add(1);
+            slot.spent = slot.spent.saturating_add(record.cost_units);
+        }
+        self.audit.push(record);
+        Ok(())
     }
 
     pub fn audit(&self) -> &[ToolAudit] {
@@ -587,7 +632,12 @@ fn digest(parts: &[&str]) -> String {
 }
 
 /// Stage 1 of the intervention record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// The three records serialise so a composition root can journal them on the
+/// hash-chained log; returned and dropped, an approval could not be
+/// attributed to anybody after the process exited (R12-GOV-6124).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GoalApproval {
     pub id: String,
     pub approver: String,
@@ -596,7 +646,8 @@ pub struct GoalApproval {
 }
 
 /// Stage 2; names the goal it relied on.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanApproval {
     pub id: String,
     pub approver: String,
@@ -606,7 +657,8 @@ pub struct PlanApproval {
 }
 
 /// Stage 3; names the plan it relied on.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionRecord {
     pub id: String,
     pub executor: String,

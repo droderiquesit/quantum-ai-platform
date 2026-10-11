@@ -84,8 +84,10 @@ dependencies = [
 name = "qip-agency"
 version = "0.1.0"
 dependencies = [
+ "qip-compliance",
  "qip-contracts",
  "qip-core",
+ "qip-events",
  "serde",
  "serde_json",
 ]
@@ -219,6 +221,7 @@ dependencies = [
  "qip-brokers",
  "qip-capital",
  "qip-capital-fabric",
+ "qip-compliance",
  "qip-contracts",
  "qip-core",
  "qip-edge",
@@ -236,6 +239,7 @@ dependencies = [
  "qip-strategy",
  "qip-streaming",
  "qip-transport",
+ "serde",
  "serde_json",
 ]
 

@@ -1049,6 +1049,9 @@ fn request() -> Request {
             comparison: prediction(d(5), true),
         }],
         guards: Some(guard_decl()),
+        pass: None,
+        structural: None,
+        touches: Vec::new(),
     }
 }
 
