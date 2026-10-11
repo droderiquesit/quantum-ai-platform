@@ -51,13 +51,14 @@ fn the_whole_platform_resolves_to_one_repository_built_from_one_commit() {
 /// secret store publish to it. It carries a Secret Manager rotation notice to
 /// an operator and is not internal messaging.
 ///
-/// The two trust-zones bindings are declared but `for_each` over an empty map
-/// while `control_fabric_topic` is null; the second test pins that it is null.
-const ALLOWED_PUBSUB_RESOURCES: [&str; 4] = [
+/// The trust-zones module once declared two more — `fabric_publish` and
+/// `fabric_attach`, `for_each` over an empty map behind a
+/// `control_fabric_topic` the root could only set to null. They were removed
+/// because inert bindings read as a Pub/Sub control fabric §1.1 contradicts;
+/// the second test refuses the variable coming back.
+const ALLOWED_PUBSUB_RESOURCES: [&str; 2] = [
     "google_pubsub_topic.rotation",
     "google_pubsub_topic_iam_member.rotation_publisher",
-    "google_pubsub_topic_iam_member.fabric_attach",
-    "google_pubsub_topic_iam_member.fabric_publish",
 ];
 
 #[test]
@@ -98,12 +99,32 @@ fn terraform_creates_no_pubsub_or_kafka_resource_beyond_the_recorded_rotation_no
 
 #[test]
 fn the_control_fabric_has_no_pubsub_topic_and_no_partner_bridge_exists() {
+    // The premise: the module and the root are where a topic would be wired,
+    // and both are read; then neither may name one. A variable that exists
+    // can be set, and a binding that can be set is a Pub/Sub control fabric
+    // waiting for a value.
+    let variables =
+        qip_acceptance::read("infrastructure/terraform/modules/trust-zones/variables.tf");
+    assert!(
+        variables.contains("variable \"zones\""),
+        "the trust-zones variables file no longer declares `zones`; this test is reading the \
+         wrong file"
+    );
+    assert!(
+        !variables.contains("variable \"control_fabric_topic\""),
+        "the trust-zones module takes a control fabric topic again: a topic here is an internal \
+         consumer of Pub/Sub, which §1.1 refuses"
+    );
     let main = qip_acceptance::read("infrastructure/terraform/main.tf");
     assert!(
-        main.lines()
-            .any(|l| l.trim() == "control_fabric_topic = null"),
-        "the trust-zones control fabric topic must stay null: a topic here is an internal \
-         consumer of Pub/Sub"
+        main.contains("module \"trust_zones\""),
+        "the root no longer instantiates trust_zones; this test is reading the wrong file"
+    );
+    assert!(
+        !main
+            .lines()
+            .any(|l| l.trim_start().starts_with("control_fabric_topic")),
+        "the root passes a control fabric topic again"
     );
 
     // A bridge would be a crate, a module or a workflow step named for the

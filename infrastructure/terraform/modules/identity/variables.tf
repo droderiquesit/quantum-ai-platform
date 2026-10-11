@@ -27,13 +27,14 @@ variable "enable_email_password" {
 }
 
 variable "mfa_state" {
-  description = "Multi-factor posture: OFF, ENABLED (optional for users), or MANDATORY. MANDATORY locks out every unenrolled account the moment it applies — flip it deliberately, with an enrolment campaign behind it."
+  description = "Multi-factor posture. MANDATORY, and nothing else is admitted (W4.6): OFF and ENABLED (optional) each leave an account protected by a password alone. Applying it to an environment that was ENABLED locks out every unenrolled account at that moment."
   type        = string
-  default     = "ENABLED"
+  default     = "MANDATORY"
+  nullable    = false
 
   validation {
-    condition     = contains(["OFF", "ENABLED", "MANDATORY"], var.mfa_state)
-    error_message = "mfa_state must be OFF, ENABLED, or MANDATORY."
+    condition     = var.mfa_state == "MANDATORY"
+    error_message = "mfa_state must be MANDATORY. OFF and ENABLED (optional enrolment) leave accounts protected by a password alone; lowering the posture is an edit to this validation, reviewed, not a value in a tfvars file."
   }
 }
 

@@ -484,3 +484,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 .claude/hooks/test_hooks.py
+
+  # Static analysis, as a gate of ci rather than a workflow beside it (R12
+  # CICD-9105). CodeQL used to run as its own workflow on push and pull
+  # request, and `deploy.yml` waited only on ci, so a CodeQL finding stopped
+  # nothing: the commit was built, signed and attested regardless. Called
+  # here, a failed analysis fails ci, and ci's success is what deploy.yml
+  # requires; deploy.yml also reads this job's results by name in the run
+  # it is about to trust, so a ci run from before this job existed is not
+  # mistaken for one that ran it. `security-events: write` is the one
+  # permission the analysis needs beyond reading, granted to this job alone.
+  sast:
+    name: sast
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/codeql-analysis.yml

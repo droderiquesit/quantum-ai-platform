@@ -17,15 +17,22 @@ resources:
 - deepbrain.yaml
 - invokers.yaml
 - prove-serving.yaml
+#
+# The three platform images come from the one build registry, `qip-dev`,
+# not from prod's own: `deploy.yml` builds each commit once and the digest
+# is promoted, never rebuilt, so prod would run exactly the bytes every
+# earlier stage ran (R12 CICD-9112). Nothing promotes into prod today — its
+# Kargo stage refuses. The vendored images below are mirrored per
+# environment and stay in prod's registry.
 images:
 - name: qip-api
-  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/qip-api
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api
   digest: TO-PIN
 - name: qip-fastbrain
-  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/qip-fastbrain
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain
   digest: TO-PIN
 - name: qip-deepbrain
-  newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/qip-deepbrain
+  newName: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain
   digest: TO-PIN
 - name: envoy
   newName: europe-west2-docker.pkg.dev/unprovisioned/qip-prod/vendor/envoy

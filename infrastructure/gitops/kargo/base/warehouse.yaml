@@ -1,12 +1,18 @@
-# The warehouse: the environment's Artifact Registry repository, one
-# subscription per catalogue binary. The overlay fills in the registry and
-# the freight-creation criteria, because both name the environment; what is
-# fixed here is the cadence and the policy. `NewestBuild` selects by the
-# image's own creation time and records the digest; `deploy.yml` labels
-# each image with `org.opencontainers.image.created` implicitly through
-# docker's build metadata and explicitly with the source revision, and the
-# tag it pushes is the commit sha, immutable in the registry — so "newest"
-# is "the latest commit the pipeline attested" (ADR 0036 decision 6).
+# The warehouse: the one build registry, one subscription per catalogue
+# binary. The same on every control plane, because there is one registry —
+# `deploy.yml` builds each commit once into `qip-dev` in the dev project and
+# every later environment is promoted the same digest (R12 CICD-9112). It
+# was filled in per environment by the overlays while each environment had
+# its own registry; a warehouse per registry is a chain whose links promote
+# different bytes, which is the failure the single registry removes.
+#
+# `NewestBuild` selects by the image's own creation time and records the
+# digest. `deploy.yml` sets that time from the commit (`SOURCE_DATE_EPOCH`
+# is the commit's timestamp, not the build's), labels the source revision,
+# and pushes the commit sha as an immutable tag — so "newest" is "the latest
+# commit the pipeline attested" (ADR 0036 decision 6). Freight whose three
+# images came from different commits is refused at creation by the
+# criterion naming every binary's tag.
 apiVersion: kargo.akuity.io/v1alpha1
 kind: Warehouse
 metadata:
@@ -15,6 +21,24 @@ metadata:
 spec:
   interval: 5m0s
   freightCreationPolicy: Automatic
-  # Set by the overlay: the three subscriptions and the criteria refusing
-  # freight whose images came from different commits.
-  subscriptions: []
+  freightCreationCriteria:
+    expression: imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api').Tag == imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain').Tag && imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain').Tag == imageFrom('us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain').Tag
+  subscriptions:
+    - image:
+        repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-api
+        imageSelectionStrategy: NewestBuild
+        allowTagsRegexes:
+          - ^[0-9a-f]{40}$
+        discoveryLimit: 5
+    - image:
+        repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-fastbrain
+        imageSelectionStrategy: NewestBuild
+        allowTagsRegexes:
+          - ^[0-9a-f]{40}$
+        discoveryLimit: 5
+    - image:
+        repoURL: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev/qip-deepbrain
+        imageSelectionStrategy: NewestBuild
+        allowTagsRegexes:
+          - ^[0-9a-f]{40}$
+        discoveryLimit: 5

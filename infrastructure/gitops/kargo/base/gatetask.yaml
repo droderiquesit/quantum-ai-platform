@@ -1,0 +1,84 @@
+# The gate record (R12 CICD-9112): what a promotion into `replay` or
+# `paper` writes. Neither stage is an environment, so there is no
+# kustomization to set an image in and no Argo CD application to notify.
+# What there is, is a fact worth keeping: this freight — these three
+# digests, from this commit — was promoted through this gate by a person, at
+# this time. The task commits exactly that into
+# `infrastructure/gitops/gates/<stage>/freight.yaml`, so `git log` on that
+# file is the gate's audit trail and the next stage's promotion is
+# traceable to it.
+#
+# What refuses here:
+#
+#   * A task invoked without the registry has nothing to read digests from,
+#     and fails before cloning anything.
+#   * Freight that skipped the gate never reaches the stage after it: Kargo
+#     offers `paper` only freight verified in `replay`, and `stage` only
+#     freight verified in `paper` (stages.yaml's `sources.stages`).
+#   * Nothing here promotes on its own: projectconfig.yaml enables automatic
+#     promotion for `dev` alone.
+apiVersion: kargo.akuity.io/v1alpha1
+kind: PromotionTask
+metadata:
+  name: record-gate
+  namespace: qip
+spec:
+  vars:
+    - name: gitRepo
+      value: https://github.com/droderiquesit/quantum-ai-platform.git
+    - name: branch
+      value: main
+    - name: warehouseRegistry
+      value: ""
+  steps:
+    - uses: fail
+      if: ${{ vars.warehouseRegistry == "" }}
+      config:
+        message: This gate did not set `warehouseRegistry`; a gate record with no digests records nothing.
+    - uses: git-clone
+      config:
+        repoURL: ${{ vars.gitRepo }}
+        author:
+          name: qip-kargo
+          email: qip-kargo@algorik.internal
+        checkout:
+          - branch: ${{ vars.branch }}
+            path: ./repo
+    - uses: yaml-update
+      as: record
+      config:
+        path: ./repo/infrastructure/gitops/gates/${{ ctx.stage }}/freight.yaml
+        updates:
+          - key: freight
+            value: ${{ ctx.targetFreight.name }}
+          - key: promotion
+            value: ${{ ctx.promotion }}
+          - key: sourceCommit
+            value: ${{ imageFrom(vars.warehouseRegistry + "/qip-api").Tag }}
+          - key: images.qip-api
+            value: ${{ imageFrom(vars.warehouseRegistry + "/qip-api").Digest }}
+          - key: images.qip-fastbrain
+            value: ${{ imageFrom(vars.warehouseRegistry + "/qip-fastbrain").Digest }}
+          - key: images.qip-deepbrain
+            value: ${{ imageFrom(vars.warehouseRegistry + "/qip-deepbrain").Digest }}
+    - uses: git-commit
+      as: commit
+      config:
+        path: ./repo
+        message: |
+          Pass freight ${{ ctx.targetFreight.name }} through the ${{ ctx.stage }} gate
+
+          Written by Kargo (infrastructure/gitops/kargo/base/gatetask.yaml),
+          promotion ${{ ctx.promotion }} in project ${{ ctx.project }}. A
+          person promoted this freight into ${{ ctx.stage }}; no policy does
+          it automatically. The digests are the ones deploy.yml built once
+          into the build registry and every later stage will run.
+
+            source commit  ${{ imageFrom(vars.warehouseRegistry + "/qip-api").Tag }}
+            qip-api        ${{ imageFrom(vars.warehouseRegistry + "/qip-api").Digest }}
+            qip-fastbrain  ${{ imageFrom(vars.warehouseRegistry + "/qip-fastbrain").Digest }}
+            qip-deepbrain  ${{ imageFrom(vars.warehouseRegistry + "/qip-deepbrain").Digest }}
+    - uses: git-push
+      config:
+        path: ./repo
+        targetBranch: ${{ vars.branch }}

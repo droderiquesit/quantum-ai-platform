@@ -50,6 +50,24 @@ Tests verify:
 - FABRIC-089: No external IP in instance template
 - FABRIC-089: Internal-only network configuration
 
+## Since W4.2 (2026-10-11)
+
+- **A machine, not only a template.** With `zone` set, one
+  `google_compute_instance_from_template` runs on the one stable address the
+  A record names. Not an instance group: RF1 has no consensus, and a group's
+  surge replacement is a second writer. More than one address is refused.
+- **A journal disk.** The template declares a second, persistent disk with
+  `device_name = "qip-journal"`; the script mounts
+  `/dev/disk/by-id/google-qip-journal`. The old default, `/dev/sdb`, named a
+  disk the template did not declare.
+- **A script that runs and fails closed.** `startup-script` replaces
+  `user-data` (read only by cloud-init images); the mount and the format no
+  longer end in `|| true`; the journal is formatted only when it carries no
+  filesystem, not whenever a marker on the boot disk is missing.
+- **Instantiated** by the root's `fabric.tf` behind `event_fabric_broker`,
+  null in every environment, with its identity and a private DNS zone on the
+  Fabric network.
+
 ## Notes
 
 - No external address = FABRIC-089 requirement (no public endpoint)

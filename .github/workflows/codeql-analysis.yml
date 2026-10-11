@@ -1,9 +1,20 @@
 # GitHub CodeQL analysis for security vulnerabilities.
 #
 # CodeQL performs static analysis to detect potential security vulnerabilities
-# and code quality issues. This workflow runs on every push to main and on pull
-# requests, enabling continuous security scanning in addition to the Trivy
-# container image scanning and Semgrep application-layer analysis.
+# and code quality issues, beside the Trivy container scan and the
+# dependency audits.
+#
+# **It gates acceptance; it does not run beside it** (R12 CICD-9105). Until
+# 2026-10-11 this workflow triggered itself on push and pull request, as a
+# separate workflow, and `deploy.yml` waited only on `ci` — so a commit with
+# a CodeQL finding was built, signed and attested exactly as one without.
+# Now `ci.yml` calls this file as its `sast` job (`workflow_call` below), so
+# `ci` cannot succeed unless CodeQL does, and `deploy.yml`'s gate also
+# checks the `sast` jobs of the ci run it is about to trust, by name. The
+# push and pull_request triggers are gone because ci runs it on both; a
+# second, independent run would be a second result nobody gates on. The
+# daily schedule stays, for advisories published against code that has
+# not changed.
 #
 # The workflow uses the language matrix to analyze supported languages.
 # For each language, CodeQL initializes its analysis database, attempts to
@@ -12,10 +23,7 @@
 name: CodeQL Analysis
 
 on:
-  push:
-    branches: ["main", "claude/**"]
-  pull_request:
-    branches: ["main"]
+  workflow_call:
   schedule:
     # Run analysis at 09:00 UTC daily to detect new vulnerabilities
     - cron: '0 9 * * *'

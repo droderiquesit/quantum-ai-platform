@@ -68,7 +68,12 @@ resource "google_compute_firewall" "deny_ingress" {
 # Each is structurally identical to the main VPC: deny-all ingress, private
 # Google APIs zone, but no regional subnets or console egress — those stay in
 # the shared VPC, `modules/trust-zones` and `modules/execution-node` are its
-# tenants. These networks join others only through NCC spokes.
+# tenants. They join no other network: there is no Network Connectivity
+# Center hub, no spoke and no VPC peering anywhere in this configuration, so
+# nothing in either can reach the main VPC or each other. This sentence said
+# "only through NCC spokes", which described a join that does not exist and
+# would have sent a reader looking for the hub that held the isolation. The
+# isolation is the absence; a spoke added later is the decision to end it.
 
 resource "google_compute_network" "data_vpc" {
   project = var.project_id
