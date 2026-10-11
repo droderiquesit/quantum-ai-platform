@@ -58,6 +58,7 @@ run "every_security_service_is_off_unless_named" {
     condition = (
       length(google_privileged_access_manager_entitlement.this) == 0
       && length(google_privateca_ca_pool.internal) == 0
+      && length(google_privateca_certificate_template.workload) == 0
       && length(google_access_context_manager_service_perimeter.data) == 0
       && length(google_data_loss_prevention_discovery_config.lake) == 0
       && length(google_project_service.security) == 0
@@ -82,7 +83,6 @@ run "every_security_service_plans_when_named_soundly" {
     certificate_authority = {
       location     = "us-east4"
       organization = "Algorik"
-      requesters   = ["serviceAccount:qip-dev-fabricd@security-plan-harness.iam.gserviceaccount.com"]
     }
     vpc_service_controls = {
       access_policy      = "123456"
@@ -106,9 +106,32 @@ run "every_security_service_plans_when_named_soundly" {
     error_message = "The pool may issue a CA certificate; a leaked workload key would then mint identities."
   }
 
+  # ADR 0112 §2: hours, not months — a day by default, at the pool and at
+  # the template alike.
   assert {
-    condition     = google_privateca_ca_pool.internal[0].issuance_policy[0].maximum_lifetime == "2592000s"
-    error_message = "The pool issues leaves for longer than thirty days."
+    condition = (
+      google_privateca_ca_pool.internal[0].issuance_policy[0].maximum_lifetime == "86400s"
+      && google_privateca_certificate_template.workload[0].maximum_lifetime == "86400s"
+    )
+    error_message = "The pool or the workload template issues leaves for longer than a day."
+  }
+
+  # The template: no subject from the requester, exactly one service-account
+  # shaped DNS SAN, never a CA.
+  assert {
+    condition = (
+      google_privateca_certificate_template.workload[0].identity_constraints[0].allow_subject_passthrough == false
+      && google_privateca_certificate_template.workload[0].identity_constraints[0].allow_subject_alt_names_passthrough == true
+      && google_privateca_certificate_template.workload[0].identity_constraints[0].cel_expression[0].expression == "subject_alt_names.size() == 1 && subject_alt_names.all(san, san.type == DNS && san.value.endsWith('.iam.gserviceaccount.com'))"
+      && google_privateca_certificate_template.workload[0].predefined_values[0].ca_options[0].is_ca == false
+    )
+    error_message = "The workload template does not confine a certificate to one SAN shaped as a service account, or may issue a CA."
+  }
+
+  # No machine is declared here, so nobody may request a certificate at all.
+  assert {
+    condition     = length(google_privateca_ca_pool_iam_member.requesters) == 0
+    error_message = "A certificate requester was granted with no broker, ledger or node declared."
   }
 
   assert {
@@ -231,18 +254,51 @@ run "perimeter_ingress_for_a_person_is_refused" {
   expect_failures = [var.vpc_service_controls]
 }
 
-run "a_person_requesting_workload_certificates_is_refused" {
+# Requesters are derived, never listed: a listed one would be an
+# unconditioned grant able to request any name.
+run "a_listed_certificate_requester_is_refused" {
   command = plan
 
   variables {
     certificate_authority = {
       location     = "us-east4"
       organization = "Algorik"
-      requesters   = ["user:someone@example.com"]
+      requesters   = ["serviceAccount:qip-dev-fabricd@security-plan-harness.iam.gserviceaccount.com"]
     }
   }
 
   expect_failures = [var.certificate_authority]
+}
+
+run "a_workload_certificate_living_longer_than_a_day_is_refused" {
+  command = plan
+
+  variables {
+    certificate_authority = {
+      location                       = "us-east4"
+      organization                   = "Algorik"
+      max_certificate_lifetime_hours = 720
+    }
+  }
+
+  expect_failures = [var.certificate_authority]
+}
+
+run "a_workload_certificate_lifetime_of_hours_is_admitted" {
+  command = plan
+
+  variables {
+    certificate_authority = {
+      location                       = "us-east4"
+      organization                   = "Algorik"
+      max_certificate_lifetime_hours = 8
+    }
+  }
+
+  assert {
+    condition     = google_privateca_ca_pool.internal[0].issuance_policy[0].maximum_lifetime == "28800s" && google_privateca_certificate_template.workload[0].maximum_lifetime == "28800s"
+    error_message = "An eight-hour lifetime did not reach the pool and the template."
+  }
 }
 
 run "a_discovery_scan_for_nothing_is_refused" {

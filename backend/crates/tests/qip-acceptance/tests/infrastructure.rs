@@ -728,16 +728,34 @@ fn the_execution_node_has_no_external_address_and_no_container_runtime() {
     );
 
     // And the machine shape is the blueprint's, refused rather than defaulted.
+    // R12-REFLEX-8002 (GCP v3.0 §1): C4D/C4 only, "a C3 or N2 shape must be
+    // refused at plan". This asserted the four C3/C3D shapes were present
+    // until 2026-10-11 — the older §41.4 range — which is the assessment's
+    // INCORRECT grade written as a test; it now asserts the opposite, on the
+    // validation's code rather than its prose.
     let variables = read("infrastructure/terraform/modules/execution-node/variables.tf");
+    let permitted = without_comments(&variables);
+    let permitted = permitted
+        .split("variable \"machine_type\"")
+        .nth(1)
+        .and_then(|rest| rest.split("error_message").next())
+        .expect("modules/execution-node declares machine_type with a validation");
     for shape in [
-        "c3-highcpu-8",
-        "c3-highcpu-22",
-        "c3d-highcpu-8",
-        "c3d-highcpu-16",
+        "\"c4-highcpu-8\"",
+        "\"c4-highcpu-16\"",
+        "\"c4d-highcpu-8\"",
+        "\"c4d-highcpu-16\"",
     ] {
         assert!(
-            variables.contains(shape),
+            permitted.contains(shape),
             "the permitted machine types no longer include {shape}"
+        );
+    }
+    for family in ["\"c3-", "\"c3d-", "\"n2-", "\"n2d-"] {
+        assert!(
+            !permitted.contains(family),
+            "the execution node admits a {family}… shape; R12-REFLEX-8002 refuses every \
+             family but C4 and C4D at plan"
         );
     }
     assert!(
@@ -5219,6 +5237,10 @@ fn no_workflow_depends_on_a_repository_variable() {
         // Authenticates by workload identity as infra.yml does, so the same
         // failure mode is available to it; it was outside the list when added.
         ".github/workflows/fleet.yml",
+        // ADR 0110's two-person publish: federates to the one identity that
+        // may sign under the model-pack key, so its provider and account are
+        // derived from the tfvars like every other workflow's.
+        ".github/workflows/model-pack-publish.yml",
     ] {
         let workflow = read(workflow_file);
         assert!(
@@ -6141,13 +6163,14 @@ fn step_output_references(text: &str) -> std::collections::BTreeSet<(String, Str
 
 #[test]
 fn every_step_output_a_workflow_reads_is_one_that_job_writes() {
-    const WORKFLOWS: [&str; 6] = [
+    const WORKFLOWS: [&str; 7] = [
         ".github/workflows/ci.yml",
         ".github/workflows/deploy.yml",
         ".github/workflows/image.yml",
         ".github/workflows/infra.yml",
         ".github/workflows/vendor.yml",
         ".github/workflows/fleet.yml",
+        ".github/workflows/model-pack-publish.yml",
     ];
 
     /// The outputs each `id`-bearing step of one job writes.

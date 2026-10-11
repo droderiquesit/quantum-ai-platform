@@ -3,9 +3,11 @@
 #
 # Rendered by Terraform's `templatefile`, which escapes nothing. Every
 # substitution is validated in variables.tf to a closed character set:
-# `account_id` and `fabric_consumer_group` are lowercase letters, digits and
-# '-', `listen_port` is a number. A new substitution needs a validation in
-# the same diff.
+# `account_id`, `fabric_consumer_group` and the deployment are lowercase
+# letters, digits and '-', `listen_port` and the certificate lifetime are
+# numbers, the CA Service names and the Google roots path are fixed shapes,
+# and the CA certificates arrive base64. A new substitution needs a
+# validation in the same diff.
 #
 # Fail closed: a ledger that cannot prove its archive is on its own disk does
 # not start, because a ledger writing to the boot disk loses its postings
@@ -43,11 +45,28 @@ mountpoint -q "$archive_path" || { echo "refusing to start: $archive_path is not
 # (qip-ledgerd/src/config.rs); the unit reads this file. No credential is in
 # it: the book name and the consumer group are configuration.
 install -d -m 0700 /etc/qip
+
+# The CA Service pool's CA certificates the broker's certificate chains to
+# (ADR 0112). Public material, passed base64 so none of it is shell syntax.
+echo '${cas_trust_roots_base64}' | base64 -d > /etc/qip/tls-trust-roots.pem
+chmod 0644 /etc/qip/tls-trust-roots.pem
+grep -q -- '-----BEGIN CERTIFICATE-----' /etc/qip/tls-trust-roots.pem \
+  || { echo "refusing to start: the CA Service trust roots rendered empty" >&2; exit 1; }
+[ -r '${google_tls_roots_path}' ] \
+  || { echo "refusing to start: ${google_tls_roots_path} is not on this image; the pinned Google roots are baked from infrastructure/trust/" >&2; exit 1; }
+
 cat > /etc/qip/ledgerd.env <<EOF
 QIP_LEDGER_ACCOUNT_ID=${account_id}
 QIP_LEDGER_ARCHIVE_PATH=$archive_path
 QIP_LEDGER_LISTEN_ADDR=$internal_ip:${listen_port}
 QIP_LEDGER_FABRIC_CONSUMER_GROUP=${fabric_consumer_group}
+QIP_DEPLOYMENT=${deployment}
+QIP_TLS_MODE=cas
+QIP_CAS_CA_POOL=${cas_ca_pool}
+QIP_CAS_CERTIFICATE_TEMPLATE=${cas_certificate_template}
+QIP_CAS_LIFETIME_SECS=${cas_lifetime_secs}
+QIP_TLS_TRUST_ROOTS_PATH=/etc/qip/tls-trust-roots.pem
+QIP_GOOGLE_TLS_ROOTS_PATH=${google_tls_roots_path}
 EOF
 chmod 0600 /etc/qip/ledgerd.env
 

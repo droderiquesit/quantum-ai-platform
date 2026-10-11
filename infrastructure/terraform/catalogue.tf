@@ -155,6 +155,20 @@ locals {
           env_file_variable = "QIP_RISK_LIMITS_PATH"
         }
       },
+      # ADR 0110: which KMS key version the API signs each class under —
+      # `{"policy", "halt", "envelope"}`, each a full cryptoKeyVersions
+      # resource name, read off the same data sources the trust bundle is
+      # rendered from, so the versions signed under and the versions the
+      # cells trust are one fact. Configuration, not a credential: a resource
+      # name grants nothing, and the signer binding is the API's own identity.
+      var.artefact_trust_bundle_file == null ? {} : {
+        kms-key-versions = {
+          content           = jsonencode(local.artefact_api_key_versions)
+          file_name         = "kms-key-versions.json"
+          content_type      = "application/json"
+          env_file_variable = "QIP_KMS_KEY_VERSIONS_PATH"
+        }
+      },
     )
     # The fast brain's one optional file. It had no entry here until ADR
     # 0061, because nothing optional reached it; the limit set does, for the
@@ -291,6 +305,20 @@ locals {
         # and anything above the envelope ceiling at start-up, by name.
         var.region_dark_after == null ? {} : {
           QIP_REGION_DARK_AFTER = var.region_dark_after
+        },
+        # ADR 0110: the API signs policy payloads, halts and envelopes under
+        # their own Cloud KMS keys, proven at start-up against the trust
+        # bundle the cells hold — both files baked into the image from
+        # `infrastructure/trust/` (Dockerfile), never fetched. Only once an
+        # environment names a committed bundle, because `kms` with no bundle
+        # stops the process; until then the API's stated interim posture is
+        # the shared key, refused outside `local` from
+        # `qip_transport::trust::SHARED_KEY_REMOVED_AFTER`. The key-version map
+        # is the `kms-key-versions` file in local.optional_config_files.
+        var.artefact_trust_bundle_file == null ? {} : {
+          QIP_ARTEFACT_SIGNER       = "kms"
+          QIP_TRUST_BUNDLE_PATH     = local.trust_bundle_image_path
+          QIP_GOOGLE_TLS_ROOTS_PATH = local.google_roots_image_path
         },
       )
       # The universe every root reads, and whatever optional files the tfvars

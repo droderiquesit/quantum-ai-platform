@@ -708,7 +708,20 @@ module "execution_node" {
   egress_bootstrap = file("${path.module}/../egress/envoy.yaml")
   egress_endpoints = module.egress_proxy.endpoints
 
-  capital_envelope_secret_id = module.secrets.secret_ids["qip-capital-envelope-key"]
+  # ADR 0110 and 0112: the node verifies against the baked trust bundle and
+  # speaks mutual TLS on a CA Service workload certificate. It holds no shared
+  # key. `execution-nodes-enabled.tf` refuses enabling a node until the
+  # environment has the bundle, the pinned roots and the CA, so nothing below
+  # reaches the module as a null.
+  trust_bundle_path     = local.trust_bundle_image_path
+  google_tls_roots_path = local.google_roots_image_path
+  workload_certificates = {
+    ca_pool              = local.cas_runtime.ca_pool
+    certificate_template = local.cas_runtime.template
+    lifetime_secs        = local.cas_runtime.lifetime_secs
+    trust_roots_pem      = local.cas_runtime.trust_roots
+  }
+
   venue_credential_secret_id = module.secrets.secret_ids["qip-venue-credential"]
 
   # The root's own predicate, passed through unchanged. The module then

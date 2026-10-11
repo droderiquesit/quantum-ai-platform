@@ -78,7 +78,7 @@ deployed node, and no runbook may quote them as a production RTO.
 |---|---|---|---|
 | Every change to `qip-fabricd`, `qip-ledgerd` or `qip-edge-node`'s fabric, spool or control code | all four scenarios, locally | the author's machine, results committed with the change | **repo** — not enforced by CI, because CI builds no binaries in the `scripts` job |
 | Weekly | all four scenarios, locally, on `main` | an operator, results committed | **not run** beyond 2026-10-11 |
-| Monthly (§25 zonal failure, RES-10152) | standby promotion with a zone lost | a deployed dev node pair | **not run**: no node is deployed (`execution_nodes_enabled = false`), and standby fencing (RES-9166/9167) is not built |
+| Monthly (§25 zonal failure, RES-10152) | standby promotion with a zone lost | a deployed dev node pair | **not run**: no node is deployed (`execution_nodes_enabled = false`). Standby fencing is built in part: `qip-edge-node`'s `standby.rs` promotes only when the holder's lease has lapsed by a margin, every venue reports the old session ended and its epoch swap lands, and `modules/execution-node` refuses a standby with no `fencing_lease_path` and writes the lease, role and name on both machines. What is not built is a cross-zone lease store: the binary's only store is a file, correct on one host, so a pair in two zones is not yet fenced and this drill has nothing honest to run against |
 | Quarterly (§25 regional loss, RES-10151) | a region lost; healthy regions continue | a multi-region deployment | **not run**: one region is authorised (ADR 0035), and fabric mirroring is refused |
 | Quarterly | rebuild from zero (RES-10158) | a scratch project | **not run** |
 
@@ -92,7 +92,14 @@ than being left off the table.
   arrives on `control.local` from a release controller, and no local binary
   publishes one; `stale-policy` drills the polled control wire, which is the
   half the cell reads from its own disk.
-- **Replication, leader movement, quorum loss** (RES-7112, 9168, 9169): the
-  broker is a single writer under ADR 0100 and there is nothing to fail over to.
+- **Replication, leader movement, quorum loss** (RES-7112, 9168, 9169): by
+  default the broker is a single writer under ADR 0100 with nothing to fail
+  over to. With `QIP_EVENT_FABRIC_MANAGED_LOG=spanner` (ADR 0111) two or three
+  instances per region contend for each partition's Spanner lease and the
+  others follow the committed log, and `modules/event-fabric-broker` admits
+  two or three addresses only beside that managed log. That is failover in
+  code and in configuration, not in a drill: no Spanner database is applied,
+  no broker is deployed, and the four local scenarios above run the
+  single-broker path.
 - **Venue loss and the feed playbook** (RES-10132): the simulated venue is
   in-process and cannot be lost separately from the cell.

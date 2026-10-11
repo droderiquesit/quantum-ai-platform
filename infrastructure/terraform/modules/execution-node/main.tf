@@ -222,15 +222,10 @@ resource "google_service_account" "node" {
 # nothing on disk to steal. A downloaded key would survive the machine, and the
 # machine is the only thing this identity is for.
 
-# The node verifies the signature on every capital envelope it is handed, and
-# `qip-edge-node` refuses to start without the key. This is the one grant the
-# node cannot run without.
-resource "google_secret_manager_secret_iam_member" "capital_envelope_key" {
-  project   = var.project_id
-  secret_id = var.capital_envelope_secret_id
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.node.email}"
-}
+# No grant on the capital-envelope key. The node verifies grants against the
+# trust bundle baked into its image (ADR 0110), and `qip-edge-node` refuses
+# to start holding the shared key as well, so a read on that secret would be
+# a grant to mint what the bundle verifies, held by a machine that must not.
 
 # The venue credential, bound only under both conditions in `locals`. Not a
 # grant this module ever makes by default, and not one it makes at all for a
@@ -480,9 +475,17 @@ resource "google_compute_instance_template" "node" {
       first_isolated_cpu         = local.first_isolated_cpu
       required_hugepages_gb      = var.required_hugepages_gb
       watchdog_seconds           = var.watchdog_seconds
-      capital_envelope_secret_id = var.capital_envelope_secret_id
       venue_credential_secret_id = local.venue_credential_bound ? var.venue_credential_secret_id : ""
       deployment                 = var.environment
+      trust_bundle_path          = var.trust_bundle_path
+      google_tls_roots_path      = var.google_tls_roots_path
+      cas_ca_pool                = var.workload_certificates.ca_pool
+      cas_certificate_template   = var.workload_certificates.certificate_template
+      cas_lifetime_secs          = var.workload_certificates.lifetime_secs
+      cas_trust_roots_base64     = base64encode(var.workload_certificates.trust_roots_pem)
+      fencing_lease_path         = var.fencing_lease_path
+      node_role                  = "primary"
+      node_name                  = "${local.name}-primary"
     })
   }
 }
@@ -724,12 +727,19 @@ resource "google_compute_firewall" "deny_ingress" {
 
 # --- Standby node (GCP-043) -------------------------------------------------------
 #
-# A standby Reflex node in a different zone monitors the primary's liveness via
-# a fencing token. When the primary fails (zone outage or health check timeout),
-# the standby is promoted to hold the cell. The two nodes form a pair: they
-# share one service account, one set of IAM bindings, one capital envelope key.
-# Promotion is orchestrated in qip-edge through fencing; Terraform only creates
-# the standby infrastructure when var.standby_enabled = true.
+# A standby Reflex node in a different zone, started warm under the same
+# service account and IAM bindings, holding the same fencing lease as the
+# primary under `QIP_NODE_ROLE=standby`. Nothing here, and nothing in the
+# binary, monitors the primary over the network — this comment said the
+# standby did so "via a fencing token", and no code ever held one. What
+# exists is `qip-edge-node`'s `standby.rs`: the standby promotes only when the
+# holder's lease record has gone unrenewed for ttl + margin, every venue
+# reports the old session ended, and its compare-and-swap to the next epoch
+# lands; until then every order it forms is refused under `fenced`. The lease
+# store is a file, which the binary itself says is correct on one host only,
+# so across two zones this pair is not yet fenced — `fencing_lease_path`
+# says why, and no environment enables it. Terraform only creates the
+# standby's infrastructure when var.standby_enabled = true.
 
 locals {
   standby_node_tag = "qip-exec-${var.node_id}-standby"
@@ -906,9 +916,17 @@ resource "google_compute_instance_template" "standby" {
       first_isolated_cpu         = local.first_isolated_cpu
       required_hugepages_gb      = var.required_hugepages_gb
       watchdog_seconds           = var.watchdog_seconds
-      capital_envelope_secret_id = var.capital_envelope_secret_id
       venue_credential_secret_id = local.venue_credential_bound ? var.venue_credential_secret_id : ""
       deployment                 = var.environment
+      trust_bundle_path          = var.trust_bundle_path
+      google_tls_roots_path      = var.google_tls_roots_path
+      cas_ca_pool                = var.workload_certificates.ca_pool
+      cas_certificate_template   = var.workload_certificates.certificate_template
+      cas_lifetime_secs          = var.workload_certificates.lifetime_secs
+      cas_trust_roots_base64     = base64encode(var.workload_certificates.trust_roots_pem)
+      fencing_lease_path         = var.fencing_lease_path
+      node_role                  = "standby"
+      node_name                  = "${local.name}-standby"
     })
   }
 }
@@ -1017,7 +1035,10 @@ resource "google_compute_firewall" "standby_deny_ingress" {
   }
 }
 
-# Fencing rule: primary to standby liveness check on port 9443
+# Primary to standby on port 9443. Nothing listens there today: promotion
+# reads the lease record, not a liveness probe (see the standby comment
+# above). The rule is kept as declared, and its harness still asserts it; it
+# admits only the primary's subnet to the standby's tag.
 resource "google_compute_firewall" "fencing" {
   count = var.standby_enabled ? 1 : 0
 

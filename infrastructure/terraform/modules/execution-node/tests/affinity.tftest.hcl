@@ -16,19 +16,26 @@ mock_provider "google" {}
 mock_provider "google-beta" {}
 
 variables {
-  project_id                 = "affinity-plan-harness"
-  environment                = "dev"
-  node_id                    = "harness"
-  region                     = "us-east4"
-  zone                       = "us-east4-a"
-  network_id                 = "projects/affinity-plan-harness/global/networks/harness"
-  subnet_cidr                = "10.0.48.0/24"
-  boot_image                 = "projects/affinity-plan-harness/global/images/qip-node-harness"
-  venues                     = { "sim" = { cidr = "192.0.2.0/24", port = 443 } }
-  egress_endpoints           = { "gcp" = "http://127.0.0.1:9105" }
-  capital_envelope_secret_id = "qip-capital-envelope-key"
-  region_allocation          = "0.25"
-  egress_bootstrap           = "static_resources:\n${join("\n", [for i in range(60) : "  # bootstrap line ${i} keeps this fixture past the one-kilobyte floor the module refuses below"])}\n"
+  project_id            = "affinity-plan-harness"
+  environment           = "dev"
+  node_id               = "harness"
+  region                = "us-east4"
+  zone                  = "us-east4-a"
+  network_id            = "projects/affinity-plan-harness/global/networks/harness"
+  subnet_cidr           = "10.0.48.0/24"
+  boot_image            = "projects/affinity-plan-harness/global/images/qip-node-harness"
+  venues                = { "sim" = { cidr = "192.0.2.0/24", port = 443 } }
+  egress_endpoints      = { "gcp" = "http://127.0.0.1:9105" }
+  trust_bundle_path     = "/etc/qip/trust/harness.json"
+  google_tls_roots_path = "/etc/qip/trust/google-roots.pem"
+  workload_certificates = {
+    ca_pool              = "projects/harness-project/locations/us-east4/caPools/qip-harness-internal"
+    certificate_template = "projects/harness-project/locations/us-east4/certificateTemplates/qip-harness-workload"
+    lifetime_secs        = 86400
+    trust_roots_pem      = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+  }
+  region_allocation = "0.25"
+  egress_bootstrap  = "static_resources:\n${join("\n", [for i in range(60) : "  # bootstrap line ${i} keeps this fixture past the one-kilobyte floor the module refuses below"])}\n"
 }
 
 # --- the admitting half ------------------------------------------------------
@@ -37,7 +44,7 @@ run "an_admitted_shape_pins_the_process_onto_the_first_isolated_core" {
   command = plan
 
   variables {
-    machine_type = "c3-highcpu-8"
+    machine_type = "c4-highcpu-8"
   }
 
   assert {
@@ -65,8 +72,57 @@ run "a_shape_the_assignment_cannot_fit_is_refused_before_anything_is_planned" {
   command = plan
 
   variables {
-    machine_type = "c3-highcpu-4"
+    machine_type = "c4-highcpu-4"
   }
 
   expect_failures = [var.machine_type]
+}
+
+# R12-REFLEX-8002: "a C3 or N2 shape must be refused at plan". One run per
+# family the blueprint names, because a list that dropped C3 and kept C3D
+# (or the reverse) would pass a single case. Each fails if its shape is put
+# back on the permitted list.
+run "a_c3_shape_is_refused" {
+  command = plan
+
+  variables {
+    machine_type = "c3-highcpu-8"
+  }
+
+  expect_failures = [var.machine_type]
+}
+
+run "a_c3d_shape_is_refused" {
+  command = plan
+
+  variables {
+    machine_type = "c3d-highcpu-16"
+  }
+
+  expect_failures = [var.machine_type]
+}
+
+run "an_n2_shape_is_refused" {
+  command = plan
+
+  variables {
+    machine_type = "n2-highcpu-16"
+  }
+
+  expect_failures = [var.machine_type]
+}
+
+# And the admitting half on the other C4 family, sixteen vCPU: the shape
+# §41.3's core assignment fits, isolating cores 2–15.
+run "a_c4d_sixteen_vcpu_shape_is_admitted_and_isolates_cores_2_to_15" {
+  command = plan
+
+  variables {
+    machine_type = "c4d-highcpu-16"
+  }
+
+  assert {
+    condition     = google_compute_instance_template.node.machine_type == "c4d-highcpu-16" && strcontains(google_compute_instance_template.node.metadata["startup-script"], "isolcpus=2-15")
+    error_message = "A c4d-highcpu-16 node was not planned on that shape with cores 2-15 isolated."
+  }
 }

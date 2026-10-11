@@ -107,9 +107,15 @@ resource "google_compute_instance" "ledgerd" {
 
   metadata = {
     startup-script = templatefile("${path.module}/startup.sh.tftpl", {
-      account_id            = var.account_id
-      fabric_consumer_group = var.fabric_consumer_group
-      listen_port           = var.listen_port
+      account_id               = var.account_id
+      fabric_consumer_group    = var.fabric_consumer_group
+      listen_port              = var.listen_port
+      deployment               = var.environment
+      cas_ca_pool              = var.workload_certificates.ca_pool
+      cas_certificate_template = var.workload_certificates.certificate_template
+      cas_lifetime_secs        = var.workload_certificates.lifetime_secs
+      cas_trust_roots_base64   = base64encode(var.workload_certificates.trust_roots_pem)
+      google_tls_roots_path    = var.google_tls_roots_path
     })
     block-project-ssh-keys = "true"
   }

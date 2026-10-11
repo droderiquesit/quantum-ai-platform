@@ -3,6 +3,11 @@ output "service_account_email" {
   value       = google_service_account.node.email
 }
 
+output "service_account_id" {
+  description = "The node identity's account id: configuration, so known at plan where the email is not. The root writes the CA Service grant, the SAN and the broker's admitted peers from it."
+  value       = google_service_account.node.account_id
+}
+
 output "subnet_id" {
   description = "The node's subnet."
   value       = google_compute_subnetwork.node.id

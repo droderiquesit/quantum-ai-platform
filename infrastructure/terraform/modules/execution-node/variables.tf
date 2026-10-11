@@ -133,14 +133,20 @@ variable "machine_type" {
   description = <<-EOT
     The machine shape, chosen by venue count. No default, deliberately.
 
-    §41.4 says "c3-highcpu-8 to -22 by venue count", which is a choice somebody
-    makes with the venue list in front of them. A default here would be that
-    choice made by whoever wrote this file, for a deployment they have not seen.
+    R12-REFLEX-8002 (GCP v3.0 §1): the Reflex plane runs on dedicated
+    C4D/C4-class machines, and "a C3 or N2 shape must be refused at plan". The
+    blueprint this module was first written against (§41.4, "c3-highcpu-8 to
+    -22 by venue count") admitted C3; that is superseded, and the C3/C3D
+    shapes are refused here rather than kept as a fallback nobody chose. Which
+    shape is a choice somebody makes with the venue list in front of them; a
+    default here would be that choice made by whoever wrote this file.
 
-    The permitted set is the C3 and C3D high-CPU shapes inside that range and
-    nothing else. `c3-highcpu-4` is below it, `c3-highcpu-44` is above it, and
-    every other family — N2, C2, E2 — either has no Titanium offload or no
-    TIER_1 networking, both of which the hot path depends on.
+    The permitted set is the C4 and C4D high-CPU shapes from 8 to 16 vCPU and
+    nothing else: §41.3 assigns threads to cores 2–15, which sixteen fit, and
+    an eight-vCPU shape is the smallest that leaves isolated cores at all.
+    `c4-highcpu-22` was listed until 2026-10-11 and is not a shape Google
+    offers (C4 high-CPU is 2, 4, 8, 16, 32 … vCPU), so it is gone rather than
+    corrected. Every other family — C3, N2, C2, E2 — is refused.
 
     Note what the small shapes cost you: §41.3 assigns threads to cores 2–15,
     which needs sixteen. On an eight-vCPU shape this module isolates cores 2–7
@@ -152,16 +158,12 @@ variable "machine_type" {
 
   validation {
     condition = contains([
-      "c3-highcpu-8",
-      "c3-highcpu-22",
-      "c3d-highcpu-8",
-      "c3d-highcpu-16",
       "c4-highcpu-8",
-      "c4-highcpu-22",
+      "c4-highcpu-16",
       "c4d-highcpu-8",
       "c4d-highcpu-16",
     ], var.machine_type)
-    error_message = "The machine type must be one of c3-highcpu-8, c3-highcpu-22, c3d-highcpu-8, c3d-highcpu-16, c4-highcpu-8, c4-highcpu-22, c4d-highcpu-8, c4d-highcpu-16 — the C3/C3D and C4/C4D high-CPU shapes between 8 and 22 vCPU that §41.4 permits."
+    error_message = "The machine type must be one of c4-highcpu-8, c4-highcpu-16, c4d-highcpu-8, c4d-highcpu-16 — the C4/C4D high-CPU shapes R12-REFLEX-8002 requires for the Reflex plane. C3, C3D, N2 and every other family are refused."
   }
 }
 
@@ -465,26 +467,110 @@ variable "egress_endpoints" {
   }
 }
 
-variable "capital_envelope_secret_id" {
-  description = <<-EOT
-    The Secret Manager secret holding the key the node verifies capital
-    envelopes against.
+# There is no `capital_envelope_secret_id` any more. The node verifies what
+# the centre signs against the trust bundle (ADR 0110), and `qip-edge-node`
+# refuses to start holding the shared HMAC key beside it.
 
-    Required, because `qip-edge-node` will not start without it. Held as a
-    secret for its integrity rather than its confidentiality: somebody who can
-    replace it can mint envelopes.
+variable "trust_bundle_path" {
+  description = <<-EOT
+    Where the node's boot image carries the committed trust bundle (ADR 0110):
+    `/etc/qip/trust/<file>`, from `infrastructure/trust/` by way of the
+    attested qip-edge-node image. Required: the node verifies policy frames,
+    halts and grants against nothing else.
   EOT
 
-  type = string
+  type     = string
+  nullable = false
 
   validation {
-    # Second argument to `qip-fetch-secret`, in the same root shell as
-    # `project_id`. Secret Manager's own name rule is letters, digits,
-    # underscore and hyphen up to 255 characters, which is already free of
-    # every shell metacharacter — so this refuses nothing a real secret id
-    # could be while refusing everything a command could be.
-    condition     = can(regex("^[A-Za-z0-9_-]{1,255}$", var.capital_envelope_secret_id))
-    error_message = "A Secret Manager secret id is 1-255 characters of letters, digits, underscore and hyphen. It is passed to a command running as root in the node's startup script."
+    # Unquoted into node.env and quoted into a `[ -r … ]` test: a fixed
+    # directory and a file name of the bundle's own character set.
+    condition     = can(regex("^/etc/qip/trust/[a-z0-9-]+\\.json$", var.trust_bundle_path))
+    error_message = "trust_bundle_path is /etc/qip/trust/<name>.json, the directory the image carries infrastructure/trust/ at."
+  }
+}
+
+variable "google_tls_roots_path" {
+  description = "Where the boot image carries the pinned Google roots the node authenticates CA Service against (ADR 0112): `/etc/qip/trust/<file>.pem`."
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = can(regex("^/etc/qip/trust/[a-z0-9-]+\\.pem$", var.google_tls_roots_path))
+    error_message = "google_tls_roots_path is /etc/qip/trust/<name>.pem."
+  }
+}
+
+variable "workload_certificates" {
+  description = <<-EOT
+    The CA Service pool and template the node requests its mTLS workload
+    certificate from (ADR 0112 §2), the lifetime it asks for, and the pool's
+    CA certificates it verifies peers against. Required: every link the node
+    owns is mutual TLS and there is no plaintext mode to fall back to.
+    `ca_pool` and `certificate_template` are full resource names, by project
+    id — the form the requester grant's IAM condition matches.
+  EOT
+
+  type = object({
+    ca_pool              = string
+    certificate_template = string
+    lifetime_secs        = number
+    trust_roots_pem      = string
+  })
+  nullable = false
+
+  validation {
+    condition = (
+      can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/caPools/[A-Za-z0-9_-]+$", var.workload_certificates.ca_pool))
+      && can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/[a-z0-9-]+/certificateTemplates/[A-Za-z0-9_-]+$", var.workload_certificates.certificate_template))
+    )
+    error_message = "workload_certificates names the CA pool and the certificate template by full resource name with a project id: projects/<id>/locations/<region>/caPools/<pool> and …/certificateTemplates/<template>. Both are written unquoted into node.env."
+  }
+
+  validation {
+    condition     = var.workload_certificates.lifetime_secs >= 3600 && var.workload_certificates.lifetime_secs <= 86400 && floor(var.workload_certificates.lifetime_secs) == var.workload_certificates.lifetime_secs
+    error_message = "workload_certificates.lifetime_secs is a whole number of seconds from an hour to a day (ADR 0112 §2: hours, not months)."
+  }
+
+  # Unknown until the CA exists, and then checked: the PEM reaches the script
+  # base64-encoded, so its content cannot be shell syntax whatever it holds;
+  # this refuses a value that is not a certificate at all.
+  validation {
+    condition     = strcontains(var.workload_certificates.trust_roots_pem, "-----BEGIN CERTIFICATE-----")
+    error_message = "workload_certificates.trust_roots_pem is the CA pool's PEM certificates."
+  }
+}
+
+variable "fencing_lease_path" {
+  description = <<-EOT
+    The fencing lease file the primary and the standby hold (`QIP_FENCING_LEASE`),
+    or empty for a node with no standby. Required when `standby_enabled`: a
+    standby with no lease is a second primary.
+
+    What this is not, said because the variable reads as more than it is:
+    `qip-edge-node`'s only lease store is a file, and its own start-up message
+    says the file store is correct on one host only — a standby in another
+    zone needs a store with a conditional write, which the tree does not have.
+    ADR 0111's Spanner lease belongs to the fabric broker and this binary has
+    no client for it. So a primary and a standby on two machines each hold a
+    lease on their own disk, and this gate refuses the configuration that is
+    certainly wrong (no lease) without making the one it admits safe. No
+    environment enables a standby, and none should until the binary has a
+    shared store this variable can name.
+  EOT
+
+  type     = string
+  default  = ""
+  nullable = false
+
+  validation {
+    condition     = var.fencing_lease_path == "" || can(regex("^/var/lib/qip/[a-z0-9_-]+(/[a-z0-9_-]+)*\\.json$", var.fencing_lease_path))
+    error_message = "fencing_lease_path is a file under /var/lib/qip such as /var/lib/qip/fencing/lease.json, or empty."
+  }
+
+  validation {
+    condition     = !var.standby_enabled || var.fencing_lease_path != ""
+    error_message = "standby_enabled is true and fencing_lease_path is empty. A standby with no fencing lease boots as a second primary and both trade the cell; name the lease both nodes hold."
   }
 }
 
@@ -503,8 +589,9 @@ variable "venue_credential_secret_id" {
   validation {
     # Null is the default and means "granted nothing"; the template renders the
     # empty string in that case and the `%{ if }` arm around the fetch is not
-    # taken. Any other value is the same root-shell argument
-    # `capital_envelope_secret_id` is, and is bounded the same way. Refused
+    # taken. Any other value is the second argument of a root-shell command
+    # beside `project_id`, so it is bounded to Secret Manager's own name rule,
+    # which holds no shell metacharacter. Refused
     # here rather than only where `venue_credential_bound` is true, because a
     # value that is safe only under a condition computed elsewhere is a value
     # nobody rechecks when the condition moves.
@@ -798,9 +885,14 @@ variable "standby_enabled" {
 
     False by default. When true, this module creates a standby instance group
     manager in a different zone within the same region, configured with
-    identical machine type, boot image, and firewall posture as the primary.
-    The standby monitors the primary's liveness via a fencing token on port 9443
-    and is promoted to hold the cell when the primary fails.
+    identical machine type, boot image, and firewall posture as the primary,
+    and both nodes are started holding `fencing_lease_path` under their own
+    role (`QIP_NODE_ROLE`) and name. Promotion is `qip-edge-node`'s
+    `standby.rs`: the standby promotes only when the holder's lease has lapsed
+    by a margin, every venue reports the old session ended, and its swap to the
+    next epoch lands. Nothing listens on port 9443 and nothing monitors the
+    primary over the network; the lease record is the only signal. Its store
+    is a file, correct on one host only — see `fencing_lease_path`.
   EOT
 
   type    = bool
