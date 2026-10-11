@@ -127,7 +127,7 @@ fn every_source_file_in_the_backend_workspace_is_written_in_rust() {
 /// Sorted, repository-relative, and exactly what the walk reports, so that a
 /// diff to this array is a diff a reviewer can read against the failure
 /// message.
-const ACCEPTED_NON_RUST_TOOLING: [&str; 26] = [
+const ACCEPTED_NON_RUST_TOOLING: [&str; 28] = [
     ".claude/hooks/format-rust-after-edit.py",
     ".claude/hooks/guard-dangerous-command.py",
     // Tests the guard above, the hook the harness runs before every Bash
@@ -177,6 +177,16 @@ const ACCEPTED_NON_RUST_TOOLING: [&str; 26] = [
     "scripts/game-day/harness.test.mjs",
     "scripts/model-gateway.mjs",
     "scripts/model-gateway.test.mjs",
+    // The rule-citation gate (R12 GOV-9080), on ci.yml's `rule-citation`
+    // job: it reads the pull request's body from the event file and refuses
+    // one that changes a rule file without naming it. It must answer on a
+    // pull request before anything compiles, and the job installs Node and
+    // no Rust toolchain — a `qip` subcommand would mean building the
+    // workspace to read a JSON field — so it is in Node, built-ins only,
+    // beside the agent guard and the SAST gate. On a workflow path, so it
+    // owes an ADR on the same terms as those two; none is written yet.
+    "scripts/rule-citation.mjs",
+    "scripts/rule-citation.test.mjs",
     // The CodeQL blocking gate (R12 CICD-9105), on `codeql-analysis.yml`'s
     // path: it reads the SARIF the analysis wrote and fails the `sast` job
     // on a finding at or above `sast-policy.json`'s threshold. That job

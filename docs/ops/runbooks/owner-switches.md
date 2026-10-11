@@ -1,6 +1,6 @@
 # The owner's switches
 
-Three settings, each committed off, each turned on only by a person in a
+The settings below, each committed off, each turned on only by a person in a
 reviewed diff followed by a plan that person reads. An agent may prepare
 any of them and may not flip one: `scripts/agent-policy.json` makes every
 environment's tfvars and the files declaring the switches protected paths —
@@ -63,3 +63,37 @@ is the CodeQL security-severity at or above which a finding fails the `sast`
 job, and so ci, and so `deploy.yml`'s gate. 7.0 is CodeQL's "high" band, the
 band the Trivy gates stop on. There is no input or override; changing it is
 an edit to that file, which is a protected path.
+
+## Branch protection on `main` (R12 CICD-9066, CICD-9095)
+
+**State: applied by hand, or not at all — this repository cannot see it.**
+`recover/l016-cicd-037` declared it as a `github_branch_protection` resource
+with the `integrations/github` provider. That was not ported: the provider
+needs a GitHub token in whichever job plans it, and this repository's
+workflows hold no such credential and may not take one from a repository
+variable. So the settings are recorded here for the owner to apply in
+*Settings → Branches* (or *Rules → Rulesets*) on `main`:
+
+- **Require a pull request before merging**, with one approving review,
+  **dismiss stale approvals on new commits**, and **require review from code
+  owners** (`.github/CODEOWNERS` scales the reviewers by path risk).
+- **Require status checks to pass**, branches up to date, naming ci's jobs
+  as GitHub reports them: `format`, `clippy`, `test`, `attestation check`,
+  `release build`, `dependency policy`, `security audit`, `cargo-deny`,
+  `sbom`, `portal`, `landing`, `vulnerability scan`, `trunk meta-linter`,
+  `infrastructure`, `secret scan`, `scripts`, `a changed rule is cited`,
+  `change management hooks`, and every `sast / …` job. The recovered branch
+  named `build / lint`, `build / clippy` and others that no workflow
+  reports; a required check nobody reports blocks every merge for ever, so
+  copy names from a recent run's checks list rather than from this page if
+  the two disagree.
+- **Do not allow bypassing** (include administrators), **no force pushes**,
+  **no deletions**.
+
+What holds without it, said so a reader does not overcount it:
+`deploy.yml` refuses to sign a commit whose ci run was not a push to this
+repository, or — dispatched — one with no successful push-started ci run
+(`qip-acceptance`'s `deploy_provenance` suite runs that step), and the
+workload identity provider admits only `refs/heads/` tokens from this
+repository. Those keep an unreviewed pull request off a deployed
+environment; only branch protection keeps one off `main`.
