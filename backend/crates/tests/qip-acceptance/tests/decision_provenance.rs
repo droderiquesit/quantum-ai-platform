@@ -29,10 +29,16 @@ const CENTRAL_ROOTS: [&str; 3] = [
 fn every_central_root_refuses_to_run_deployed_without_a_source_commit() {
     for root in CENTRAL_ROOTS {
         let text = production_text(&read(root));
-        // The premise: this is the root that names its deployment.
-        let parsed = text
-            .find("Deployment::parse(")
-            .unwrap_or_else(|| panic!("{root} no longer parses its deployment"));
+        // The premise: this is the root that names its deployment, and names
+        // it against the platform's own markers. Since the R3-TRUST lane
+        // (ADR 0110 decision 5) a root parses through `parse_observed`, which
+        // refuses `local` where Cloud Run's `K_*` or the GCE DMI name shows the
+        // process is deployed; a root that went back to the bare `parse` would
+        // let an environment edit name a revision `local` and skip this very
+        // check, so the bare form is deliberately not accepted here.
+        let parsed = text.find("Deployment::parse_observed(").unwrap_or_else(|| {
+            panic!("{root} no longer parses its deployment against the deployed markers")
+        });
         let required = text
             .find("decision_record::require_source_commit(deployment)")
             .unwrap_or_else(|| {
