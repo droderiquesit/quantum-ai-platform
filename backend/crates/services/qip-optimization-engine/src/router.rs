@@ -931,6 +931,13 @@ impl ComputeRouter {
                     Ok(JobPoll::Completed { polls, result }) => {
                         dispatch.harvested = Some(pending.ticket.id());
                         dispatch.harvested_after_cycles = Some(polls);
+                        // `polls` counts the polls that found the job still
+                        // running, so an answer ready at the first harvest
+                        // reads zero — what an inline call would read. It was
+                        // harvested a cycle after the one that sent it, and
+                        // the learning's latency is cycles since submission,
+                        // so the harvesting cycle counts.
+                        let latency = polls.saturating_add(1);
                         if pending.key != key {
                             dispatch.notes.push(format!(
                                 "quantum job {} answered a problem over a different universe or \
@@ -941,7 +948,7 @@ impl ComputeRouter {
                                 &pending,
                                 MeasurementOutcome::Stale,
                                 None,
-                                polls,
+                                latency,
                             ));
                         } else {
                             let simulated = arm.gateway.provider().capabilities().simulated;
@@ -952,7 +959,7 @@ impl ComputeRouter {
                                         &pending,
                                         MeasurementOutcome::Answered,
                                         Some((run.is_usable(), judged)),
-                                        polls,
+                                        latency,
                                     ));
                                     dispatch.notes.push(format!(
                                         "quantum job {} answered after {polls} cycle(s) and was \
@@ -966,7 +973,7 @@ impl ComputeRouter {
                                         &pending,
                                         MeasurementOutcome::Refused,
                                         None,
-                                        polls,
+                                        latency,
                                     ));
                                     quantum_failure = Some(error.message().to_string());
                                 }
