@@ -386,6 +386,20 @@ pub struct PlatformConfig {
     #[serde(default)]
     pub hedge_policies: Vec<HedgePolicyDeclaration>,
 
+    /// The instruments the Hedge Brain may search over (blueprint §14.1;
+    /// `crate::hedge`).
+    ///
+    /// Judgement only, as [`Self::hedge_policies`] is: class, Greeks, costs,
+    /// depth and factor loadings. Multiplier and lot come from the catalogue
+    /// and price from the snapshot. Empty by default, and the DECIDE line
+    /// then says no candidate protects a failing world rather than reading as
+    /// a hedged book; `#[serde(default)]` so an older stored configuration
+    /// keeps deserialising. Omitted from the serialised record when empty,
+    /// so a configuration's recorded form — and any digest taken over it — is
+    /// unchanged for every deployment that declares none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hedge_candidates: Vec<crate::hedge::HedgeCandidateDeclaration>,
+
     /// How deep a chain observation has to be buried before the platform will
     /// read state derived from it.
     ///
@@ -548,6 +562,7 @@ impl Default for PlatformConfig {
             user_eligibilities: Vec::new(),
             venue_registrations: Vec::new(),
             hedge_policies: Vec::new(),
+            hedge_candidates: Vec::new(),
             chain_confirmations: default_chain_confirmations(),
             reasoning_confidence_bar: default_reasoning_confidence_bar(),
             exploration_share: default_exploration_share(),
@@ -662,6 +677,16 @@ impl PlatformConfig {
     /// named.
     pub fn with_venue_registrations(mut self, registrations: Vec<RegistrationRecord>) -> Self {
         self.venue_registrations = registrations;
+        self
+    }
+
+    /// Commit the instruments the Hedge Brain may search over. See
+    /// [`PlatformConfig::hedge_candidates`].
+    pub fn with_hedge_candidates(
+        mut self,
+        candidates: Vec<crate::hedge::HedgeCandidateDeclaration>,
+    ) -> Self {
+        self.hedge_candidates = candidates;
         self
     }
 

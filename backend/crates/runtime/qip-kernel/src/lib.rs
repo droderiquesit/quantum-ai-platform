@@ -57,6 +57,7 @@ pub mod falsification;
 pub mod family_review;
 pub mod feature_statistics;
 pub mod federation_stage;
+pub mod hedge;
 pub mod hedge_review;
 pub mod lattice_stage;
 pub mod market_factory_stage;

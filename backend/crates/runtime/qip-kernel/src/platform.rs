@@ -4329,6 +4329,10 @@ impl Platform {
         model_provider: Box<dyn ModelProvider>,
     ) -> Result<Self> {
         let now = context.now();
+        // The survival ceiling is a figure only this kernel computes, so the
+        // limit that reads it is installed here, on whatever set the root
+        // handed in (R12-RISK-7205; `crate::survival::install_survival_limit`).
+        let limits = crate::survival::install_survival_limit(limits)?;
 
         // Opened here, before anything else is built, for the same reason the
         // storage preflight runs before a node serves: a log destination that
@@ -4568,6 +4572,12 @@ impl Platform {
                 state: RiskState {
                     equity: initial_equity,
                     cash: initial_equity,
+                    // The empty book's survival ceiling at assembly: its whole
+                    // equity, which is what the seed below derives before any
+                    // reserve is configured. Without it the desk's risk agent
+                    // would read the installed survival limit against no
+                    // ceiling and veto every thesis on a book holding nothing.
+                    survival_gross_ceiling: Some(initial_equity),
                     ..RiskState::default()
                 },
                 limits: limits.clone(),
@@ -5004,6 +5014,10 @@ impl Platform {
             platform.orders.withdraw_venue(venue.as_str());
             platform.central.withdraw_venue(venue.as_str());
         }
+        // The survival ceiling the installed limit reads, from the book as
+        // resumed — after `resume_book`, so a restarted process stands behind
+        // the positions it actually holds.
+        platform.seed_survival_ceiling(now);
         Ok(platform)
     }
 
@@ -7773,24 +7787,52 @@ impl Platform {
                     at: now,
                 };
                 self.journal_record(decided.clone(), CAPITAL_GRANT_ORIGIN, now)?;
-                let outcome = self.central.issue(
-                    strategy,
-                    CAPITAL_GRANT_REQUESTER,
-                    &approval,
-                    &[first_credential, credential],
-                    drawdown,
-                    now,
-                );
+                // The confidence governor narrows the grant as it narrows the
+                // desk's budget (R12-RISK-4111, 4112, 4114, 4115): a platform
+                // whose evidence of being right has weakened signs its cells
+                // less, not the same. Contraction only, and refused rather
+                // than skipped when a measurement it reads is malformed — a
+                // grant signed past a governor that could not decide is a
+                // grant the governor never saw.
+                let narrowing = self.governor.grant_decision();
+                let outcome = narrowing.and_then(|narrowing| {
+                    self.central
+                        .issue_narrowed(
+                            strategy,
+                            CAPITAL_GRANT_REQUESTER,
+                            &approval,
+                            &[first_credential, credential],
+                            drawdown,
+                            narrowing.multiplier,
+                            now,
+                        )
+                        .map(|issued| (issued, narrowing))
+                });
                 // Cleared either way, as the promotion clears its pair: a
                 // pending signature left behind a refusal would let a later
                 // countersignature retry the plane without a fresh review.
                 self.pending_capital_grants.remove(strategy);
                 let mut entry = decided;
                 match &outcome {
-                    Ok(issued) => {
+                    Ok((issued, narrowing)) => {
                         entry.outcome = "issued".to_string();
                         entry.gross_limit = Some(issued.envelope().gross_limit());
                         entry.expires_at = Some(issued.envelope().expires_at());
+                        // Which measurement narrowed the grant, in the record
+                        // a replay reads, so a smaller grant is explained
+                        // rather than merely smaller.
+                        if !narrowing.contractions.is_empty() {
+                            entry.detail = Some(format!(
+                                "narrowed to {} of the allocation: {}",
+                                narrowing.multiplier,
+                                narrowing
+                                    .contractions
+                                    .iter()
+                                    .map(|contraction| contraction.reason.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join("; ")
+                            ));
+                        }
                     }
                     Err(error) => {
                         entry.outcome = "refused".to_string();
@@ -9132,10 +9174,90 @@ impl Platform {
 
     /// Withhold hedge capacity under `policy` from every construction from
     /// now on. Replaces the policy and keeps the governor's measurements.
+    ///
+    /// The ceiling the survival limit reads is re-derived under the new
+    /// policy at once, rather than left at the old policy's figure until the
+    /// next construction: a policy that withholds more must bind the next
+    /// order, not the next thesis.
     pub fn set_survival_policy(&mut self, policy: crate::survival::SurvivalPolicy) {
         let signals = self.governor.signals().clone();
         self.governor = crate::survival::SurvivalGovernor::with_policy(policy);
         *self.governor.signals_mut() = signals;
+        self.seed_survival_ceiling(self.context.now());
+    }
+
+    /// The survival policy every construction withholds under.
+    pub fn survival_policy(&self) -> &crate::survival::SurvivalPolicy {
+        self.governor.policy()
+    }
+
+    /// The gross the survival kernel stands behind now — the figure
+    /// `LimitKind::MaxSurvivalGross` reads in every pre-trade check.
+    pub fn survival_gross_ceiling(&self) -> Option<Decimal> {
+        self.governor.gross_ceiling()
+    }
+
+    /// The measurements the confidence governor reads, for a test that drives
+    /// a trigger without staging the cycle that would produce it. The
+    /// production writers are the LEARN, REASON and feature-statistics seams;
+    /// this is the same `ConfidenceSignals` they write, not a second copy.
+    #[doc(hidden)]
+    pub fn confidence_signals_mut(&mut self) -> &mut crate::confidence::ConfidenceSignals {
+        self.governor.signals_mut()
+    }
+
+    /// The ledger's figures for the survival waterfall, with margin,
+    /// collateral and settlement read through
+    /// [`crate::survival::CapitalObligations`] from the cross-margin review
+    /// (R12-CAPITAL-4086, 4087). A review that cannot be read refuses the
+    /// sizing: an obligation that could not be measured is not an obligation
+    /// of zero.
+    fn survival_figures(
+        &self,
+        deployable: Decimal,
+        now: Timestamp,
+    ) -> Result<crate::survival::LedgerFigures> {
+        let review = crate::cross_margin::review(
+            &self.holdings_observed,
+            &self.aggregates,
+            &MarginModel::default(),
+            SETTLEMENT_CURRENCY,
+        )
+        .map_err(|error| {
+            Error::invalid(format!(
+                "the survival waterfall cannot read the book's margin: {}",
+                error.message()
+            ))
+        })?;
+        crate::survival::LedgerFigures {
+            equity: self.capital.equity(),
+            held: self.reservations.reserved_total(),
+            obligations: self.commitments.unfunded_total(now)?,
+            deployable,
+            gross: RiskState::from_figures(&self.aggregates).gross_exposure,
+            ..crate::survival::LedgerFigures::default()
+        }
+        .with_obligations(&review)
+    }
+
+    /// Derive the survival ceiling with no construction: at assembly and when
+    /// the policy changes.
+    ///
+    /// A refusal is not propagated, and is not lost: the governor has already
+    /// lowered the ceiling to the gross the book stands in (or left none,
+    /// where nothing could be read), which is the restrictive state, and the
+    /// next DECIDE re-derives the figure and reports any refusal on the cycle.
+    /// Failing assembly instead would stop a process because its book is
+    /// stressed — the one moment an operator most needs it running to reduce.
+    fn seed_survival_ceiling(&mut self, now: Timestamp) {
+        let figures = self
+            .deployable_capital(now)
+            .and_then(|free| self.survival_figures(free, now));
+        if let Ok(figures) = figures {
+            let _lowered_on_refusal =
+                self.governor
+                    .seed(figures, self.stress.as_ref(), STRESS_LOSS_TOLERANCE, now);
+        }
     }
 
     /// The most recent calibration, if any thesis has resolved informatively.
@@ -13472,13 +13594,7 @@ impl Platform {
                 regime: self.market_regime(thesis.object_id.as_str()),
             })
             .collect();
-        let figures = crate::survival::LedgerFigures {
-            equity: self.capital.equity(),
-            held: self.reservations.reserved_total(),
-            obligations: self.commitments.unfunded_total(now)?,
-            deployable: free,
-            gross: RiskState::from_figures(&self.aggregates).gross_exposure,
-        };
+        let figures = self.survival_figures(free, now)?;
         let sizing = self.governor.size(
             figures,
             self.stress.as_ref(),
@@ -14330,7 +14446,30 @@ impl Platform {
             .iter()
             .map(|(object, lot)| (object.clone(), (lot.quantity * lot.average_price).to_f64()))
             .collect();
-        let tail_worlds = crate::tail::worlds(&book, &self.price_history, equity.to_f64(), now);
+        let mut tail_worlds = crate::tail::worlds(&book, &self.price_history, equity.to_f64(), now);
+        // R12-RISK-4116..4120, 4123, 4124: the rest of §14.3's worlds and two
+        // generated past the book's own history, seeded by the cycle so a
+        // replay regenerates them. Days to exit from the same liquidity
+        // ladder the limits read; a position it did not mark is charged the
+        // world's own unmarked figure rather than dropped.
+        let days_to_liquidate = self.risk_state().days_to_liquidate;
+        let positions: Vec<crate::tail::TailPosition> = book
+            .iter()
+            .map(|(object, notional)| crate::tail::TailPosition {
+                object: object.clone(),
+                notional: *notional,
+                days_to_liquidate: days_to_liquidate.get(object).copied(),
+            })
+            .collect();
+        tail_worlds.extend(crate::tail::survival_worlds(
+            &crate::tail::TailBook {
+                positions: &positions,
+                price_history: &self.price_history,
+                equity: equity.to_f64(),
+                seed: self.cycle,
+            },
+            now,
+        ));
         for world in &tail_worlds {
             if world.breaches(STRESS_LOSS_TOLERANCE) {
                 problems.push(format!(
@@ -14633,6 +14772,15 @@ impl Platform {
                 // history next cycle, and the event log keeps the attempt.
                 Err(error) => {
                     refusal = Some(error.message().to_string());
+                    // A construction that sized nothing released nothing,
+                    // whichever step refused — before the waterfall ran, in
+                    // it, or after it, when its release was never held. The
+                    // survival ceiling falls to what the book already stands
+                    // in, rather than keeping a release no proposal holds.
+                    self.governor.release_nothing(
+                        RiskState::from_figures(&self.aggregates).gross_exposure,
+                        self.reservations.reserved_total(),
+                    );
                     self.constructor.nothing_to_do(
                         ProposalId::from_string(format!("prop-{}", self.cycle)),
                         Money::new(self.capital.equity(), Currency::USD),
@@ -14713,6 +14861,12 @@ impl Platform {
         // like a hedged one with nothing to do.
         let hedges = self.review_hedges(now);
         detail.push_str(&format!("; {}", hedges.summary()));
+        // Blueprint §14.1's Hedge Brain beside the policy survey: the
+        // cheapest plan across every declared candidate and every stressed
+        // world, budgeted inside the hedge capacity this construction
+        // withheld. A plan and a sentence; see `crate::hedge`.
+        let brain = self.run_hedge_brain(now);
+        detail.push_str(&format!("; {}", brain.summary()));
         let mut outcome = StageOutcome::ran(Stage::Decide, legs, detail);
         // R12-GOV-6121: the five versions this DECIDE ran under, on the
         // chain beside its decisions (`crate::decision_record`).
@@ -16403,6 +16557,53 @@ impl Platform {
     /// pre-trade veto and the monitor evaluate — rather than a copy, so a
     /// hedge cannot be projected against bounds the desk is not actually
     /// under. Two copies of a bound is the failure principle 6 names.
+    /// Run the Hedge Brain (`crate::hedge`) against the book as it stands and
+    /// journal what it found.
+    ///
+    /// The budget is the hedge capacity the last construction's survival
+    /// waterfall withheld, and zero before any construction — no plan is
+    /// funded by capital the waterfall never set aside. A journal that failed
+    /// is a capture problem, as the policy survey's is.
+    fn run_hedge_brain(&mut self, now: Timestamp) -> crate::hedge::HedgeBrainReport {
+        let state = self.risk_state();
+        let (hedge_capacity, funding) = self
+            .governor
+            .last()
+            .map(|budget| {
+                (
+                    budget.survival.hedge_capacity,
+                    budget.survival.margin_required + budget.survival.funding_maturity_required,
+                )
+            })
+            .unwrap_or((Decimal::ZERO, Decimal::ZERO));
+        let report = {
+            let market = self.market.read();
+            crate::hedge::plan(&crate::hedge::HedgeBrainInputs {
+                declarations: &self.config.hedge_candidates,
+                universe: &market.universe,
+                snapshot: &market.snapshot,
+                state: &state,
+                stress: self.stress.as_ref(),
+                price_history: &self.price_history,
+                equity: self.capital.equity(),
+                hedge_capacity,
+                funding,
+                tolerance: STRESS_LOSS_TOLERANCE,
+                cycle: self.cycle,
+                at: now,
+            })
+        };
+        if let Some(record) = crate::hedge::HedgePlanned::of(&report, self.cycle, now)
+            && let Err(error) = self.journal_record(record, "kernel/hedge-brain", now)
+        {
+            self.capture_problems.push(format!(
+                "the hedge brain's plan was reported to the desk and not journalled: {}",
+                error.message()
+            ));
+        }
+        report
+    }
+
     fn review_hedges(&mut self, now: Timestamp) -> crate::hedge_review::HedgeReview {
         let state = self.risk_state();
         let review = {

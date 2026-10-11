@@ -158,3 +158,38 @@ fn the_kernel_survival_modules_read_measurements_and_import_no_alpha_component()
         }
     }
 }
+/// R12-CAPITAL-7204's hedge and model-risk halves: the Hedge Brain (the
+/// kernel's `hedge.rs` and `qip-risk`'s `hedge_search.rs`) and the
+/// confidence governor that narrows grants (`confidence.rs`) import no alpha
+/// component, so no alpha or model crate can construct, relax or bypass a
+/// hedge plan or a grant contraction. `qip-risk` is already in [`SURVIVAL`],
+/// so its crate closure is checked above; this pins the modules themselves.
+/// Mutation: add `use qip_strategy::catalogue;` to the kernel's `hedge.rs`
+/// and this fails naming it.
+#[test]
+fn the_hedge_brain_and_the_grant_governor_import_no_alpha_component() {
+    let root = qip_acceptance::repository_root().join("backend/crates");
+    let modules = [
+        root.join("runtime/qip-kernel/src/hedge.rs"),
+        root.join("runtime/qip-kernel/src/confidence.rs"),
+        root.join("libs/qip-risk/src/hedge_search.rs"),
+    ];
+    for module in &modules {
+        let text = std::fs::read_to_string(module)
+            .unwrap_or_else(|error| panic!("{} is readable: {error}", module.display()));
+        assert!(
+            text.contains("use "),
+            "premise: {} was read and imports something",
+            module.display()
+        );
+        for alpha in ALPHA {
+            let path = alpha.replace('-', "_");
+            assert!(
+                !text.contains(&format!("{path}::")),
+                "{} names {path}; a hedge or a grant contraction an alpha component can reach \
+                 is one it can relax",
+                module.display()
+            );
+        }
+    }
+}
