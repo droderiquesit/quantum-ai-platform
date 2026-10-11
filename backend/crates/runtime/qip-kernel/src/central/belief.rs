@@ -83,7 +83,7 @@
 //! not describe a cell as acting on a prior. It does not.
 
 use qip_ai::memory::Episode;
-use qip_contracts::policy::{BeliefPriors, PolicyItem, Slot};
+use qip_contracts::policy::{BeliefPriors, BeliefState, PolicyItem, Slot, UncertaintyType};
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
@@ -175,7 +175,6 @@ impl BeliefIssue {
         // cadence moves the producer with it instead of leaving two numbers
         // to disagree.
         let window: Duration = PolicyItem::BeliefPriors.time_to_live();
-        let earliest_current = now.saturating_sub(window);
 
         let mut current: Vec<&Episode> = Vec::new();
         let mut aged_out = 0usize;
@@ -204,10 +203,17 @@ impl BeliefIssue {
                     episode.episode_id, episode.instrument
                 )));
             }
-            if episode.at < earliest_current {
+            // The §27 BeliefState is the gate (R12-CONTRACT-7063): each open
+            // belief is stated as the contract record, and its own expiry —
+            // not a second comparison kept beside it — decides whether it is
+            // still current. A belief whose record does not validate at `now`
+            // for any other reason is refused, not shipped.
+            let stated = belief_state(episode, window)?;
+            if stated.check_expired(now_secs(now)?).is_err() {
                 aged_out += 1;
                 continue;
             }
+            stated.validate(now_secs(now)?)?;
             current.push(episode);
         }
 
@@ -297,6 +303,53 @@ impl BeliefIssue {
     }
 }
 
+/// One open belief as the §27 BeliefState contract states it (CONTRACT-010,
+/// R12-CONTRACT-7063): the claim about the instrument, the episode it is
+/// recorded in as its evidence, the causal path the world model held into the
+/// instrument — or, where it held none, the hypothesis class that raised the
+/// claim — the effective confidence after review, and an expiry one slot
+/// window after the belief was formed.
+///
+/// The expiry is the slot's own time to live, so the contract and the slot
+/// agree about when a belief stops being current. It is whole seconds, as the
+/// contract states it, and truncation only ever makes a belief expire
+/// earlier: a belief is never carried past its window on a rounding.
+///
+/// Uncertainty is epistemic: an open claim is one an observation will resolve,
+/// which is exactly what LEARN waits for before removing it.
+pub fn belief_state(episode: &Episode, window: Duration) -> Result<BeliefState> {
+    let causal_path = if episode.causal_context.is_empty() {
+        vec![format!("{} -> {}", episode.claim.class, episode.instrument)]
+    } else {
+        episode
+            .causal_context
+            .iter()
+            .map(|edge| {
+                format!(
+                    "{} -[{}]-> {}",
+                    edge.cause, edge.mechanism, episode.instrument
+                )
+            })
+            .collect()
+    };
+    Ok(BeliefState {
+        proposition: format!("{}: {}", episode.instrument, episode.claim.claim),
+        evidence_set: vec![format!("episode:{}", episode.episode_id)],
+        causal_path,
+        confidence: episode.claim.confidence,
+        uncertainty_type: UncertaintyType::Epistemic,
+        expires_at: now_secs(episode.at.saturating_add(window))?,
+    })
+}
+
+fn now_secs(at: Timestamp) -> Result<u64> {
+    u64::try_from(at.as_secs()).map_err(|_| {
+        Error::invalid(format!(
+            "{at:?} is before the epoch; a belief's expiry cannot be stated in the contract's seconds"
+        ))
+    })
+}
+
 impl EventBody for BeliefIssue {
     // What the centre distributed as policy, recorded whether or not it was
     // anything: a platform whose beliefs never reach a cell is exactly the
@@ -350,6 +403,71 @@ mod tests {
             model_version: None,
             model_derived: false,
         }
+    }
+
+    /// R12-CONTRACT-7063: what the centre ships a cell is derived from the
+    /// §27 BeliefState record of each open belief, and the record carries
+    /// every field from the episode it states. The contract type had no
+    /// production constructor until this, so its refusals guarded nothing.
+    #[test]
+    fn an_open_belief_is_stated_as_a_section_27_belief_state_carrying_every_field() {
+        let window = PolicyItem::BeliefPriors.time_to_live();
+        let plain = belief("ep-1", "AAA", 0.7, at(9_900));
+        let stated = belief_state(&plain, window).expect("states");
+        assert_eq!(stated.proposition, "AAA: undervalued");
+        assert_eq!(stated.evidence_set, vec!["episode:ep-1".to_string()]);
+        assert_eq!(
+            stated.causal_path,
+            vec!["mean_reversion -> AAA".to_string()]
+        );
+        assert!((stated.confidence - 0.7).abs() < f64::EPSILON, "{stated:?}");
+        assert_eq!(stated.uncertainty_type, UncertaintyType::Epistemic);
+        assert_eq!(stated.expires_at, 10_200);
+        stated
+            .validate(10_000)
+            .expect("current at the issue instant");
+
+        let mut caused = plain;
+        caused.causal_context = vec![qip_ai::memory::CausalContextEdge {
+            cause: "USD".to_string(),
+            mechanism: "funding".to_string(),
+            transmission: 0.4,
+            established: true,
+        }];
+        let stated = belief_state(&caused, window).expect("states");
+        assert_eq!(stated.causal_path, vec!["USD -[funding]-> AAA".to_string()]);
+
+        // And it is the record a cell's peer would decode: a round trip
+        // through the contract's own serde is exact.
+        let bytes = serde_json::to_vec(&stated).expect("encodes");
+        let decoded: BeliefState = serde_json::from_slice(&bytes).expect("decodes");
+        assert_eq!(decoded, stated);
+    }
+
+    /// The contract record's expiry, not a second comparison, decides what is
+    /// current: a belief exactly one window old has expired on its own record
+    /// and does not ship, and one a second younger does.
+    #[test]
+    fn a_belief_exactly_one_window_old_is_expired_by_its_contract_record_and_not_shipped() {
+        let issued_at = at(10_000);
+        let expired = [belief("ep-edge", "AAA", 0.6, at(9_700))];
+        let none = BeliefIssue::derive(expired.iter(), Some(at(9_700)), issued_at)
+            .expect("an expired set is not an error");
+        assert_eq!(
+            none.outcome,
+            BeliefOutcome::NothingCurrent {
+                open: 1,
+                aged_out: 1,
+                formed_at: at(9_700),
+            }
+        );
+        let live = [belief("ep-live", "AAA", 0.6, at(9_701))];
+        let produced = BeliefIssue::derive(live.iter(), Some(at(9_701)), issued_at)
+            .expect("one second inside the window");
+        assert_eq!(
+            produced.priors().map(|p| p.priors.get("AAA").copied()),
+            Some(Some(0.6))
+        );
     }
 
     #[test]
