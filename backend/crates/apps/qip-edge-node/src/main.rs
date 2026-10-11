@@ -49,6 +49,7 @@ use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, Duration, SystemClock};
 use qip_edge::cell::{CellConfig, Placer, PricingPolicy};
+use qip_edge::fencing::Fence;
 use qip_edge::telemetry::CellMetrics;
 use qip_edge_node::allocation::RegionCapital;
 use qip_edge_node::arbitrage::{
@@ -60,6 +61,9 @@ use qip_edge_node::dark::DarkRegionWire;
 use qip_edge_node::event_fabric::drain::{Drain, DrainConfig, LakeSink, Sink};
 use qip_edge_node::event_fabric::inputs::RecordedInputs;
 use qip_edge_node::event_fabric::mirror::FabricMirror;
+use qip_edge_node::event_fabric::placement::{
+    Placement, WRITER_CPU_VARIABLE, current_placement, parse_writer_cpu, pin_current_thread,
+};
 use qip_edge_node::event_fabric::pressure::{PressureGauge, Thresholds};
 use qip_edge_node::event_fabric::relay::{JournalRelay, RelayConfig};
 use qip_edge_node::event_fabric::telemetry::OutboxTelemetry;
@@ -76,16 +80,22 @@ use qip_edge_node::outbox::{
     read_fabric, spool_dir, spool_survives_the_machine,
 };
 use qip_edge_node::pass::PassMeter;
+use qip_edge_node::peer::{LISTEN_VARIABLE, PEERS_VARIABLE, PeerSession, PeerSettings};
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
+use qip_edge_node::risk::{CellRiskLimits, RISK_LIMITS_VARIABLE};
 use qip_edge_node::scheduler::{DecisionLoop, HealthFacts, InstantClock, MarkerFacts, Outbox};
 use qip_edge_node::share::RegionShareStatus;
+use qip_edge_node::standby::{
+    FileLeaseStore, LEASE_VARIABLE, LeaseKeeper, LeaseThread, LeaseTiming, NAME_VARIABLE,
+    ROLE_VARIABLE, SimulatedSessions, StandbySettings,
+};
 use qip_edge_node::strategies::{
     MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX, StrategyInstaller,
     parse_pricing,
 };
 use qip_edge_node::venue::{ACKNOWLEDGEMENT_VARIABLE, ADAPTER_VARIABLE, VenueChoice};
-use qip_edge_node::{NodeAssembly, assemble};
+use qip_edge_node::{NodeAssembly, assemble_with_risk};
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_observability::metrics::Metrics;
@@ -229,6 +239,22 @@ struct NodeConfig {
     /// The fabric partition the spool drains to, when one is configured —
     /// see `qip_edge_node::outbox`. Taken once, because it holds the token.
     fabric: Option<FabricSettings>,
+    /// The limits the cell's deterministic Risk Gate evaluates. Never
+    /// absent: unset is the shipped set, and a named file that cannot be
+    /// read or names a limit the cell cannot evaluate stops the process —
+    /// see `qip_edge_node::risk`.
+    risk_limits: CellRiskLimits,
+    /// The fencing lease this process holds or stands by for, when it runs
+    /// as one of a primary/standby pair. `None` is a node with no standby,
+    /// announced — see `qip_edge_node::standby`.
+    standby: Option<StandbySettings>,
+    /// The peer Reflex Mesh, when this cell has peers. `None` is a cell that
+    /// coordinates with no other cell directly, announced — see
+    /// `qip_edge_node::peer`.
+    peers: Option<PeerSettings>,
+    /// The core the spool writer is pinned to, when the deployment names
+    /// one — see `qip_edge_node::event_fabric::placement`.
+    writer_cpu: Option<usize>,
 }
 
 impl NodeConfig {
@@ -361,6 +387,21 @@ impl NodeConfig {
         }
 
         let fabric = read_fabric(&|name| std::env::var(name).ok())?;
+        let writer_cpu = parse_writer_cpu(std::env::var(WRITER_CPU_VARIABLE).ok().as_deref())?;
+        let peers = PeerSettings::read(
+            &cell_id,
+            std::env::var(LISTEN_VARIABLE).ok().as_deref(),
+            std::env::var(PEERS_VARIABLE).ok().as_deref(),
+        )?;
+        let standby = StandbySettings::read(
+            std::env::var(LEASE_VARIABLE).ok().as_deref(),
+            std::env::var(ROLE_VARIABLE).ok().as_deref(),
+            std::env::var(NAME_VARIABLE).ok().as_deref(),
+        )?;
+        let risk_limits = CellRiskLimits::read(
+            std::env::var(RISK_LIMITS_VARIABLE).ok().as_deref(),
+            |path| std::fs::read_to_string(path),
+        )?;
 
         Ok(Self {
             cell_id,
@@ -382,6 +423,10 @@ impl NodeConfig {
             mirror,
             quote_limits,
             fabric,
+            risk_limits,
+            standby,
+            peers,
+            writer_cpu,
         })
     }
 }
@@ -479,13 +524,17 @@ fn run() -> Result<()> {
         telemetry,
         mut cell,
         mesh_series,
-    } = assemble(
+    } = assemble_with_risk(
         cell_config,
         features,
         Arc::clone(&clock),
         config.region_allocation,
         config.mirror.clone(),
+        &config.risk_limits,
     )?;
+    // Said at start, because which limits the reflex path refuses on is the
+    // first thing an operator reading a refusal under `risk_gate` needs.
+    println!("qip-edge-node: {}", config.risk_limits.describe());
     // Said before the venue banner, because which venues are abroad changes
     // what the venue line below means: two venues in one region compose a
     // transport edge and two across a boundary compose a mirror edge, and an
@@ -524,6 +573,43 @@ fn run() -> Result<()> {
         println!("{line}");
     }
     let mut gateway = NodeGateway::open(&choice, gateway_venue.clone(), started)?;
+
+    // The fencing lease, before the feed and before anything is served: a
+    // standby that reported healthy before its fence was installed would be
+    // a second owner for as long as that took. Refused on any adapter but
+    // the simulator, because the venue-session check a promotion requires
+    // exists only for the simulator, whose session is its process.
+    let lease_thread = match &config.standby {
+        Some(settings) => {
+            if !matches!(choice, VenueChoice::Simulated { .. }) {
+                return Err(Error::invalid(format!(
+                    "configuration: {LEASE_VARIABLE} is set on a node whose venue adapter is not                      the simulator; a standby promotes only once every venue reports the old                      holder's session ended, and no adapter but the simulator can answer that                      yet"
+                )));
+            }
+            let fence = Fence::new();
+            cell.install_fence(fence.clone());
+            let store = FileLeaseStore::at(&settings.path)?;
+            let keeper = LeaseKeeper::new(
+                &settings.name,
+                settings.role,
+                LeaseTiming::deployed()?,
+                Arc::new(store),
+                fence,
+                config.venues.clone(),
+                Box::new(SimulatedSessions),
+            )?;
+            println!(
+                "qip-edge-node: fencing lease at {} as {} `{}`: ttl {:?}, margin {:?}; this cell                  places nothing until it holds the epoch. The file store is correct on one host                  only: a standby in another zone needs a store with a conditional write, which                  this tree does not have",
+                settings.path.display(),
+                settings.role.as_str(),
+                settings.name,
+                keeper.timing().ttl,
+                keeper.timing().margin,
+            );
+            Some(LeaseThread::spawn(keeper, Arc::clone(&clock))?)
+        }
+        None => None,
+    };
 
     // The feed, bound to the cell before anything is served. Refused here,
     // and not at the first pass, if the gateway it would price is not the
@@ -690,6 +776,7 @@ fn run() -> Result<()> {
         &gateway,
         &strategies,
         requoter.is_some(),
+        lease_thread.is_some(),
     ) {
         println!("qip-edge-node: awaiting {requirement}");
     }
@@ -777,9 +864,24 @@ fn run() -> Result<()> {
         WriterConfig::new(&config.cell_id, started, WRITER_POLL, WRITER_GROUP)?,
     )?;
     let session = spool_writer.session();
+    // The writer's placement is settled on its own thread before it takes
+    // a handoff, and reported back here before anything is served: pinned
+    // when a core is named, and a node that cannot have the core it was
+    // told to use stops rather than running on whatever the scheduler chose.
+    let (placed, placement) = std::sync::mpsc::sync_channel::<Result<Placement>>(1);
+    let writer_cpu = config.writer_cpu;
     std::thread::Builder::new()
         .name("qip-spool-writer".to_string())
         .spawn(move || {
+            let outcome = match writer_cpu {
+                Some(cpu) => pin_current_thread(cpu),
+                None => current_placement(),
+            };
+            let pinned = outcome.is_ok() || writer_cpu.is_none();
+            let _ = placed.send(outcome);
+            if !pinned {
+                return;
+            }
             // Returns only once every sender has gone and the spool holds
             // what it received, or with the write the spool refused; either
             // way its heartbeat has stopped and the gauge halts new exposure.
@@ -792,6 +894,33 @@ fn run() -> Result<()> {
             }
         })
         .map_err(|error| Error::io(format!("cannot start the spool writer: {error}")))?;
+    match placement.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(placement)) => println!(
+            "qip-edge-node: spool writer thread {} {} (allowed {:?}, last ran on CPU {})",
+            placement.tid,
+            match config.writer_cpu {
+                Some(cpu) => format!("pinned to CPU {cpu}"),
+                None => format!(
+                    "not pinned ({WRITER_CPU_VARIABLE} unset): the scheduler may run it on the \
+                     decision thread's core"
+                ),
+            },
+            placement.allowed,
+            placement.last_cpu
+        ),
+        // Unpinned, a placement that cannot be read is said and not fatal:
+        // nothing was asked of it.
+        Ok(Err(error)) if config.writer_cpu.is_none() => eprintln!(
+            "qip-edge-node: the spool writer's placement could not be read: {}",
+            error.message()
+        ),
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            return Err(Error::io(
+                "the spool writer did not report its placement within five seconds",
+            ));
+        }
+    }
     let relay = JournalRelay::spawn(
         from_mirror,
         to_writer,
@@ -891,6 +1020,25 @@ fn run() -> Result<()> {
     if let Some(installer) = installer {
         decisions = decisions.with_desk(installer);
     }
+    // The peer mesh: its own thread owns the sockets, and the decision loop
+    // meets it at two bounded queues after the flush.
+    match &config.peers {
+        Some(settings) => {
+            let session = PeerSession::new(settings)?;
+            println!(
+                "qip-edge-node: peer mesh listening on {} for {} peer(s), plaintext on loopback \
+                 only until the mTLS transport of ADR 0112 is built",
+                session.link().local_addr(),
+                settings.peers.len()
+            );
+            decisions = decisions.with_peers(session);
+        }
+        None => println!(
+            "qip-edge-node: no peer mesh ({LISTEN_VARIABLE} and {PEERS_VARIABLE} unset): this \
+             cell coordinates with no other cell directly, and a cross-region cycle reaches it \
+             only through the centre"
+        ),
+    }
     let plans = match config.plan_path.clone() {
         Some(path) => {
             let (sender, handoff) = ControlHandoff::bounded(PLAN_HANDOFF_CAPACITY)?;
@@ -976,6 +1124,7 @@ fn missing_production_requirements(
     gateway: &NodeGateway,
     strategies: &StrategyInstaller,
     has_requoter: bool,
+    has_lease: bool,
 ) -> Vec<String> {
     let mut missing = vec![
         "QIP_VENUE_FEED_ENDPOINT and its multicast group or session credential".to_string(),
@@ -1046,6 +1195,15 @@ fn missing_production_requirements(
             "{REPRICE_VARIABLE} for the requote threshold: without it a resting order stays where \
              it was sent until its time to live however far the touch moves; set \
              `<tick>:<ticks>:<bps>`"
+        ));
+    }
+    if !has_lease {
+        // A node with no lease is the only owner of its session by
+        // assumption, and a standby started beside it with no lease would
+        // be a second owner; said here so nobody adds one without a lease.
+        missing.push(format!(
+            "{LEASE_VARIABLE} for a fenced standby: without it this node runs alone, a restart \
+             is its only recovery, and a second node for this cell must not be started"
         ));
     }
     if !has_halt_flag {

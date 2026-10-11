@@ -347,7 +347,19 @@ fn nothing_but_the_cells_own_verification_can_mint_a_verified_policy_halt_or_gra
         "qip-mesh depends on the edge cell; the peer protocol can now construct or apply \
          what only the signed downward path may"
     );
-    let peer = read("backend/crates/services/qip-mesh/src/peer.rs");
+    // The protocol moved to `qip-contracts` so the edge node can speak it
+    // (W5.4); that crate links no cell either, and the same property holds
+    // of it.
+    let contracts = read("backend/crates/libs/qip-contracts/Cargo.toml");
+    assert!(
+        contracts.contains("[dependencies]")
+            && !contracts
+                .lines()
+                .any(|line| line.trim_start().starts_with("qip-edge")),
+        "qip-contracts depends on the edge cell; the peer protocol can now construct or apply \
+         what only the signed downward path may"
+    );
+    let peer = read("backend/crates/libs/qip-contracts/src/peer.rs");
     assert!(
         peer.contains("DOWNWARD_ONLY"),
         "premise: this is the module that refuses downward kinds from a peer"

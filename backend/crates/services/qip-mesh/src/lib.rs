@@ -42,7 +42,12 @@ pub mod backing;
 pub mod bigquery;
 pub mod catalog;
 pub mod delta;
-pub mod peer;
+/// The peer half of the Reflex Mesh. The protocol lives in `qip-contracts`
+/// so the edge node can speak it: `qip-edge-node` may not link this crate,
+/// which holds the BigQuery client (DATA-058), and a protocol only one side
+/// of the wire can link is a protocol with no wire. Re-exported here so every
+/// existing `qip_mesh::peer` path still names the same types.
+pub use qip_contracts::peer;
 pub mod ports;
 pub mod provider;
 pub mod rebalance;

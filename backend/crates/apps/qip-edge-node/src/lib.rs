@@ -41,15 +41,24 @@ pub mod mirror;
 pub mod outbox;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+/// The peer Reflex Mesh on a socket: this cell's edge states and the
+/// distributed-cycle protocol, to and from the other cells.
+pub mod peer;
 /// Each venue's own message limits, as the deployment states them.
 pub mod quote_limits;
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
 pub mod reprice;
+/// The cell's deterministic Risk Gate: the limits it evaluates, and the one
+/// way this node obtains them.
+pub mod risk;
 pub mod scheduler;
 /// The cell's share of its region's grant, as the health body reports it.
 pub mod share;
+/// The warm standby and the fencing lease that keeps it from being a second
+/// owner of the venue session.
+pub mod standby;
 /// The strategies the payload's plan names, deployed under their grants.
 pub mod strategies;
 pub mod tape;
@@ -71,6 +80,7 @@ use qip_observability::Telemetry;
 use qip_observability::metrics::Metrics;
 use qip_strategy::catalogue::FeatureCatalogue;
 use qip_strategy::ir::Type;
+use risk::CellRiskLimits;
 use std::sync::Arc;
 use telemetry::MeshSeries;
 
@@ -142,12 +152,42 @@ impl NodeAssembly {
 /// body says so, and the cost — a fresh node sends nothing until the centre
 /// ships it a share — is the ADR's stated price.
 pub fn assemble(
-    mut config: CellConfig,
+    config: CellConfig,
     features: FeatureEngine,
     clock: Arc<dyn Clock>,
     allocation: RegionCapital,
     mirror: Option<CrossRegionMirror>,
 ) -> Result<NodeAssembly> {
+    assemble_with_risk(
+        config,
+        features,
+        clock,
+        allocation,
+        mirror,
+        &CellRiskLimits::shipped(),
+    )
+}
+
+/// [`assemble`], under the Risk Gate limits the deployment named.
+///
+/// The fifth instance of the pattern [`assemble`]'s documentation lists:
+/// `Cell::with_risk_gate` existed, was tested, and no composition root called
+/// it, so every order a deployed cell sent skipped the deterministic gate
+/// (R12-RISK-4093, R12-RISK-7205). The limits are a parameter, and
+/// [`assemble`] passes the shipped set rather than nothing, so there is no
+/// path through this crate that builds a cell without a gate. The gate
+/// measures its ratios against the region allocation: the most the
+/// deployment says the whole cell may commit, and the only capital figure
+/// the cell holds before the centre has granted it anything.
+pub fn assemble_with_risk(
+    mut config: CellConfig,
+    features: FeatureEngine,
+    clock: Arc<dyn Clock>,
+    allocation: RegionCapital,
+    mirror: Option<CrossRegionMirror>,
+    risk: &CellRiskLimits,
+) -> Result<NodeAssembly> {
+    let risk_gate = risk.gate(allocation.amount())?;
     let cell_id = config.cell_id.clone();
     let region = config.region.clone();
     // Both halves of §31.1 go in here, for the third time the same reason
@@ -194,6 +234,7 @@ pub fn assemble(
     let metrics: Arc<Metrics> = Arc::clone(&telemetry.metrics);
     let mut cell = Cell::new(config, features)?
         .with_mode_gate(mode_gate)
+        .with_risk_gate(risk_gate)
         .with_metrics(Arc::clone(&metrics))
         .with_unfunded_region(allocation.amount())?;
     if let Some(mirror) = mirror {

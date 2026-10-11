@@ -41,6 +41,8 @@ pub mod dispersion;
 pub mod dropcopy;
 pub mod envelope;
 pub mod feasibility;
+/// The fencing epoch a cell places under beside a standby (R12-REFLEX-8069).
+pub mod fencing;
 /// Funding rates and borrow availability per instrument (REFLEX-021).
 pub mod funding;
 pub mod journal;
@@ -84,6 +86,7 @@ pub use dispersion::{DispersionPolicy, DispersionVerdict, FillTimes, VenueFillTi
 pub use dropcopy::{CellFill, Discrepancy, DropCopyFill, DropCopyReconciler};
 pub use envelope::{VerifiedEnvelope, sign_payload};
 pub use feasibility::{Granularity, Infeasible, VenueModel};
+pub use fencing::{Fence, FenceStatus, GATE_FENCED};
 pub use funding::{BorrowAvailability, FundingRate, FundingState};
 pub use journal::{Decision, FileMirror, Journal, JournalEntry, MemoryMirror, Mirror, MirrorBatch};
 pub use mesh::{

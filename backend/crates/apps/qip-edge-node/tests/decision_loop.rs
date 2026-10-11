@@ -574,3 +574,157 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     );
     Ok(())
 }
+
+/// A peer mesh whose every peer is unreachable holds neither the decision
+/// thread nor the journal (R12-MESH-5050): the turns stay short, passes run,
+/// the journal reaches its store, and a policy the centre ships still
+/// applies — while the wire counts the peer it could not reach.
+///
+/// Mutation: make `PeerSession::turn` wait until the wire reports a frame
+/// sent — a blocking publish — and the first turn never returns, so the
+/// drive's watchdog aborts the test.
+#[test]
+fn an_unreachable_peer_mesh_holds_neither_the_decision_thread_nor_the_journal() -> Result<()> {
+    use qip_edge_node::peer::{PeerSession, PeerSettings};
+    use std::collections::BTreeMap;
+    let free = || {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|probe| probe.local_addr())
+            .expect("a loopback port")
+    };
+    let session = PeerSession::new(&PeerSettings {
+        node: CELL.to_string(),
+        listen: free(),
+        // Nothing listens here: every connect is refused.
+        peers: BTreeMap::from([("tokyo-1".to_string(), free())]),
+    })?;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let mut decisions = rig.decisions.with_peers(session);
+
+    let (longest, _, _) = drive(&mut decisions, 10, 20);
+    assert!(
+        decisions.stats().passes > 0,
+        "the premise is a loop that ran passes"
+    );
+    // The wire's thread connects asynchronously; give it the time to find
+    // the peer unreachable before reading the premise.
+    let waited = std::time::Instant::now();
+    while decisions
+        .peers()
+        .expect("the loop holds the session")
+        .link()
+        .stats()
+        .send_failures
+        == 0
+    {
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "premise: the wire never tried the unreachable peer"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let wire = decisions
+        .peers()
+        .expect("the loop holds the session")
+        .link()
+        .stats();
+    assert_eq!(wire.sent, 0, "premise: nothing reached a peer: {wire:?}");
+    assert!(
+        longest < std::time::Duration::from_millis(500),
+        "a turn took {longest:?} beside an unreachable peer"
+    );
+
+    let _watchdog = Watchdog::arm("the journal reaching its store beside an unreachable peer");
+    let waited = std::time::Instant::now();
+    let mut second: i64 = 40;
+    loop {
+        decisions.turn(t(second))?;
+        second += 1;
+        let shipped: usize = batches(&*store)?.iter().map(|b| b.entries.len()).sum();
+        if shipped > 0 {
+            break;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the journal did not ship while the peer mesh was down"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    // Control distribution does not ride the peer mesh either: a fresh
+    // policy applies while every peer is still down.
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(2, CELL, t(second));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(second),
+    );
+    let policy =
+        VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(second))?;
+    decisions.cell_mut().apply_policy(policy, t(second))?;
+    assert_eq!(decisions.cell().policy_sequence(), Some(2));
+    Ok(())
+}
+
+/// The cell's acknowledgement of a policy it applied reaches the fabric's
+/// spool after the turn that flushed it, on the journal stream the drain
+/// delivers to `reflex-journal.local` (the policy-ack half of
+/// R12-REFLEX-5034; telemetry is not yet a fabric record).
+///
+/// Mutation: drop `Decision::PolicyApplied` entries in `SpoolWriter`'s
+/// journal handling (or stop flushing in `DecisionLoop::turn`) and the
+/// acknowledgement never reaches the spool.
+#[test]
+fn a_policy_the_cell_applied_is_acknowledged_on_the_fabric_spool_after_the_turn() -> Result<()> {
+    use qip_contracts::reflex::Decision as Recorded;
+    use qip_events::event_fabric::bindings::REFLEX_JOURNAL_RECORDED;
+    use qip_events::event_fabric::policy::QosClass;
+    let store = Arc::new(MemoryKeyValueStore::new());
+    let mut rig = rig(Arc::clone(&store) as Arc<dyn KeyValueStore>, 1 << 16, 64)?;
+    let acknowledged = |spool: &SegmentLog| -> Result<Option<QosClass>> {
+        Ok(writer::records(spool)?
+            .into_iter()
+            .filter(|record| record.event.topic == REFLEX_JOURNAL_RECORDED.topic)
+            .find(|record| {
+                writer::journal_entry(&record.event).is_ok_and(|entry| {
+                    matches!(entry.decision, Recorded::PolicyApplied { sequence: 7, .. })
+                })
+            })
+            .map(|record| record.stream))
+    };
+    // Premise: nothing has acknowledged sequence 7 before it is applied.
+    drive(&mut rig.decisions, 10, 2);
+    assert_eq!(acknowledged(&rig.spool)?, None);
+
+    let named = grant()?.signature().to_string();
+    let mut payload = PolicyPayload::unproduced(7, CELL, t(20));
+    payload.capital_grants = Slot::produced(
+        GrantManifest {
+            live_grants: vec![named],
+        },
+        t(20),
+    );
+    let policy = VerifiedPolicy::verify(payload.signed(ENVELOPE_KEY)?, ENVELOPE_KEY, CELL, t(20))?;
+    rig.decisions.cell_mut().apply_policy(policy, t(20))?;
+
+    let _watchdog = Watchdog::arm("the policy acknowledgement reaching the spool");
+    let waited = std::time::Instant::now();
+    let mut second = 21;
+    let stream = loop {
+        rig.decisions.turn(t(second))?;
+        second += 1;
+        if let Some(stream) = acknowledged(&rig.spool)? {
+            break stream;
+        }
+        assert!(
+            waited.elapsed() < PATIENCE,
+            "the policy acknowledgement never reached the fabric spool"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(stream, QosClass::P2MarketJournal);
+    Ok(())
+}

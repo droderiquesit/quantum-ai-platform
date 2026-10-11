@@ -1,11 +1,22 @@
 //! The peer half of the Reflex Mesh, as a protocol with no sockets.
 //!
-//! [`crate::spine`] is the centre-to-cell wire of ADR 0011. This module is the
-//! other thing the word "mesh" names: what regional cells say to *each other*
-//! while they coordinate a multi-leg opportunity. It is deliberately pure:
-//! frames in, state and refusals out. Putting the rules here means the future
-//! transport (MESH-038, blocked on a dependency record) can only carry bytes
-//! and cannot decide anything, so it cannot weaken them.
+//! `qip_mesh::spine` is the centre-to-cell wire of ADR 0011. This module is
+//! the other thing the word "mesh" names: what regional cells say to *each
+//! other* while they coordinate a multi-leg opportunity. It is deliberately
+//! pure: frames in, state and refusals out. Putting the rules here means the
+//! transport (`qip_edge_node::peer`) can only carry bytes and cannot decide
+//! anything, so it cannot weaken them.
+//!
+//! It lives in `qip-contracts`, beside the vocabulary both ends share, and
+//! not in `qip-mesh` where it was written: the edge node may not link
+//! `qip-mesh`, because that crate holds the BigQuery client and no reflex
+//! crate may be able to wait on a warehouse (DATA-058). `qip_mesh::peer`
+//! re-exports this module, so the central side's paths are unchanged.
+//!
+//! Besides the five Lane 1 functions it carries the cells' **executable edge
+//! states** (MESH-5060, [`PeerMessage::EdgeState`]): what each node can trade
+//! at its venues right now, compressed to the touch — price and size each
+//! side, per venue and instrument, bounded in count — never the raw book.
 //!
 //! What each rule prevents:
 //!
@@ -69,6 +80,17 @@ const DOWNWARD_ONLY: [&str; 7] = [
     "belief_pack",
 ];
 
+/// Most edges one [`PeerMessage::EdgeState`] may carry, and most a receiver
+/// holds per peer. A summary is the touch of each venue and instrument a node
+/// trades, not its book: a sender that needs more than this is shipping depth,
+/// which is the thing §17.2 says a peer must not receive.
+pub const MAX_EDGES_PER_STATE: usize = 64;
+
+/// Most peers whose edge states one endpoint holds at once. A peer beyond it
+/// is refused, never evicting a known one: a node that could be made to forget
+/// its neighbours by a stream of new names would coordinate against nothing.
+pub const MAX_EDGE_PEERS: usize = 64;
+
 /// Longest reason a [`PeerMessage::Declined`] carries, in characters.
 ///
 /// The reason is diagnostic text for the coordinator's journal, not an input
@@ -106,7 +128,8 @@ impl Lane {
 /// functions, and [`PeerMessage::function`] maps every kind onto one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MeshFunction {
-    /// Latency-sensitive state a peer tells the others: a leg's fill.
+    /// Latency-sensitive state a peer tells the others: a leg's fill, and
+    /// the executable edge state it can trade at right now (MESH-5060).
     PeerReflexMessage,
     /// The token that carries a distributed opportunity's epoch.
     OpportunityToken,
@@ -307,6 +330,49 @@ impl EpochDraft {
     }
 }
 
+/// One venue and instrument as a peer may trade it now: the touch, each side
+/// with its size. This is the whole of what an edge state carries — no depth,
+/// no order ids, no strategy — so a summary is bounded by the instruments a
+/// node trades and not by how deep its books are.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutableEdge {
+    pub venue: String,
+    pub instrument: String,
+    pub bid: Decimal,
+    pub bid_size: Decimal,
+    pub ask: Decimal,
+    pub ask_size: Decimal,
+    /// When the sending node's book last showed this touch.
+    pub as_of_ns: i64,
+}
+
+impl ExecutableEdge {
+    /// Refuses a crossed or locked touch and a non-positive size: a summary
+    /// a peer would price a cycle off must be one somebody could trade.
+    pub fn validate(&self) -> Result<()> {
+        if self.venue.trim().is_empty() || self.instrument.trim().is_empty() {
+            return Err(Error::invalid(
+                "an executable edge names its venue and instrument",
+            ));
+        }
+        if !self.bid.is_positive() || self.ask <= self.bid {
+            return Err(Error::invalid(format!(
+                "edge {}/{} is crossed or unpriced ({} / {}); a touch nobody can trade is not \
+                 an edge",
+                self.venue, self.instrument, self.bid, self.ask
+            )));
+        }
+        if !self.bid_size.is_positive() || !self.ask_size.is_positive() {
+            return Err(Error::invalid(format!(
+                "edge {}/{} carries no executable size",
+                self.venue, self.instrument
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// What peers say. A closed set: anything else, including every downward-only
 /// pack kind, fails to decode.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,6 +411,14 @@ pub enum PeerMessage {
         leg: String,
         reason: String,
     },
+    /// What `node` can trade now (MESH-5060). `sequence` rises with every
+    /// state the node sends, so a reordered or replayed summary is refused
+    /// rather than rolling a peer's view back.
+    EdgeState {
+        node: String,
+        sequence: u64,
+        edges: Vec<ExecutableEdge>,
+    },
 }
 
 impl PeerMessage {
@@ -356,7 +430,7 @@ impl PeerMessage {
             Self::Token { .. } => MeshFunction::OpportunityToken,
             Self::Reserved { .. } | Self::Declined { .. } => MeshFunction::DistributedReservation,
             Self::Fire { .. } => MeshFunction::MultiLegCoordination,
-            Self::Fill { .. } => MeshFunction::PeerReflexMessage,
+            Self::Fill { .. } | Self::EdgeState { .. } => MeshFunction::PeerReflexMessage,
             Self::Unwind { .. } => MeshFunction::HedgeUnwindCommand,
         }
     }
@@ -414,6 +488,20 @@ pub fn decode(frame: &[u8], max_frame: usize) -> Result<PeerMessage> {
     }
     serde_json::from_value(value)
         .map_err(|e| Error::denied(format!("peer frame is not a known message: {e}")))
+}
+
+fn check_edges(edges: &[ExecutableEdge]) -> Result<()> {
+    if edges.len() > MAX_EDGES_PER_STATE {
+        return Err(Error::denied(format!(
+            "an edge state of {} edges exceeds the {MAX_EDGES_PER_STATE}-edge bound; a peer \
+             receives the touch of what a node trades, never its book",
+            edges.len()
+        )));
+    }
+    for edge in edges {
+        edge.validate()?;
+    }
+    Ok(())
 }
 
 /// Limits an endpoint enforces on everything it receives.
@@ -511,6 +599,9 @@ pub struct PeerEndpoint {
     limits: PeerLimits,
     opportunities: BTreeMap<String, OpportunityState>,
     refusals: Vec<Refusal>,
+    /// The latest executable edge state each peer sent, with its sequence.
+    /// Bounded by [`MAX_EDGE_PEERS`] peers of [`MAX_EDGES_PER_STATE`] edges.
+    edge_states: BTreeMap<String, (u64, Vec<ExecutableEdge>)>,
     /// Measured offset of this node's clock from the reference, in nanoseconds.
     /// `None` until something measures it, and `None` is refused, not zero.
     clock_offset_nanos: Option<i64>,
@@ -523,6 +614,7 @@ impl PeerEndpoint {
             limits,
             opportunities: BTreeMap::new(),
             refusals: Vec::new(),
+            edge_states: BTreeMap::new(),
             clock_offset_nanos: None,
         }
     }
@@ -614,6 +706,32 @@ impl PeerEndpoint {
         Ok(peers.into_iter().map(str::to_string).collect())
     }
 
+    /// The latest executable edges `peer` sent, if any.
+    pub fn peer_edges(&self, peer: &str) -> Option<&[ExecutableEdge]> {
+        self.edge_states
+            .get(peer)
+            .map(|(_, edges)| edges.as_slice())
+    }
+
+    /// The peers whose edge states this endpoint holds, in name order.
+    pub fn edge_peers(&self) -> Vec<String> {
+        self.edge_states.keys().cloned().collect()
+    }
+
+    /// This node's own edge state as a frame for its peers, bounded and
+    /// validated here so a sender never relies on a receiver to notice.
+    pub fn edge_state_frame(&self, sequence: u64, edges: Vec<ExecutableEdge>) -> Result<Vec<u8>> {
+        check_edges(&edges)?;
+        encode(
+            &PeerMessage::EdgeState {
+                node: self.node.clone(),
+                sequence,
+                edges,
+            },
+            self.limits.max_frame,
+        )
+    }
+
     /// Every refusal so far, oldest first.
     pub fn refusals(&self) -> &[Refusal] {
         &self.refusals
@@ -679,6 +797,11 @@ impl PeerEndpoint {
     fn admit(&mut self, msg: PeerMessage, now: Timestamp) -> std::result::Result<(), Rejected> {
         let (opp, seq) = match &msg {
             PeerMessage::Token { epoch } => return self.install(epoch.clone(), now),
+            PeerMessage::EdgeState {
+                node,
+                sequence,
+                edges,
+            } => return self.absorb_edges(node, *sequence, edges),
             PeerMessage::Reserved {
                 opportunity,
                 sequence,
@@ -814,8 +937,49 @@ impl PeerEndpoint {
                 }
                 st.unwound.insert(leg, realized_loss);
             }
-            PeerMessage::Token { .. } => {}
+            PeerMessage::Token { .. } | PeerMessage::EdgeState { .. } => {}
         }
+        Ok(())
+    }
+
+    fn absorb_edges(
+        &mut self,
+        node: &str,
+        sequence: u64,
+        edges: &[ExecutableEdge],
+    ) -> std::result::Result<(), Rejected> {
+        if node == self.node {
+            return Err((
+                "own_state",
+                "an edge state naming this node arrived from a peer; a node's own view of its \
+                 venues is never taken from the wire"
+                    .to_string(),
+            ));
+        }
+        check_edges(edges).map_err(|e| ("edge_state", e.to_string()))?;
+        match self.edge_states.get(node) {
+            Some((held, _)) if *held >= sequence => {
+                return Err((
+                    "stale_edge_state",
+                    format!(
+                        "edge state {sequence} from `{node}` is not newer than {held}; not applied"
+                    ),
+                ));
+            }
+            None if self.edge_states.len() >= MAX_EDGE_PEERS => {
+                return Err((
+                    "edge_peers",
+                    format!(
+                        "edge state from `{node}` would be a {}th peer, over the bound of \
+                         {MAX_EDGE_PEERS}",
+                        self.edge_states.len() + 1
+                    ),
+                ));
+            }
+            _ => {}
+        }
+        self.edge_states
+            .insert(node.to_string(), (sequence, edges.to_vec()));
         Ok(())
     }
 

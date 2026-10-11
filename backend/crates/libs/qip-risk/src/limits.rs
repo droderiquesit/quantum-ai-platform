@@ -1120,6 +1120,19 @@ impl LimitSet {
     /// a bound, never remove a control" a property of every root rather
     /// than of a reviewer's attention.
     pub fn from_document(text: &str, path: &str) -> Result<Self> {
+        Self::from_document_against(text, path, &Self::conservative_default())
+    }
+
+    /// [`Self::from_document`] validated against `shipped` rather than the
+    /// desk's [`Self::conservative_default`].
+    ///
+    /// A process whose gate ships a different set — the edge cell's, which
+    /// carries only the limits the cell can produce a figure for — still
+    /// needs the same two properties of the file: an unknown key refused, and
+    /// no shipped control removed by omission. Validating such a file against
+    /// the desk's set would demand value-at-risk and drawdown limits the cell
+    /// then refuses to install, so no file could ever load.
+    pub fn from_document_against(text: &str, path: &str, shipped: &LimitSet) -> Result<Self> {
         let document: LimitSetDocument = serde_json::from_str(text).map_err(|error| {
             Error::invalid(format!(
                 "configuration: {path} does not hold a valid limit set: {error}. The document is \
@@ -1130,10 +1143,9 @@ impl LimitSet {
             ))
         })?;
         let set: Self = document.into();
-        set.validate(&Self::conservative_default())
-            .map_err(|error| {
-                Error::invalid(format!("configuration: {path} {}", error.message()))
-            })?;
+        set.validate(shipped).map_err(|error| {
+            Error::invalid(format!("configuration: {path} {}", error.message()))
+        })?;
         Ok(set)
     }
 
