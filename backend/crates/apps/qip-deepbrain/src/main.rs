@@ -283,6 +283,21 @@ fn run() -> Result<()> {
         .open_trial_book(config.storage.key_value("trial-book")?, "trial-book")
         .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
+    // The breadth plan (R12-EXEC-5080, R12-EVENT-5082…, R12-COMMERCE-5090…):
+    // the Market Factory, event markets and commerce research, installed
+    // before the first cycle so DISCOVER and SIMULATE run them from the
+    // start. Unset is none of it; a plan that cannot be honoured stops the
+    // process here with exit 78 — see `qip_deepbrain::breadth`.
+    // On the platform's clock, not the wall's: under a tape the synthetic
+    // sources must start at tape time or their first reading would lie in a
+    // future the tape never reaches.
+    let breadth_at = platform.context().now();
+    let breadth = qip_deepbrain::breadth::install(
+        &mut platform,
+        &|name| std::env::var(name).ok(),
+        breadth_at,
+    )?;
+
     // The OpenObserve drain (ADR 0028): absent configuration means this
     // process's telemetry stays where it already is, on /metrics on the health
     // port bound above. Set means a thread starts that POSTs this node's
@@ -325,6 +340,18 @@ fn run() -> Result<()> {
     // learns which precondition is missing and which variable supplies it.
     println!("  language model:   {}", language_model.describe());
     println!("  tool registry:    {}", language_model.describe_tools());
+    match &breadth {
+        Some(lines) => {
+            for line in lines {
+                println!("  breadth:          {line}");
+            }
+        }
+        None => println!(
+            "  breadth:          none ({} is not set); no market factory, event-market or \
+             commerce source runs",
+            qip_deepbrain::breadth::PLAN_VARIABLE
+        ),
+    }
     println!(
         "  universe:         {}; sector and country buckets are fed from it. Note ADR 0027: under the \
          conservative default the first desk order into an empty book is refused by \
