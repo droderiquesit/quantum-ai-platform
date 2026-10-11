@@ -51,6 +51,7 @@
 
 use crate::broker::Broker;
 use crate::feasibility::{self, VenueFeasibility};
+use crate::market_creation::{LadderAdmission, PricingRule};
 use crate::order::{Fill, Order, OrderState, OrderType};
 use crate::session::{RecordedInstruction, RecordedSession, SealOutcome, SessionRecorder};
 use qip_core::Decimal;
@@ -982,6 +983,80 @@ impl OrderManager {
             }
         }
         (cancelled, failed)
+    }
+
+    /// Measure resting `rule`'s ladder for `product` at `venue` against the
+    /// desk's limits, and mint the only verdict
+    /// [`crate::market_creation::MarketFactory::seed`] will rest it on.
+    ///
+    /// A seeded ladder is orders at a venue: every bid can buy and every ask
+    /// can sell. Each side is checked as one order of its whole size, the bid
+    /// side as a buy at the best bid and the ask side as a sale at the
+    /// deepest ask — the highest price either side rests at, so neither is
+    /// measured below the notional it can trade — on the book plus every
+    /// order already working, exactly as [`Self::submit`] checks an order.
+    /// The kill switch and the autonomy level are asked first, as `submit`
+    /// asks them: a halted desk or one at observation rests nothing.
+    ///
+    /// Refused whole, never reduced: a ladder sized down by a limit is a
+    /// pricing rule nobody published.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_ladder(
+        &mut self,
+        product: &str,
+        venue: &str,
+        rule: &PricingRule,
+        scope: &str,
+        autonomy: &AutonomyController,
+        risk_state: &RiskState,
+        at: Timestamp,
+    ) -> Result<LadderAdmission> {
+        if autonomy.kill_switch().is_halted(scope) {
+            return Err(Error::denied(format!(
+                "the kill switch is tripped for {scope}; no ladder is rested for {product}"
+            )));
+        }
+        if !autonomy.level().executes() {
+            return Err(Error::denied(format!(
+                "the desk is at {} and rests nothing; no ladder is rested for {product}",
+                autonomy.level().as_str()
+            )));
+        }
+        let size = rule.ask_quantity()?;
+        let sides = [
+            (size, rule.top_bid(), "bid"),
+            (-size, rule.deepest_ask()?, "ask"),
+        ];
+        let working = self.working_exposure();
+        let axes = BTreeMap::from([(
+            qip_risk::limits::COUNTERPARTY_AXIS.to_string(),
+            venue.to_string(),
+        )]);
+        for (quantity, price, side) in sides {
+            let proposed = ProposedOrder {
+                object_id: qip_core::ObjectId::from_string(product),
+                quantity,
+                reference_price: price,
+                axes: axes.clone(),
+                scope: scope.to_string(),
+            };
+            let check = self
+                .checker
+                .check_with_working(&proposed, risk_state, &working, at)?;
+            if !check.decision.is_approved() {
+                return Err(Error::denied(format!(
+                    "the {side} side of the ladder for {product} at {venue} — {} at up to {price} \
+                     — is {}; nothing was rested",
+                    quantity.abs(),
+                    check.decision.describe()
+                )));
+            }
+        }
+        Ok(LadderAdmission {
+            product: product.to_string(),
+            venue: venue.to_string(),
+            rule: rule.clone(),
+        })
     }
 
     /// The unfilled remainder of every open order, as the pre-trade check

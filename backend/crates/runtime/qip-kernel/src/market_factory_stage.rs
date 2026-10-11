@@ -37,7 +37,7 @@ use qip_execution_engine::creation::{
     CreationAction, CreationAuthority, CreationPermissions, CreationRequest,
 };
 use qip_execution_engine::market_creation::{
-    FactoryRecord, MarketFactory, PricingRule, ValidityFinding,
+    FactoryRecord, LadderAdmission, MarketFactory, PricingRule, ValidityFinding,
 };
 use serde::{Deserialize, Serialize};
 
@@ -147,9 +147,15 @@ impl FactoryStage {
     /// create, list and seed on `venue`. Refused whole on the first step any
     /// market fails, naming it: a plan that half-installed would leave the
     /// venue holding markets the plan's reader believes were refused.
+    ///
+    /// `ladders` measures each market's ladder against the desk's limits and
+    /// mints the verdict `MarketFactory::seed` rests it on; the composition
+    /// root passes `OrderManager::admit_ladder` over the book as it stands.
+    /// A ladder it refuses refuses the plan, like any other failed step.
     pub fn install(
         plan: &FactoryPlan,
         venue: &mut dyn ListingVenue,
+        ladders: &mut dyn FnMut(&str, &str, &PricingRule) -> Result<LadderAdmission>,
         now: Timestamp,
     ) -> Result<Self> {
         let mut permissions = CreationPermissions::new();
@@ -190,14 +196,21 @@ impl FactoryStage {
                 ))
             };
             factory
-                .create(&step(CreationAction::Create).map_err(named)?, rule, now)
+                .create(
+                    &step(CreationAction::Create).map_err(named)?,
+                    rule.clone(),
+                    now,
+                )
                 .map_err(named)?;
             factory
                 .list(&step(CreationAction::List).map_err(named)?, venue, now)
                 .map_err(named)?;
+            let ladder =
+                ladders(market.product.as_str(), market.venue.as_str(), &rule).map_err(named)?;
             factory
                 .seed(
                     &step(CreationAction::Seed).map_err(named)?,
+                    &ladder,
                     market.inventory,
                     venue,
                     now,

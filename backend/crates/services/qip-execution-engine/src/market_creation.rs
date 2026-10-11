@@ -71,6 +71,31 @@ pub const MAX_MARKETS: usize = 64;
 /// The most price levels a rule may rest on one side.
 pub const MAX_LEVELS: u32 = 20;
 
+/// The pre-trade risk verdict on resting one pricing rule's ladder for one
+/// product at one venue.
+///
+/// No public constructor and no `Deserialize`: the only mint is
+/// [`crate::oms::OrderManager::admit_ladder`], so [`MarketFactory::seed`]
+/// cannot rest a ladder the desk's limits have not measured. The same shape
+/// as [`CreationAdmission`], and for the same reason — a gate that any
+/// caller could satisfy by building the struct is a comment.
+#[derive(Debug)]
+pub struct LadderAdmission {
+    pub(crate) product: String,
+    pub(crate) venue: String,
+    pub(crate) rule: PricingRule,
+}
+
+impl LadderAdmission {
+    pub fn product(&self) -> &str {
+        &self.product
+    }
+
+    pub fn venue(&self) -> &str {
+        &self.venue
+    }
+}
+
 /// How a created market is priced, published at creation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PricingRule {
@@ -169,6 +194,20 @@ impl PricingRule {
         self.level_size
             .checked_mul(Decimal::from_int(i64::from(self.levels)))
             .ok_or_else(|| Error::numeric("the rule's ask quantity overflowed"))
+    }
+
+    /// The best bid the rule rests: the reference less the half-spread.
+    pub fn top_bid(&self) -> Decimal {
+        self.reference_price - self.half_spread
+    }
+
+    /// The deepest ask the rule rests, the highest price on the ask side.
+    pub fn deepest_ask(&self) -> Result<Decimal> {
+        self.level_step
+            .checked_mul(Decimal::from_int(i64::from(self.levels - 1)))
+            .and_then(|ladder| ladder.checked_add(self.half_spread))
+            .and_then(|offset| self.reference_price.checked_add(offset))
+            .ok_or_else(|| Error::numeric("the rule's deepest ask overflowed"))
     }
 
     /// The book the rule rests, both sides.
@@ -472,9 +511,18 @@ impl MarketFactory {
     }
 
     /// Commit `inventory` and rest the rule's ladder on both sides.
+    ///
+    /// `ladder` is the pre-trade verdict on the ladder this rests, and there
+    /// is no way to hold one but [`crate::oms::OrderManager::admit_ladder`],
+    /// which runs the desk's own limit check over both sides. Seeding rests
+    /// orders at a venue, and until round 3 it was the one route to a venue
+    /// that passed no Risk Gate (R12-RISK-4093): the creation workflow
+    /// admitted the *market*, and nothing measured the *exposure* its ladder
+    /// commits. A verdict for another product, venue or rule is refused.
     pub fn seed(
         &mut self,
         admission: &CreationAdmission,
+        ladder: &LadderAdmission,
         inventory: Decimal,
         venue: &mut dyn ListingVenue,
         now: Timestamp,
@@ -483,6 +531,13 @@ impl MarketFactory {
         self.bound_to(venue)?;
         let market = self.stage_of(&request, MarketStage::Listed)?;
         let rule = market.rule.clone();
+        if ladder.product != request.product || ladder.venue != self.venue || ladder.rule != rule {
+            return Err(Error::denied(format!(
+                "the risk verdict presented to seed {} at {} was given for {} at {}, or for \
+                 another pricing rule; a ladder is rested only on the verdict for that ladder",
+                request.product, self.venue, ladder.product, ladder.venue
+            )));
+        }
         let needed = rule.ask_quantity()?;
         if inventory < needed {
             return Err(Error::denied(format!(
@@ -748,6 +803,113 @@ mod tests {
         PricingRule::new(d("100"), d("0.5"), d("0.25"), d("10"), 3, d("0.05"))
     }
 
+    /// The risk verdict on `rule`'s ladder under `limits`, minted the only
+    /// way one can be: by the order manager's check, against a book of a
+    /// million.
+    fn ladder_under(
+        limits: qip_risk::limits::LimitSet,
+        rule: &PricingRule,
+    ) -> Result<LadderAdmission> {
+        let mut manager =
+            crate::oms::OrderManager::new(qip_risk_engine::pretrade::PreTradeChecker::new(limits));
+        let state = qip_risk::limits::RiskState {
+            equity: d("1000000"),
+            cash: d("1000000"),
+            ..qip_risk::limits::RiskState::default()
+        };
+        manager.admit_ladder(
+            PRODUCT,
+            VENUE,
+            rule,
+            "market-factory",
+            &qip_risk_engine::autonomy::AutonomyController::new(),
+            &state,
+            at(),
+        )
+    }
+
+    /// `rule()`'s ladder under a 2x leverage limit it is far inside.
+    fn ladder() -> Result<LadderAdmission> {
+        use qip_risk::limits::{Limit, LimitKind, LimitSet};
+        ladder_under(
+            LimitSet::new("factory-test").with(Limit::new(
+                "leverage",
+                LimitKind::MaxLeverage { limit: 2.0 },
+            )),
+            &rule()?,
+        )
+    }
+
+    fn notional_cap(limit: &str) -> qip_risk::limits::LimitSet {
+        use qip_risk::limits::{Limit, LimitKind, LimitSet};
+        LimitSet::new("factory-test").with(Limit::new(
+            "order-notional",
+            LimitKind::MaxOrderNotional { limit: d(limit) },
+        ))
+    }
+
+    /// R12-RISK-4093: a seeded ladder is orders at a venue, and it is
+    /// measured against the desk's limits like one. `rule()` rests 30 a side
+    /// with a best bid of 99.5 and a deepest ask of 101: some 3,000 of
+    /// notional each way. A per-order cap of 2,000 refuses it, naming the
+    /// side; a cap of 5,000 admits it, so the refusal is the cap and not the
+    /// mint refusing everything.
+    /// Mutation: make `admit_ladder` skip its check loop and the first
+    /// `expect_err` fails.
+    #[test]
+    fn a_ladder_past_a_desk_limit_gets_no_verdict_to_seed_on() -> Result<()> {
+        assert!(ladder_under(notional_cap("5000"), &rule()?).is_ok());
+        let refused = ladder_under(notional_cap("2000"), &rule()?)
+            .expect_err("a ladder past the per-order cap must not be admitted");
+        assert!(
+            refused.message().contains("the bid side of the ladder"),
+            "the refusal names the side that breached: {}",
+            refused.message()
+        );
+        Ok(())
+    }
+
+    /// A verdict is for one ladder: one measured for a different rule does
+    /// not seed this market, and nothing rests.
+    /// Mutation: drop the `ladder.rule != rule` comparison from `seed` and
+    /// the seed succeeds.
+    #[test]
+    fn a_verdict_for_another_rule_does_not_seed_the_market() -> Result<()> {
+        let permissions = permitted()?;
+        let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
+        let mut factory = MarketFactory::for_venue(&broker)?;
+        factory.create(&admit(&permissions, CreationAction::Create)?, rule()?, at())?;
+        factory.list(
+            &admit(&permissions, CreationAction::List)?,
+            &mut broker,
+            at(),
+        )?;
+        let narrower = PricingRule::new(d("100"), d("0.5"), d("0.25"), d("1"), 1, d("0.05"))?;
+        let other = ladder_under(notional_cap("5000"), &narrower)?;
+        assert!(
+            factory
+                .seed(
+                    &admit(&permissions, CreationAction::Seed)?,
+                    &other,
+                    d("30"),
+                    &mut broker,
+                    at(),
+                )
+                .is_err(),
+            "a ladder was seeded on a verdict given for another rule"
+        );
+        assert!(broker.listed_book(PRODUCT).is_some_and(OrderBook::is_empty));
+        // Contrast: the verdict for this rule seeds it.
+        factory.seed(
+            &admit(&permissions, CreationAction::Seed)?,
+            &ladder()?,
+            d("30"),
+            &mut broker,
+            at(),
+        )?;
+        Ok(())
+    }
+
     fn permitted() -> Result<CreationPermissions> {
         let mut permissions = CreationPermissions::new();
         for action in CreationAction::ALL {
@@ -789,6 +951,7 @@ mod tests {
         assert!(broker.listed_book(PRODUCT).is_some_and(OrderBook::is_empty));
         factory.seed(
             &admit(&permissions, CreationAction::Seed)?,
+            &ladder()?,
             d("30"),
             &mut broker,
             at(),
@@ -870,6 +1033,7 @@ mod tests {
         )?;
         factory.seed(
             &admit(&permissions, CreationAction::Seed)?,
+            &ladder()?,
             d("30"),
             &mut broker,
             at(),
@@ -940,6 +1104,7 @@ mod tests {
             factory
                 .seed(
                     &admit(&permissions, CreationAction::Seed)?,
+                    &ladder()?,
                     d("29"),
                     &mut broker,
                     at()
