@@ -56,6 +56,7 @@ const LEDGER: &str = "ledger";
 const PRODUCER: &str = "reflex:cell-a";
 const VENUE: &str = "sim-xnys";
 const UNIT: &str = "USD";
+const OBJECT: &str = "OBJ-ACME";
 const PARTITIONS: u32 = 2;
 const EVENTUALLY: StdDuration = StdDuration::from_secs(60);
 
@@ -248,17 +249,31 @@ impl Journal {
 
     /// A fill, as the P1 `OutcomeRecorded` record the writer emits.
     fn fill(&mut self, order: &str, quantity: u64, price: &str, simulated: bool) -> Record {
+        self.fill_on(order, quantity, price, simulated, BookSide::Bid, None)
+    }
+
+    /// [`Self::fill`] on a chosen side, with the fee the venue reported, if
+    /// it reported one.
+    fn fill_on(
+        &mut self,
+        order: &str,
+        quantity: u64,
+        price: &str,
+        simulated: bool,
+        side: BookSide,
+        fee: Option<&str>,
+    ) -> Record {
         let entry = self.seal(Decision::Filled {
             order_id: order.to_string(),
             venue: VENUE.to_string(),
-            object: "OBJ-ACME".to_string(),
+            object: OBJECT.to_string(),
             quantity: quantity.to_string(),
             price: price.to_string(),
             simulated,
             shares: vec![("alpha".to_string(), quantity.to_string())],
-            side: Some(BookSide::Bid),
+            side: Some(side),
             quote_unit: Some(UNIT.to_string()),
-            fee: None,
+            fee: fee.map(str::to_string),
         });
         let outcome = OutcomeRecord {
             cell: self.cell.clone(),
@@ -517,6 +532,110 @@ fn a_live_fill_on_the_stream_parks_its_cell_and_another_cell_keeps_booking() {
         })
         .sum();
     assert!(refused >= 1, "the refusal is counted");
+    ledger.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One balance read back over the started ledger's read API.
+fn balance_over_http(address: &str, account: &str, unit: &str) -> Decimal {
+    let (status, body) = http_get(
+        address,
+        &format!("/api/v1/ledger/balance?account={account}&unit={unit}"),
+    );
+    assert_eq!(status, 200, "{body}");
+    Decimal::parse(&body).unwrap_or_else(|| panic!("a balance is decimal text: {body:?}"))
+}
+
+fn dec(text: &str) -> Decimal {
+    Decimal::parse(text).unwrap()
+}
+
+/// LEDGER-5003, LEDGER-5004, LEDGER-5007 and LEDGER-5015 through the
+/// composed path: two paper fills on the stream — a purchase whose venue
+/// reported a fee, and one whose venue reported none — are booked by the
+/// started ledger, and what its read API answers is the ledger's own state:
+///
+/// - **multi-asset (5003):** the trading book holds the instrument and the
+///   cash as two balances in two units, each readable by unit, and the
+///   trial balance closes to zero in *each* unit separately;
+/// - **authoritative for cash and positions (5004):** the position and the
+///   cash a desk would ask for are read from the ledger, after the fills;
+/// - **venue-reported fees (5007):** the fees account holds exactly the
+///   reported fee, and the fill with no report books none — not zero
+///   estimated, nothing;
+/// - **trading subledger (5015):** the trade's legs land on
+///   `trading:<cell>/<strategy>` against `venue:<venue>`, and roll up into a
+///   global trial balance that still closes.
+///
+/// Mutation: in `PaperFill::try_from`, book an unreported fee as a
+/// reported 0.25 — the trading cash reads -1409.5 and the cash assertion
+/// fails. Mutation: in `qip_portfolio::ledger::post`, drop the fee legs —
+/// `LedgerEvent::new` refuses a reported fee with no fee postings, nothing
+/// is booked, and the first wait times out. Mutation: key the
+/// store's balances by account only (`balance_key` ignores the unit) — the
+/// instrument and cash legs net into one number and the per-unit position
+/// assertion fails. Mutation: post the instrument leg of a purchase to the
+/// venue on both sides (route it out of the trading subledger) — the
+/// position reads zero and the subledger assertion fails.
+#[test]
+fn fills_on_the_stream_book_per_unit_positions_cash_and_reported_fees_that_close_in_every_unit() {
+    let mut fabric = Fabric::start();
+    let mut cell = Journal::new("cell-a");
+    let charged = cell.fill_on("o-fee", 10, "100.5", true, BookSide::Ask, Some("0.25"));
+    let free = cell.fill_on("o-nofee", 4, "101", true, BookSide::Ask, None);
+    fabric.produce(0, vec![charged, free]);
+
+    let dir = temp_dir("units");
+    let ledger = start_ledger(&dir, &fabric);
+    wait_until("both fills are booked", || {
+        ledger.store().events().unwrap().len() == 2
+    });
+    let address = ledger.address().to_string();
+    let trading = "trading:cell-a/alpha";
+    let venue = format!("venue:{VENUE}");
+    let fees = format!("fees:{VENUE}");
+
+    // Bought 10 + 4 of the instrument: the position, in the instrument's
+    // own unit, held by the trading book against the venue.
+    assert_eq!(balance_over_http(&address, trading, OBJECT), dec("14"));
+    assert_eq!(balance_over_http(&address, &venue, OBJECT), dec("-14"));
+    // Paid 10 x 100.5 + 4 x 101 = 1409 to the venue, and the one reported
+    // fee of 0.25 to the fees subledger: the cash, in the quote unit.
+    assert_eq!(balance_over_http(&address, trading, UNIT), dec("-1409.25"));
+    assert_eq!(balance_over_http(&address, &venue, UNIT), dec("1409"));
+    assert_eq!(
+        balance_over_http(&address, &fees, UNIT),
+        dec("0.25"),
+        "exactly the reported fee, and nothing for the fill that reported none"
+    );
+    let events = ledger.store().events().unwrap();
+    let unreported = events
+        .iter()
+        .find(|event| event.source().order_id == "o-nofee")
+        .expect("premise: the unreported fill was booked");
+    assert!(
+        unreported
+            .postings()
+            .iter()
+            .all(|posting| !matches!(posting.account, Account::Fees { .. })),
+        "a fill with no reported fee posts nothing to fees"
+    );
+
+    let (status, body) = http_get(&address, "/api/v1/ledger/trial-balance");
+    assert_eq!(status, 200, "{body}");
+    let totals: BTreeMap<String, String> = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        totals.keys().cloned().collect::<Vec<_>>(),
+        vec![OBJECT.to_string(), UNIT.to_string()],
+        "premise: two units moved"
+    );
+    for (unit, total) in &totals {
+        assert_eq!(
+            dec(total),
+            Decimal::ZERO,
+            "the trial balance closes in {unit}"
+        );
+    }
     ledger.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }

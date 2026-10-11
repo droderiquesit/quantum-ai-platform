@@ -85,7 +85,7 @@ const MAXIMUM_CATALOGUE_BYTES: u64 = 1024 * 1024;
 /// own 64 MiB produce limit, because each connection may buffer this much
 /// and sixty-four of them may be live (FABRIC-063). Raise it, per route, if
 /// a producer ever needs to send a larger batch.
-const MAXIMUM_REQUEST_BYTES: usize = 8 * 1024 * 1024 + 4096;
+pub const MAXIMUM_REQUEST_BYTES: usize = 8 * 1024 * 1024 + 4096;
 
 /// The key the archive's start-up probe is written under.
 const ARCHIVE_PROBE_KEY: &str = "fabricd/startup-probe";
