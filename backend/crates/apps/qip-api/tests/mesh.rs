@@ -2925,3 +2925,58 @@ fn a_backbone_signing_under_the_class_keys_is_verified_by_a_bundle_cell_and_refu
     );
     Ok(())
 }
+
+/// The failure this prevents: `signing::configure` refused the shared key
+/// after its removal date only at start-up, so an API started on the last
+/// permitted day kept signing payloads and halts under it for as long as it
+/// stayed up. Mutation: make `MeshBackbone::shared_key_at` return the key
+/// without consulting `refuse_shared_key_after_removal` and both dispatches
+/// after the date are signed and sent; this fails.
+#[test]
+fn a_running_backbone_stops_signing_with_the_shared_key_at_its_removal_date() -> Result<()> {
+    let before = Timestamp::from_civil(2027, 1, 31);
+    let after = Timestamp::from_civil(2027, 2, 1);
+    let pending = |at: Timestamp| qip_api::mesh::PendingPolicy {
+        payloads: vec![(CELL.to_string(), PolicyPayload::unproduced(1, CELL, at))],
+        ..qip_api::mesh::PendingPolicy::default()
+    };
+
+    // A backbone nobody told its deployment is held to the date.
+    let rig = rig(64)?;
+    let mut mesh = rig
+        .mesh
+        .lock()
+        .map_err(|_| Error::unavailable("the mesh lock is poisoned"))?;
+    // Premise: the day before, the same backbone signs and sends both.
+    let sent = mesh.dispatch_policy(pending(before), before);
+    assert_eq!(sent.sent, 1, "{sent:?}");
+    assert_eq!(mesh.broadcast_halt("drill", before).sent, 1);
+
+    let refused = mesh.dispatch_policy(pending(after), after);
+    assert_eq!(refused.sent, 0, "a payload went out under the retired key");
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|error| error.contains(qip_transport::trust::SHARED_KEY_REMOVED_AFTER)),
+        "the refusal does not name the date: {refused:?}"
+    );
+    let halt = mesh.broadcast_halt("drill", after);
+    assert_eq!(halt.sent, 0, "a halt went out under the retired key");
+    assert!(
+        halt.errors
+            .iter()
+            .any(|error| error.contains("QIP_ARTEFACT_SIGNER=kms")),
+        "the refusal does not say what to set instead: {halt:?}"
+    );
+
+    // A deployed backbone, as `main` binds it outside `local`: the same.
+    mesh.bind_shared_key_to(qip_core::deployment::Deployment::Dev);
+    assert_eq!(mesh.broadcast_halt("drill", after).sent, 0);
+
+    // `local` keeps the key, mirroring the start-up rule exactly.
+    mesh.bind_shared_key_to(qip_core::deployment::Deployment::Local);
+    assert_eq!(mesh.dispatch_policy(pending(after), after).sent, 1);
+    assert_eq!(mesh.broadcast_halt("drill", after).sent, 1);
+    Ok(())
+}

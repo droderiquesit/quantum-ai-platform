@@ -25,7 +25,7 @@
 //! live-capable one — which no deployment ever is, so the old rule refused
 //! nothing anywhere it ran. The deployment is named by `QIP_DEPLOYMENT` and
 //! an absent name is refused rather than read as `local`
-//! ([`qip_core::deployment::Deployment::parse`]): the guard a developer's
+//! ([`qip_core::deployment::Deployment::parse_observed`]): the guard a developer's
 //! machine relaxes must not be relaxed by an omission. A warning would be
 //! read once and scrolled away; a process that is not running is the only
 //! message that reliably arrives.
@@ -43,7 +43,7 @@ use qip_kernel::platform::Platform;
 pub const ENVELOPE_KEY_VARIABLE: &str = "QIP_CAPITAL_ENVELOPE_KEY";
 
 /// The variable naming the deployment this process runs in (ADR 0110
-/// decision 5). Required: [`Deployment::parse`] refuses it absent.
+/// decision 5). Required: [`Deployment::parse_observed`] refuses it absent.
 pub const DEPLOYMENT_VARIABLE: &str = "QIP_DEPLOYMENT";
 
 /// Where this process's envelope-signing key came from. Printed in the

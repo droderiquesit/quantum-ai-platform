@@ -71,13 +71,51 @@ pub struct ServerLimits {
     pub max_headers: usize,
     /// Largest body accepted.
     pub max_body: usize,
-    /// How long a connection may take to send its request.
+    /// How long any one read may wait for a byte. A bound on silence, not on
+    /// the connection: a peer that sends one byte every few seconds resets
+    /// it on every byte, which is what [`Self::connection_deadline`] is for.
     pub read_timeout: StdDuration,
     /// How long a response may take to write.
     pub write_timeout: StdDuration,
     /// Concurrent connections handled. Beyond this, connections queue in the
     /// listener backlog rather than each spawning a thread.
     pub max_concurrent: usize,
+    /// The wall-clock budget from accepting a connection to having read its
+    /// request in full — the TLS handshake included.
+    ///
+    /// [`Self::read_timeout`] alone let a host that dribbled a ClientHello
+    /// one byte at a time hold a worker for as long as it cared to, because
+    /// each byte restarted the per-read clock; with enough such hosts every
+    /// worker was a stalled handshake and no legitimate peer was served.
+    /// This bound is not reset by anything the peer does. It ends when the
+    /// request has been read, so a handler's own work and a streamed
+    /// response are not limited by it.
+    pub connection_deadline: StdDuration,
+    /// The most connections that may be at once in the phase before the
+    /// server knows who they are — the TLS handshake, or for a plaintext
+    /// server the request read — as a share of [`Self::max_concurrent`].
+    ///
+    /// Beyond it a new connection is closed at once in the accept loop
+    /// without a thread being spawned for it. What this buys is bounded:
+    /// hosts that cannot authenticate can occupy at most this many workers
+    /// and never the whole pool, so connections already past their handshake
+    /// keep being served. It does not stop such hosts from refusing *new*
+    /// legitimate handshakes while they hold the slots — that is bounded in
+    /// time by [`Self::connection_deadline`], and in reach by the VPC
+    /// firewall that decides who may open a connection at all.
+    pub max_handshaking: usize,
+    /// The most bytes read from a peer whose certificate chained and whose
+    /// name the server does not admit, before it is answered `403`.
+    ///
+    /// That read exists only so the kernel does not reset the connection
+    /// over an unread request and discard the answer. It was bounded by the
+    /// full request limits — a megabyte of body and fifteen seconds a read —
+    /// which handed a refused workload a worker for as long as the most
+    /// generous admitted one. A few kilobytes is a request line and its
+    /// headers; anything past it is unread, and the refusal is the same.
+    pub refused_request_bytes: usize,
+    /// How long that read may take in all, for the same reason.
+    pub refused_request_deadline: StdDuration,
 }
 
 impl Default for ServerLimits {
@@ -90,7 +128,106 @@ impl Default for ServerLimits {
             read_timeout: StdDuration::from_secs(15),
             write_timeout: StdDuration::from_secs(30),
             max_concurrent: 64,
+            // A handshake and a request inside the VPC take milliseconds; a
+            // megabyte body at a congested hundred kilobytes a second still
+            // fits. Twenty seconds is the bound, not the expectation.
+            connection_deadline: StdDuration::from_secs(20),
+            // A quarter of the pool: unauthenticated hosts cannot take the
+            // other three quarters from connections already admitted.
+            max_handshaking: 16,
+            refused_request_bytes: 4 * 1024,
+            refused_request_deadline: StdDuration::from_secs(2),
         }
+    }
+}
+
+/// A socket whose reads share one wall-clock deadline.
+///
+/// Each read is given the smaller of the per-read timeout and the time left
+/// before the deadline, and a read with no time left fails as timed out
+/// without touching the socket. [`Self::lift`] ends the budget once the
+/// request has been read, after which reads fall back to the per-read
+/// timeout alone, exactly as before the deadline existed.
+struct Budgeted {
+    socket: TcpStream,
+    deadline: Option<std::time::Instant>,
+    per_read: StdDuration,
+}
+
+impl Budgeted {
+    fn new(socket: TcpStream, limits: &ServerLimits) -> Self {
+        Self {
+            socket,
+            deadline: std::time::Instant::now().checked_add(limits.connection_deadline),
+            per_read: limits.read_timeout,
+        }
+    }
+
+    /// Bring the deadline forward to `at` if it is sooner; never later.
+    fn tighten(&mut self, at: Option<std::time::Instant>) {
+        self.deadline = match (self.deadline, at) {
+            (Some(current), Some(at)) => Some(current.min(at)),
+            (current, at) => current.or(at),
+        };
+    }
+
+    fn lift(&mut self) {
+        self.deadline = None;
+        let _ = self.socket.set_read_timeout(Some(self.per_read));
+    }
+}
+
+impl Read for Budgeted {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if let Some(deadline) = self.deadline {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "the connection's deadline passed before its request was read",
+                ));
+            }
+            self.socket
+                .set_read_timeout(Some(remaining.min(self.per_read)))?;
+        }
+        self.socket.read(buf)
+    }
+}
+
+impl Write for Budgeted {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.socket.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.socket.flush()
+    }
+}
+
+/// A connection that ends its read deadline once its request is read.
+trait Deadlined: Read + Write {
+    fn lift_deadline(&mut self);
+}
+
+impl Deadlined for Budgeted {
+    fn lift_deadline(&mut self) {
+        self.lift();
+    }
+}
+
+impl Deadlined for rustls::StreamOwned<rustls::ServerConnection, Budgeted> {
+    fn lift_deadline(&mut self) {
+        self.sock.lift();
+    }
+}
+
+/// One place in [`ServerLimits::max_handshaking`], released when dropped so
+/// that every early return on the handshake path gives it back.
+struct HandshakeSlot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for HandshakeSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -514,6 +651,10 @@ pub struct Server {
     handler: Arc<dyn Handler>,
     shutdown: Arc<AtomicBool>,
     requests: Arc<AtomicU64>,
+    /// Connections accepted by [`Server::serve`] and not yet past the
+    /// handshake (or, plaintext, the request read) — the count
+    /// [`ServerLimits::max_handshaking`] caps.
+    handshaking: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl std::fmt::Debug for Server {
@@ -537,6 +678,7 @@ impl Server {
             handler,
             shutdown: Arc::new(AtomicBool::new(false)),
             requests: Arc::new(AtomicU64::new(0)),
+            handshaking: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         })
     }
 
@@ -574,6 +716,18 @@ impl Server {
         self.requests.load(Ordering::Relaxed)
     }
 
+    /// Connections [`Self::serve`] holds that have not yet finished their
+    /// handshake (plaintext: their request read).
+    pub fn handshaking(&self) -> usize {
+        self.handshaking.load(Ordering::Relaxed)
+    }
+
+    /// A handle on [`Self::handshaking`] that outlives a move into the
+    /// serving thread.
+    pub fn handshaking_handle(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        Arc::clone(&self.handshaking)
+    }
+
     /// Serve until the shutdown handle is set.
     ///
     /// One thread per connection, capped by the limits. A thread pool would be
@@ -587,6 +741,14 @@ impl Server {
             }
             let Ok(stream) = stream else { continue };
 
+            if self.handshaking.load(Ordering::Relaxed) >= self.limits.max_handshaking {
+                // Closed at once, on this thread, with nothing written: no
+                // worker is spent on a connection the server cannot yet tell
+                // from the ones holding every handshake slot, and a TLS
+                // client could not read a plaintext refusal anyway.
+                drop(stream);
+                continue;
+            }
             if live.load(Ordering::Relaxed) as usize >= self.limits.max_concurrent {
                 // Refuse rather than queue unboundedly: a server that accepts
                 // every connection under load fails by exhausting memory,
@@ -605,8 +767,13 @@ impl Server {
             let requests = self.requests.clone();
             let live_count = live.clone();
             live.fetch_add(1, Ordering::Relaxed);
+            // Taken here, before the spawn, so the check above sees every
+            // connection already accepted and not only those whose thread
+            // has started.
+            self.handshaking.fetch_add(1, Ordering::Relaxed);
+            let slot = HandshakeSlot(Arc::clone(&self.handshaking));
             std::thread::spawn(move || {
-                accept_connection(stream, handler.as_ref(), limits, tls.as_ref());
+                accept_connection(stream, handler.as_ref(), limits, tls.as_ref(), Some(slot));
                 requests.fetch_add(1, Ordering::Relaxed);
                 live_count.fetch_sub(1, Ordering::Relaxed);
             });
@@ -625,6 +792,7 @@ impl Server {
             self.handler.as_ref(),
             self.limits,
             self.tls.as_ref(),
+            None,
         );
         self.requests.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -638,6 +806,7 @@ fn accept_connection(
     handler: &dyn Handler,
     limits: ServerLimits,
     tls: Option<&TlsServer>,
+    slot: Option<HandshakeSlot>,
 ) {
     let _ = stream.set_read_timeout(Some(limits.read_timeout));
     let _ = stream.set_write_timeout(Some(limits.write_timeout));
@@ -645,12 +814,14 @@ fn accept_connection(
         .peer_addr()
         .map(|address| address.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
+    // The deadline starts at accept, so the handshake spends from it.
+    let socket = Budgeted::new(stream, &limits);
     match tls {
         None => {
-            let mut stream = stream;
-            serve_connection(&mut stream, &peer, None, handler, limits);
+            let mut socket = socket;
+            serve_connection(&mut socket, &peer, None, handler, limits, slot);
         }
-        Some(tls) => serve_tls_connection(stream, &peer, handler, limits, tls),
+        Some(tls) => serve_tls_connection(socket, &peer, handler, limits, tls, slot),
     }
 }
 
@@ -660,13 +831,14 @@ fn accept_connection(
 /// A peer that presents no certificate, or one the roots do not chain,
 /// fails inside `complete_io` and the connection is dropped there: no
 /// request is read and no handler runs. The handshake is bounded by the
-/// socket timeouts [`accept_connection`] already set.
+/// per-read timeout and, in all, by [`ServerLimits::connection_deadline`].
 fn serve_tls_connection(
-    mut socket: TcpStream,
+    mut socket: Budgeted,
     peer: &str,
     handler: &dyn Handler,
     limits: ServerLimits,
     tls: &TlsServer,
+    slot: Option<HandshakeSlot>,
 ) {
     let Ok(mut session) = rustls::ServerConnection::new(Arc::clone(&tls.config)) else {
         return;
@@ -676,28 +848,53 @@ fn serve_tls_connection(
             return;
         }
     }
+    // Past the handshake the peer has a certificate the roots chain; it no
+    // longer counts against the slots unauthenticated hosts compete for.
+    drop(slot);
     let admitted = session
         .peer_certificates()
         .and_then(<[_]>::first)
         .map(|leaf| tls.peers.admit(leaf));
     let mut stream = rustls::StreamOwned::new(session, socket);
     match admitted {
-        Some(Ok(identity)) => {
-            serve_connection(&mut stream, peer, identity.as_deref(), handler, limits)
-        }
+        Some(Ok(identity)) => serve_connection(
+            &mut stream,
+            peer,
+            identity.as_deref(),
+            handler,
+            limits,
+            None,
+        ),
         // Unreachable with a verifier that requires a certificate, and
         // refused rather than assumed: a session with no peer certificate is
         // not an authenticated one.
         None | Some(Err(_)) => {
-            // Read the request — bounded by the same limits and socket
-            // timeouts as any other, and handed to no handler — before
-            // answering. Answering first and closing with the client's
-            // request still unread in the receive buffer makes the kernel
-            // reset the connection, and a reset discards the 403 the client
-            // had not yet read: the refused workload saw a dropped socket,
-            // not a refusal, in more than half of loopback runs. Whatever
-            // the read returns, the answer is the same 403.
-            let _ = read_request(&mut stream, peer, limits);
+            // Read the request — handed to no handler — before answering.
+            // Answering first and closing with the client's request still
+            // unread in the receive buffer makes the kernel reset the
+            // connection, and a reset discards the 403 the client had not
+            // yet read: the refused workload saw a dropped socket, not a
+            // refusal, in more than half of loopback runs. Whatever the read
+            // returns, the answer is the same 403.
+            //
+            // Bounded far tighter than an admitted request, in bytes and in
+            // time: this read is a courtesy to a peer the server has already
+            // refused, and it held a worker for as long as any admitted
+            // request could until both bounds were added.
+            stream
+                .sock
+                .tighten(std::time::Instant::now().checked_add(limits.refused_request_deadline));
+            let refused = ServerLimits {
+                max_request_line: limits.refused_request_bytes,
+                max_header_line: limits.refused_request_bytes,
+                max_body: limits.refused_request_bytes,
+                ..limits
+            };
+            let _ = read_request(
+                (&mut stream).take(limits.refused_request_bytes as u64),
+                peer,
+                refused,
+            );
             let response = Response::json(
                 403,
                 r#"{"error":"the client certificate does not name a workload this server admits"}"#,
@@ -711,14 +908,22 @@ fn serve_tls_connection(
     let _ = stream.flush();
 }
 
-fn serve_connection<S: Read + Write>(
+fn serve_connection<S: Deadlined>(
     stream: &mut S,
     peer: &str,
     identity: Option<&str>,
     handler: &dyn Handler,
     limits: ServerLimits,
+    slot: Option<HandshakeSlot>,
 ) {
-    let request = match read_request(&mut *stream, peer, limits) {
+    let read = read_request(&mut *stream, peer, limits);
+    // A plaintext peer is unknown until its request is read, so this is
+    // where it leaves the handshake slots; and the request is in, so the
+    // deadline that bounded getting it ends — a handler's work and a
+    // streamed response are bounded by the write timeout, not by it.
+    drop(slot);
+    stream.lift_deadline();
+    let request = match read {
         Ok(request) => request,
         Err(status) => {
             let response = Response::json(

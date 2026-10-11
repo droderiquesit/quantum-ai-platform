@@ -30,7 +30,7 @@
 //! "workstation" would let a deployment that forgot it post to a disk, and a
 //! safety default here is the restrictive one.
 
-use qip_core::deployment::Deployment;
+use qip_core::deployment::{COMPUTE_ENGINE_PRODUCT_FILE, Deployment, DeploymentMarkers};
 use qip_core::error::{Error, Result};
 use qip_storage::gcp::spanner::{DEFAULT_TABLE, SpannerDatabase};
 use qip_transport::tls::{TLS_MODE_VARIABLE, TlsPaths, link_mode};
@@ -161,11 +161,35 @@ fn required(variables: &BTreeMap<String, String>, name: &str, what: &str) -> Res
 impl LedgerConfig {
     /// Read the process environment. Called from `main` only.
     pub fn from_environment() -> Result<Self> {
-        Self::parse(&std::env::vars().collect())
+        let variables: BTreeMap<String, String> = std::env::vars().collect();
+        // The ledger runs on Compute Engine, where the DMI product name is
+        // the marker that refuses a `local` an `add-metadata` edit set.
+        let markers = DeploymentMarkers::observe(
+            &|name| variables.get(name).cloned(),
+            std::fs::read_to_string(COMPUTE_ENGINE_PRODUCT_FILE)
+                .ok()
+                .as_deref(),
+        );
+        Self::parse_with(&variables, &markers)
     }
 
-    /// Validate `variables`, refusing the first thing wrong by name.
+    /// Validate `variables`, refusing the first thing wrong by name, with
+    /// the deployment markers observed from `variables` alone — the form a
+    /// test drives. The process goes through [`Self::parse_with`] with the
+    /// host's DMI product name as well.
     pub fn parse(variables: &BTreeMap<String, String>) -> Result<Self> {
+        Self::parse_with(
+            variables,
+            &DeploymentMarkers::observe(&|name| variables.get(name).cloned(), None),
+        )
+    }
+
+    /// Validate `variables` against what the root observed of its platform:
+    /// [`DEPLOYMENT`]=`local` is refused wherever `markers` is not empty.
+    pub fn parse_with(
+        variables: &BTreeMap<String, String>,
+        markers: &DeploymentMarkers,
+    ) -> Result<Self> {
         let environment = match required(
             variables,
             ENVIRONMENT,
@@ -207,7 +231,8 @@ impl LedgerConfig {
         // http address on a TLS link is not upgraded, and an https address
         // on a plaintext link is not downgraded. The transport appends each
         // route's own path, so a path here would be doubled.
-        let deployment = Deployment::parse(variables.get(DEPLOYMENT).map(String::as_str))?;
+        let deployment =
+            Deployment::parse_observed(variables.get(DEPLOYMENT).map(String::as_str), markers)?;
         // Two settings now describe one fact — whether this is a workstation
         // — and two claims about the same fact will disagree. Each relaxes a
         // different guard: `workstation` admits the local disk store, `local`
@@ -391,6 +416,25 @@ mod tests {
                 "{name}: {error}"
             );
         }
+    }
+
+    /// The failure this prevents: an `add-metadata` edit setting
+    /// `QIP_DEPLOYMENT=local` (and the workstation store beside it) on the
+    /// ledger's VM brought it up reading outcomes over plaintext. Mutation:
+    /// pass `&DeploymentMarkers::none()` to `parse_observed` in `parse_with`
+    /// and the relabelled ledger parses; this fails.
+    #[test]
+    fn a_ledger_that_can_see_it_is_deployed_refuses_local() {
+        // Premise: the workstation fixture parses with no marker.
+        assert!(LedgerConfig::parse_with(&complete(), &DeploymentMarkers::none()).is_ok());
+        let on_compute_engine =
+            DeploymentMarkers::observe(&|_| None, Some("Google Compute Engine\n"));
+        let error = LedgerConfig::parse_with(&complete(), &on_compute_engine)
+            .expect_err("local was admitted on a Compute Engine guest");
+        assert!(
+            error.to_string().contains("can see it is deployed"),
+            "{error}"
+        );
     }
 
     /// A broker address with TLS or a path, a partition count of zero or past
