@@ -33,8 +33,12 @@ pub mod feed;
 pub mod gateway;
 /// The second halt wire: a flag on the node's own filesystem, polled.
 pub mod halt;
+/// The health and scrape surface, on a thread of its own.
+pub mod health;
 pub mod mesh;
 pub mod mirror;
+/// The outbox's configuration: spool, budgets, cadence, fabric endpoint.
+pub mod outbox;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
 /// Each venue's own message limits, as the deployment states them.

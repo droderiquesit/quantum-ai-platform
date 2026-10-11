@@ -1,7 +1,8 @@
 //! One pass of the node: feed, decide, act, reconcile.
 //!
-//! The step `main.rs` runs on its serve loop once the halt has been polled
-//! and the mesh exchanged. It is in the library so a test can drive the
+//! The step the decision loop (`scheduler::DecisionLoop::turn`) runs once
+//! the wires, the mesh's inbound control and journal pressure have been
+//! applied. It is in the library so a test can drive the
 //! assembled cell through it against the same gateway and feed the binary
 //! holds, and prove the pass-time series move — which the binary, being a
 //! binary, cannot.
@@ -11,10 +12,11 @@
 //! Everything in it is arithmetic and memory. The feed reads a book held in
 //! this process, the gateway matches in this process, and the reconciler
 //! compares two vectors. The one call in the cell that may block —
-//! `Cell::flush` — is not here; the serve loop runs it separately. So a pass
-//! blocks the health server for exactly one pass, bounded by the feed's
-//! instrument and level caps and the cell's own strategy budget, and never
-//! by anything outside the process.
+//! `Cell::flush` — is not here, and since the outbox was wired it does not
+//! block either: the decision loop flushes through a mirror that only offers
+//! to a bounded channel. So a pass costs the decision thread exactly one
+//! pass, bounded by the feed's instrument and level caps and the cell's own
+//! strategy budget, and never anything outside the process.
 //!
 //! # A halted node runs no pass
 //!
@@ -185,8 +187,9 @@ impl PassLog {
 ///
 /// The cell's own series say what a pass decided. None said how long the
 /// turn took, how many ended badly, or how much of the health surface's
-/// patience one consumed — and on this binary the pass runs on the thread
-/// that answers the probe, so a slow pass is a probe that waits. A closure
+/// patience one consumed. The allowance is the decision loop's period: a
+/// pass that takes the whole period is a loop that can no longer keep its
+/// own cadence. A closure
 /// rather than a second `run_pass` signature, so the loop still calls
 /// [`run_pass`] by name and this only stands around it.
 #[derive(Debug)]
@@ -196,7 +199,8 @@ pub struct PassMeter {
 }
 
 impl PassMeter {
-    /// `allowance` is how long the health surface allows one request: the
+    /// `allowance` is the decision loop's period (it was the health
+    /// surface's request timeout while passes ran on the probe thread): the
     /// denominator of saturation. Zero is refused at start-up rather than
     /// divided by on every pass.
     pub fn new(metrics: Arc<Metrics>, allowance: std::time::Duration) -> Result<Self> {

@@ -99,8 +99,10 @@
 
 use crate::gateway::SimulatedGateway;
 use qip_brokers::exchange::BookLevel;
+use qip_contracts::market_event::MarketEvent;
 use qip_contracts::message::{BookSide, MarketMessage, MessageBody};
 use qip_contracts::venue::{Origin, VenueId, VenueStatus};
+use qip_contracts::{Entitlement, Usage};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::ObjectId;
@@ -121,6 +123,24 @@ pub const SIMULATED_FEED: &str = "simulated";
 /// The feed's channel name, as the cell's protocol registry and sequencer
 /// key it beside the venue.
 pub const FEED_NAME: &str = "simulated-depth";
+
+/// The dataset the simulated depth is captured under.
+pub const SIMULATED_DATASET: &str = "qip-simulated-depth";
+
+/// The entitlement the simulator's own depth is held under.
+///
+/// Granted without an expiry because nothing was licensed: the depth is
+/// generated in this process by the platform's own matching engine, so
+/// there is no agreement to end. Named as its own dataset so a lake reader
+/// can never mistake a simulated tick for a venue's — the partition path
+/// carries it.
+fn simulated_entitlement() -> Entitlement {
+    Entitlement::Granted {
+        dataset: SIMULATED_DATASET.to_string(),
+        usage: Usage::Trade,
+        expires_at: Timestamp::MAX,
+    }
+}
 
 /// The wire format's name, for the decoder's diagnostics.
 const PROTOCOL: &str = "qip.simulated-depth.2";
@@ -221,6 +241,16 @@ pub struct SimulatedFeed {
     /// venue sequence number of the last one. Written on each line and read
     /// back by the decoder, never supplied by it.
     sequence: u64,
+    /// The lines the last publication put on the wire and the cell took,
+    /// as market events, until [`Self::take_captured`] hands them on.
+    /// Bounded by the frame bound in the module documentation, and replaced
+    /// rather than appended to on every publication, so a caller that never
+    /// takes them holds one frame's worth and no more.
+    captured: Vec<MarketEvent>,
+    /// Lines the cell took that could not be built into a market event.
+    /// Counted rather than fatal: the pass has already applied the frame,
+    /// and failing it now would make recording a reason to stop trading.
+    capture_failures: u64,
 }
 
 impl SimulatedFeed {
@@ -232,6 +262,8 @@ impl SimulatedFeed {
             published: BTreeMap::new(),
             omitted_total: 0,
             sequence: 0,
+            captured: Vec::new(),
+            capture_failures: 0,
         }
     }
 
@@ -258,6 +290,53 @@ impl SimulatedFeed {
     /// before the first.
     pub fn sequence(&self) -> u64 {
         self.sequence
+    }
+
+    /// Hand on the market events the last publication applied, oldest
+    /// first, leaving none. Each carries the venue's instant as its event
+    /// time, this node's receipt instant as its receive time, and the
+    /// feed's own sequence number in its origin — the three facts a tick
+    /// lake partition is read by. A resynchronisation snapshot is not here:
+    /// it is the venue's whole depth rebuilt out of band, with no place in
+    /// the feed's sequence, and a lake that recorded it as a tick would
+    /// show a sequence the venue never published.
+    pub fn take_captured(&mut self) -> Vec<MarketEvent> {
+        std::mem::take(&mut self.captured)
+    }
+
+    /// Lines the cell took that could not be captured as market events.
+    pub fn capture_failures(&self) -> u64 {
+        self.capture_failures
+    }
+
+    fn capture(
+        &self,
+        (sequence, id, side, price, size): &(u64, String, BookSide, Decimal, Decimal),
+        venue_time: Timestamp,
+        now: Timestamp,
+    ) -> Result<MarketEvent> {
+        let payload = MarketMessage::new(
+            ObjectId::from_string(id.clone()),
+            Origin::new(self.venue.clone(), FEED_NAME, 0, *sequence),
+            MessageBody::LevelSet {
+                side: *side,
+                price: *price,
+                quantity: *size,
+                order_count: None,
+            },
+            venue_time,
+            now,
+        );
+        let hash = MarketEvent::hash_payload(&payload)?;
+        MarketEvent::new(
+            payload,
+            venue_time,
+            now,
+            now,
+            qip_core::time::Duration::ZERO,
+            hash,
+            simulated_entitlement(),
+        )
     }
 
     /// Bind this feed's decoder to the cell, and state the venue's
@@ -356,6 +435,7 @@ impl SimulatedFeed {
         }
         let mut wire = Wire {
             frame: String::new(),
+            lines: Vec::new(),
             sequence: self.sequence,
             // The venue's clock, not this call's `now`: the instant the pass
             // last advanced the gateway to. The pass hands both the same
@@ -415,7 +495,9 @@ impl SimulatedFeed {
         // refused is a frame it did not see, and the hole its numbers leave
         // is how the sequencer finds that out on the next one.
         self.sequence = wire.sequence;
+        let venue_time = wire.venue_time;
         let frame = wire.frame;
+        self.captured.clear();
         if tick.messages > 0 {
             let decoded = cell.on_bytes(&self.key, frame.as_bytes(), now)?;
             if decoded != tick.messages {
@@ -427,6 +509,16 @@ impl SimulatedFeed {
                      the feed's wire and its decoder disagree",
                     tick.messages
                 )));
+            }
+            // Captured only once the cell has decoded the whole frame: a
+            // tick the cell did not take is not a tick this pass applied,
+            // and the record of what a pass applied is what replay and the
+            // lake read.
+            for line in wire.lines {
+                match self.capture(&line, venue_time, now) {
+                    Ok(event) => self.captured.push(event),
+                    Err(_) => self.capture_failures = self.capture_failures.saturating_add(1),
+                }
             }
         }
         Ok(tick)
@@ -462,6 +554,9 @@ pub fn level_line(
 /// it carries from the venue.
 struct Wire {
     frame: String,
+    /// The same lines as facts, for the capture the feed keeps of what it
+    /// published (W1.13): sequence, instrument, side, price, size.
+    lines: Vec<(u64, String, BookSide, Decimal, Decimal)>,
     /// The sequence number of the last line written.
     sequence: u64,
     venue_time: Timestamp,
@@ -470,6 +565,8 @@ struct Wire {
 impl Wire {
     fn level(&mut self, id: &str, side: BookSide, price: Decimal, size: Decimal) {
         self.sequence = self.sequence.saturating_add(1);
+        self.lines
+            .push((self.sequence, id.to_string(), side, price, size));
         self.frame.push_str(&level_line(
             self.sequence,
             self.venue_time,
