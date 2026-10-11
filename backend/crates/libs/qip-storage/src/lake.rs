@@ -20,8 +20,13 @@
 //!
 //! Raw venue bytes are retained only where the entitlement permits it. Where
 //! it does not, the segment record still carries the raw payload's SHA-256 so
-//! lineage survives, and the bytes are not stored. Compression is not done
-//! here: it needs a codec and the workspace has two dependencies.
+//! lineage survives, and the bytes are not stored.
+//!
+//! Compression is a writer setting, off by default ([`Lake::with_codec`],
+//! [`crate::lake_codec`]): ADR 0113 admits the codec on measurement, and
+//! `lake_codec::measure_partitions` is that measurement. Whatever codec stored
+//! a segment, its `canonical_sha256` names the uncompressed content, so a
+//! manifest pinned before compression was switched on verifies after.
 //!
 //! Market events reach the lake through [`crate::tick_capture::TickLakeWriter`],
 //! which seals them with [`Lake::write_market_segment`] under the retention
@@ -36,6 +41,7 @@
 //! from the lake because two lists disagreed.
 
 use crate::blob::BlobStore;
+use crate::lake_codec::SegmentCodec;
 use qip_core::error::{Error, Result};
 use qip_core::hash::sha256_hex;
 use qip_events::envelope::canonical_json;
@@ -188,6 +194,11 @@ pub struct SegmentRecord {
     pub raw_sha256: Option<String>,
     /// Object key of the raw bytes, present only where retention is permitted.
     pub raw_key: Option<String>,
+    /// How the canonical bytes at `key` are stored. Omitted from the
+    /// serialised form when identity, so every record written before the
+    /// codec existed parses unchanged.
+    #[serde(default, skip_serializing_if = "SegmentCodec::is_identity")]
+    pub codec: SegmentCodec,
 }
 
 /// A named, stored description of an input set.
@@ -211,11 +222,69 @@ pub struct Materialized {
 #[derive(Debug)]
 pub struct Lake<'a> {
     pub(crate) store: &'a dyn BlobStore,
+    pub(crate) codec: SegmentCodec,
 }
 
 impl<'a> Lake<'a> {
+    /// A lake writing uncompressed segments — the default ADR 0113 keeps
+    /// until a measurement decides otherwise.
     pub fn new(store: &'a dyn BlobStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            codec: SegmentCodec::Identity,
+        }
+    }
+
+    /// The same lake, sealing new segments with `codec`. Reading is
+    /// unaffected: every reader decodes by the record's own codec.
+    pub fn with_codec(mut self, codec: SegmentCodec) -> Self {
+        self.codec = codec;
+        self
+    }
+
+    /// The codec new segments are sealed with.
+    pub const fn codec(&self) -> SegmentCodec {
+        self.codec
+    }
+
+    /// A segment already sealed under `segment_id` in `partition`, under
+    /// either codec: its key, codec and the SHA-256 of its canonical bytes.
+    ///
+    /// Both suffixes are looked at, so switching the codec on cannot turn a
+    /// sealed id into a writable one: history written uncompressed is not
+    /// overwritten by the same id compressed.
+    pub(crate) fn sealed(
+        &self,
+        partition: &Partition,
+        segment_id: &str,
+    ) -> Result<Option<(String, SegmentCodec, String)>> {
+        for codec in [SegmentCodec::Identity, SegmentCodec::Zstd { level: 3 }] {
+            let key = format!("{}/{segment_id}{}", partition.prefix(), codec.suffix());
+            if let Some(stored) = self.store.get(&key)? {
+                let canonical = codec.decode(&stored)?;
+                return Ok(Some((key, codec, sha256_hex(&canonical))));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The canonical bytes `record` names, decoded by its codec and checked
+    /// against its SHA-256. A segment that fails the check is refused by
+    /// name: a training input that silently differs from its record is not
+    /// that input.
+    pub fn read_canonical(&self, record: &SegmentRecord) -> Result<Vec<u8>> {
+        let stored = self
+            .store
+            .get(&record.key)?
+            .ok_or_else(|| Error::not_found(format!("segment {} is missing", record.key)))?;
+        let canonical = record.codec.decode(&stored)?;
+        if sha256_hex(&canonical) != record.canonical_sha256 {
+            return Err(Error::invalid(format!(
+                "segment {} fails its checksum; it is not the segment that was sealed",
+                record.key
+            )));
+        }
+        Ok(canonical)
     }
 
     /// Seal one segment. A second write to the same segment id is refused.
@@ -227,12 +296,12 @@ impl<'a> Lake<'a> {
         raw: Option<Vec<u8>>,
     ) -> Result<SegmentRecord> {
         component("segment id", segment_id)?;
-        let key = format!("{}/{segment_id}.canonical", partition.prefix());
-        if self.store.get(&key)?.is_some() {
+        if let Some((key, _, _)) = self.sealed(partition, segment_id)? {
             return Err(Error::denied(format!(
                 "{key} is sealed; history is never overwritten, write a new segment that references it"
             )));
         }
+        let key = format!("{}/{segment_id}{}", partition.prefix(), self.codec.suffix());
         let canonical_sha256 = sha256_hex(&canonical);
         let raw_sha256 = raw.as_deref().map(sha256_hex);
         let raw_key = match raw {
@@ -243,13 +312,15 @@ impl<'a> Lake<'a> {
             }
             _ => None,
         };
-        self.store.put(&key, canonical)?;
+        let stored = self.codec.encode(&canonical)?;
+        self.store.put(&key, stored)?;
         Ok(SegmentRecord {
             partition: partition.clone(),
             key,
             canonical_sha256,
             raw_sha256,
             raw_key,
+            codec: self.codec,
         })
     }
 
@@ -301,15 +372,17 @@ impl<'a> Lake<'a> {
                     raw_retention_permitted: false,
                 },
             )?;
-            let key = format!("{}/{segment_id}.canonical", partition.prefix());
             let canonical_sha256 = sha256_hex(&canonical);
-            if self.store.digest(&key)?.as_deref() == Some(canonical_sha256.as_str()) {
+            if let Some((key, codec, existing)) = self.sealed(&partition, segment_id)?
+                && existing == canonical_sha256
+            {
                 sealed.push(SegmentRecord {
                     partition,
                     key,
                     canonical_sha256,
                     raw_sha256: None,
                     raw_key: None,
+                    codec,
                 });
                 continue;
             }
@@ -352,8 +425,14 @@ impl<'a> Lake<'a> {
         let manifest = self.read_manifest(manifest_name)?;
         let mut bad = Vec::new();
         for record in &manifest.segments {
-            let stored = self.store.get(&record.key)?;
-            if stored.as_deref().map(sha256_hex).as_deref() != Some(&record.canonical_sha256) {
+            let intact = match self.store.get(&record.key)? {
+                Some(stored) => record
+                    .codec
+                    .decode(&stored)
+                    .is_ok_and(|canonical| sha256_hex(&canonical) == record.canonical_sha256),
+                None => false,
+            };
+            if !intact {
                 bad.push(record.key.clone());
             }
         }
@@ -378,18 +457,7 @@ impl<'a> Lake<'a> {
                 out.withheld.push(record.key);
                 continue;
             }
-            let bytes = self.store.get(&record.key)?.ok_or_else(|| {
-                Error::not_found(format!(
-                    "segment {} named by the manifest is missing",
-                    record.key
-                ))
-            })?;
-            if sha256_hex(&bytes) != record.canonical_sha256 {
-                return Err(Error::invalid(format!(
-                    "segment {} fails its checksum; it is not the segment the manifest recorded",
-                    record.key
-                )));
-            }
+            let bytes = self.read_canonical(&record)?;
             out.entitlements_read.insert(entitlement);
             out.segments.push((record, bytes));
         }

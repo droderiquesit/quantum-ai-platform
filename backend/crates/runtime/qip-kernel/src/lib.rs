@@ -45,6 +45,7 @@ pub mod cross_margin;
 pub mod cycle;
 pub mod exploration;
 pub mod fabric_declaration;
+pub mod fusion;
 pub mod falsification;
 pub mod family_review;
 pub mod feature_statistics;

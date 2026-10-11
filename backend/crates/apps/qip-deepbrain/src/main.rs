@@ -649,6 +649,24 @@ fn run() -> Result<()> {
          may switch off research until restart"
     );
 
+    // The tick desk (`tick_desk.rs`): the one reader of recorded market
+    // history in a shipped binary. Off unless QIP_DEEPBRAIN_TICK_EVERY is
+    // set; set, it refuses to start without an entitlement grant. It reads
+    // the same lake namespace the outcome archive above writes the
+    // platform's own records into, and writes its model cards and
+    // opportunity maps under a namespace of its own.
+    let tick_config =
+        qip_deepbrain::tick_desk::TickDeskConfig::from_lookup(&|name| std::env::var(name).ok())
+            .map_err(configuration)?;
+    println!("  tick desk:        {}", tick_config.describe());
+    let mut tick_desk = qip_deepbrain::tick_desk::TickDesk::new(
+        tick_config,
+        config.storage.blobs(qip_storage::lake::LAKE_NAMESPACE)?,
+        config
+            .storage
+            .blobs(qip_deepbrain::tick_desk::OUTPUT_NAMESPACE)?,
+    );
+
     let run = node::run_with(
         &mut platform,
         &archive,
@@ -661,6 +679,7 @@ fn run() -> Result<()> {
         node::Loops {
             research: Some(&mut research),
             operations: Some(&mut operations),
+            tick: Some(&mut tick_desk),
         },
         |outcome| {
             println!();
@@ -737,6 +756,9 @@ fn run() -> Result<()> {
                             .join(", ")
                     );
                 }
+            }
+            if let Some(round) = &outcome.tick {
+                println!("  {}", round.describe());
             }
             if let Some(round) = &outcome.research {
                 println!("  {}", round.describe());

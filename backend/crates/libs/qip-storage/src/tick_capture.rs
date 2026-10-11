@@ -253,8 +253,9 @@ impl Lake<'_> {
             lines.len(),
             &canonical_sha256[..16]
         );
-        let key = format!("{}/{segment_id}.canonical", partition.prefix());
-        if self.store.digest(&key)?.as_deref() == Some(canonical_sha256.as_str()) {
+        if let Some((key, codec, existing)) = self.sealed(partition, &segment_id)?
+            && existing == canonical_sha256
+        {
             let raw_key = format!("{}/{segment_id}.raw", partition.prefix());
             let raw_kept = partition.entitlement.raw_retention_permitted
                 && self.store.get(&raw_key)?.is_some();
@@ -264,6 +265,7 @@ impl Lake<'_> {
                 canonical_sha256,
                 raw_sha256: raw.as_deref().map(sha256_hex),
                 raw_key: raw_kept.then_some(raw_key),
+                codec,
             });
         }
         self.write_segment(partition, &segment_id, canonical, raw)
@@ -271,16 +273,7 @@ impl Lake<'_> {
 
     /// Read a market segment back, verifying its checksum, for exact replay.
     pub fn read_market_segment(&self, record: &SegmentRecord) -> Result<Vec<CapturedMarketEvent>> {
-        let bytes = self
-            .store
-            .get(&record.key)?
-            .ok_or_else(|| Error::not_found(format!("segment {} is missing", record.key)))?;
-        if sha256_hex(&bytes) != record.canonical_sha256 {
-            return Err(Error::invalid(format!(
-                "segment {} fails its checksum; it is not the segment that was sealed",
-                record.key
-            )));
-        }
+        let bytes = self.read_canonical(record)?;
         let text = std::str::from_utf8(&bytes).map_err(|error| {
             Error::invalid(format!("segment {} is not UTF-8: {error}", record.key))
         })?;

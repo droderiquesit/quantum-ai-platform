@@ -496,6 +496,8 @@ fn market_events_the_feed_applied_reach_the_tick_lake_with_exchange_time_capture
     let sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
         Arc::clone(&lake) as Arc<dyn BlobStore>,
         CELL,
+        qip_edge_node::event_fabric::drain::default_retention(),
+        qip_storage::lake_codec::SegmentCodec::Identity,
     )?)];
     let mut drain = Drain::open(
         Arc::clone(&rig.spool),

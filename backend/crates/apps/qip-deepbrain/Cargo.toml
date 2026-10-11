@@ -74,6 +74,12 @@ qip-reasoning-engine.workspace = true
 # Both workspace-internal; not third-party dependencies.
 qip-opportunity-engine.workspace = true
 qip-expansion.workspace = true
+# The tick desk (`tick_desk.rs`): the synthetic future tree and its compact
+# twin state live in `qip-twin`, and the fusion reads the knowledge graph's
+# own type from `qip-world-model`. Both Lane 3, both workspace-internal, and
+# this is the Lane 3 root the desk runs in.
+qip-twin.workspace = true
+qip-world-model.workspace = true
 
 [dev-dependencies]
 # The campaign tests decode the closed-manifest record straight off the

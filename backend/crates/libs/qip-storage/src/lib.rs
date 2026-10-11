@@ -62,6 +62,8 @@ mod fsio;
 pub mod gcp;
 pub mod kv;
 pub mod lake;
+pub mod lake_codec;
+pub mod lake_history;
 pub mod managed;
 pub mod provider;
 pub mod redis;

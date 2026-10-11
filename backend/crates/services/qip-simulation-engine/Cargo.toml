@@ -21,6 +21,12 @@ qip-risk.workspace = true
 # An edge library, so the dependency runs the permitted direction.
 qip-strategy.workspace = true
 qip-contracts.workspace = true
+# The order book a tick replay rebuilds (R12-TICK-2059, 2067). An edge
+# library of plain data and pure logic (core and contracts only), so the
+# dependency runs the permitted direction — Lane 3 reading a Lane 0 type —
+# and replay rebuilds books with the same code the cell trades on, rather
+# than a second book that could disagree with it.
+qip-orderbook.workspace = true
 
 [dev-dependencies]
 qip-evolution.workspace = true

@@ -70,4 +70,5 @@ pub mod roster;
 pub mod signal_mapper;
 pub mod status;
 pub mod succession;
+pub mod tick_desk;
 pub mod trust;
