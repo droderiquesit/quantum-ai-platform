@@ -16,14 +16,20 @@
 //!
 //! This is the in-process model: a registry, a lineage tree, calibration
 //! scores and a journal of [`Event`]s from which the lineage tree can be
-//! rebuilt. It is not yet appended to the central event log and no
-//! composition root builds a `Federation`; the register says so.
+//! rebuilt. `qip-kernel`'s `federation_stage` is the composition root that
+//! builds one, feeds it views every UNDERSTAND pass and appends what it
+//! decided to the hash-chained event log; it takes the journal with
+//! [`Federation::drain_journal`] once the log holds it, so the in-process
+//! copy stays bounded and the log is the record. Positions a
+//! [`ResearchTask`] cites are absolute — counted from the first event ever
+//! journaled — so a draining reader does not renumber the record it cites.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use qip_contracts::expansion::EffectAttribution;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
+use serde::{Deserialize, Serialize};
 
 /// Spread (max minus min probability) at or under which views agree.
 pub const AGREEMENT_SPREAD: f64 = 0.05;
@@ -39,7 +45,7 @@ pub const CLEAR_LEADER_MARGIN: f64 = 0.1;
 pub const MATERIAL_DISAGREEMENT_SPREAD: f64 = 0.2;
 
 /// What a model is for, beyond what it is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ModelKind {
     Observational,
     Scenario,
@@ -47,7 +53,7 @@ pub enum ModelKind {
 }
 
 /// How far from raw observations a model reasons.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Abstraction {
     Micro,
     Meso,
@@ -55,7 +61,7 @@ pub enum Abstraction {
 }
 
 /// The five axes along which the population is specialised.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scope {
     pub domain: String,
     /// A region, or the explicit word `global`; never blank.
@@ -169,7 +175,7 @@ impl WorldModelSpec {
 }
 
 /// Where a node came from. A root model has no parents and no trigger.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lineage {
     pub parents: Vec<String>,
     pub trigger: Option<String>,
@@ -195,7 +201,7 @@ pub enum Status {
 /// One model's view on one proposition, with the three dimensions it can
 /// self-report. The fourth, predictive performance, is computed, never
 /// reported.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Assessment {
     pub proposition: String,
     pub probability: f64,
@@ -205,7 +211,7 @@ pub struct Assessment {
     pub at: Timestamp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Calibration {
     /// No forecast has resolved. Not zero, not a default.
     Unscored,
@@ -228,7 +234,7 @@ struct Node {
 }
 
 /// One live member's standing on all four dimensions.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScoredView {
     pub model: String,
     pub probability: f64,
@@ -242,19 +248,19 @@ pub struct ScoredView {
 }
 
 /// Every live view, minority included, and how far apart they are.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Disagreement {
     pub views: Vec<ScoredView>,
     pub spread: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InformationRequest {
     pub proposition: String,
     pub models: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Decision {
     Branch,
     Merge,
@@ -262,7 +268,7 @@ pub enum Decision {
     RequestMoreInformation(InformationRequest),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Arbitration {
     pub proposition: String,
     pub at: Timestamp,
@@ -284,7 +290,7 @@ pub struct Arbitration {
 /// task is what turns "the models are far apart on this" into work, and it
 /// cites the record it came from rather than restating it, so a reader of
 /// the task reads the same views arbitration saw.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResearchTask {
     /// Position in the journal of the [`Event::Decided`] record cited.
     pub cites: usize,
@@ -295,7 +301,7 @@ pub struct ResearchTask {
     pub raised_at: Timestamp,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
     Declared {
         id: String,
@@ -345,6 +351,16 @@ pub enum Event {
         update_kind: String,
         at: Timestamp,
     },
+    /// Every view on a proposition withdrawn unscored, because reality will
+    /// never answer it — the subject stopped being observed. Journaled with
+    /// the count, so a forecast that vanished is distinguishable from one
+    /// that was resolved: without this the only way to bound the views a
+    /// population holds was to score them against an outcome nobody saw.
+    Abandoned {
+        proposition: String,
+        views: usize,
+        at: Timestamp,
+    },
 }
 
 /// The distinct values the live population takes on each axis.
@@ -362,6 +378,10 @@ pub struct Spanned {
 pub struct Federation {
     nodes: BTreeMap<String, Node>,
     journal: Vec<Event>,
+    /// Events already taken by [`Federation::drain_journal`]. Added to every
+    /// position so the record a [`ResearchTask`] cites keeps its number after
+    /// the events before it have moved to the durable log.
+    journal_base: usize,
     /// Propositions with a research task outstanding. One task per open
     /// question: a disagreement that persists is arbitrated every cycle, and
     /// raising it every cycle would bury the task under copies of itself.
@@ -384,8 +404,63 @@ impl Federation {
         Self::default()
     }
 
+    /// The events not yet drained, oldest first.
     pub fn journal(&self) -> &[Event] {
         &self.journal
+    }
+
+    /// The absolute position of [`Self::journal`]'s first event.
+    pub fn journal_base(&self) -> usize {
+        self.journal_base
+    }
+
+    /// Take every undrained event, oldest first, advancing the base.
+    ///
+    /// For a caller that has appended them to a durable log: the in-process
+    /// journal otherwise grows by one `Decided` per proposition per cycle for
+    /// as long as the process lives, which is an unbounded buffer in a
+    /// long-running kernel. A caller that drains and then fails to append has
+    /// lost the record, so append first, then drain.
+    pub fn drain_journal(&mut self) -> Vec<Event> {
+        let taken = std::mem::take(&mut self.journal);
+        self.journal_base += taken.len();
+        taken
+    }
+
+    /// Every live member whose expiry is after `now`, in id order.
+    ///
+    /// What a population check reads: a member past its expiry is excluded
+    /// from arbitration, so counting it as covering its scope would report a
+    /// coverage the arbitration does not have.
+    pub fn live_specs(&self, now: Timestamp) -> Vec<&WorldModelSpec> {
+        self.nodes
+            .values()
+            .filter(|n| n.status == Status::Live && now < n.spec.expires_at)
+            .map(|n| &n.spec)
+            .collect()
+    }
+
+    /// Withdraw every view on `proposition` without scoring it. Returns how
+    /// many views were withdrawn; journals nothing when there were none.
+    ///
+    /// Scoring a forecast against an outcome nobody observed would move a
+    /// model's calibration on a fact that does not exist, so a proposition
+    /// reality will not answer is abandoned instead, on the record.
+    pub fn abandon(&mut self, proposition: &str, at: Timestamp) -> usize {
+        self.open_research.remove(proposition);
+        let views = self
+            .nodes
+            .values_mut()
+            .filter_map(|node| node.views.remove(proposition))
+            .count();
+        if views > 0 {
+            self.journal.push(Event::Abandoned {
+                proposition: proposition.to_string(),
+                views,
+                at,
+            });
+        }
+        views
     }
 
     /// Every research task raised, oldest first, read from the journal.
@@ -685,7 +760,7 @@ impl Federation {
         let spread = if views.is_empty() { 0.0 } else { hi - lo };
         let (decision, reason, arbitrated) = decide(proposition, &views, spread);
         let disagreement = Disagreement { views, spread };
-        let record = self.journal.len();
+        let record = self.journal_base + self.journal.len();
         self.journal.push(Event::Decided {
             proposition: proposition.to_string(),
             at: now,
@@ -830,6 +905,21 @@ fn decide(proposition: &str, views: &[ScoredView], spread: f64) -> (Decision, St
         ),
         None,
     )
+}
+
+/// The decision arbitration reaches on `disagreement`, recomputed from the
+/// recorded views alone.
+///
+/// What makes a journaled [`Arbitration`] replayable rather than merely
+/// readable: the decision, its reason and the merged probability are a pure
+/// function of the scored views the record carries, so a reader of the log
+/// can recompute them and refuse a record whose decision does not follow
+/// from its own views.
+pub fn decide_on(
+    proposition: &str,
+    disagreement: &Disagreement,
+) -> (Decision, String, Option<f64>) {
+    decide(proposition, &disagreement.views, disagreement.spread)
 }
 
 /// Rebuild the lineage tree from a journal alone.
