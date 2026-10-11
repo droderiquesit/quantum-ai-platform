@@ -1480,6 +1480,7 @@ fn approved_grant_outside_the_plane(
         venues: terms.venues.clone(),
         expires_at: envelope.expires_at(),
         requested_by: "research.desk".to_string(),
+        exposure: envelope.exposure().cloned(),
     };
     let mut chain = ApprovalChain::new(Decimal::ZERO, key.clone())?;
     let approved = chain.grant(&request, &approval, &credentials(now)?, now)?;
@@ -6842,6 +6843,7 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
         venues: vec![venue()],
         expires_at: envelope.expires_at(),
         requested_by: grant.requested_by.clone(),
+        exposure: envelope.exposure().cloned(),
     };
     assert_eq!(grant.subject, request.subject());
     assert_eq!(

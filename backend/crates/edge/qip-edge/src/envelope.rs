@@ -10,7 +10,9 @@
 //! checks against this cannot be handed an unapproved grant. Construction is
 //! not the control; verification is, and this is where it happens.
 
-use qip_contracts::capital::{CapitalAdmission, CapitalEnvelope, Utilisation};
+use qip_contracts::capital::{
+    CapitalAdmission, CapitalEnvelope, ExposureBounds, ExposureBreach, Utilisation,
+};
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
@@ -164,6 +166,25 @@ impl VerifiedEnvelope {
         now: Timestamp,
     ) -> CapitalAdmission {
         self.inner.admit(venue, notional, used, now)
+    }
+
+    /// The liquidity and leverage bounds the grant was signed with, if any
+    /// (R12-CAPITAL-4088).
+    pub fn exposure(&self) -> Option<&ExposureBounds> {
+        self.inner.exposure()
+    }
+
+    /// Check an order against those bounds; see
+    /// [`CapitalEnvelope::check_exposure`].
+    pub fn check_exposure(
+        &self,
+        quantity: Decimal,
+        visible_depth: Decimal,
+        notional: Decimal,
+        used: &Utilisation,
+    ) -> std::result::Result<(), ExposureBreach> {
+        self.inner
+            .check_exposure(quantity, visible_depth, notional, used)
     }
 }
 

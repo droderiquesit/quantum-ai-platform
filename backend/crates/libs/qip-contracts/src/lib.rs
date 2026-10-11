@@ -81,7 +81,9 @@ pub mod symbolic;
 pub mod validated;
 pub mod world_model;
 
-pub use capital::{CapitalAdmission, CapitalEnvelope, CapitalGrant, Utilisation};
+pub use capital::{
+    CapitalAdmission, CapitalEnvelope, CapitalGrant, ExposureBounds, ExposureBreach, Utilisation,
+};
 pub use control::{ComputePlan, HedgePlan, InformationRequest, ModelVote};
 pub use control_pack::ControlPackAnnouncement;
 pub use degradation::{AllocationMode, Capability, DegradationState, Freshness, StrategyClass};

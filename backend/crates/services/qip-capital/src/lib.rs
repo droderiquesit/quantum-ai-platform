@@ -150,6 +150,7 @@ pub mod exposure;
 pub mod funding;
 pub mod ledger;
 pub mod margin;
+pub mod obligations;
 pub mod recall;
 pub mod reservation;
 pub mod shadow;
@@ -169,7 +170,10 @@ pub use compounding::{
     CapitalThreshold, CompoundingPolicy, FeeVolumeLedger, ReinvestmentDecision, ReinvestmentPlan,
     ThresholdLadder,
 };
-pub use envelope::{EnvelopeIssuer, EnvelopeTerms, MAXIMUM_ENVELOPE_VALIDITY};
+pub use envelope::{
+    DEFAULT_MAX_LEVERAGE, DEFAULT_MAX_PARTICIPATION_BP, EnvelopeIssuer, EnvelopeTerms,
+    ExposureTerms, MAXIMUM_ENVELOPE_VALIDITY,
+};
 pub use exploration::{
     DeclinedProbe, ExplorationBook, ExplorationPlan, KindRecord, MAXIMUM_PROBE_VALIDITY, Probe,
     ProbeCandidate, ProbeEvidence, ProbeKind, ProbeOutcome, ProbeSettlement, budget_for,
@@ -180,6 +184,7 @@ pub use exposure::{
 pub use margin::{
     LiquidationHorizon, LiquidityAssessment, MarginModel, MarginRequirement, assess_liquidity,
 };
+pub use obligations::LedgerObligations;
 pub use recall::{RecallOrder, RecallReason, RecallRegister, RecallState};
 pub use reservation::{MAXIMUM_RESERVATION_VALIDITY, Reservation, ReservationLedger};
 pub use shadow::{AllocationVariant, ShadowAllocation, ShadowPortfolioUniverse, ShadowScore};

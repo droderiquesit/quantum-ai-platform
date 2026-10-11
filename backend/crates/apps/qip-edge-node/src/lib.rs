@@ -210,6 +210,12 @@ pub fn assemble_with_risk(
     // defaults, so a deployed cell stops sending to a venue rejecting a
     // fifth of at least ten orders and tries it again five minutes later.
     config = config.with_venue_health(qip_routing::health::HealthPolicy::default());
+    // R12-CAPITAL-4088: a deployed cell refuses every order against an
+    // envelope without liquidity and leverage bounds. The centre's issuer
+    // signs both into every grant, so on this path an unbounded envelope is
+    // one the centre did not issue, and reading its silence as "unbounded"
+    // is how a disconnected cell builds the position the bounds exist for.
+    config = config.with_exposure_bounds_required();
     // EXEC-020: the node enables only the two modes its paper path actually
     // performs, order taking and routing, and only at the venues the cell may
     // trade. The other six modes (quoting, liquidity provision, derivatives,

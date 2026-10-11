@@ -95,6 +95,7 @@ pub fn capital_subject(strategy: &StrategyId, cell: &str) -> String {
         venues: Vec::new(),
         expires_at: Timestamp::from_secs(0),
         requested_by: String::new(),
+        exposure: None,
     }
     .subject()
 }
@@ -2038,6 +2039,10 @@ impl CentralPlane {
             venues: terms.venues.clone(),
             expires_at: envelope.expires_at(),
             requested_by: requested_by.to_string(),
+            // The issued envelope's own bounds, so the approval chain signs
+            // the same liquidity and leverage the cell will enforce and the
+            // payload comparison below covers them (R12-CAPITAL-4088).
+            exposure: envelope.exposure().cloned(),
         };
         let approved =
             self.compliance

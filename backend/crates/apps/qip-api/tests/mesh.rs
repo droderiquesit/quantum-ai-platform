@@ -2925,3 +2925,130 @@ fn a_backbone_signing_under_the_class_keys_is_verified_by_a_bundle_cell_and_refu
     );
     Ok(())
 }
+
+/// R12-CAPITAL-4088 on the binary path: the grant the centre's plane issues
+/// carries the liquidity and leverage bounds, `pending_capital` and the
+/// mesh dispatch carry them to the cell's capital inbox, and the cell's own
+/// downlink verifies them under the trust root — so the bounds the cell
+/// enforces are the ones the two approvers' grant was signed over. A copy
+/// whose participation bound was widened in transit does not verify.
+///
+/// Mutation: drop the `with_exposure` call from `EnvelopeIssuer::issue` —
+/// the verified envelope carries no bounds and the first assertion fails.
+#[test]
+fn the_plane_issued_grant_reaches_the_cells_downlink_with_its_exposure_bounds_signed() -> Result<()>
+{
+    let centre = rig(64)?;
+    let grant = {
+        let mut platform = centre
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        grant_the_desk(platform.central_mut())?
+    };
+    let issued = grant
+        .exposure()
+        .cloned()
+        .ok_or_else(|| Error::not_found("exposure bounds on the issued grant"))?;
+    assert_eq!(
+        issued.max_participation_bp,
+        qip_capital::DEFAULT_MAX_PARTICIPATION_BP
+    );
+    assert_eq!(issued.max_leverage, qip_capital::DEFAULT_MAX_LEVERAGE);
+    assert_eq!(
+        issued.capital,
+        grant.gross_limit(),
+        "the leverage is measured on the capital the grant was sized at"
+    );
+
+    // The pending set the cycle route builds, dispatched through the mesh.
+    let pending = {
+        let platform = centre
+            .platform
+            .lock()
+            .map_err(|_| Error::invalid("the platform lock is poisoned"))?;
+        qip_api::mesh::pending_capital(&platform, at(Duration::from_secs(30)))
+    };
+    assert_eq!(pending.len(), 1, "premise: the plane offers the one grant");
+    let dispatched = centre
+        .mesh
+        .lock()
+        .map_err(|_| Error::invalid("the mesh lock is poisoned"))?
+        .dispatch(pending, at(Duration::from_secs(30)));
+    assert_eq!(dispatched.delivered, 1, "{dispatched:?}");
+
+    let mut downlink = CapitalDownlink::connect(
+        DownlinkConfig::new(
+            CELL,
+            mesh_config("downlink", &format!("http://{}", centre.cell_peer)),
+        ),
+        ENVELOPE_KEY.as_bytes(),
+        Arc::new(ManualClock::new(start())) as Arc<dyn Clock>,
+        sleeper(),
+    )?;
+    let batch = downlink.poll(at(Duration::from_secs(60)))?;
+    assert_eq!(batch.verified.len(), 1, "{:?}", batch.refused);
+    let verified = &batch.verified[0];
+    assert_eq!(verified.exposure(), Some(&issued));
+    // The cell's check reads those bounds: a quarter of the visible side is
+    // the most one order may ask for.
+    let used = Utilisation::default();
+    assert!(
+        verified
+            .check_exposure(dec!("25"), dec!("100"), dec!("2500"), &used)
+            .is_ok()
+    );
+    assert!(
+        verified
+            .check_exposure(dec!("26"), dec!("100"), dec!("2600"), &used)
+            .is_err()
+    );
+
+    // Widened in transit, on a second rig so the dispatch is not deduplicated
+    // against the honest copy: same signature, different payload, refused.
+    let tampered: CapitalEnvelope = serde_json::from_str(
+        &serde_json::to_string(&grant)
+            .map_err(|e| Error::invalid(e.to_string()))?
+            .replace(
+                "\"max_participation_bp\":2500",
+                "\"max_participation_bp\":10000",
+            ),
+    )
+    .map_err(|e| Error::invalid(e.to_string()))?;
+    assert_eq!(
+        tampered
+            .exposure()
+            .map(|bounds| bounds.max_participation_bp),
+        Some(10_000),
+        "premise: the edit took"
+    );
+    let other = rig(64)?;
+    let dispatched = other
+        .mesh
+        .lock()
+        .map_err(|_| Error::invalid("the mesh lock is poisoned"))?
+        .dispatch(
+            vec![PendingGrant {
+                cell: CELL.to_string(),
+                envelope: tampered,
+            }],
+            at(Duration::from_secs(30)),
+        );
+    assert_eq!(dispatched.delivered, 1, "{dispatched:?}");
+    let mut downlink = CapitalDownlink::connect(
+        DownlinkConfig::new(
+            CELL,
+            mesh_config("downlink-tampered", &format!("http://{}", other.cell_peer)),
+        ),
+        ENVELOPE_KEY.as_bytes(),
+        Arc::new(ManualClock::new(start())) as Arc<dyn Clock>,
+        sleeper(),
+    )?;
+    let batch = downlink.poll(at(Duration::from_secs(60)))?;
+    assert!(
+        batch.verified.is_empty() && batch.refused.len() == 1,
+        "a widened bound verified at the cell: {:?}",
+        batch.refused
+    );
+    Ok(())
+}

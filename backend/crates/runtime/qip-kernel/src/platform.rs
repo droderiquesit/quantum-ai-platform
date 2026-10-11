@@ -1019,6 +1019,13 @@ pub struct Platform {
     /// question — how much the platform may stand behind now — and two would
     /// be two answers to it.
     governor: crate::survival::SurvivalGovernor,
+    /// The ledger of record's margin, collateral and unsettled cash, as last
+    /// observed (R12-CAPITAL-4087). `None` until a reading arrives; see
+    /// [`Self::observe_ledger_obligations`].
+    ledger_obligations: Option<qip_capital::LedgerObligations>,
+    /// Desk sale proceeds the venue's settlement calendar has not yet made
+    /// usable (R12-CAPITAL-4087). See [`UnsettledSale`].
+    unsettled_sales: Vec<UnsettledSale>,
     /// Proposals produced since assembly, including those aged out above.
     proposals_made: u64,
     /// Corporate actions absorbed whose ex-date the tape has not yet reached,
@@ -2148,6 +2155,20 @@ const CAPITAL_HORIZON: Duration = Duration::from_days(1);
 /// A single region because one process trades one book. A deployment spanning
 /// regions runs a cell per region, which is what `docs/adr/0008` describes.
 const HOME_REGION: &str = "home";
+
+/// The most in-flight sales the settlement register holds before it folds
+/// new proceeds into the entry released last (see
+/// `Platform::register_settlement`). Far above a T+1 desk's daily fills.
+const MAX_UNSETTLED_SALES: usize = 4_096;
+
+/// One desk sale whose proceeds the venue's calendar has not yet made usable.
+/// `available_at` is `None` for a venue with no calendar: withheld, never
+/// assumed settled.
+#[derive(Clone, Debug, PartialEq)]
+struct UnsettledSale {
+    available_at: Option<Timestamp>,
+    proceeds: Decimal,
+}
 
 /// How many of a subject's most recent returns stand for "now" when the
 /// platform describes the conditions a routing decision was made under.
@@ -4857,6 +4878,8 @@ impl Platform {
             constructor: PortfolioConstructor::new(config.mandate, router)?,
             pending_theses: Vec::new(),
             governor: crate::survival::SurvivalGovernor::default(),
+            ledger_obligations: None,
+            unsettled_sales: Vec::new(),
             episodes: EpisodicMemory::default(),
             pending_episodes: Vec::new(),
             precedents: Vec::new(),
@@ -7287,6 +7310,16 @@ impl Platform {
                         fill.at,
                     );
                     self.aggregate_fill(&fill.object_id, moved);
+                    // From the same record, so a restart withholds what the
+                    // process it replaced withheld.
+                    self.register_settlement(
+                        &fill.venue,
+                        fill.side,
+                        fill.price,
+                        fill.quantity,
+                        fill.costs,
+                        fill.at,
+                    );
                 }
                 Entry::Adjustment(adjusted) => self
                     .capital
@@ -9275,7 +9308,148 @@ impl Platform {
             gross: RiskState::from_figures(&self.aggregates).gross_exposure,
             ..crate::survival::LedgerFigures::default()
         }
-        .with_obligations(&review)
+        .with_obligations(&crate::survival::CombinedObligations {
+            review: &review,
+            ledger: self.ledger_obligations.as_ref(),
+            unsettled_sales: self.unsettled_sale_proceeds(now)?,
+        })
+    }
+
+    /// Withhold a desk sale's proceeds until the venue's settlement calendar
+    /// says they are usable (R12-CAPITAL-4087).
+    ///
+    /// The desk venue is declared T+1 in the settlement book at assembly,
+    /// and the simulated broker books the cash at the fill; until this the
+    /// survival waterfall believed the second and the pre-positioning
+    /// planner the first, two claims about one fact. The calendar is the
+    /// claim with a source, so proceeds are withheld until its
+    /// `available_at`. A venue with no calendar is withheld without a
+    /// release instant rather than read as instant — the permissive guess —
+    /// and the problem is said on the cycle. Purchases owe nothing later
+    /// here: the broker has already debited the cash.
+    fn register_settlement(
+        &mut self,
+        venue: &str,
+        side: Side,
+        price: Decimal,
+        quantity: Decimal,
+        costs: Decimal,
+        at: Timestamp,
+    ) {
+        if side != Side::Sell {
+            return;
+        }
+        let Some(proceeds) = price
+            .checked_mul(quantity)
+            .and_then(|gross| gross.checked_sub(costs))
+            .filter(|proceeds| proceeds.is_positive())
+        else {
+            return;
+        };
+        let available_at = match self
+            .pre_positioner
+            .settlement()
+            .calendar_for(&VenueId::new(venue), &CapitalRegion::new(HOME_REGION))
+            .and_then(|calendar| calendar.quote(at))
+        {
+            Ok(quote) => Some(quote.available_at),
+            Err(error) => {
+                self.capture_problems.push(format!(
+                    "a sale at {venue} has no settlement date ({}); its {proceeds} of proceeds \
+                     is withheld from survival sizing until the venue has a calendar",
+                    error.message()
+                ));
+                None
+            }
+        };
+        // Settled entries are dropped on the way in, so the register holds
+        // only what is in flight: a few days of sales at T+n.
+        self.unsettled_sales
+            .retain(|sale| sale.available_at.is_none_or(|due| due > at));
+        let sale = UnsettledSale {
+            available_at,
+            proceeds,
+        };
+        if self.unsettled_sales.len() >= MAX_UNSETTLED_SALES {
+            // Bounded, and folded the restrictive way: the new proceeds join
+            // the entry released last, at the later of the two instants, so
+            // the cap can delay a release and never bring one forward.
+            if let Some(last) = self
+                .unsettled_sales
+                .iter_mut()
+                .max_by_key(|entry| entry.available_at.map_or(i64::MAX, |due| due.as_secs()))
+                && let Some(folded) = last.proceeds.checked_add(sale.proceeds)
+            {
+                last.proceeds = folded;
+                last.available_at = match (last.available_at, sale.available_at) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    _ => None,
+                };
+                return;
+            }
+            // A fold that cannot be represented is not dropped: the entry
+            // is kept on its own, so nothing is released by the overflow.
+        }
+        self.unsettled_sales.push(sale);
+    }
+
+    /// Desk sale proceeds still in settlement at `now`: what the survival
+    /// waterfall's settlement tier withholds beside the ledger's accruals.
+    pub fn unsettled_sale_proceeds(&self, now: Timestamp) -> Result<Decimal> {
+        self.unsettled_sales
+            .iter()
+            .filter(|sale| sale.available_at.is_none_or(|due| due > now))
+            .try_fold(Decimal::ZERO, |total, sale| {
+                total
+                    .checked_add(sale.proceeds)
+                    .ok_or_else(|| Error::numeric("unsettled sale proceeds overflow"))
+            })
+    }
+
+    /// Hand the survival waterfall what the ledger of record holds: margin
+    /// booked, collateral pledged, and cash owed and not yet settled, folded
+    /// from `qip-ledgerd`'s balances (R12-CAPITAL-4087).
+    ///
+    /// Until this is called the waterfall's collateral and settlement tiers
+    /// read zero, because the cross-margin review — the only other source —
+    /// can see neither. Refuses a reading in a unit other than the one the
+    /// platform sizes in, and one older than the reading it holds: balances
+    /// delivered out of order would put back an obligation the ledger has
+    /// since cleared, or take away one it has since booked. The survival
+    /// ceiling the Risk Gate reads is re-derived at once, as
+    /// [`Self::set_survival_policy`] does, so a pledge binds the next order
+    /// and not the next thesis.
+    pub fn observe_ledger_obligations(
+        &mut self,
+        obligations: qip_capital::LedgerObligations,
+    ) -> Result<()> {
+        if obligations.unit() != SETTLEMENT_CURRENCY.as_str() {
+            return Err(Error::invalid(format!(
+                "the ledger reading is in {} and the survival waterfall sizes in {}; read the \
+                 ledger in {} instead",
+                obligations.unit(),
+                SETTLEMENT_CURRENCY,
+                SETTLEMENT_CURRENCY
+            )));
+        }
+        if let Some(held) = &self.ledger_obligations
+            && obligations.as_of() < held.as_of()
+        {
+            return Err(Error::invalid(format!(
+                "the ledger reading as of {} is older than the one held as of {}; a stale \
+                 reading would restore obligations the ledger has since moved",
+                obligations.as_of().to_rfc3339(),
+                held.as_of().to_rfc3339()
+            )));
+        }
+        self.ledger_obligations = Some(obligations);
+        self.seed_survival_ceiling(self.context.now());
+        Ok(())
+    }
+
+    /// The ledger reading the survival waterfall withholds from, if any.
+    pub fn ledger_obligations(&self) -> Option<&qip_capital::LedgerObligations> {
+        self.ledger_obligations.as_ref()
     }
 
     /// Derive the survival ceiling with no construction: at assembly and when
@@ -17517,6 +17691,14 @@ impl Platform {
                 fill.at,
             );
             self.aggregate_fill(object_id.as_str(), moved);
+            self.register_settlement(
+                venue.as_str(),
+                side,
+                fill.price,
+                fill.quantity,
+                fill.costs,
+                fill.at,
+            );
         }
 
         // The part of the order the venue did not fill (MODEL-039). The

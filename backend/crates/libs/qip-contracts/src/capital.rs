@@ -44,6 +44,122 @@ pub struct CapitalEnvelope {
     /// product class or a leverage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bounds: Option<AuthorityBounds>,
+    /// R12-CAPITAL-4088: the liquidity and leverage bounds, inside the
+    /// signed payload when present. Absent on an envelope issued before they
+    /// existed; such an envelope still verifies, and a cell built with
+    /// `CellConfig::with_exposure_bounds_required` refuses every order
+    /// against it rather than reading the absence as "unbounded".
+    ///
+    /// Boxed so the envelope a cell holds by value in every channel slot and
+    /// deployment does not grow by the bounds' size for every envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exposure: Option<Box<ExposureBounds>>,
+}
+
+/// The fields of [`ExposureBounds`] (R12-CAPITAL-4088).
+///
+/// The envelope's money limits say how much a cell may commit; they say
+/// nothing about *where* or *on what*. Two positions inside the same gross
+/// limit can differ in everything that matters to a disconnected cell: one
+/// was built at a tenth of a venue's visible depth and can be exited, the
+/// other took the whole book and cannot; one is carried on the equity the
+/// grant was backed by, the other on that equity after the loss the cell has
+/// already taken. These two bounds are what the cell checks for each, before
+/// an order exists.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposureBoundsFields {
+    pub schema_version: u32,
+    /// The largest share of the visible depth on the side an order takes
+    /// that the order may ask for, in basis points of that depth.
+    pub max_participation_bp: u32,
+    /// The most gross the grant may carry over its remaining equity —
+    /// `capital` less the realised loss — after the order; one is unlevered.
+    pub max_leverage: Decimal,
+    /// The equity the grant is backed by: what the leverage is measured
+    /// against. Never less than the gross limit over the leverage, which
+    /// [`CapitalEnvelope::with_exposure`] checks.
+    pub capital: Decimal,
+}
+
+/// Validated liquidity and leverage bounds. Built only through
+/// [`Validated::new`]; deserialisation runs the same refusals, so a bound
+/// widened on the wire is refused at decode rather than enforced as sent.
+pub type ExposureBounds = Validated<ExposureBoundsFields>;
+
+impl Contract for ExposureBoundsFields {
+    const NAME: &'static str = "ExposureBounds";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    /// Refuses a participation of zero (a grant that may take no liquidity
+    /// is a grant of nothing, which should be refused at issue and say so)
+    /// or above the whole visible side, a leverage below one, and a
+    /// non-positive capital. Nothing is clamped.
+    fn check(&self) -> Result<()> {
+        let c = Self::NAME;
+        if self.max_participation_bp == 0 || self.max_participation_bp > MAX_BP {
+            return refuse(
+                c,
+                format!(
+                    "states a participation of {} bp of visible depth; give one in (0, {MAX_BP}]",
+                    self.max_participation_bp
+                ),
+            );
+        }
+        if self.max_leverage < Decimal::ONE {
+            return refuse(
+                c,
+                format!(
+                    "states leverage {}; one is unlevered and less is a smaller gross limit \
+                     stated in the wrong field",
+                    self.max_leverage
+                ),
+            );
+        }
+        positive(c, "capital", self.capital)
+    }
+}
+
+impl ExposureBounds {
+    /// The bounds at the current schema version.
+    pub fn bounded(
+        max_participation_bp: u32,
+        max_leverage: Decimal,
+        capital: Decimal,
+    ) -> Result<Self> {
+        Validated::new(ExposureBoundsFields {
+            schema_version: ExposureBoundsFields::SCHEMA_VERSION,
+            max_participation_bp,
+            max_leverage,
+            capital,
+        })
+    }
+}
+
+/// Which exposure bound an order breached, so a cell journals it under the
+/// gate that names it rather than under the envelope's money gate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExposureBreach {
+    /// The envelope carries no exposure bounds at all.
+    Unbounded(String),
+    /// The order asks for more of the visible depth than the grant allows,
+    /// or there is no visible depth to measure it against.
+    Liquidity(String),
+    /// The order would carry the grant past its leverage on remaining
+    /// equity, or there is no remaining equity to carry it on.
+    Leverage(String),
+}
+
+impl ExposureBreach {
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::Unbounded(reason) | Self::Liquidity(reason) | Self::Leverage(reason) => reason,
+        }
+    }
 }
 
 /// What kind of exposure a grant authorises beyond its money limits
@@ -145,7 +261,115 @@ impl CapitalEnvelope {
             approver,
             signature: signature.into(),
             bounds: None,
+            exposure: None,
         })
+    }
+
+    /// This envelope with liquidity and leverage bounds, and its signature
+    /// cleared: the bounds enter the signed payload, so a signature taken
+    /// before them is over the wrong thing. Refuses an envelope already
+    /// carrying exposure bounds — a changed bound is a new envelope — and a
+    /// gross limit the leverage could never carry on the stated capital,
+    /// which would be a grant whose two bounds contradict each other.
+    pub fn with_exposure(mut self, exposure: ExposureBounds) -> Result<Self> {
+        if self.exposure.is_some() {
+            return Err(Error::denied(
+                "this envelope already carries exposure bounds; a changed bound is a new \
+                 envelope, signed anew",
+            ));
+        }
+        let carried = exposure
+            .capital
+            .checked_mul(exposure.max_leverage)
+            .ok_or_else(|| Error::numeric("the envelope's capital times its leverage overflows"))?;
+        if self.gross_limit > carried {
+            return Err(Error::invalid(format!(
+                "a gross limit of {} cannot be carried at leverage {} on capital {}; raise the \
+                 capital or lower the gross limit rather than issue a grant whose bounds \
+                 contradict",
+                self.gross_limit, exposure.max_leverage, exposure.capital
+            )));
+        }
+        self.exposure = Some(Box::new(exposure));
+        self.signature = String::new();
+        Ok(self)
+    }
+
+    pub fn exposure(&self) -> Option<&ExposureBounds> {
+        self.exposure.as_deref()
+    }
+
+    /// Check an order against the envelope's liquidity and leverage bounds
+    /// (R12-CAPITAL-4088), separately from [`Self::admit`] so the caller can
+    /// journal a breach under the gate that names it.
+    ///
+    /// `quantity` is what the order asks for and `visible_depth` the size
+    /// resting on the side it takes; `notional` is its cash value. Visible
+    /// depth of zero refuses: participation in a book that shows nothing
+    /// cannot be measured, and an order the cell cannot measure is not one it
+    /// may assume is small. Leverage is the gross committed after the order
+    /// over the capital less the realised loss; equity at or below zero
+    /// refuses whatever the order.
+    pub fn check_exposure(
+        &self,
+        quantity: Decimal,
+        visible_depth: Decimal,
+        notional: Decimal,
+        used: &Utilisation,
+    ) -> std::result::Result<(), ExposureBreach> {
+        let Some(bounds) = &self.exposure else {
+            return Err(ExposureBreach::Unbounded(
+                "the envelope carries no liquidity or leverage bound, so it authorises no \
+                 exposure this cell can check; ask the centre for a bounded envelope"
+                    .to_string(),
+            ));
+        };
+        if !visible_depth.is_positive() {
+            return Err(ExposureBreach::Liquidity(format!(
+                "the book shows {visible_depth} on the side the order takes, so its \
+                 participation cannot be measured against the {} bp bound",
+                bounds.max_participation_bp
+            )));
+        }
+        let allowed = visible_depth
+            .checked_mul(Decimal::from_int(i64::from(bounds.max_participation_bp)))
+            .and_then(|scaled| scaled.checked_div(Decimal::from_int(i64::from(MAX_BP))))
+            .ok_or_else(|| {
+                ExposureBreach::Liquidity(
+                    "the participation bound cannot be computed on this depth".to_string(),
+                )
+            })?;
+        if quantity > allowed {
+            return Err(ExposureBreach::Liquidity(format!(
+                "the order asks for {quantity} against {visible_depth} visible, above the {allowed} \
+                 that {} bp of it allows",
+                bounds.max_participation_bp
+            )));
+        }
+        let equity = bounds
+            .capital
+            .checked_sub(used.realised_loss)
+            .filter(|equity| equity.is_positive())
+            .ok_or_else(|| {
+                ExposureBreach::Leverage(format!(
+                    "realised loss {} leaves no equity of the {} capital to carry gross on",
+                    used.realised_loss, bounds.capital
+                ))
+            })?;
+        let gross_after = used.gross_committed.checked_add(notional).ok_or_else(|| {
+            ExposureBreach::Leverage("the gross after the order overflows".into())
+        })?;
+        let carried = equity.checked_mul(bounds.max_leverage).ok_or_else(|| {
+            ExposureBreach::Leverage("the leverage bound cannot be computed".to_string())
+        })?;
+        if gross_after > carried {
+            return Err(ExposureBreach::Leverage(format!(
+                "gross of {gross_after} after the order exceeds the {carried} that leverage {} \
+                 allows on equity of {equity}",
+                bounds.max_leverage
+            )));
+        }
+        Ok(())
     }
 
     /// This envelope with authority bounds, and its signature cleared: the
@@ -246,13 +470,27 @@ impl CapitalEnvelope {
             self.expires_at.as_secs(),
             self.approver
         );
-        match &self.bounds {
+        let base = match &self.bounds {
             None => base,
             Some(bounds) => format!(
                 "{base}|bounds|{}|{}|{}",
                 bounds.max_leverage,
                 bounds.product_classes.join(","),
                 bounds.regulated_functions.join(",")
+            ),
+        };
+        // The schema version is in the payload so a later revision of the
+        // bounds cannot be verified as this one: a cell that reads version 1
+        // and is handed version 2's bytes refuses the signature rather than
+        // enforcing a subset of what was signed.
+        match &self.exposure {
+            None => base,
+            Some(exposure) => format!(
+                "{base}|exposure.v{}|{}|{}|{}",
+                exposure.schema_version,
+                exposure.max_participation_bp,
+                exposure.max_leverage,
+                exposure.capital
             ),
         }
     }

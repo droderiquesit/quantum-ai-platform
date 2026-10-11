@@ -34,10 +34,15 @@
 //! trait rather than as numbers a caller types in, because "a reserve typed in
 //! by a caller is not an account" (R12-CAPITAL-4087). The platform implements
 //! it over the cross-margin review it already runs every cycle
-//! (`crate::cross_margin`); a ledger of record that carries margin, collateral
-//! and settlement accounts implements the same three methods and replaces it
-//! without touching the waterfall. What the review cannot see it says, in the
-//! implementation's doc, rather than reading as zero by omission.
+//! (`crate::cross_margin`) **combined with the ledger of record** once one has
+//! been observed ([`CombinedObligations`], fed by
+//! `Platform::observe_ledger_obligations` from `qip-ledgerd`'s balances): the
+//! ledger's booked margin where it exceeds the review's, its pledged
+//! collateral beyond that margin, and its owed, unsettled accruals. Until a
+//! ledger reading arrives, collateral and settlement read zero because
+//! nothing has been read — the review has no source for either — and that is
+//! the gap a deployment closes by feeding the ledger, not a figure anybody
+//! measured.
 //!
 //! # The ceiling the gate reads, and the reservations inside it
 //!
@@ -367,10 +372,10 @@ pub trait CapitalObligations {
 ///   `crate::cross_margin::review`), so it is the cover for the margin above
 ///   and not a second encumbrance. No pledge outside a margin domain is
 ///   recorded anywhere in this platform; one would be the ledger's to report.
-/// * **Settlement** is zero for the same reason: the simulated venue books
-///   cash at the fill, so no executed trade owes anything later. A venue that
-///   settles T+n reports its unsettled cash through a ledger implementing this
-///   trait, not through this one.
+/// * **Settlement** is zero: the review reads balances and exposure, not
+///   trade dates. Since R12-CAPITAL-4087 the platform withholds a desk sale's
+///   proceeds until the desk venue's T+1 calendar makes them usable, and the
+///   ledger's owed accruals, both through [`CombinedObligations`].
 impl CapitalObligations for crate::cross_margin::CrossMarginReview {
     fn margin_required(&self) -> Result<Decimal> {
         if self.maintenance_required.is_negative() {
@@ -389,6 +394,101 @@ impl CapitalObligations for crate::cross_margin::CrossMarginReview {
 
     fn settlement_due(&self) -> Result<Decimal> {
         Ok(Decimal::ZERO)
+    }
+}
+
+/// The ledger of record as an obligation source (R12-CAPITAL-4087): margin
+/// booked, collateral pledged, and cash owed and not yet settled, folded from
+/// `qip-ledgerd`'s balances by [`qip_capital::LedgerObligations`]. See that
+/// module for what each figure counts and what it refuses.
+///
+/// Collateral here is the whole pledge. [`CombinedObligations`] is what the
+/// platform sizes against, and it withholds only the part of the pledge the
+/// margin does not already account for.
+impl CapitalObligations for qip_capital::LedgerObligations {
+    fn margin_required(&self) -> Result<Decimal> {
+        Ok(self.margin())
+    }
+
+    fn collateral_encumbered(&self) -> Result<Decimal> {
+        Ok(self.collateral())
+    }
+
+    fn settlement_due(&self) -> Result<Decimal> {
+        Ok(self.settlement())
+    }
+}
+
+/// The cross-margin review and the ledger of record, read together: what
+/// the platform's waterfall withholds once the ledger has been observed.
+///
+/// * **Margin** is the larger of the two. They are two claims about one
+///   fact — the review's a model rate on the gross carried, the ledger's a
+///   requirement a venue made and the ledger booked — and two claims about
+///   one fact will disagree; withholding the smaller would release the
+///   difference on whichever claim happened to be lower.
+/// * **Collateral** is the ledger's pledge less that margin, never below
+///   zero. A pledge is how a margin requirement is met, so the part of it
+///   that covers the margin is the margin's cover and is already withheld;
+///   the excess is encumbered beyond it. Withholding both whole would count
+///   the same money twice, which is the trait's own rule.
+/// * **Settlement** is the ledger's owed accruals plus the desk's sale
+///   proceeds still in settlement on the venue's own calendar. The review
+///   sees neither.
+///
+/// With no ledger observed this is the review alone — collateral and
+/// settlement read zero because nothing has been read, which the platform
+/// states on [`crate::Platform::observe_ledger_obligations`] rather than
+/// here.
+#[derive(Debug)]
+pub struct CombinedObligations<'a, R: CapitalObligations> {
+    pub review: &'a R,
+    pub ledger: Option<&'a qip_capital::LedgerObligations>,
+    /// Desk sale proceeds the venue's settlement calendar has not yet made
+    /// usable (`Platform::unsettled_sale_proceeds`), withheld on the
+    /// settlement tier beside the ledger's owed accruals.
+    pub unsettled_sales: Decimal,
+}
+
+impl<R: CapitalObligations> CapitalObligations for CombinedObligations<'_, R> {
+    fn margin_required(&self) -> Result<Decimal> {
+        let reviewed = self.review.margin_required()?;
+        Ok(match self.ledger {
+            Some(ledger) => reviewed.max(ledger.margin()),
+            None => reviewed,
+        })
+    }
+
+    fn collateral_encumbered(&self) -> Result<Decimal> {
+        let Some(ledger) = self.ledger else {
+            return self.review.collateral_encumbered();
+        };
+        let margin = self.margin_required()?;
+        let excess = ledger
+            .collateral()
+            .checked_sub(margin)
+            .ok_or_else(|| Error::numeric("collateral less margin overflows".to_string()))?;
+        let excess = excess.max(Decimal::ZERO);
+        excess
+            .checked_add(self.review.collateral_encumbered()?)
+            .ok_or_else(|| Error::numeric("encumbered collateral overflows".to_string()))
+    }
+
+    fn settlement_due(&self) -> Result<Decimal> {
+        if self.unsettled_sales.is_negative() {
+            return Err(Error::invalid(format!(
+                "unsettled sale proceeds read {}; proceeds below nothing would release capital",
+                self.unsettled_sales
+            )));
+        }
+        let owed = self
+            .ledger
+            .map_or(Decimal::ZERO, |ledger| ledger.settlement());
+        self.review
+            .settlement_due()?
+            .checked_add(owed)
+            .and_then(|due| due.checked_add(self.unsettled_sales))
+            .ok_or_else(|| Error::numeric("unsettled cash overflows".to_string()))
     }
 }
 
@@ -1078,6 +1178,85 @@ mod tests {
             settlement: Decimal::ZERO,
         };
         assert!(figures(dec!("850000")).with_obligations(&negative).is_err());
+    }
+
+    /// R12-CAPITAL-4087: the ledger's pledge and its unsettled cash are
+    /// withheld beside the review's margin, and the part of the pledge that
+    /// covers the margin is not withheld twice.
+    ///
+    /// Mutations, each fired and restored: return `Decimal::ZERO` from
+    /// `CombinedObligations::settlement_due`'s ledger arm (released rises by
+    /// the 30,000 owed); withhold the whole pledge rather than its excess
+    /// over margin (released falls by a further 80,000); take the smaller
+    /// margin instead of the larger (margin reads 60,000).
+    #[test]
+    fn the_ledgers_pledge_and_unsettled_cash_are_withheld_and_its_margin_cover_is_not_counted_twice()
+     {
+        use qip_contracts::ledger::Account;
+        let balances: std::collections::BTreeMap<(Account, String), Decimal> = [
+            (
+                Account::Margin {
+                    venue: "XLON".to_string(),
+                },
+                dec!("60000"),
+            ),
+            (
+                Account::Collateral {
+                    counterparty: "prime".to_string(),
+                },
+                dec!("100000"),
+            ),
+            (
+                Account::Accrual {
+                    accrual_type: "funding".to_string(),
+                },
+                dec!("-30000"),
+            ),
+        ]
+        .into_iter()
+        .map(|(account, amount)| ((account, "USD".to_string()), amount))
+        .collect();
+        let ledger = qip_capital::LedgerObligations::from_balances(&balances, "USD", at()).unwrap();
+        // The review's model margin is the larger claim here.
+        let review = Ledger {
+            margin: dec!("80000"),
+            collateral: Decimal::ZERO,
+            settlement: Decimal::ZERO,
+        };
+
+        let mut governor = SurvivalGovernor::default();
+        let review_only = governor
+            .size(
+                figures(dec!("850000")).with_obligations(&review).unwrap(),
+                None,
+                0.20,
+                &views(),
+                at(),
+            )
+            .unwrap();
+        // Premise: without the ledger, collateral and settlement withhold
+        // nothing, which is the gap this closes.
+        assert_eq!(review_only.survival.collateral_posted, Decimal::ZERO);
+        assert_eq!(review_only.survival.settlement_required, Decimal::ZERO);
+
+        let combined = CombinedObligations {
+            review: &review,
+            ledger: Some(&ledger),
+            unsettled_sales: Decimal::ZERO,
+        };
+        let budget = governor
+            .size(
+                figures(dec!("850000")).with_obligations(&combined).unwrap(),
+                None,
+                0.20,
+                &views(),
+                at(),
+            )
+            .unwrap();
+        assert_eq!(budget.survival.margin_required, dec!("80000"));
+        assert_eq!(budget.survival.collateral_posted, dec!("20000"));
+        assert_eq!(budget.survival.settlement_required, dec!("30000"));
+        assert_eq!(budget.released, review_only.released - dec!("50000"));
     }
 
     /// The emergency reserve is withheld before opportunity and reported as
