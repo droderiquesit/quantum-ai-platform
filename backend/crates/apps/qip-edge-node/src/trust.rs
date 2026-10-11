@@ -79,7 +79,10 @@ pub fn choose_root(
                     Error::denied(format!("configuration: {}", error.message()))
                 })?;
             }
-            TrustRoot::shared_key(key)
+            // The same cut, carried into every check: the start-up refusal
+            // alone let a node started before the date verify with the key
+            // for as long as it stayed up.
+            TrustRoot::shared_key_in(key, deployment)
         }
         (None, None) => Err(Error::invalid(format!(
             "configuration: the node has nothing to verify the centre against; set \
@@ -162,5 +165,38 @@ mod tests {
         assert!(choose_root(None, Some(KEY), Deployment::Dev, after).is_err());
         assert!(choose_root(None, Some(KEY), Deployment::Local, after).is_ok());
         assert!(choose_root(None, None, Deployment::Local, after).is_err());
+    }
+
+    /// The failure this prevents: a node started the day before the removal
+    /// date passed the start-up refusal and then verified under the shared
+    /// key for as long as it ran. Mutation: build the root with
+    /// `TrustRoot::shared_key_in(key, Deployment::Local)` in `choose_root`
+    /// and the deployed node's root accepts the MAC after the date; build it
+    /// with `TrustRoot::shared_key(key)` and the local one refuses it. Either
+    /// fails this.
+    #[test]
+    fn a_deployed_node_started_before_the_removal_date_refuses_the_shared_key_once_it_passes() {
+        let before = Timestamp::from_civil(2027, 1, 31);
+        let after = Timestamp::from_civil(2027, 2, 1);
+        let mac = qip_core::hash::to_hex(&qip_core::hmac_sha256(KEY, b"payload"));
+        let deployed = choose_root(None, Some(KEY), Deployment::Dev, before)
+            .expect("premise: the deployed node starts before the date");
+        assert!(
+            deployed
+                .check(ArtefactClass::Policy, b"payload", &mac, before)
+                .is_ok()
+        );
+        assert!(
+            deployed
+                .check(ArtefactClass::Policy, b"payload", &mac, after)
+                .is_err(),
+            "a deployed node kept verifying with the shared key past its removal date"
+        );
+        let local = choose_root(None, Some(KEY), Deployment::Local, before).expect("local starts");
+        assert!(
+            local
+                .check(ArtefactClass::Policy, b"payload", &mac, after)
+                .is_ok()
+        );
     }
 }

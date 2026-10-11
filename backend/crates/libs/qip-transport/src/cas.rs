@@ -473,8 +473,13 @@ struct IssuedResponse {
 
 /// Something that turns a public key into a certificate chain, leaf first.
 /// [`CasClient`] is the production one; a test's issuer mints locally.
+///
+/// Named `issue_certificate`, not `issue`: `issue` is the capital
+/// envelope's verb, and qip-acceptance's `security.rs` review list of
+/// functions that move a capital weight finds callers by that name. A
+/// certificate is not capital, and the plain name made it read as one.
 pub trait CertificateIssuer: Send + Sync + std::fmt::Debug {
-    fn issue(
+    fn issue_certificate(
         &self,
         key: &WorkloadKey,
         certificate_id: &str,
@@ -619,7 +624,7 @@ fn parse_pem_certificates(pem: &str, field: &str) -> Result<Vec<CertificateDer<'
 }
 
 impl CertificateIssuer for CasClient {
-    fn issue(
+    fn issue_certificate(
         &self,
         key: &WorkloadKey,
         certificate_id: &str,
@@ -823,7 +828,7 @@ impl Renewer {
             self.clock.now().as_secs(),
             qip_core::hash::to_hex(&suffix)
         );
-        let chain = self.issuer.issue(&key, &certificate_id)?;
+        let chain = self.issuer.issue_certificate(&key, &certificate_id)?;
         self.identity.install(&key, chain)
     }
 

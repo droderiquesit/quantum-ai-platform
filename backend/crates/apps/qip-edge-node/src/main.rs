@@ -46,7 +46,7 @@
 use qip_arbitrage::SearchSettings;
 use qip_contracts::signal::StrategyId;
 use qip_contracts::venue::VenueId;
-use qip_core::deployment::Deployment;
+use qip_core::deployment::{COMPUTE_ENGINE_PRODUCT_FILE, Deployment, DeploymentMarkers};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Decimal, Duration, SystemClock};
 use qip_edge::cell::{CellConfig, Placer, PricingPolicy};
@@ -311,8 +311,20 @@ impl NodeConfig {
         // outright: a node whose allocation is unparseable or zero must never
         // reach the cell with a number it made up in place of one.
         let region_allocation = RegionCapital::read(Some(&region_allocation))?;
-        let deployment = Deployment::parse(Some(&deployment_name))
-            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+        // `local` is refused on a Compute Engine guest (the DMI product
+        // name) or under Cloud Run or Kubernetes: `add-metadata` setting
+        // local+plaintext must not re-admit the seed key and a plaintext
+        // fabric link on a deployed node.
+        let deployment = Deployment::parse_observed(
+            Some(&deployment_name),
+            &DeploymentMarkers::observe(
+                &|name| std::env::var(name).ok(),
+                std::fs::read_to_string(COMPUTE_ENGINE_PRODUCT_FILE)
+                    .ok()
+                    .as_deref(),
+            ),
+        )
+        .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
 
         let venues: Vec<VenueId> = venues
             .split(',')
@@ -422,6 +434,7 @@ impl NodeConfig {
             std::env::var(LEASE_VARIABLE).ok().as_deref(),
             std::env::var(ROLE_VARIABLE).ok().as_deref(),
             std::env::var(NAME_VARIABLE).ok().as_deref(),
+            deployment,
         )?;
         let risk_limits = CellRiskLimits::read(
             std::env::var(RISK_LIMITS_VARIABLE).ok().as_deref(),

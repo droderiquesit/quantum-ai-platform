@@ -1144,10 +1144,14 @@ pub fn run(arguments: &[String], environment: &Environment) -> Result<Outcome> {
     let arguments = parse_arguments(arguments)?;
     let peer = loopback_peer(&arguments.peer)?;
     let fixture = load_fixture(&arguments.fixture)?;
-    // Fail closed: `Deployment::parse` refuses an absent value, so a run that
-    // forgot to say where it is cannot reach the plaintext link or the shared
-    // key only a workstation may choose.
-    let deployment = Deployment::parse(environment.variable(DEPLOYMENT_VARIABLE).as_deref())?;
+    // Fail closed: an absent value is refused, so a run that forgot to say
+    // where it is cannot reach the plaintext link or the shared key only a
+    // workstation may choose; and `local` is refused on a machine that can
+    // see it is deployed.
+    let deployment = Deployment::parse_observed(
+        environment.variable(DEPLOYMENT_VARIABLE).as_deref(),
+        &environment.deployment_markers(),
+    )?;
     let link = LinkSecurity::from_lookup(deployment, &|name| environment.variable(name))?;
     let now = environment.clock().now();
     let signer = read_signer(environment, deployment, now)?;

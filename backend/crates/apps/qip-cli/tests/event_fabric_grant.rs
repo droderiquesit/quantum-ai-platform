@@ -872,6 +872,41 @@ fn the_shared_fixture_key_signs_only_in_a_local_deployment() {
     assert!(seen.published().is_empty());
 }
 
+/// `QIP_DEPLOYMENT=local` on a machine that can see it is deployed is
+/// refused before any key, token or link is read: `local` is what admits
+/// the plaintext link and the shared key, and on Cloud Run it would be one
+/// unreviewed environment edit away.
+///
+/// Mutation: pass `&DeploymentMarkers::none()` to `parse_observed` in
+/// `grant::run` and the Cloud Run run publishes; the `expect_err` fires.
+#[test]
+fn a_local_deployment_is_refused_where_the_process_can_see_it_is_deployed() {
+    // Premise: the same local wiring publishes with no marker.
+    let (environment, seen, _) = wired("markers-premise");
+    grant::run(
+        &fixture_arguments(&committed_fixture(), LOOPBACK),
+        &environment,
+    )
+    .expect("a local run with no marker publishes");
+    assert!(!seen.published().is_empty());
+
+    let mut wiring = Wiring::new("markers-cloud-run");
+    wiring.set("K_SERVICE", "qip-api");
+    let (environment, seen) = wiring.environment();
+    let error = grant::run(
+        &fixture_arguments(&committed_fixture(), LOOPBACK),
+        &environment,
+    )
+    .expect_err("local was admitted on Cloud Run");
+    assert!(
+        error.message().contains("K_SERVICE"),
+        "refused for the wrong reason: {}",
+        error.message()
+    );
+    assert!(seen.connects().is_empty());
+    assert!(seen.published().is_empty());
+}
+
 /// An asymmetric signer is proven against the trust bundle before anything
 /// is signed, and the API's other refusals hold: a local signer outside a
 /// `local` deployment, and the shared key mounted beside an asymmetric

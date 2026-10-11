@@ -441,7 +441,11 @@ impl std::fmt::Debug for LocalIssuer {
 }
 
 impl CertificateIssuer for LocalIssuer {
-    fn issue(&self, key: &WorkloadKey, _id: &str) -> Result<Vec<CertificateDer<'static>>> {
+    fn issue_certificate(
+        &self,
+        key: &WorkloadKey,
+        _id: &str,
+    ) -> Result<Vec<CertificateDer<'static>>> {
         if self.failing.load(Ordering::SeqCst) {
             return Err(Error::unavailable("the stand-in CA is down"));
         }

@@ -106,9 +106,18 @@ fn shared_key_deadline() -> Timestamp {
 /// Refuse the shared-key posture after [`SHARED_KEY_REMOVED_AFTER`].
 ///
 /// Called by a composition root at start-up, with the wall clock it read
-/// once at the boundary. Checked at start-up rather than per frame: a cell
-/// that began refusing every frame at midnight would be an outage nobody
-/// deployed, while a process that will not start names its own fix.
+/// once at the boundary, where a process that will not start names its own
+/// fix — **and again at every use**: by `qip_edge::TrustRoot::check` for
+/// each artefact a cell verifies, and by the API's mesh backbone for each
+/// dispatch it would sign. This said "checked at start-up rather than per
+/// frame" until an independent review pointed out what that meant: a
+/// process started on the last permitted day verified and signed under the
+/// shared key for as long as it stayed up, so the date removed nothing from
+/// a fleet nobody restarts. Refusing at midnight is an outage — every frame
+/// under the shared key is refused from then on — and that is the intended
+/// trade: the date has been in every banner and refusal since the key was
+/// deprecated, and a cell that stops accepting policy narrows rather than
+/// trades on a key every node can mint with.
 pub fn refuse_shared_key_after_removal(now: Timestamp) -> Result<()> {
     if now >= shared_key_deadline() {
         return Err(Error::denied(format!(

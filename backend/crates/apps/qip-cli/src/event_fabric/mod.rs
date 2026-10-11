@@ -71,6 +71,10 @@ pub struct Environment {
     sleeper: Arc<dyn Sleeper>,
     connect: Connector,
     connect_link: LinkConnector,
+    /// What this machine's DMI `product_name` says, read once by
+    /// [`Self::process`] and `None` everywhere else, so a test never depends
+    /// on whether the host running it is a Compute Engine guest.
+    product_name: Option<String>,
 }
 
 impl Environment {
@@ -83,6 +87,10 @@ impl Environment {
             sleeper: Arc::new(ThreadSleeper),
             connect: Box::new(grant::http_transport),
             connect_link: Box::new(grant::link_transport),
+            product_name: std::fs::read_to_string(
+                qip_core::deployment::COMPUTE_ENGINE_PRODUCT_FILE,
+            )
+            .ok(),
         }
     }
 
@@ -101,6 +109,7 @@ impl Environment {
             sleeper,
             connect,
             connect_link: Box::new(grant::link_transport),
+            product_name: None,
         }
     }
 
@@ -114,6 +123,17 @@ impl Environment {
 
     pub fn variable(&self, name: &str) -> Option<String> {
         (self.lookup)(name)
+    }
+
+    /// The signs that this process runs on Cloud Run, Kubernetes or Compute
+    /// Engine, which refuse `QIP_DEPLOYMENT=local` (ADR 0110 decision 5):
+    /// a `local` set by an unreviewed edit on a deployed machine would
+    /// otherwise re-admit the plaintext link and the shared key.
+    pub fn deployment_markers(&self) -> qip_core::deployment::DeploymentMarkers {
+        qip_core::deployment::DeploymentMarkers::observe(
+            &|name| self.variable(name),
+            self.product_name.as_deref(),
+        )
     }
 
     pub fn clock(&self) -> Arc<dyn Clock> {
