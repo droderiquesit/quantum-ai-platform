@@ -1,0 +1,286 @@
+//! What an external action must clear besides the plan itself, checked in
+//! front of every adapter call [`crate::engine::execute`] makes.
+//!
+//! R12-AGENCY-1056..1069, 6091; R12-GOV-6123, 6124, 6127. Before this module
+//! the conduct gate, the tool registry, the approval chain and the
+//! justification check each existed and each was tested, and `execute` called
+//! an adapter consulting none of them. A control with no caller reads as
+//! protection and is not. Now a plan is sent only when, for every step:
+//!
+//! * the tool is registered, not revoked, on a channel it may use, and the
+//!   *whole plan* fits its rate and budget ([`ToolRegistry::admits_all`]);
+//! * the step's public face — the [`CommunicationDraft`] the world would see
+//!   — passes all seven conduct checks, and the drafts together pass the
+//!   coordinated-voices check;
+//! * the draft speaks as the tool's registered identity, which is the goal's
+//!   acting identity: a step sent under any other name is a fabricated
+//!   identity (R12-AGENCY-1063) however it is authorised;
+//! * the justification names an evidence ground, not profit or price impact
+//!   alone (GOV-6127);
+//! * a goal approval and a plan approval exist, by people other than the
+//!   acting identity, in order, and before the execution instant (GOV-6124).
+//!
+//! All of it runs before the first call, so a refusal sends nothing. In
+//! shadow the same checks run, read-only, and a step they would refuse is
+//! reported withheld rather than "cleared every gate".
+
+use crate::conduct_brain::{CommunicationDraft, ConductGate, ConductPolicy};
+use crate::goal::GoalSpec;
+use crate::plan::Step;
+use qip_contracts::action::{
+    ExecutionRecord, GoalApproval, Ground, PlanApproval, ToolAudit, ToolRegistration, ToolRegistry,
+    check_justification,
+};
+use qip_core::decimal::SCALE;
+use qip_core::{Decimal, Error, Timestamp};
+use serde::Deserialize;
+use std::collections::BTreeMap;
+
+/// Who approved the goal and the plan, and when the act stage runs. Times
+/// come from the caller, never a clock read here, so a pass replays.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalDecl {
+    pub goal_approver: String,
+    pub goal_approved_at: Timestamp,
+    pub plan_approver: String,
+    pub plan_approved_at: Timestamp,
+    pub execute_at: Timestamp,
+}
+
+/// The guard as a document, carried by a request.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardDecl {
+    pub conduct: ConductPolicy,
+    pub tools: Vec<ToolRegistration>,
+    /// Per tool, the public face of every step that tool takes.
+    pub communications: BTreeMap<String, CommunicationDraft>,
+    pub grounds: Vec<Ground>,
+    pub approvals: ApprovalDecl,
+    /// The caller's rate window id for this pass.
+    pub rate_window: u64,
+}
+
+/// The three GOV-6124 records of one pass, each attributable alone. The
+/// execution record exists only once steps were sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalChain {
+    pub goal: GoalApproval,
+    pub plan: PlanApproval,
+    pub execution: Option<ExecutionRecord>,
+}
+
+/// A step cleared to go: what the registry will be charged with.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Cleared {
+    pub(crate) step: Step,
+    pub(crate) channel: String,
+    pub(crate) cost_units: u64,
+}
+
+/// The built guard. Holds the registry, so a caller that keeps one guard
+/// across passes keeps the rate, budget and revocation state across them.
+#[derive(Debug)]
+pub struct ActionGuard {
+    gate: ConductGate,
+    registry: ToolRegistry,
+    communications: BTreeMap<String, CommunicationDraft>,
+    grounds: Vec<Ground>,
+    approvals: ApprovalDecl,
+    rate_window: u64,
+}
+
+impl ActionGuard {
+    /// Build the gate and register every tool, refusing whatever either
+    /// refuses.
+    pub fn from_decl(decl: GuardDecl) -> Result<Self, Error> {
+        let gate = ConductGate::from_policy(decl.conduct)?;
+        let mut registry = ToolRegistry::new();
+        for tool in decl.tools {
+            registry.register(tool)?;
+        }
+        Ok(Self {
+            gate,
+            registry,
+            communications: decl.communications,
+            grounds: decl.grounds,
+            approvals: decl.approvals,
+            rate_window: decl.rate_window,
+        })
+    }
+
+    pub fn registry(&self) -> &ToolRegistry {
+        &self.registry
+    }
+
+    /// The revocation path: a revoked tool's next step is refused, and the
+    /// refusal is audited if it reaches the registry's `authorise`.
+    pub fn revoke(&mut self, tool: &str) -> Result<(), Error> {
+        self.registry.revoke(tool)
+    }
+
+    /// Move to a new rate window and execution instant for the next pass.
+    pub fn advance(&mut self, rate_window: u64, approvals: ApprovalDecl) {
+        self.rate_window = rate_window;
+        self.approvals = approvals;
+    }
+
+    pub fn audit(&self) -> &[ToolAudit] {
+        self.registry.audit()
+    }
+
+    /// Every check, read-only. `priced` is each step beside its cost from
+    /// the affordance graph. On success, the goal and plan approvals and the
+    /// steps as the registry will be charged for them.
+    pub(crate) fn preflight(
+        &self,
+        goal: &GoalSpec,
+        priced: &[(Step, Decimal)],
+    ) -> Result<(ApprovalChain, Vec<Cleared>), Error> {
+        check_justification(&self.grounds)?;
+        let steps: Vec<Step> = priced.iter().map(|(step, _)| step.clone()).collect();
+        let chain = self.approve(goal, &steps)?;
+
+        let mut cleared = Vec::with_capacity(priced.len());
+        let mut drafts: BTreeMap<&str, &CommunicationDraft> = BTreeMap::new();
+        for (step, cost) in priced {
+            let registration = self.registry.registration(&step.tool).ok_or_else(|| {
+                Error::denied(format!(
+                    "tool `{}` is not registered; an action acts only through a registered tool",
+                    step.tool
+                ))
+            })?;
+            let draft = self.communications.get(&step.tool).ok_or_else(|| {
+                Error::denied(format!(
+                    "step `{}` has no drafted public face; an external action nobody drafted \
+                     cannot be conduct-checked, so it is not sent",
+                    step.tool
+                ))
+            })?;
+            if draft.sender_identity != registration.acting_identity
+                || registration.acting_identity != goal.acting_identity
+            {
+                return Err(Error::denied(format!(
+                    "step `{}` would speak as `{}`, the tool is registered to `{}` and the goal \
+                     acts as `{}`; an action under any name but the goal's is a fabricated identity",
+                    step.tool,
+                    draft.sender_identity,
+                    registration.acting_identity,
+                    goal.acting_identity
+                )));
+            }
+            cleared.push(Cleared {
+                step: step.clone(),
+                channel: draft.channel.clone(),
+                cost_units: budget_units(&step.tool, *cost)?,
+            });
+            drafts.insert(step.tool.as_str(), draft);
+        }
+
+        let released: Vec<&CommunicationDraft> = drafts.values().copied().collect();
+        let failures = self.gate.campaign_failures(&released);
+        if !failures.is_empty() {
+            let reasons: Vec<String> = failures
+                .iter()
+                .map(|(id, check)| {
+                    format!(
+                        "{id}: {} ({})",
+                        check.check_name,
+                        check.reason.as_deref().unwrap_or("failed")
+                    )
+                })
+                .collect();
+            return Err(Error::denied(format!(
+                "the conduct gate refuses: {}",
+                reasons.join("; ")
+            )));
+        }
+        let actions: Vec<(&str, &str, u64)> = cleared
+            .iter()
+            .map(|c| (c.step.tool.as_str(), c.channel.as_str(), c.cost_units))
+            .collect();
+        self.registry.admits_all(self.rate_window, &actions)?;
+        Ok((chain, cleared))
+    }
+
+    /// The execution record, written before the first call so a refused or
+    /// failed call still has an attributable execution behind it.
+    pub(crate) fn execution(
+        &self,
+        chain: &mut ApprovalChain,
+        executor: &str,
+        steps: &[Step],
+    ) -> Result<(), Error> {
+        chain.execution = Some(ExecutionRecord::execute(
+            &chain.plan,
+            executor,
+            self.approvals.execute_at,
+            &subject(steps),
+        )?);
+        Ok(())
+    }
+
+    /// The mutating, audited admission of one step, immediately before its
+    /// call.
+    pub(crate) fn authorise(&mut self, cleared: &Cleared) -> Result<(), Error> {
+        self.registry.authorise(
+            &cleared.step.tool,
+            &cleared.channel,
+            self.rate_window,
+            cleared.cost_units,
+            self.approvals.execute_at,
+        )
+    }
+
+    fn approve(&self, goal: &GoalSpec, steps: &[Step]) -> Result<ApprovalChain, Error> {
+        let a = &self.approvals;
+        for (role, who) in [("goal", &a.goal_approver), ("plan", &a.plan_approver)] {
+            if who == &goal.acting_identity {
+                return Err(Error::denied(format!(
+                    "the {role} approver is the acting identity `{who}`; an identity approving \
+                     its own action is one record wearing two names"
+                )));
+            }
+        }
+        if a.execute_at < a.plan_approved_at {
+            return Err(Error::invalid(
+                "execution would precede the plan approval it relies on; check the clock or the order",
+            ));
+        }
+        let goal_approval =
+            GoalApproval::approve(&a.goal_approver, a.goal_approved_at, &goal.target_state)?;
+        let plan = PlanApproval::approve(
+            &goal_approval,
+            &a.plan_approver,
+            a.plan_approved_at,
+            &subject(steps),
+        )?;
+        Ok(ApprovalChain {
+            goal: goal_approval,
+            plan,
+            execution: None,
+        })
+    }
+}
+
+/// What a plan approval and an execution record are about: the tools, in
+/// order, so the two records name the same thing.
+fn subject(steps: &[Step]) -> String {
+    let tools: Vec<&str> = steps.iter().map(|s| s.tool.as_str()).collect();
+    format!("steps: {}", tools.join(" -> "))
+}
+
+/// The graph states a tool's cost as a `Decimal`; the registry's budget is
+/// whole units. A fractional cost is refused rather than rounded, because
+/// rounding down is a budget that under-charges every call.
+fn budget_units(tool: &str, cost: Decimal) -> Result<u64, Error> {
+    let raw = cost.raw();
+    if raw < 0 || raw % SCALE != 0 {
+        return Err(Error::invalid(format!(
+            "tool `{tool}` costs {cost}; a registry budget is charged in whole non-negative units"
+        )));
+    }
+    u64::try_from(raw / SCALE)
+        .map_err(|_| Error::numeric(format!("tool `{tool}` costs more units than fit a u64")))
+}

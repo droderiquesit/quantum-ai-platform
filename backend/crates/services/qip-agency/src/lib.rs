@@ -12,8 +12,20 @@
 //! (`qip-cli`) reads a request document and runs [`engine::run`] with no
 //! policy and an adapter that refuses, so the goal, graph, plan, ranking,
 //! gate and stage order are on a shipped path and nothing can act through
-//! it. [`tools`], [`memory`], [`attribution`] and [`autonomy`]'s widening
-//! and drift rules have no production caller; their register rows say so.
+//! it.
+//!
+//! Inside the crate, [`engine::execute`] is the only adapter caller and it
+//! stands [`guard::ActionGuard`] in front of every call: the conduct gate,
+//! the tool registry, the approval chain and the justification check. A
+//! request document may carry the guard (`guards`), in which case even a
+//! shadow pass reports a step the guard would refuse as withheld.
+//! [`engine::learn`] writes [`memory`] and drives [`autonomy`]'s drift rule;
+//! [`engine::widen`] is the one widening path. Neither `learn` nor `widen` is
+//! called by a composition root yet, because no pass reaches `Act` in a
+//! shipped binary: the CLI has no adapter and no policy, deliberately.
+//!
+//! [`goal`], [`tools`] and [`attribution`] re-export `qip-contracts` types:
+//! each used to exist twice, once here and once there.
 
 pub mod affordance;
 pub mod attribution;
@@ -22,6 +34,7 @@ pub mod comparison;
 pub mod conduct_brain;
 pub mod engine;
 pub mod goal;
+pub mod guard;
 pub mod knowledge;
 pub mod memory;
 pub mod plan;

@@ -6,7 +6,8 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
-use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation};
+use qip_contracts::action::Method;
+use qip_contracts::expansion::{Effect, EffectAttribution, HorizonObservation, Identification};
 use qip_core::error::Result;
 use qip_core::time::{Duration, Timestamp};
 use qip_world_model::federation::{
@@ -666,6 +667,10 @@ fn an_effect_attribution_with_empty_goal_id_is_refused_naming_the_field() -> Res
         intervention_id: "intervention-1".into(),
         action_id: "action-1".into(),
         observations: vec![],
+        action_class: Method::Market,
+        identification: Identification::Experiment,
+        causal_chain: vec!["quote width".into(), "fill rate".into()],
+        competing_explanations: vec!["none considered".into()],
         counterfactual_method: "simulated".into(),
         effect: Effect {
             mean: 0.05,
@@ -699,6 +704,10 @@ fn valid_attribution(goal: &str) -> EffectAttribution {
             horizon_ms: 60_000,
             value: 0.047,
         }],
+        action_class: Method::Market,
+        identification: Identification::Experiment,
+        causal_chain: vec!["quote width".into(), "fill rate".into()],
+        competing_explanations: vec!["none considered".into()],
         counterfactual_method: "simulated".into(),
         effect: Effect {
             mean: 0.047,

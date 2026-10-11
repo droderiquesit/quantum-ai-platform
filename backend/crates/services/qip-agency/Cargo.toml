@@ -1,6 +1,6 @@
 [package]
 name = "qip-agency"
-description = "Causal agency contracts: GoalSpec, action-affordance graph, tool registry, bounded intervention plans, effect attribution."
+description = "Causal agency engine: affordance graph, bounded intervention plans, the conduct gate and the guarded act stage. GoalSpec, the tool registry and EffectAttribution are qip-contracts types."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 qip-core.workspace = true
+qip-contracts.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

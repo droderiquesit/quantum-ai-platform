@@ -13,14 +13,27 @@
 //! No adapter is implemented here or anywhere in the workspace. With no
 //! policy, or a policy at shadow, [`execute`] returns the steps that would
 //! have run and calls nothing.
+//!
+//! In front of every adapter call [`execute`] makes stands an
+//! [`ActionGuard`]: the conduct gate, the one tool registry, the approval
+//! chain and the justification check (see [`crate::guard`]). With authority
+//! to act and no guard, `execute` refuses; it never sends unguarded. After
+//! an action, [`learn`] runs observe-effect, attribute and update in order,
+//! keeping the outcome in [`ActionOutcomeMemory`] and holding the policy to
+//! what it predicted. [`widen`] is the one path by which a policy gains
+//! authority, and it returns a record of who widened it on what evidence.
 
 use crate::affordance::{AffordanceGraph, ToolEdgeDraft};
+use crate::attribution::EffectAttribution;
 use crate::autonomy::{ActionPolicy, Authority};
 use crate::comparison::ComparisonDraft;
 use crate::goal::GoalSpec;
+use crate::guard::{ActionGuard, ApprovalChain, GuardDecl};
+use crate::memory::{ActionOutcomeDraft, ActionOutcomeMemory};
 use crate::plan::{
     ActingIdentity, Candidate, InterventionPlan, PlanNode, Proposal, Selection, Step, select,
 };
+use qip_contracts::action::{Method, ToolAudit};
 use qip_core::{Decimal, Error};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -194,6 +207,27 @@ pub enum Execution {
     /// The steps that would have run. No adapter was called.
     Shadow(Vec<Step>),
     Executed(Vec<Step>),
+    /// The guard refused before any call: the conduct gate, the registry,
+    /// the approvals or the justification. The reason.
+    Withheld(String),
+}
+
+/// What [`execute`] returns: what it did, and the approval records it made.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Acted {
+    pub execution: Execution,
+    /// The goal and plan approvals, and the execution record once anything
+    /// was sent. `None` when no guard was supplied, or it refused.
+    pub approvals: Option<ApprovalChain>,
+}
+
+/// A plan that has cleared the gate, and the context it is executed in.
+#[derive(Debug, Clone, Copy)]
+pub struct Gated<'a> {
+    pub goal: &'a GoalSpec,
+    pub graph: &'a AffordanceGraph,
+    pub plan: &'a InterventionPlan,
+    pub facts: &'a BTreeSet<String>,
 }
 
 /// The only caller of an [`Adapter`].
@@ -204,22 +238,36 @@ pub enum Execution {
 /// narrow-reversible every step is checked before the first is sent: one of
 /// another class, or one whose tool is not declared reversible, refuses the
 /// whole plan with no call made.
+///
+/// Then the guard. With authority to act and no guard, refused: an adapter
+/// call nobody conduct-checked is not a path that exists. With a guard, every
+/// check in [`crate::guard`] runs over the whole plan before the first call,
+/// and each call is admitted, audited, by the registry immediately before it
+/// is made. In shadow with a guard the same checks run read-only, so a shadow
+/// report never says a step "cleared every gate" that the guard would stop.
 pub fn execute(
     log: &mut StageLog,
     policy: Option<&ActionPolicy>,
-    graph: &AffordanceGraph,
-    plan: &InterventionPlan,
-    facts: &BTreeSet<String>,
+    gated: Gated<'_>,
+    guard: Option<&mut ActionGuard>,
     adapter: &mut dyn Adapter,
-) -> Result<Execution, Error> {
+) -> Result<Acted, Error> {
     log.expect(Stage::Act)?;
-    let steps: Vec<Step> = plan.root.simulate(facts).into_iter().cloned().collect();
-    let policy = match policy {
-        Some(policy) if policy.authority() == Authority::NarrowReversible => policy,
-        _ => return Ok(Execution::Shadow(steps)),
+    let steps: Vec<Step> = gated
+        .plan
+        .root
+        .simulate(gated.facts)
+        .into_iter()
+        .cloned()
+        .collect();
+    let acting = match policy {
+        Some(policy) if policy.authority() == Authority::NarrowReversible => Some(policy),
+        _ => None,
     };
+    let mut priced = Vec::with_capacity(steps.len());
     for step in &steps {
-        let edge = graph
+        let edge = gated
+            .graph
             .edges(&step.variable)
             .iter()
             .find(|e| e.tool == step.tool)
@@ -229,29 +277,185 @@ pub fn execute(
                     step.tool, step.variable
                 ))
             })?;
-        if edge.method != policy.class() {
-            return Err(Error::denied(format!(
-                "tool `{}` is a {:?} action; this policy holds authority for {:?} only",
-                step.tool,
-                edge.method,
-                policy.class()
-            )));
+        if let Some(policy) = acting {
+            if edge.method != policy.class() {
+                return Err(Error::denied(format!(
+                    "tool `{}` is a {:?} action; this policy holds authority for {:?} only",
+                    step.tool,
+                    edge.method,
+                    policy.class()
+                )));
+            }
+            if !edge.reversible {
+                return Err(Error::denied(format!(
+                    "tool `{}` is irreversible; narrow-reversible authority does not cover it",
+                    step.tool
+                )));
+            }
         }
-        if !edge.reversible {
-            return Err(Error::denied(format!(
-                "tool `{}` is irreversible; narrow-reversible authority does not cover it",
-                step.tool
-            )));
-        }
+        priced.push((step.clone(), edge.cost));
     }
-    for step in &steps {
-        if let Err(refusal) = adapter.call(step) {
+
+    let Some(guard) = guard else {
+        if acting.is_some() {
+            return Err(Error::denied(
+                "no action guard is configured: the conduct gate, tool registry and approvals \
+                 stand in front of every adapter call, and nothing is sent without them",
+            ));
+        }
+        return Ok(Acted {
+            execution: Execution::Shadow(steps),
+            approvals: None,
+        });
+    };
+    let (mut chain, cleared) = match guard.preflight(gated.goal, &priced) {
+        Ok(passed) => passed,
+        Err(refusal) => {
+            log.fail(Stage::Act)?;
+            return Ok(Acted {
+                execution: Execution::Withheld(refusal.message().to_string()),
+                approvals: None,
+            });
+        }
+    };
+    if acting.is_none() {
+        return Ok(Acted {
+            execution: Execution::Shadow(steps),
+            approvals: Some(chain),
+        });
+    }
+
+    guard.execution(&mut chain, &gated.goal.acting_identity, &steps)?;
+    for step in &cleared {
+        let sent = guard
+            .authorise(step)
+            .and_then(|()| adapter.call(&step.step));
+        if let Err(refusal) = sent {
             log.fail(Stage::Act)?;
             return Err(refusal);
         }
     }
     log.pass(Stage::Act)?;
-    Ok(Execution::Executed(steps))
+    Ok(Acted {
+        execution: Execution::Executed(steps),
+        approvals: Some(chain),
+    })
+}
+
+/// R12-AGENCY-6103: a policy gains authority by this path only, and the
+/// widening leaves a record of the evidence and the approver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Widening {
+    pub class: Method,
+    pub goal_id: String,
+    pub intervention_id: String,
+    pub action_id: String,
+    pub approver: String,
+}
+
+/// Widen `policy` on `evidence` and `approver` together, through
+/// [`ActionPolicy::widen`], which validates the attribution, refuses a
+/// correlation however strong, and refuses an approver without the authority.
+pub fn widen(
+    policy: &mut ActionPolicy,
+    evidence: &EffectAttribution,
+    approver: &ActingIdentity,
+) -> Result<Widening, Error> {
+    policy.widen(evidence, approver)?;
+    Ok(Widening {
+        class: policy.class(),
+        goal_id: evidence.goal_id.clone(),
+        intervention_id: evidence.intervention_id.clone(),
+        action_id: evidence.action_id.clone(),
+        approver: approver.name.clone(),
+    })
+}
+
+/// R12-AGENCY-6107 / 6108 / 054: after an action, observe its effect,
+/// attribute it and update, in that order, and only after `Act` passed.
+///
+/// Refused, with the stage that refused it recorded as failed:
+/// * an outcome whose action sequence is not the tools that ran — an effect
+///   credited to something that never happened (observe-effect);
+/// * an attribution that does not validate, measures another class of action,
+///   or is less sure of itself than the outcome claims to be: an outcome
+///   recorded at confidence 0.9 on an attribution identified at 0.2 is a
+///   correlation written up as a cause (attribute, R12-AGENCY-6103).
+///
+/// Then the outcome is remembered and the policy is held to its prediction
+/// (`observed - counterfactual` against the predicted interval, and the
+/// side effects against those predicted), which may drop it to shadow.
+/// Returns the authority the policy now holds.
+pub fn learn(
+    log: &mut StageLog,
+    executed: &[Step],
+    policy: &mut ActionPolicy,
+    memory: &mut ActionOutcomeMemory,
+    outcome: ActionOutcomeDraft,
+    attribution: &EffectAttribution,
+) -> Result<Authority, Error> {
+    log.expect(Stage::ObserveEffect)?;
+    let outcome = match outcome.build() {
+        Ok(outcome) => outcome,
+        Err(refusal) => {
+            log.fail(Stage::ObserveEffect)?;
+            return Err(refusal);
+        }
+    };
+    let ran: Vec<&str> = executed.iter().map(|s| s.tool.as_str()).collect();
+    let claimed: Vec<&str> = outcome.action_sequence.iter().map(String::as_str).collect();
+    if ran != claimed {
+        log.fail(Stage::ObserveEffect)?;
+        return Err(Error::denied(format!(
+            "the outcome credits {claimed:?}, but {ran:?} ran; an effect is recorded against \
+             the action that happened"
+        )));
+    }
+    log.pass(Stage::ObserveEffect)?;
+
+    if let Err(refusal) = attribute(policy, &outcome.attribution_confidence, attribution) {
+        log.fail(Stage::Attribute)?;
+        return Err(refusal);
+    }
+    log.pass(Stage::Attribute)?;
+
+    let effect = outcome
+        .actual_observations
+        .checked_sub(outcome.no_action_counterfactual)
+        .ok_or_else(|| Error::numeric("attributed effect overflowed"))?;
+    let side_effects = outcome.side_effects.clone();
+    memory.keep(outcome);
+    let authority = policy.observe(effect, &side_effects);
+    log.pass(Stage::Update)?;
+    Ok(authority)
+}
+
+fn attribute(
+    policy: &ActionPolicy,
+    claimed: &Decimal,
+    attribution: &EffectAttribution,
+) -> Result<(), Error> {
+    attribution.validate()?;
+    if attribution.action_class != policy.class() {
+        return Err(Error::denied(format!(
+            "the attribution measures {:?}, not this policy's {:?}",
+            attribution.action_class,
+            policy.class()
+        )));
+    }
+    // The statistics/money crossing: identifiability is an `f64` statistic,
+    // the outcome's confidence a `Decimal`. Compared as a `Decimal` so the
+    // comparison is exact on the record's side; a non-finite figure has
+    // already been refused by `validate`.
+    let supported = Decimal::from_f64(attribution.identifiability)
+        .ok_or_else(|| Error::numeric("identifiability could not be read as a decimal"))?;
+    if *claimed > supported {
+        return Err(Error::denied(format!(
+            "the outcome claims attribution confidence {claimed}, above the {supported} the \
+             attribution identifies; correlation is not upgraded to cause by restating it"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,12 +495,18 @@ pub struct Request {
     pub evidence: BTreeMap<String, LeverEvidence>,
     pub observed_facts: BTreeSet<String>,
     pub proposals: Vec<ProposalDraft>,
+    /// What stands in front of every adapter call. Optional in the document
+    /// so a shadow request can omit it; a pass with authority to act and no
+    /// guard is refused by [`execute`], never sent unguarded.
+    #[serde(default)]
+    pub guards: Option<GuardDecl>,
 }
 
 /// How a pass ended.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
-    /// A stage failed before any plan was chosen; the reason.
+    /// A stage failed, or the act stage's guard withheld the plan; the
+    /// reason.
     Stopped(String),
     /// No proposal beat doing nothing, or none survived.
     NoAction,
@@ -316,6 +526,10 @@ pub struct Report {
     /// Proposal index and why it was refused.
     pub refused: Vec<(usize, Error)>,
     pub outcome: Outcome,
+    /// GOV-6124's records, when a guard was supplied and admitted the plan.
+    pub approvals: Option<ApprovalChain>,
+    /// Every registry decision the guard has audited, this pass included.
+    pub audit: Vec<ToolAudit>,
 }
 
 fn report(
@@ -330,10 +544,13 @@ fn report(
         levers,
         refused,
         outcome,
+        approvals: None,
+        audit: Vec::new(),
     }
 }
 
-/// One pass of the loop, observe through act, in the declared order.
+/// One pass of the loop, observe through act, in the declared order, with
+/// the guard the request carries (if any) built fresh for this pass.
 ///
 /// `Err` means the request itself was malformed. A request that was
 /// well-formed and went nowhere is an `Ok` report that says which stage
@@ -343,6 +560,30 @@ pub fn run(
     policy: Option<&ActionPolicy>,
     adapter: &mut dyn Adapter,
 ) -> Result<Report, Error> {
+    run_with(request, policy, None, adapter)
+}
+
+/// [`run`] with a guard the caller keeps, so the registry's rate, budget,
+/// revocations and audit persist across passes. A request that also carries
+/// its own guard is refused: two guards are two sources of truth about what
+/// may be sent.
+pub fn run_with(
+    mut request: Request,
+    policy: Option<&ActionPolicy>,
+    guard: Option<&mut ActionGuard>,
+    adapter: &mut dyn Adapter,
+) -> Result<Report, Error> {
+    let declared = request.guards.take();
+    if declared.is_some() && guard.is_some() {
+        return Err(Error::invalid(
+            "the request carries a guard and one was also supplied; supply exactly one",
+        ));
+    }
+    let mut owned = declared.map(ActionGuard::from_decl).transpose()?;
+    let guard = match owned.as_mut() {
+        Some(built) => Some(built),
+        None => guard,
+    };
     let mut graph = AffordanceGraph::new();
     for variable in &request.variables {
         graph.add_variable(&variable.name, variable.observable, variable.controllable)?;
@@ -438,16 +679,21 @@ pub fn run(
     };
     log.pass(Stage::Gate)?;
 
-    let outcome = match execute(
-        &mut log,
-        policy,
-        &graph,
-        &plan,
-        &request.observed_facts,
-        adapter,
-    )? {
+    let gated = Gated {
+        goal: &request.goal,
+        graph: &graph,
+        plan: &plan,
+        facts: &request.observed_facts,
+    };
+    let mut guard = guard;
+    let acted = execute(&mut log, policy, gated, guard.as_deref_mut(), adapter)?;
+    let outcome = match acted.execution {
         Execution::Shadow(steps) => Outcome::Shadowed(steps),
         Execution::Executed(steps) => Outcome::Executed(steps),
+        Execution::Withheld(why) => Outcome::Stopped(format!("the act stage withheld: {why}")),
     };
-    Ok(report(log, levers, refused, outcome))
+    let mut done = report(log, levers, refused, outcome);
+    done.approvals = acted.approvals;
+    done.audit = guard.map(|g| g.audit().to_vec()).unwrap_or_default();
+    Ok(done)
 }
