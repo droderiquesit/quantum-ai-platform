@@ -1,0 +1,4581 @@
+[
+ {
+  "id": "R12-AMBIENT-9001",
+  "domain": "AMBIENT",
+  "title": "Generalist and ambient agents consume evidence, publish via Fabric",
+  "statement": "Foundation/generalist and ambient agents consume Knowledge Catalog / Spanner Graph / BigQuery evidence and publish research tasks and results through the Fabric as typed events.",
+  "rationale": "Agents that read and write outside the Fabric produce research nobody can replay or attribute.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "An agent run reads evidence through a store adapter and its research task appears as a typed Fabric/event-log record; deleting the publish call makes the test fail."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": "GCP placement column names Gemini Enterprise Agent Platform or GKE for persistent agents; GKE conflicts with ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes for workloads)."
+ },
+ {
+  "id": "R12-MODEL-9002",
+  "domain": "MODEL",
+  "title": "Custom model training on GPU/TPU/CPU producing versioned artifacts",
+  "statement": "Custom model training runs as Vertex custom training/pipelines on GPU/TPU/CPU, reading training datasets from GCS/BigQuery/Bigtable snapshots, and outputs versioned model artifacts.",
+  "rationale": "Training from live mutable stores cannot be reproduced; unversioned artifacts cannot be rolled back.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A training job is submitted from a snapshot reference and the produced artifact carries a version and the snapshot digest; removing the snapshot reference fails the test."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-9003",
+  "domain": "MODEL",
+  "title": "Model registry records versions, evaluation, lineage, aliases, promotion evidence",
+  "statement": "A model registry holds every model version with its evaluation, lineage, aliases and the evidence that justified its promotion.",
+  "rationale": "A model that cannot be traced to its evaluation and promotion evidence cannot be audited or safely rolled back.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Registering, evaluating and promoting a model leaves version, evaluation, lineage, alias and promotion evidence readable; removing the evaluation makes require_for_decision refuse."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": "Text places it on Vertex Model Registry / ML metadata; the in-tree registry is a Rust equivalent."
+ },
+ {
+  "id": "R12-WORLD-9004",
+  "domain": "WORLD",
+  "title": "World-model federation maintains competing scored models; disagreement is research signal",
+  "statement": "Multiple competing world models/graphs are maintained and scored, and their disagreement is recorded and turned into a research signal rather than averaged away.",
+  "rationale": "A single shared world model cannot say the models disagree; an average hides that the platform does not know.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Two registered models that disagree produce an Arbitration carrying the Disagreement and a ResearchTask in the cycle's journal; collapsing to a mean fails the test."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": "Placement: Spanner Graph + GKE/agent workers."
+ },
+ {
+  "id": "R12-REASON-9005",
+  "domain": "REASON",
+  "title": "Symbolic reasoners produce machine-checkable proofs or constraints",
+  "statement": "Symbolic/neuro-symbolic reasoning runs on dedicated compute and produces machine-checkable proofs or constraint results wherever possible.",
+  "rationale": "A conclusion that cannot be checked mechanically can only be trusted, not verified.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A reasoning outcome carries a checkable constraint/proof artefact that an independent checker re-verifies; corrupting the artefact fails verification."
+  },
+  "policy_flags": [
+   "NON_RUST",
+   "NEW_DEPENDENCY",
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": "Names Z3/OR-Tools/Python reasoners: conflicts with ADR 0002/0009 (serde/serde_json only) and ADR 0001 (Rust everywhere)."
+ },
+ {
+  "id": "R12-TICK-9006",
+  "domain": "TICK",
+  "title": "Simulation covers replay, no-action branches, interventions, strategy validation",
+  "statement": "The simulation/counterfactual capability provides market replay, no-action branches, intervention simulation and strategy validation over retained history.",
+  "rationale": "Without a no-action branch every intervention looks causal; without replay a strategy cannot be validated.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A replay of retained history yields the same decisions; an intervention candidate set without a no-action baseline is refused."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": "Placement: GKE Jobs + batch compute; BigQuery/GCS history."
+ },
+ {
+  "id": "R12-QUANT-9007",
+  "domain": "QUANT",
+  "title": "Quantum admits only asynchronous eligible research job classes",
+  "statement": "The quantum path admits only asynchronous jobs of the eligible classes (optimisation, search, QML research) through a controlled egress gateway to IBM Quantum.",
+  "rationale": "A synchronous quantum call would make execution depend on an external queue the platform does not control.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "admit_job refuses a synchronous job and any class outside the eligible set, and the production submission path calls it; removing the call from the path fails an integration test."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-QUANT-9008",
+  "domain": "QUANT",
+  "title": "Classical benchmark and validation gate any quantum artifact promotion",
+  "statement": "No quantum-produced artifact may be promoted unless a classical benchmark was computed on the same problem and the result validated against it.",
+  "rationale": "\"We used a quantum computer\" is not a result; an unvalidated quantum answer could reach a decision.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Each routing decision carries a finite classical objective; a quantum-gateway artifact is refused at promotion and a quantum-informed one is admitted only with its calibrated baseline. Deleting the classical solve or the refusal fails the tests."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "ADR 0006."
+ },
+ {
+  "id": "R12-MODEL-9009",
+  "domain": "MODEL",
+  "title": "Large-model outputs distilled into bounded compact Reflex models and signed bundles",
+  "statement": "Large model outputs are distilled/compiled into bounded compact Reflex models and signed policy bundles through a training pipeline.",
+  "rationale": "A Reflex node cannot evaluate a large model inside its latency budget, and an unsigned bundle can be swapped.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Cognitive, Model and Quantum Compute Plane"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A distilled student carries a bounded worst-case cost and its digest appears in a signed manifest the cell verifies; altering a coefficient changes the digest and the cell refuses it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-REFLEX-9010",
+  "domain": "REFLEX",
+  "title": "Reflex Node never calls a general model endpoint for a live order",
+  "statement": "A Reflex Node never calls a general model endpoint to decide an order.",
+  "rationale": "A remote model on the order path makes execution depend on a non-deterministic, slow, external service.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Model-package rule"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The dependency graph shows no edge crate or edge-node reaching the language-model/AI crates; adding such an edge fails the architecture suite."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Text says 'live order'; the platform is paper-only (ADR 0003), so the invariant is applied to every order the cell decides."
+ },
+ {
+  "id": "R12-REFLEX-9011",
+  "domain": "REFLEX",
+  "title": "Reflex executes only locally loaded, tested, signed packages with deterministic risk",
+  "statement": "A Reflex Node executes only a locally loaded, tested, signed model/policy package, with deterministic risk checks.",
+  "rationale": "An unsigned or untested package on the order path is an unreviewed change to trading behaviour.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11 Model-package rule"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "The cell refuses a policy whose signature fails and a model its manifest does not name; risk gates are deterministic. Mutating the signature check fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-ARCH-9012",
+  "domain": "ARCH",
+  "title": "Intelligence decomposed into independently scalable services",
+  "statement": "The intelligence platform is decomposed into independently scalable services rather than one global model endpoint.",
+  "rationale": "One global endpoint is a single point of failure and cannot scale workloads independently.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11.1 Superintelligence Service Topology"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each named cognitive service is a separately deployable binary with its own scaling settings."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-9013",
+  "domain": "CONTRACT",
+  "title": "Cognitive services exchange typed Rust Fabric contracts and own narrow state",
+  "statement": "Each cognitive service publishes/consumes typed Rust Fabric contracts and owns a narrow state domain.",
+  "rationale": "Shared mutable state between services makes failures and changes non-local.",
+  "kind": "contract",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11.1 Superintelligence Service Topology"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Every cross-service message is a typed qip-contracts body with a schema-lock row; a service reading another's state directly fails the architecture suite."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-ARCH-9014",
+  "domain": "ARCH",
+  "title": "Each cognitive service degrades without stopping local execution",
+  "statement": "Every cognitive service can degrade or fail without stopping local (Reflex) execution.",
+  "rationale": "If cognition is on the critical path, a research outage halts trading.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11.1 Superintelligence Service Topology"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "With every central input stale/unavailable the cell still completes passes with reduced sizing; making a capability required for a pass fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GCP-9015",
+  "domain": "GCP",
+  "title": "Persistent cognitive services on regional GKE; burst on Vertex/accelerators",
+  "statement": "Persistent cognitive services run primarily on regional/multi-region GKE Standard; burst training, evaluation and simulation use Vertex AI, GKE accelerator pools and batch compute.",
+  "rationale": "Placement decision for warm cognition and burst compute.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "11",
+    "section": "§11.1 Superintelligence Service Topology"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "A plan shows the cognitive services on the stated runtime."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE",
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with ADR 0024 (Cloud Run + one Compute Engine node per region, no Kubernetes for workloads)."
+ },
+ {
+  "id": "R12-WORLD-9016",
+  "domain": "WORLD",
+  "title": "now-state-coordinator produces GlobalState, RegionalState, SurpriseEvent",
+  "statement": "A now-state-coordinator consumes knowledge deltas, market state and model residuals and produces GlobalState, RegionalState and SurpriseEvent contracts.",
+  "rationale": "Without one estimate of the present state, every consumer builds its own and they disagree.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.2 Global State Estimation / NOW Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Feeding deltas and residuals produces typed GlobalState/RegionalState and a SurpriseEvent when a residual exceeds its bound."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9017",
+  "domain": "WORLD",
+  "title": "NOW state partitioned by domain and region",
+  "statement": "NOW state is partitioned by domain and region so it scales and fails per partition.",
+  "rationale": "A single global state store is a single point of contention and failure.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.2 Global State Estimation / NOW Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "State keys carry domain and region; a write to one partition does not touch another."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9018",
+  "domain": "WORLD",
+  "title": "Stale NOW state lowers confidence and never blocks Reflex",
+  "statement": "Stale NOW state lowers confidence and never blocks Reflex execution.",
+  "rationale": "A blocking dependency on central state turns a cognition outage into a trading outage.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.2 Global State Estimation / NOW Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "With NOW state past its freshness bound, confidence drops and the cell still runs; making the cell wait on NOW fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9019",
+  "domain": "WORLD",
+  "title": "state-filter-workers produce latent-state candidates; missing worker reduces diversity",
+  "statement": "State-filter workers turn typed observations and state priors into candidate latent-state updates, and a missing worker reduces ensemble diversity rather than failing estimation.",
+  "rationale": "An estimator that fails when one ensemble member is missing is less available than any member.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.2 Global State Estimation / NOW Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Removing one worker still yields an estimate with a reported smaller ensemble."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9020",
+  "domain": "WORLD",
+  "title": "state-reconciler is a single fenced domain leader promoting state",
+  "statement": "A state-reconciler, run as a single domain leader with fencing, promotes state and confidence from candidate states and symbolic constraints.",
+  "rationale": "Two leaders promoting state concurrently produce two truths.",
+  "kind": "invariant",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.2 Global State Estimation / NOW Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A reconciler with a stale fencing epoch cannot promote; candidates violating a symbolic constraint are not promoted."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9021",
+  "domain": "WORLD",
+  "title": "Last promoted state remains valid until expiry",
+  "statement": "When the reconciler is unavailable, the last promoted state remains valid until its expiry.",
+  "rationale": "Dropping state on a leader failure creates a gap; keeping it forever serves stale truth.",
+  "kind": "invariant",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.2 Global State Estimation / NOW Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "After reconciler loss the state is served until expires_at and refused after."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9022",
+  "domain": "WORLD",
+  "title": "forecast-router routes questions by domain/horizon/model society",
+  "statement": "A forecast-router routes forecast questions by domain, horizon and model society using a routing/reputation cache, and falls back to default ensembles on failure.",
+  "rationale": "Routing every question to one model ignores where each model is competent.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.3 Temporal Forecast Lattice Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A question is routed to the model with the best reputation in its context; with the cache unavailable the default ensemble answers."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9023",
+  "domain": "WORLD",
+  "title": "forecast-micro runs calibrated microstructure forecasts locally",
+  "statement": "Microsecond-to-minute calibrated microstructure forecasts run locally in Reflex (with warm backup) and continue independently of central services.",
+  "rationale": "Remote microstructure forecasts arrive after the moment they forecast.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.3 Temporal Forecast Lattice Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "The cell evaluates a local model in its pass with no network call; central unavailability does not stop it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9024",
+  "domain": "WORLD",
+  "title": "forecast-tactical outputs expire when stale and feed capital sizing",
+  "statement": "Minutes-to-days tactical forecasts expire when stale, and capital sizing contracts on their staleness.",
+  "rationale": "A stale forecast that keeps sizing positions is a decision on old information.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.3 Temporal Forecast Lattice Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A forecast past its expiry is not used and sizing shrinks; removing the expiry check fails the test."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9025",
+  "domain": "WORLD",
+  "title": "forecast-strategic outage accumulates backlog, never an execution outage",
+  "statement": "Weeks-to-years strategic forecasts run as a separate service whose outage only accumulates research backlog and never causes an execution outage.",
+  "rationale": "Long-horizon research is not latency-critical and must not be able to stop trading.",
+  "kind": "invariant",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.3 Temporal Forecast Lattice Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Stopping the strategic service leaves execution passing."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9026",
+  "domain": "WORLD",
+  "title": "forecast-calibrator scores calibration, quantiles/intervals, regime scorecards",
+  "statement": "A forecast-calibrator performs calibration, quantile/interval scoring and regime scorecards, keeping score history.",
+  "rationale": "Uncalibrated forecasts make confidence arithmetic meaningless.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.3 Temporal Forecast Lattice Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Resolved forecasts produce Brier/interval scores by regime stored durably; removing the scoring call fails the test."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9027",
+  "domain": "WORLD",
+  "title": "On calibrator failure, model influence freezes at last safe weights",
+  "statement": "If the calibrator fails, model influence freezes at the last safe weights.",
+  "rationale": "Weights updated from a broken calibrator drift arbitrarily.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.3 Temporal Forecast Lattice Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "With calibration unavailable the weights equal the last safe set; mutating to keep updating fails."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-ARCH-9028",
+  "domain": "ARCH",
+  "title": "Agents are not all required to use the same runtime",
+  "statement": "The platform must not require every agent to use the same runtime; managed sessions/memory may use Agent Engine and long-lived deterministic agents run elsewhere.",
+  "rationale": "Forcing one runtime either over-pays for simple agents or under-serves custom ones.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.4 Predictive Model & Agent Society"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "An agent manifest can name its runtime and two runtimes are supported."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AMBIENT-9029",
+  "domain": "AMBIENT",
+  "title": "Specialist agents: domain research, controlled tools, Fabric task interfaces",
+  "statement": "Specialist agents perform domain research, tool use and multimodal reasoning, interfacing through Fabric tasks/results, knowledge APIs and controlled tools.",
+  "rationale": "Uncontrolled tool access lets an agent act outside its grant.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.4 Predictive Model & Agent Society"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "An agent can invoke only tools in its explicit grant and its outputs are journaled."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-9030",
+  "domain": "MODEL",
+  "title": "Model Tournament scores by calibration, regime and information value",
+  "statement": "A Model Tournament scores models by calibration, regime and information value against ForecastState and resolved outcomes.",
+  "rationale": "The best of many models on one aggregate metric is selected by chance.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.4 Predictive Model & Agent Society"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Models are ranked per regime with calibration and information-value scores from resolved outcomes; a challenger that did not win its comparison cannot be promoted."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-9031",
+  "domain": "MODEL",
+  "title": "Forecast Market aggregates model votes via synthetic reputation",
+  "statement": "A Forecast Market aggregates model votes using synthetic reputation/capital and emits ModelVote / ForecastConsensus.",
+  "rationale": "Unweighted averaging gives a poor model the same voice as a proven one.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.4 Predictive Model & Agent Society"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Votes weighted by reputation produce a ForecastConsensus; equal weighting fails the test."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-REASON-9032",
+  "domain": "REASON",
+  "title": "Adversarial/Verifier Society attacks leading forecasts",
+  "statement": "An Adversarial/Verifier Society attacks leading forecasts and searches for contradictions, exchanging ChallengeRequest / VerificationResult.",
+  "rationale": "A model asked whether a persuasive thesis holds usually agrees with it.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.4 Predictive Model & Agent Society"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A leading forecast receives challenges and a fatal challenge rejects it."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AMBIENT-9033",
+  "domain": "AMBIENT",
+  "title": "Curiosity ranks missing evidence by value of information",
+  "statement": "Curiosity/Active Sensing ranks missing evidence by expected value of information and sends InformationRequests to the Scout Fabric.",
+  "rationale": "Acquiring data by habit rather than by value wastes budget on what does not change decisions.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.4 Predictive Model & Agent Society"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Requests are ordered by computed value of information and reach the scout; random order fails."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AMBIENT-9034",
+  "domain": "AMBIENT",
+  "title": "Meta-Intelligence allocates attention, compute and model influence",
+  "statement": "Meta-Intelligence allocates attention, compute and model influence, emitting ComputePlan / AgentBudget / ModelWeight.",
+  "rationale": "Without explicit allocation, compute follows whatever asks loudest.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "12",
+    "section": "§11.4 Predictive Model & Agent Society"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A ComputePlan bounds per-agent budgets and model weights; exceeding a budget is refused."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9035",
+  "domain": "WORLD",
+  "title": "world-branch-manager branches, reweights, prunes future-state trees",
+  "statement": "A world-branch-manager branches, reweights and prunes future-state trees, storing compact WorldBranch records partitioned by scenario family.",
+  "rationale": "Unpruned scenario trees grow without bound; unweighted ones give rare branches equal say.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.5 Synthetic Future & Digital Twin Fabric"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Branches carry weights summing to one and pruning keeps the tree within its bound."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-TICK-9036",
+  "domain": "TICK",
+  "title": "market-digital-twin simulates exchange, venue, queue, participants, execution",
+  "statement": "A market digital twin simulates exchange, venue, queue, participant and execution behaviour, run as sharded replay/simulation jobs.",
+  "rationale": "Backtests without queue and participant modelling overstate fills.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.5 Synthetic Future & Digital Twin Fabric"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A replayed order receives queue-position-dependent fills; removing queue modelling changes fills and fails the test."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-WORLD-9037",
+  "domain": "WORLD",
+  "title": "Macro/company twins simulate causal business and supply-chain dynamics",
+  "statement": "Macro and company twins simulate causal business, macro and supply-chain dynamics with compact twin state and source manifests.",
+  "rationale": "Without causal dynamics, second-order effects are invisible.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.5 Synthetic Future & Digital Twin Fabric"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A shock to an upstream entity propagates through the twin to dependants."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-TICK-9038",
+  "domain": "TICK",
+  "title": "Rare-event factory generates adversarial combinations; only lessons persist",
+  "statement": "A rare-event factory generates adversarial/unseen combinations; simulation outputs are ephemeral and only promoted lessons are retained.",
+  "rationale": "History contains only the crises that happened; retaining every synthetic output is unbounded.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.5 Synthetic Future & Digital Twin Fabric"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Generated scenarios include moves outside history and only promoted lessons are persisted."
+  },
+  "policy_flags": [
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CAPITAL-9039",
+  "domain": "CAPITAL",
+  "title": "Counterfactual portfolio farm runs shadow hedges, timing and sizing",
+  "statement": "A counterfactual portfolio farm runs shadow positions, alternate hedges, timing and sizing asynchronously and in parallel, storing compact packs.",
+  "rationale": "A decision scored only against itself cannot show what it cost.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.5 Synthetic Future & Digital Twin Fabric"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Each decision has scored alternatives; removing the alternative scoring fails the test."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-QUANT-9040",
+  "domain": "QUANT",
+  "title": "IBM Quantum reached only through a controlled asynchronous gateway",
+  "statement": "IBM Quantum is reached only through a controlled, asynchronous quantum gateway.",
+  "rationale": "Direct calls would put an external queue on a decision path and leak credentials widely.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.6 Hybrid CPU/GPU/TPU/QPU Compute Fabric"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Only the gateway identity has egress to IBM hosts and the gateway queues jobs; a second caller fails the check."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-QUANT-9041",
+  "domain": "QUANT",
+  "title": "Compute Intelligence Router learns best substrate per problem class",
+  "statement": "A Compute Intelligence Router learns which substrate (CPU, GPU, TPU, quantum-inspired, QPU) gives the best verified result for each problem class.",
+  "rationale": "Static routing keeps paying for substrates that never win.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.6 Hybrid CPU/GPU/TPU/QPU Compute Fabric"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Recorded verified outcomes per problem class change the router's substrate choice."
+  },
+  "policy_flags": [
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-QUANT-9042",
+  "domain": "QUANT",
+  "title": "CPU/Rust pools own deterministic compute as low-cost baseline",
+  "statement": "CPU/Rust pools on Compute Engine own symbolic solvers, graph algorithms, deterministic services and Fabric/Reflex tooling, scaled by fixed reservations as the low-cost baseline.",
+  "rationale": "Deterministic work on accelerators costs more and adds non-determinism.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.6 Hybrid CPU/GPU/TPU/QPU Compute Fabric"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Execution nodes consume a specific reservation sized to target; deterministic services are Rust on CPU."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": "GKE CPU pools named in text conflict with ADR 0024; Compute Engine half applies."
+ },
+ {
+  "id": "R12-QUANT-9043",
+  "domain": "QUANT",
+  "title": "GPU substrate for training, multimodal inference, simulation",
+  "statement": "GPU pools (Vertex custom training) serve foundation/specialist training, multimodal inference and simulation, with Spot for interruptible jobs.",
+  "rationale": "Accelerator-shaped work on CPUs is slow and expensive.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.6 Hybrid CPU/GPU/TPU/QPU Compute Fabric"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "A training job spec names a GPU machine type and Spot for interruptible runs."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "KUBERNETES",
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-QUANT-9044",
+  "domain": "QUANT",
+  "title": "TPU7x substrate scheduled by compute router",
+  "statement": "TPU7x (Ironwood) via Compute Engine serves large dense/MoE training, decode-heavy inference and high-scale simulation, scheduled by the compute router.",
+  "rationale": "Placement for the largest training workloads.",
+  "kind": "capability",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.6 Hybrid CPU/GPU/TPU/QPU Compute Fabric"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "A TPU slice is reservable and the router can schedule onto it."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "KUBERNETES",
+   "COST",
+   "NON_RUST"
+  ],
+  "secondary_domains": [],
+  "notes": "JAX/PyTorch named: non-Rust."
+ },
+ {
+  "id": "R12-QUANT-9045",
+  "domain": "QUANT",
+  "title": "Quantum-inspired classical baseline always available before any QPU claim",
+  "statement": "Quantum-inspired classical heuristics (QUBO/Ising, annealing-style) are always available as the baseline before any QPU claim.",
+  "rationale": "A QPU result compared to nothing proves nothing.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.6 Hybrid CPU/GPU/TPU/QPU Compute Fabric"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "SolverBenchmark always includes a classical solver record and refuses a candidate failing classical validation."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-QUANT-9046",
+  "domain": "QUANT",
+  "title": "QPU work budgeted, off the hot path, classically verified",
+  "statement": "QPU work runs in a budgeted queue, with no hot-path dependency and mandatory classical verification.",
+  "rationale": "An unbudgeted QPU queue spends without bound; a hot-path dependency stalls execution.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "13",
+    "section": "§11.6 Hybrid CPU/GPU/TPU/QPU Compute Fabric"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Jobs over budget are refused; no execution crate reaches a solver; every QPU result is validated classically."
+  },
+  "policy_flags": [
+   "COST",
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CAPITAL-9047",
+  "domain": "CAPITAL",
+  "title": "capital-society-coordinator combines allocation, funding, liquidity, collateral proposals",
+  "statement": "A capital-society-coordinator combines allocation, funding, liquidity and collateral proposals against the authoritative capital grants/ledger.",
+  "rationale": "Independent proposers over-commit the same capital.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.7 Capital, Hedge & Survival Intelligence Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Competing proposals are reconciled against the grant ledger and the sum never exceeds granted capital."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CAPITAL-9048",
+  "domain": "CAPITAL",
+  "title": "Survival kernel reserves cash, margin, liquidity, emergency buffers first",
+  "statement": "A survival-kernel reserves cash, margin, liquidity and emergency buffers, under deterministic policy, before any capital is deployed.",
+  "rationale": "Deploying capital before reserving buffers is how a book is forced to liquidate.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.7 Capital, Hedge & Survival Intelligence Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Opportunity capital is released only after reserves in priority order; a book whose reserves exceed capital releases none. Reordering the waterfall fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RISK-9049",
+  "domain": "RISK",
+  "title": "hedge-brain searches multi-world hedge portfolios and unwind plans",
+  "statement": "A hedge-brain searches multi-world hedge portfolios and unwind plans using the hybrid solver router, over positions and the forecast distribution.",
+  "rationale": "Hedges sized to one forecast fail in the worlds it did not consider.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.7 Capital, Hedge & Survival Intelligence Services"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A hedge plan is evaluated across scenario worlds and includes an unwind plan."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RISK-9050",
+  "domain": "RISK",
+  "title": "Confidence governor shrinks grants when calibration, OOD or disagreement deteriorates",
+  "statement": "A model-risk/confidence-governor shrinks capital grants when calibration, out-of-distribution signals or model disagreement deteriorate.",
+  "rationale": "A model that has stopped being right keeps its full allocation until a loss shows it.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.7 Capital, Hedge & Survival Intelligence Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Worsening calibration reduces the grant; mutating the governor to ignore calibration fails the test."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CAPITAL-9051",
+  "domain": "CAPITAL",
+  "title": "shadow-portfolio-farm writes counterfactual sizing/hedge/timing outcome packs",
+  "statement": "A shadow-portfolio-farm runs counterfactual sizing, hedge and timing portfolios as batch jobs writing compact outcome packs.",
+  "rationale": "The realised choice is only meaningful scored against what it declined.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.7 Capital, Hedge & Survival Intelligence Services"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Each allocation has shadow alternatives scored after resolution into a durable pack."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-9052",
+  "domain": "DATA",
+  "title": "Spanner Graph holds promoted durable entities, never agent scratchpads",
+  "statement": "Spanner Graph holds promoted durable entities, relationships, causal edges, world-model state and provenance references, and never agent scratchpads.",
+  "rationale": "Scratchpads in the authoritative graph pollute truth with unvetted guesses.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.8 Superintelligence Memory Boundaries"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Only promoted entities can be written to the graph store; a scratchpad write is refused."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-9053",
+  "domain": "DATA",
+  "title": "Bigtable holds high-rate ambient state, reputation, scores, features, branch indexes",
+  "statement": "Bigtable holds high-rate ambient state, forecast reputation, model scores, live derived features and branch indexes.",
+  "rationale": "High-rate state in a transactional store contends with the ledger.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.8 Superintelligence Memory Boundaries"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "These record kinds are routed to the wide-column target and nothing else is."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-9054",
+  "domain": "DATA",
+  "title": "BigQuery holds resolved outcomes, tournament history, research analytics",
+  "statement": "BigQuery holds resolved forecast outcomes, tournament history, research analytics and large derived datasets.",
+  "rationale": "Analytics in operational stores slow the operational path.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.8 Superintelligence Memory Boundaries"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Resolved outcomes are streamed to the warehouse."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-9055",
+  "domain": "DATA",
+  "title": "Cloud Storage holds retained history, segments, artifacts; never raw-world corpus",
+  "statement": "Cloud Storage holds retained tick/internal history, immutable Fabric segments, model artifacts and compact knowledge/world-state packs, and is never a general raw-world corpus.",
+  "rationale": "An unbounded raw corpus is a cost and licensing liability.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.8 Superintelligence Memory Boundaries"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Archiver writes sealed segments and artifacts with deterministic names; writes outside the named classes are refused."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AMBIENT-9056",
+  "domain": "AMBIENT",
+  "title": "Agent memory is bounded and never authoritative truth",
+  "statement": "Agent/session memory is bounded and is never authoritative financial or world truth.",
+  "rationale": "Agent memory treated as truth lets a hallucination become a fact.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§11.8 Superintelligence Memory Boundaries"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Agent memory has a size bound and no decision path reads it as truth."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-API-9057",
+  "domain": "API",
+  "title": "Public edge: Cloud DNS, global ALB, Cloud Armor, CDN, Certificate Manager",
+  "statement": "The public edge is Cloud DNS plus a global external Application Load Balancer with Cloud Armor, Cloud CDN and Certificate Manager.",
+  "rationale": "A public surface without WAF/DDoS and managed certificates is exposed by default.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "A plan for an environment with a public edge creates the LB, security policy, CDN backend and certificate map."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-API-9058",
+  "domain": "API",
+  "title": "Static content cached; dynamic BFF on Cloud Run behind serverless backends",
+  "statement": "Static content is cached at the edge and the dynamic BFF runs on Cloud Run behind serverless backends.",
+  "rationale": "Uncached static content loads the BFF; a BFF exposed directly bypasses the edge.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Every backend bucket is CDN-served and the BFF is a serverless NEG backend."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-API-9059",
+  "domain": "API",
+  "title": "Customer identity on Identity Platform with strong MFA/passkeys",
+  "statement": "Customer/application identities use Identity Platform with strong MFA/passkeys where supported.",
+  "rationale": "Password-only customer accounts are taken over.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Identity Platform config has MFA mandatory (or enforced per tenant) and passkeys enabled."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9060",
+  "domain": "SEC",
+  "title": "Workforce/admin paths use Cloud Identity/IAM/IAP/PAM",
+  "statement": "Internal workforce and admin paths use Cloud Identity, IAM, IAP and Privileged Access Manager.",
+  "rationale": "Admin paths on public endpoints or standing privilege are the common breach route.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Every admin surface sits behind IAP and privileged roles are granted only via PAM entitlements."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-API-9061",
+  "domain": "API",
+  "title": "Public API never exposes ledger tables, broker ports, Reflex nodes or keys",
+  "statement": "The public API exposes portfolio/ledger-derived views and authorised commands only, never direct ledger tables, Fabric broker ports, Reflex nodes or custody keys.",
+  "rationale": "Direct exposure of internal stores bypasses every control between them and the user.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "The route table contains no route resolving to a ledger table, broker, node or key, and every mutating route raises a typed intent; adding such a route fails the suite."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-9062",
+  "domain": "AGENCY",
+  "title": "Causal action adapters run as separate services per action class",
+  "statement": "Causal action adapters (publication, outreach, product/pricing, market creation, operational tools) run as separate services.",
+  "rationale": "One adapter process holding every action authority is one compromise away from all of them.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each adapter class is its own deployable with its own identity."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION",
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-AGENCY-9063",
+  "domain": "AGENCY",
+  "title": "Each action adapter carries identity, jurisdiction policy, rate limits, audit, stop",
+  "statement": "Each causal action adapter has an action identity, jurisdiction/channel policy, rate limits, immutable audit and rollback/stop controls.",
+  "rationale": "An action without identity, limits and a stop control cannot be attributed or halted.",
+  "kind": "contract",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A tool missing any of these declarations cannot be constructed; deleting one field check fails the test."
+  },
+  "policy_flags": [
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9064",
+  "domain": "SEC",
+  "title": "Crawler/scout isolated in dedicated project/VPC/pools and egress identity",
+  "statement": "Crawler/scout workloads run in a dedicated project/VPC/node pools with their own egress identity.",
+  "rationale": "Untrusted fetching in the trading network gives web content a path to trading systems.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Scouts have their own identity and network and only they hold information-source egress."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9065",
+  "domain": "SEC",
+  "title": "Untrusted web content cannot invoke high-authority tools or production secrets",
+  "statement": "Untrusted web content cannot directly invoke high-authority tools or reach production secrets.",
+  "rationale": "Prompt injection via fetched content is the obvious route to tool misuse.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§12 Edge, Portal, API and Causal Action Plane"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "Ingested content has no code path to tool invocation or secret reads."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9066",
+  "domain": "CICD",
+  "title": "Autonomous development never bypasses Git, test, attestation or deploy policy",
+  "statement": "Agent-produced code and infrastructure changes go through Git, tests, attestation and deployment policy like any other change.",
+  "rationale": "An agent with a side door to production makes every control optional.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Deploy requires a passing CI run on a repository commit and signs only that; a fork/PR commit cannot be signed."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-9067",
+  "domain": "GOV",
+  "title": "Planner agent cannot merge or deploy",
+  "statement": "The planner agent role may read and plan but cannot merge or deploy.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9068",
+  "domain": "SEC",
+  "title": "Coder agent has sandboxed credentials, no prod secrets",
+  "statement": "The coder agent works with sandboxed credentials and never holds production secrets.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9069",
+  "domain": "CICD",
+  "title": "Test agent cannot waive failing risk or performance gates",
+  "statement": "The test/replay agent cannot waive a failing risk or performance gate.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9070",
+  "domain": "SEC",
+  "title": "Security findings severity controls promotion",
+  "statement": "Security-agent findings are triaged by a severity policy that controls promotion.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "14",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-ARCH-9071",
+  "domain": "ARCH",
+  "title": "Architecture agent cannot silently redefine non-negotiables",
+  "statement": "Architecture checks enforce dependency rules, hot-path violations and state ownership, and non-negotiables cannot be redefined silently.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9072",
+  "domain": "CICD",
+  "title": "Reviewer independent of coder by model and context",
+  "statement": "The reviewer agent uses a separate model/context from the primary coder.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9073",
+  "domain": "CICD",
+  "title": "Release agent promotes by immutable digest; no direct kubectl/SSH",
+  "statement": "The release agent updates environment desired state by immutable digest after gates and has no direct kubectl/SSH to production.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9074",
+  "domain": "OBS",
+  "title": "SRE auto-remediation limited to signed runbooks and approved actions",
+  "statement": "SRE agent auto-remediation is limited to signed runbooks and approved actions.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-9075",
+  "domain": "GOV",
+  "title": "Learning agent proposals still pass promotion gates",
+  "statement": "The learning agent may propose capability changes from incidents/reviews/benchmarks, but promotion stays gated.",
+  "rationale": "Section 13's role table makes this the hard boundary for the role.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The boundary is enforced by credentials/config or a gate, and a run attempting the forbidden action is refused."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9076",
+  "domain": "CICD",
+  "title": "Agent workers are ephemeral with scoped service accounts",
+  "statement": "Agent orchestration runs on a management plane and execution workers are ephemeral jobs/build workers with scoped service accounts.",
+  "rationale": "Long-lived agent workers accumulate credentials and state.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Each agent task runs in an ephemeral worker under a task-scoped identity."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9077",
+  "domain": "SEC",
+  "title": "Agent sandboxes: ephemeral, egress-limited, quota, read-only telemetry, synthetic data",
+  "statement": "Agent sandboxes are ephemeral namespaces/projects with egress policy, quota, read-only production telemetry by default and synthetic/test data when possible.",
+  "rationale": "An agent sandbox with write access to production telemetry or real data is not a sandbox.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "A sandbox identity has only read on telemetry and no data-store grants."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9078",
+  "domain": "SEC",
+  "title": "One policy-enforcing, audited model gateway for agents",
+  "statement": "Agents use approved models only through one policy-enforcing gateway; credentials stay in Secret Manager and requests are audited.",
+  "rationale": "Per-agent model credentials sprawl and requests go unaudited.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Every agent model request passes the gateway, which records it; a direct call fails."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "EXTERNAL_ACTION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-9079",
+  "domain": "GOV",
+  "title": "Architecture memory indexed for agents",
+  "statement": "ADRs, contracts, service catalogue, SLOs, runbooks and the blueprint are indexed for agents.",
+  "rationale": "Agents that cannot find the rules re-derive them wrongly.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "The index lists every ADR, blueprint source with hash, the deployable binaries, and runbooks; a missing entry fails."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GOV-9080",
+  "domain": "GOV",
+  "title": "Agents cite the rule they change when proposing an exception",
+  "statement": "An agent proposing an exception must cite the rule it is changing.",
+  "rationale": "Silent exceptions erode rules without anyone deciding to.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "A PR template field naming the rule is required and checked."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9081",
+  "domain": "CICD",
+  "title": "No invisible changes: repairs become commits/PRs or audited runtime actions",
+  "statement": "Any autonomous repair that changes code/config becomes a normal Git commit/PR, or a pre-approved runtime action whose event is durably audited.",
+  "rationale": "An unrecorded fix is an unreviewable change.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13 Autonomous Development and AI Engineering"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A remediation produces an audit record before the effect; an effect without a record fails."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9082",
+  "domain": "CICD",
+  "title": "Agent work isolated in branches/worktrees with deterministic acceptance and budgets",
+  "statement": "Agent work is decomposed into isolated branches/worktrees with deterministic acceptance criteria and budgeted tool/model usage.",
+  "rationale": "Unbudgeted parallel agents spend without bound and collide.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13.1 Autonomous Development at Superintelligence Scale"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each task carries acceptance criteria and a budget that is enforced."
+  },
+  "policy_flags": [
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9083",
+  "domain": "CICD",
+  "title": "Orchestrator keeps dependency DAGs and prevents overlapping edits",
+  "statement": "An agent orchestrator maintains dependency DAGs and prevents multiple agents editing the same ownership boundary without merge coordination.",
+  "rationale": "Parallel agents editing the same files or allocating the same IDs collide.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13.1 Autonomous Development at Superintelligence Scale"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Two tasks claiming the same boundary are serialised."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9084",
+  "domain": "SEC",
+  "title": "Agent sandboxes have no production credentials",
+  "statement": "Ephemeral agent sandboxes (Cloud Run Jobs, GKE Jobs or build workers) never have production credentials available.",
+  "rationale": "A sandbox holding prod credentials makes agent compromise a production compromise.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13.1 Autonomous Development at Superintelligence Scale"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "No production-scoped grant exists for any sandbox identity."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9085",
+  "domain": "CICD",
+  "title": "Agent changes carry machine-checkable evidence",
+  "statement": "Every agent-produced change generates machine-checkable evidence: tests, replay deltas, benchmark deltas, security results and architecture-contract checks.",
+  "rationale": "A change justified by prose cannot be checked.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13.1 Autonomous Development at Superintelligence Scale"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "CI emits each evidence class as an artifact for every PR."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GCP-9086",
+  "domain": "GCP",
+  "title": "Terraform/GitOps is the only normal path to persistent cloud state",
+  "statement": "Agents may propose services/models/tools, but Terraform/GitOps remains the only normal path to persistent cloud state.",
+  "rationale": "Console changes drift from the reviewed state.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13.1 Autonomous Development at Superintelligence Scale"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "infra apply consumes a saved plan; drift detectors raise findings."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9087",
+  "domain": "RES",
+  "title": "SRE agents turn regressions into replay/fuzz/game-day tests first",
+  "statement": "SRE agents learn from incidents and turn each regression into a replay/fuzz/game-day test before proposing a fix.",
+  "rationale": "A fix without a regression test lets the incident recur.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§13.1 Autonomous Development at Superintelligence Scale"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each incident record links a new test that fails before the fix."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9088",
+  "domain": "CICD",
+  "title": "Repository algorik-app owns its declared scope",
+  "statement": "A repository named algorik-app owns: Rust services, Reflex, Fabric, APIs, shared crates, tests.",
+  "rationale": "Separating ownership by repository bounds blast radius and review scope.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§14.1 Repository model"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The algorik-app repository exists and holds exactly that scope."
+  },
+  "policy_flags": [
+   "MULTI_REPO"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with the platform's one-repository rule."
+ },
+ {
+  "id": "R12-CICD-9089",
+  "domain": "CICD",
+  "title": "Repository algorik-models owns its declared scope",
+  "statement": "A repository named algorik-models owns: training code, evaluation, feature definitions, distillation, model manifests.",
+  "rationale": "Separating ownership by repository bounds blast radius and review scope.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§14.1 Repository model"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The algorik-models repository exists and holds exactly that scope."
+  },
+  "policy_flags": [
+   "MULTI_REPO"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with the platform's one-repository rule."
+ },
+ {
+  "id": "R12-CICD-9090",
+  "domain": "CICD",
+  "title": "Repository algorik-infra owns its declared scope",
+  "statement": "A repository named algorik-infra owns: Terraform modules/stacks for org/projects/network/GKE/Spanner/data/build/security.",
+  "rationale": "Separating ownership by repository bounds blast radius and review scope.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§14.1 Repository model"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The algorik-infra repository exists and holds exactly that scope."
+  },
+  "policy_flags": [
+   "MULTI_REPO"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with the platform's one-repository rule."
+ },
+ {
+  "id": "R12-CICD-9091",
+  "domain": "CICD",
+  "title": "Repository algorik-platform-config owns its declared scope",
+  "statement": "A repository named algorik-platform-config owns: Config Sync cluster baseline, policies, CRDs, observability agents, GitOps controllers.",
+  "rationale": "Separating ownership by repository bounds blast radius and review scope.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "15",
+    "section": "§14.1 Repository model"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The algorik-platform-config repository exists and holds exactly that scope."
+  },
+  "policy_flags": [
+   "MULTI_REPO"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with the platform's one-repository rule."
+ },
+ {
+  "id": "R12-CICD-9092",
+  "domain": "CICD",
+  "title": "Repository algorik-env owns its declared scope",
+  "statement": "A repository named algorik-env owns: environment desired state: application/model/policy digests and per-region rollout declarations.",
+  "rationale": "Separating ownership by repository bounds blast radius and review scope.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.1 Repository model"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The algorik-env repository exists and holds exactly that scope."
+  },
+  "policy_flags": [
+   "MULTI_REPO"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with the platform's one-repository rule."
+ },
+ {
+  "id": "R12-CICD-9093",
+  "domain": "CICD",
+  "title": "Repository algorik-schemas owns its declared scope",
+  "statement": "A repository named algorik-schemas owns: Fabric event schemas, compatibility rules, generated Rust clients/types, data contracts.",
+  "rationale": "Separating ownership by repository bounds blast radius and review scope.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.1 Repository model"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The algorik-schemas repository exists and holds exactly that scope."
+  },
+  "policy_flags": [
+   "MULTI_REPO"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with the platform's one-repository rule."
+ },
+ {
+  "id": "R12-CICD-9094",
+  "domain": "CICD",
+  "title": "Repository algorik-runbooks owns its declared scope",
+  "statement": "A repository named algorik-runbooks owns: SRE runbooks, game-day definitions, remediation policy, architecture acceptance tests.",
+  "rationale": "Separating ownership by repository bounds blast radius and review scope.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.1 Repository model"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The algorik-runbooks repository exists and holds exactly that scope."
+  },
+  "policy_flags": [
+   "MULTI_REPO"
+  ],
+  "secondary_domains": [],
+  "notes": "Conflicts with the platform's one-repository rule."
+ },
+ {
+  "id": "R12-CICD-9095",
+  "domain": "CICD",
+  "title": "Branch protection requires tests and risk-scaled independent review",
+  "statement": "Branch protections require tests and independent review scaled by risk class for every PR, whether from a human or an authorised agent.",
+  "rationale": "Unreviewed changes to safety paths reach main.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Main refuses a merge without passing checks and a code-owner review."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9096",
+  "domain": "SEC",
+  "title": "CI uses WIF short-lived credentials; no stored service-account keys",
+  "statement": "GitHub Actions exchanges OIDC for short-lived GCP credentials through Workload Identity Federation, and no service-account key is stored anywhere.",
+  "rationale": "A stored key is a permanent credential that outlives every rotation.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "No google_service_account_key in Terraform, org policy disables key creation/upload, and workflows authenticate via the WIF provider."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9097",
+  "domain": "CICD",
+  "title": "Builds run in a Cloud Build private pool, reproducibly",
+  "statement": "Builds run in a Cloud Build private pool inside private networking and are reproducible.",
+  "rationale": "A non-reproducible build cannot be verified against its source; public runners see build secrets.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Two builds of the same commit yield the same digest; builds run in a private pool."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9098",
+  "domain": "CICD",
+  "title": "Rust builds use locked dependencies",
+  "statement": "Rust builds use locked dependencies.",
+  "rationale": "An unlocked build resolves a different dependency graph from the one reviewed.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Every cargo build in CI and the Dockerfile passes --locked."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9099",
+  "domain": "CICD",
+  "title": "cargo-deny and cargo-audit gate CI",
+  "statement": "CI runs cargo-deny and cargo-audit as gates.",
+  "rationale": "Known-vulnerable or disallowed crates reach a build.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The audit and deny jobs fail the workflow on findings."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9100",
+  "domain": "CICD",
+  "title": "Clippy and unit/property tests gate CI",
+  "statement": "CI runs clippy and unit/property tests as gates.",
+  "rationale": "Lint and test failures ship.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "clippy and cargo test --no-fail-fast run on every PR."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9101",
+  "domain": "CICD",
+  "title": "Fuzz tests gate CI",
+  "statement": "CI runs fuzz tests as a gate.",
+  "rationale": "Parsers fail on inputs nobody wrote by hand.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "A fuzz job runs on PRs and fails on a crash."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9102",
+  "domain": "CICD",
+  "title": "Replay and benchmark gates in CI",
+  "statement": "CI runs replay and benchmark gates.",
+  "rationale": "Behavioural and performance regressions ship silently.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "A replay comparison and a benchmark threshold fail the build on regression."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9103",
+  "domain": "CICD",
+  "title": "Terraform plan before artifacts accepted",
+  "statement": "A Terraform plan runs before artifacts are accepted.",
+  "rationale": "Infrastructure that cannot plan is discovered at apply.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "A plan job runs on PRs touching infrastructure."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9104",
+  "domain": "CICD",
+  "title": "Kubernetes policy checks before artifacts accepted",
+  "statement": "Kubernetes manifests pass policy checks before artifacts are accepted.",
+  "rationale": "A manifest that relaxes a control reaches the cluster.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "Rendered manifests are checked for the invariants."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9105",
+  "domain": "CICD",
+  "title": "Secret scan, SAST, SCA and container scan before acceptance",
+  "statement": "Secret scan, SAST/SCA and container scan run before artifacts are accepted.",
+  "rationale": "Leaked secrets and known vulnerabilities ship.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Each scanner runs and blocks."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9106",
+  "domain": "CICD",
+  "title": "Architecture rule tests before acceptance",
+  "statement": "Architecture rule tests run before artifacts are accepted.",
+  "rationale": "Boundary violations ship.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "The architecture suite runs in CI's cargo test and deploy gates on CI."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9107",
+  "domain": "CICD",
+  "title": "Artifact Registry stores images, Rust packages, OCI bundles by immutable digest",
+  "statement": "Artifact Registry stores images, Rust packages and OCI deployment bundles by immutable digest.",
+  "rationale": "A mutable tag lets whoever can push change what deploys.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Repositories have immutable tags and deploys reference digests."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9108",
+  "domain": "CICD",
+  "title": "SBOM, provenance and scan results attached to artifacts",
+  "statement": "SBOM, provenance and scan results are attached to each stored artifact.",
+  "rationale": "An artifact without provenance cannot be traced to source.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "The registry entry for an image has SBOM and provenance attestations."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9109",
+  "domain": "SEC",
+  "title": "KMS/HSM signs release, model and policy manifests",
+  "statement": "Cloud KMS/HSM signs release, model and policy manifests.",
+  "rationale": "Symmetric or reproducible signing keys let anyone who can compute them forge policy.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Each manifest signature verifies with a KMS public key; a manifest signed with any other key is refused."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9110",
+  "domain": "SEC",
+  "title": "Binary Authorization requires trusted attestations at deploy",
+  "statement": "Binary Authorization and admission policy require trusted attestations for deployed workloads.",
+  "rationale": "Unattested images run.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "Default rule is REQUIRE_ATTESTATION with ENFORCED_BLOCK_AND_AUDIT_LOG naming the attestor."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": "Text says GKE workloads; here applied to Cloud Run."
+ },
+ {
+  "id": "R12-CICD-9111",
+  "domain": "CICD",
+  "title": "Desired state updated by digest; Config Sync and Argo CD reconcile",
+  "statement": "The release agent updates the environment desired state with exact digests; Config Sync reconciles the platform baseline and Argo CD reconciles application state.",
+  "rationale": "Imperative deploys leave no reviewed desired state.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "A promotion is a commit of digests and reconciliation follows it."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9112",
+  "domain": "CICD",
+  "title": "Same immutable artifact promoted dev→integration→replay→paper→staging→prod",
+  "statement": "Kargo promotes the same immutable artifact through dev, integration, replay, paper, staging and prod regions; rebuilding per environment is prohibited.",
+  "rationale": "A per-environment rebuild means prod runs bytes nobody tested.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "The digest promoted to each stage equals the digest built once; a second build fails the check."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9113",
+  "domain": "CICD",
+  "title": "Argo Rollouts canary/blue-green for GKE services",
+  "statement": "GKE services roll out by canary/blue-green via Argo Rollouts.",
+  "rationale": "All-at-once rollouts make every regression a full outage.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Rollout objects define steps and analysis."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-REFLEX-9114",
+  "domain": "REFLEX",
+  "title": "Reflex/Fabric use drain/stage/epoch activation, not pod canaries",
+  "statement": "Reflex and Fabric components roll out via component-specific drain/stage/epoch activation rather than generic pod canaries.",
+  "rationale": "A pod canary on a stateful venue session double-sends or drops orders.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A new incarnation fences the old one by epoch before activating."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9115",
+  "domain": "CICD",
+  "title": "Rollout SLOs enforced; regression auto-rolls back and opens incident",
+  "statement": "Monitoring/replay comparators enforce rollout SLOs; a regression rolls back automatically and creates an incident/task.",
+  "rationale": "A regression nobody notices stays deployed.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.2 Source-to-production flow"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A spent error budget blocks release and a regression triggers rollback."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CICD-9116",
+  "domain": "CICD",
+  "title": "GKE services canary with SLO gate and instant previous-digest rollback",
+  "statement": "GKE services deploy via Argo CD + Kargo + Argo Rollouts with canary by traffic/replicas, an SLO gate, and instant rollback to the previous digest.",
+  "rationale": "Slow rollback extends incidents.",
+  "kind": "process",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.3 Component-specific release mechanics"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Rollback to the previous digest is one action."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-REFLEX-9117",
+  "domain": "REFLEX",
+  "title": "Reflex rollout: standby, replay shadow, drain/fence, activate epoch, compare, expand",
+  "statement": "Reflex binaries roll out as immutable VM images: standby first, replay shadow, drain/fence, activate epoch, compare, expand.",
+  "rationale": "Replacing the active node in place loses the venue session.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.3 Component-specific release mechanics"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "A rollout drill follows the sequence and the old node is fenced before activation."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-FABRIC-9118",
+  "domain": "FABRIC",
+  "title": "Fabric broker rollout: drain leaders, verify RF, replace one broker, rejoin",
+  "statement": "Fabric brokers roll out by draining leaders/partitions, verifying replication factor, replacing one broker, rejoining, and repeating.",
+  "rationale": "Replacing brokers without verified replication loses quorum-acked records.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.3 Component-specific release mechanics"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "A rolling replacement preserves every quorum-acked record."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MODEL-9119",
+  "domain": "MODEL",
+  "title": "Model/policy rollout: shadow, paper/replay, stage, atomic epoch activation, rollback retained",
+  "statement": "Models/policy roll out as signed OCI manifests with GCS weights: shadow score, paper/replay, stage locally, atomic epoch activation, with rollback retained.",
+  "rationale": "A model activated without shadow evidence is an untested change to decisions.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.3 Component-specific release mechanics"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Promotion requires shadow evidence, activation is atomic by sequence, and rollback restores the parent."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GCP-9120",
+  "domain": "GCP",
+  "title": "Terraform: gated apply, plan artifact, change windows for core resources",
+  "statement": "Terraform changes go through plan plus gated apply; folder/project/network/database changes have explicit change windows and a plan artifact.",
+  "rationale": "Unplanned applies to core resources cause outages.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.3 Component-specific release mechanics"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Apply consumes the saved plan artifact; core changes are refused outside a window."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-CONTRACT-9121",
+  "domain": "CONTRACT",
+  "title": "Schema changes: compatibility gate, additive first, dual read/write, retire after inventory",
+  "statement": "Schemas live in a registry with a CI compatibility gate; changes are additive first with dual-read/write migrations, and a field is retired only after a consumer inventory proves it safe.",
+  "rationale": "A breaking schema change strands consumers.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "16",
+    "section": "§14.3 Component-specific release mechanics"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "Removing a field fails the gate; adding passes."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9122",
+  "domain": "SEC",
+  "title": "Least-privilege, group-based IAM",
+  "statement": "Human and workload identity uses Cloud Identity/IAM with least privilege and group-based access.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9123",
+  "domain": "SEC",
+  "title": "Privileged Access Manager time-bounded elevation",
+  "statement": "Sensitive operations use Privileged Access Manager for time-bounded elevation with approvals.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9124",
+  "domain": "SEC",
+  "title": "External CI uses Workload Identity Federation",
+  "statement": "GitHub/external CI obtains short-lived GCP access through Workload Identity Federation without service-account keys.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9125",
+  "domain": "SEC",
+  "title": "Workload Identity for GKE pods; no node-wide credentials",
+  "statement": "GKE pods map to GCP service identities with no node-wide credentials.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9126",
+  "domain": "SEC",
+  "title": "Secret Manager with rotation, versioning, audit",
+  "statement": "Venue/API credentials and non-key secrets live in Secret Manager with rotation, versioning and audit, delivered as files.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9127",
+  "domain": "SEC",
+  "title": "KMS/HSM for CMEK, signing, attestation roots",
+  "statement": "Cloud KMS/HSM provides CMEK, package signing, high-assurance key material and attestation roots.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9128",
+  "domain": "SEC",
+  "title": "Certificate Authority Service mTLS for Fabric/VM identities",
+  "statement": "Certificate Authority Service issues mTLS certificates for Fabric/VM and internal workload identities outside a mesh.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9129",
+  "domain": "SEC",
+  "title": "VPC Service Controls perimeters around ledger/data/AI",
+  "statement": "VPC Service Controls perimeters surround ledger, data and AI projects.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9130",
+  "domain": "SEC",
+  "title": "Cloud Armor WAF/DDoS/rate controls internet-facing",
+  "statement": "Every internet-facing surface has Cloud Armor WAF, DDoS (adaptive protection) and rate controls.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9131",
+  "domain": "SEC",
+  "title": "Hierarchical firewall / NGFW egress segmentation",
+  "statement": "Organisation/folder hierarchical firewall policies (Cloud NGFW) provide network policy, egress segmentation and narrow lateral paths.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9132",
+  "domain": "SEC",
+  "title": "Security Command Center posture and findings",
+  "statement": "Security Command Center aggregates posture, findings and threats with response integration.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9133",
+  "domain": "SEC",
+  "title": "Artifact Analysis and Binary Authorization",
+  "statement": "Artifact Analysis scans images and Binary Authorization enforces at deploy time.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9134",
+  "domain": "SEC",
+  "title": "Sensitive Data Protection for PII in lake/analytics",
+  "statement": "Sensitive Data Protection discovers, classifies and redacts PII/sensitive data in lake/analytics.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9135",
+  "domain": "SEC",
+  "title": "Cloud Audit Logs and Asset Inventory",
+  "statement": "Cloud Audit Logs and Cloud Asset Inventory provide administrative/data-access evidence and change visibility.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9136",
+  "domain": "SEC",
+  "title": "IAP for internal/admin web; no public management endpoints",
+  "statement": "Internal/admin web access uses IAP and no management endpoint is public.",
+  "rationale": "Section 15 control table.",
+  "kind": "constraint",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Security and Trust Architecture"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "The control exists in Terraform and is asserted by a test or plan."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9137",
+  "domain": "SEC",
+  "title": "Custody, deploy-signing, Fabric identity and user-auth keys are separate trust domains",
+  "statement": "Custody/transfer keys, deployment-signing keys, Fabric identity keys and user-auth keys are separate trust domains.",
+  "rationale": "A shared key domain lets one compromise cross into another.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Key separation"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Each key class is a distinct KMS key with disjoint IAM."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9138",
+  "domain": "SEC",
+  "title": "Engineering-agent compromise cannot yield capital-moving authority",
+  "statement": "Compromise of an engineering agent must not yield authority to move capital.",
+  "rationale": "Agent compromise becoming a funds-movement compromise.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Key separation"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "No CI/agent identity holds any treasury/withdrawal grant."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-SEC-9139",
+  "domain": "SEC",
+  "title": "Trading-service compromise cannot yield deployment-signing authority",
+  "statement": "Compromise of a trading service must not yield deployment-signing authority.",
+  "rationale": "A compromised workload signing its own replacement.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§15 Key separation"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "No workload identity holds signer rights on the attestor key."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9140",
+  "domain": "OBS",
+  "title": "OpenTelemetry instrumentation everywhere",
+  "statement": "Every process is instrumented with OpenTelemetry (SDK/collector).",
+  "rationale": "Uninstrumented processes cannot be operated.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Each binary exports OTLP; a binary without an exporter fails the check."
+  },
+  "policy_flags": [
+   "NEW_DEPENDENCY"
+  ],
+  "secondary_domains": [],
+  "notes": "An OTel SDK crate would breach ADR 0002; OTLP/JSON is produced in-tree."
+ },
+ {
+  "id": "R12-OBS-9141",
+  "domain": "OBS",
+  "title": "Reflex/Fabric export asynchronously to regional collectors",
+  "statement": "Reflex and Fabric export telemetry asynchronously to regional collectors.",
+  "rationale": "Synchronous export puts the collector on the order path.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "Export happens off the pass thread to a regional collector."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9142",
+  "domain": "OBS",
+  "title": "No logging call may block order processing",
+  "statement": "No logging call may block order processing.",
+  "rationale": "A slow log sink stalls the order path.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Logging on the pass path is sampled/non-blocking; an injected slow sink does not delay a pass."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9143",
+  "domain": "OBS",
+  "title": "Metrics on Managed Prometheus + Cloud Monitoring",
+  "statement": "Metrics are collected by Managed Service for Prometheus and Cloud Monitoring.",
+  "rationale": "Metrics nothing collects page nobody.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "A collector scrapes each service and alert policies evaluate."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9144",
+  "domain": "OBS",
+  "title": "Domain metric: decision p99",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'decision p99' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'decision p99' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet (nine domain metrics)."
+ },
+ {
+  "id": "R12-OBS-9145",
+  "domain": "OBS",
+  "title": "Domain metric: venue ack latency",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'venue ack latency' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'venue ack latency' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9146",
+  "domain": "OBS",
+  "title": "Domain metric: Fabric quorum ack",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'Fabric quorum ack' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'Fabric quorum ack' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9147",
+  "domain": "OBS",
+  "title": "Domain metric: partition lag",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'partition lag' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'partition lag' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9148",
+  "domain": "OBS",
+  "title": "Domain metric: mirror lag",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'mirror lag' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'mirror lag' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9149",
+  "domain": "OBS",
+  "title": "Domain metric: ledger commit",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'ledger commit' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'ledger commit' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9150",
+  "domain": "OBS",
+  "title": "Domain metric: reconciliation breaks",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'reconciliation breaks' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'reconciliation breaks' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9151",
+  "domain": "OBS",
+  "title": "Domain metric: model freshness",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'model freshness' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'model freshness' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9152",
+  "domain": "OBS",
+  "title": "Domain metric: package activation",
+  "statement": "Cloud Monitoring/Prometheus carries the domain metric 'package activation' alongside golden signals.",
+  "rationale": "Golden signals alone do not show trading-specific failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "A test drives the event and asserts the 'package activation' series moved; deleting the recording site fails it."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": "Split from the §16 metrics bullet."
+ },
+ {
+  "id": "R12-OBS-9153",
+  "domain": "OBS",
+  "title": "High-rate logs strictly sampled; raw history in Fabric/GCS not logs",
+  "statement": "Application/control logs go to Cloud Logging with strict sampling on high-rate paths; raw tick/decision history belongs in Fabric/GCS, not log ingestion.",
+  "rationale": "Per-event logging makes log cost proportional to traffic.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "High-rate paths log through the sampler and carry dropped counts."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9154",
+  "domain": "OBS",
+  "title": "Traces for warm/API; correlation IDs bridge into Reflex/Fabric metadata",
+  "statement": "Cloud Trace covers warm/API workflows, and sampled correlation IDs bridge into Reflex/Fabric event metadata without distributed-trace network calls on the hot path.",
+  "rationale": "Without correlation, an operator cannot follow a decision from API to cell.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A correlation id set at the API appears in the cell's event metadata."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9155",
+  "domain": "OBS",
+  "title": "Network telemetry: flow logs, connectivity tests, LB and Interconnect metrics",
+  "statement": "Network observability uses VPC Flow Logs where appropriate, Connectivity Tests, load-balancer telemetry and Interconnect/VPN metrics.",
+  "rationale": "Network faults are invisible without flow data.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Subnets on trading/zone paths carry flow logs."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9156",
+  "domain": "OBS",
+  "title": "SLOs per plane with error budgets driving release policy",
+  "statement": "SLOs are declared per plane and dependency, with error budgets that drive release policy.",
+  "rationale": "SLOs that do not gate releases are decoration.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A spent budget refuses a release for that plane only."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9157",
+  "domain": "OBS",
+  "title": "Fabric backlog and ledger reconciliation are product SLOs",
+  "statement": "Fabric backlog and ledger reconciliation are product SLOs, not only infrastructure metrics.",
+  "rationale": "Treating them as infrastructure hides product failure.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Both appear as declared SLOs with targets."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9158",
+  "domain": "OBS",
+  "title": "AIOps SRE agent diagnoses and executes pre-approved actions with audit",
+  "statement": "An SRE agent reads telemetry, compares runbooks and recent diffs, opens incidents/PRs, scales permitted services and executes pre-approved rollback/restart/drain actions with audit.",
+  "rationale": "Manual diagnosis is slow; unaudited automation is dangerous.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "17",
+    "section": "§16 Observability, SRE and AIOps"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A detected anomaly yields an incident and only a runbook action, audited."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9159",
+  "domain": "OBS",
+  "title": "Reflex SLOs declared and measured",
+  "statement": "Reflex has SLOs covering: market-event-to-decision p99/p99.9, venue round-trip, stale-book age, local risk-gate latency, dropped feed messages.",
+  "rationale": "Per-component SLOs are what release and paging decisions are made on.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§16 Observability, SRE and AIOps (primary SLO examples)"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each named objective is declared with a target and backed by a recorded series; deleting a recording site makes an 'unmeasured' assertion fire."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9160",
+  "domain": "OBS",
+  "title": "Fabric SLOs declared and measured",
+  "statement": "Fabric has SLOs covering: publish quorum p99, broker availability, partition under-replication, consumer lag, mirror lag, archive lag, schema reject rate.",
+  "rationale": "Per-component SLOs are what release and paging decisions are made on.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§16 Observability, SRE and AIOps (primary SLO examples)"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each named objective is declared with a target and backed by a recorded series; deleting a recording site makes an 'unmeasured' assertion fire."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9161",
+  "domain": "OBS",
+  "title": "GKE services SLOs declared and measured",
+  "statement": "GKE services has SLOs covering: request p99/error, saturation, pod disruption, dependency circuit opens.",
+  "rationale": "Per-component SLOs are what release and paging decisions are made on.",
+  "kind": "metric",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§16 Observability, SRE and AIOps (primary SLO examples)"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each named objective is declared with a target and backed by a recorded series; deleting a recording site makes an 'unmeasured' assertion fire."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9162",
+  "domain": "OBS",
+  "title": "Ledger SLOs declared and measured",
+  "statement": "Ledger has SLOs covering: commit p99, outcome-to-ledger lag, reconciliation mismatch age, transaction abort rate.",
+  "rationale": "Per-component SLOs are what release and paging decisions are made on.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§16 Observability, SRE and AIOps (primary SLO examples)"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each named objective is declared with a target and backed by a recorded series; deleting a recording site makes an 'unmeasured' assertion fire."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9163",
+  "domain": "OBS",
+  "title": "Data SLOs declared and measured",
+  "statement": "Data has SLOs covering: GCS archive delay, source re-fetch health, Bigtable p99, knowledge-delta freshness, BQ ingestion freshness, lineage completeness.",
+  "rationale": "Per-component SLOs are what release and paging decisions are made on.",
+  "kind": "metric",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§16 Observability, SRE and AIOps (primary SLO examples)"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each named objective is declared with a target and backed by a recorded series; deleting a recording site makes an 'unmeasured' assertion fire."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9164",
+  "domain": "OBS",
+  "title": "AI SLOs declared and measured",
+  "statement": "AI has SLOs covering: model package freshness, calibration/drift, training/evaluation queue, agent tool failures, quantum/classical benchmark delta.",
+  "rationale": "Per-component SLOs are what release and paging decisions are made on.",
+  "kind": "metric",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§16 Observability, SRE and AIOps (primary SLO examples)"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each named objective is declared with a target and backed by a recorded series; deleting a recording site makes an 'unmeasured' assertion fire."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-OBS-9165",
+  "domain": "OBS",
+  "title": "Delivery SLOs declared and measured",
+  "statement": "Delivery has SLOs covering: lead time, rollback rate, build reproducibility, attestation coverage, config drift, autonomous PR acceptance/rework rate.",
+  "rationale": "Per-component SLOs are what release and paging decisions are made on.",
+  "kind": "metric",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§16 Observability, SRE and AIOps (primary SLO examples)"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Each named objective is declared with a target and backed by a recorded series; deleting a recording site makes an 'unmeasured' assertion fire."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9166",
+  "domain": "RES",
+  "title": "Reflex standby stays fenced; failure loses only that shard's venue session",
+  "statement": "On a Reflex process/VM failure the standby stays fenced until failover criteria are met and only that shard's venue connection is lost.",
+  "rationale": "An unfenced standby double-sends; a shared session loses every shard.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "Killing the primary does not activate the standby until criteria pass; other shards keep sessions."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9167",
+  "domain": "RES",
+  "title": "Reflex recovery after liveness, fencing, venue-session checks; no zero-gap promise",
+  "statement": "Reflex recovers by restart or standby promotion only after liveness, fencing and venue-session checks; recovery targets are measured per venue and zero-gap failover is not promised.",
+  "rationale": "Promoting before the old session is dead produces duplicate orders.",
+  "kind": "process",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "A drill records per-venue recovery time and the promotion follows the three checks."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9168",
+  "domain": "RES",
+  "title": "Zone loss: Fabric RF3 retains quorum; Reflex promotes standby",
+  "statement": "On loss of one zone, Fabric RF3 and the regional control plane retain quorum and Reflex can promote its standby.",
+  "rationale": "A single-zone deployment loses everything with the zone.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "Zone-loss drill keeps quorum-acked records and promotes the standby."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9169",
+  "domain": "RES",
+  "title": "Broker failure: leader moves, producers refresh, quorum-acked records preserved",
+  "statement": "On a Fabric broker failure the partition leader moves to a follower, producers refresh the map, and quorum-acked records are preserved before the broker is replaced and rebalanced.",
+  "rationale": "Losing an acknowledged record breaks the audit trail.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "Killing a broker loses no acked record."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9170",
+  "domain": "RES",
+  "title": "Fabric region loss: Reflex continues on cached policy; mirrored topics elsewhere",
+  "statement": "On loss of a whole Fabric region, Reflex continues under cached policy, critical mirrored topics remain available elsewhere, and the region is rebuilt from replicas/GCS archives.",
+  "rationale": "A region outage must not stop other regions or the region's own execution.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "With the broker unreachable the cell passes on its last verified policy; spool pressure halts only per the journal wire."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9171",
+  "domain": "RES",
+  "title": "Regional control-plane loss: Reflex continues; rebuild from Terraform and GitOps",
+  "statement": "On regional GKE (control plane) loss, Reflex and Fabric journaling continue, other regions take research/control work, and the cluster is rebuilt from Terraform + Config Sync + Argo.",
+  "rationale": "Control-plane loss must not become an execution outage.",
+  "kind": "process",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "Deleting the control plane leaves cells passing; terraform + argo rebuilds it."
+  },
+  "policy_flags": [
+   "KUBERNETES",
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9172",
+  "domain": "RES",
+  "title": "Global cognition loss: no new models; trading follows degradation envelope",
+  "statement": "On loss of global cognition/AI, no new models or research are produced and local trading follows its freshness/degradation envelope with no hot-path impact.",
+  "rationale": "Cognition on the hot path turns an AI outage into a trading outage.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "With every centre-fed capability stale, the cell's sizing multiplier falls per the table and passes continue."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9173",
+  "domain": "RES",
+  "title": "Spanner leader move: monitor outcome-to-ledger backlog",
+  "statement": "When the Spanner leader region moves, the ledger tolerates latency change and the outcome-to-ledger backlog is monitored.",
+  "rationale": "A silently growing backlog means outcomes are unrecorded.",
+  "kind": "metric",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "The backlog gauge is recorded and alerted."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9174",
+  "domain": "RES",
+  "title": "Bigtable failover via multi-cluster routing and app profiles",
+  "statement": "Bigtable uses multi-cluster routed reads for failover, app profiles define behaviour, and single-cluster transactional workloads fail over explicitly with replay from Fabric/GCS.",
+  "rationale": "A single cluster is a single point of failure.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Instance has ≥2 clusters and app profiles."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9175",
+  "domain": "RES",
+  "title": "GCS research data per residency; derived stores rehydrated from immutable objects",
+  "statement": "GCS uses replicated/dual-region locations per residency policy, regional landing is the source segment until archived, and derived stores can be rehydrated from immutable objects.",
+  "rationale": "Derived stores that cannot be rebuilt are a second, unverifiable truth.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "integration",
+   "check": "A derived store rebuilt from archived segments equals the original."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9176",
+  "domain": "RES",
+  "title": "GitOps plane loss: workloads keep running; recreate from Git",
+  "statement": "On GitOps management-plane loss, running workloads continue, reconciliation pauses, and the plane is recreated from Git.",
+  "rationale": "A control plane that workloads depend on is a hidden SPOF.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "game-day",
+   "check": "Stopping Argo leaves services serving."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9177",
+  "domain": "RES",
+  "title": "Registry region loss: nodes keep local images; secondary repository before prod",
+  "statement": "On Artifact Registry region loss existing nodes keep local images and rollout pauses; release artifacts are replicated to a designated secondary repository before prod promotion.",
+  "rationale": "A single registry region blocks every recovery deploy.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "18",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "A secondary repository exists and promotion to prod checks the artifact is there."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-RES-9178",
+  "domain": "RES",
+  "title": "Autonomous dev plane is never an availability dependency",
+  "statement": "If the autonomous development plane is lost, no autonomous changes happen, production keeps running, and the human/manual pipeline remains available.",
+  "rationale": "Agents must be a convenience, not a dependency.",
+  "kind": "invariant",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§17 Availability, Resilience and Disaster Recovery"
+   }
+  ],
+  "verification": {
+   "method": "inspection",
+   "check": "Every deploy/infra workflow is human-dispatchable and no runtime component calls an agent service."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-REFLEX-9179",
+  "domain": "REFLEX",
+  "title": "No reactive autoscale of Reflex during a market burst",
+  "statement": "Reflex is never reactively autoscaled during a market burst.",
+  "rationale": "An autoscaler that adds a second instance creates two venue sessions.",
+  "kind": "invariant",
+  "priority": "P0",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "acceptance",
+   "check": "No autoscaler resource targets the execution-node group; adding one fails the suite."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-REFLEX-9180",
+  "domain": "REFLEX",
+  "title": "Reflex scales by sharding sessions/instruments and pre-provisioning",
+  "statement": "Reflex scales intentionally by sharding venue sessions/instruments across VMs and pre-provisioning capacity.",
+  "rationale": "Unsharded growth overloads one node.",
+  "kind": "capability",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Nodes are declared per shard with reservations."
+  },
+  "policy_flags": [
+   "MULTI_REGION",
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-MESH-9181",
+  "domain": "MESH",
+  "title": "Mesh exchanges compressed state with bounded fan-out and message size",
+  "statement": "The Reflex Mesh exchanges compressed state only, bounds fan-out and message sizes, and never broadcasts raw tick streams globally.",
+  "rationale": "Global raw broadcast saturates links and leaks venue data.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Over-size frames and over-fan-out updates are refused, not truncated."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-FABRIC-9182",
+  "domain": "FABRIC",
+  "title": "Fabric scales by brokers and partitions with zone-loss headroom",
+  "statement": "The Fabric scales by adding brokers, moving leaders/followers and increasing partitions by domain, keeping headroom for zone loss and maintenance.",
+  "rationale": "A Fabric that cannot add brokers caps platform throughput.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Broker count and partitions are configurable with headroom."
+  },
+  "policy_flags": [
+   "MULTI_REGION"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-GCP-9183",
+  "domain": "GCP",
+  "title": "GKE services autoscale via HPA/VPA, lag metrics, Cluster Autoscaler",
+  "statement": "GKE services scale with HPA/VPA on custom lag/queue metrics and Cluster Autoscaler for warm/batch workloads.",
+  "rationale": "Fixed capacity either wastes or saturates.",
+  "kind": "capability",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "HPA objects exist."
+  },
+  "policy_flags": [
+   "KUBERNETES"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-9184",
+  "domain": "DATA",
+  "title": "Bigtable autoscaling with hotspot-safe row keys and per-workload app profiles",
+  "statement": "Bigtable uses managed autoscaling, hotspot-safe row keys and workload-specific app profiles.",
+  "rationale": "Hotspotted keys defeat autoscaling.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Autoscaling config, row-key design tests and app profiles exist."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-9185",
+  "domain": "DATA",
+  "title": "Spanner autoscaling with high floor; schema eliminates hotspots",
+  "statement": "Spanner uses managed autoscaling with a high floor, and schema/key design eliminates hotspots before scaling.",
+  "rationale": "Hotspots make added capacity useless.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Autoscaling config with min ≥ floor."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-FINOPS-9186",
+  "domain": "FINOPS",
+  "title": "BigQuery separate research, backtest and BI reservations",
+  "statement": "BigQuery uses separate research, backtest and BI reservations/workload management so no one job monopolises compute.",
+  "rationale": "One runaway query starves every other workload.",
+  "kind": "constraint",
+  "priority": "P2",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Three reservations and assignments exist."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-DATA-9187",
+  "domain": "DATA",
+  "title": "GCS partitioned, immutable, reasonably sized segments; tiny objects compacted async",
+  "statement": "GCS objects are partitioned by source/date/instrument, written as immutable reasonably sized segments, and tiny objects are compacted asynchronously.",
+  "rationale": "Millions of tiny objects make listing and replay slow and costly.",
+  "kind": "constraint",
+  "priority": "P1",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "unit",
+   "check": "Archive names partition by source/date and compaction merges small objects off the write path."
+  },
+  "policy_flags": [],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-FINOPS-9188",
+  "domain": "FINOPS",
+  "title": "AI training queue/quota-aware, Spot where safe, reserved capacity if justified",
+  "statement": "AI training uses queue- and quota-aware scheduling, Spot where interruption is safe, and fixed reserved capacity for critical retraining only if justified.",
+  "rationale": "Unscheduled training exhausts quota and budget.",
+  "kind": "process",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Job specs carry Spot/queue settings."
+  },
+  "policy_flags": [
+   "MANAGED_SERVICE",
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ },
+ {
+  "id": "R12-FINOPS-9189",
+  "domain": "FINOPS",
+  "title": "Autonomous-dev workers scale independently with concurrency quotas",
+  "statement": "Autonomous-dev ephemeral workers and build pools scale independently, with concurrency quotas protecting source APIs and budgets.",
+  "rationale": "Unbounded agent concurrency exhausts API quotas and spend.",
+  "kind": "constraint",
+  "priority": "P3",
+  "sources": [
+   {
+    "doc": "G",
+    "page": "19",
+    "section": "§18 Scaling and Performance Model"
+   }
+  ],
+  "verification": {
+   "method": "plan",
+   "check": "Worker pools have max concurrency."
+  },
+  "policy_flags": [
+   "COST"
+  ],
+  "secondary_domains": [],
+  "notes": ""
+ }
+]

@@ -1,0 +1,3652 @@
+[
+  {
+    "id": "R12-ARCH-8001",
+    "domain": "ARCH",
+    "title": "Cognition stays asynchronous to live order execution",
+    "statement": "The Superintelligence/cognition plane (latent state, forecasts, agents, twins, routing) must remain asynchronous to live order execution: no execution-path crate may depend on a cognition crate, and the fastest path stays regional and deterministic.",
+    "rationale": "Planes are separated by latency/consistency need; cognition inserted synchronously into execution would make order timing depend on elastic, failure-prone services.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A dependency-graph walk from every edge/reflex crate finds no cognition, language-model or solver crate; adding such an edge to qip-edge's Cargo.toml must fail the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8002",
+    "domain": "REFLEX",
+    "title": "Reflex plane on dedicated C4D/C4 Compute Engine VMs",
+    "statement": "Reflex Execution must run on dedicated Compute Engine C4D/C4-class VMs with direct venue sessions, local books/features/models/risk, and no service-mesh or database dependency.",
+    "rationale": "Lowest jitter and direct venue sessions; a mesh or DB hop in the decision loop adds unexplainable latency and a shared failure.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "terraform plan with a declared execution node shows a google_compute_instance_group_manager on a c4/c4d shape with no load balancer or mesh; a C3 or N2 shape must be refused at plan."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-8003",
+    "domain": "MESH",
+    "title": "Reflex Mesh is direct peer QUIC between regional cells",
+    "statement": "Regional Reflex Cells must coordinate 2–20-leg opportunities over a direct peer-to-peer QUIC mesh that is bounded and ephemeral by design.",
+    "rationale": "Fast bounded multi-region coordination without routing through durable messaging or the centre.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two cells exchange a multi-leg proposal over the peer link within a bounded deadline; replacing the transport with a durable relay or dropping the bound must fail the test."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "QUIC needs a crate (e.g. quinn) — ADR 0002/0009 permit serde/serde_json only."
+  },
+  {
+    "id": "R12-FABRIC-8004",
+    "domain": "FABRIC",
+    "title": "Fabric runs on dedicated Rust broker VMs per region",
+    "statement": "The Rust Event & Control Fabric must run as dedicated Rust broker VMs in each region, providing one native contract for durable pub/sub, journals, replay, backpressure, control and outcomes.",
+    "rationale": "One native contract replaces Pub/Sub/Kafka so semantics are owned in-tree.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Each production region's plan contains broker instances running qip-fabricd; removing the module instantiation must fail the infrastructure acceptance test."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8005",
+    "domain": "GCP",
+    "title": "Regional Service Plane on regional GKE Standard",
+    "statement": "Elastic warm services (asset/risk/capital, evidence, replay, fabric sinks, APIs, package distribution) must run on a regional GKE Standard service plane.",
+    "rationale": "Warm services scale independently of the Reflex and Fabric planes.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A plan shows a regional GKE Standard cluster per execution region hosting the warm services."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": "KUBERNETES: conflicts with ADR 0024 (Cloud Run + Compute Engine). Intent (independently scaled warm services) can be met on Cloud Run."
+  },
+  {
+    "id": "R12-DATA-8006",
+    "domain": "DATA",
+    "title": "Data/Intelligence plane on GCS, Bigtable, BigQuery, Catalog, Spanner Graph",
+    "statement": "Pass-through world sensing, retained tick/internal history, compact provenance/knowledge, research and models must be served by GCS, Bigtable, BigQuery, Knowledge Catalog, Spanner Graph and Agent Platform/Vertex APIs.",
+    "rationale": "Each store is matched to an access pattern; one store for everything couples analytics to execution.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan provisions each store and an in-tree adapter opens it; an adapter refusing the target must fail the integration test."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8007",
+    "domain": "LEDGER",
+    "title": "Financial truth in Spanner Enterprise Plus",
+    "statement": "Ledger, positions, obligations, capital grants and idempotent outcome processing must live in a strongly consistent Spanner Enterprise Plus database as the financial system of record.",
+    "rationale": "Financial truth needs external consistency and must not share fate with analytics.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A ledger write commits through a Spanner adapter in one transaction; pointing the writer at a non-Spanner store in production config must be refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8008",
+    "domain": "CICD",
+    "title": "Engineering plane: Cloud Build pools, Artifact Registry, GitOps controllers",
+    "statement": "The engineering/control plane must provide an immutable supply chain and GitOps promotion via GitHub, Cloud Build private pools, Artifact Registry, Config Sync and Argo CD/Kargo/Rollouts.",
+    "rationale": "Immutable artefacts and declarative promotion make every production change reproducible and attributable.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Images are built in a private pool, stored in Artifact Registry by digest and promoted only by Kargo/Argo commits; a manual deploy must be refused by policy."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": "Config Sync / Argo need a cluster; ADR 0036 permits the GitOps control-plane cluster as the one Kubernetes exception."
+  },
+  {
+    "id": "R12-FABRIC-8009",
+    "domain": "FABRIC",
+    "title": "No Pub/Sub or Managed Kafka in the internal runtime",
+    "statement": "Google Pub/Sub and Managed Kafka must not be internal runtime dependencies for service-to-service control, tick journaling, outcomes or replay.",
+    "rationale": "Algorik semantics are defined by the Rust fabric; a second bus would split them.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No workspace crate declares a Pub/Sub/Kafka client and no Terraform grants publish/subscribe on a fabric topic; adding either must fail the scan."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8010",
+    "domain": "FABRIC",
+    "title": "Any Kafka/Pub/Sub partner bridge is stateless at the boundary",
+    "statement": "If a partner requires Kafka/Pub/Sub compatibility, the bridge must be a stateless component at an external boundary and Algorik semantics must remain defined by the Rust fabric.",
+    "rationale": "A stateful bridge becomes a second source of truth for event history.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§1 Executive Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A bridge crate, if present, contains no durable-store type and nothing else depends on it; introducing DurableStore into it must fail."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8011",
+    "domain": "DATA",
+    "title": "External world payloads are transient and discarded after distillation",
+    "statement": "External world content must be parsed, evidence-scored and distilled into durable knowledge, after which the source payload is discarded; GCP storage holds Algorik-created knowledge, not a mirror of the public world.",
+    "rationale": "Mirroring sources raises cost and licensing/privacy exposure and makes a sealed log hold text that can never be removed.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The durable record of an ingested document has no field able to hold source text; adding a body String to NewsItem must fail a structural test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8012",
+    "domain": "DATA",
+    "title": "No default GCS landing bucket for external-world content",
+    "statement": "Crawler/scout workers must stream source bytes through memory or encrypted ephemeral disk only; there must be no default GCS landing bucket for external-world content.",
+    "rationale": "A landing bucket becomes a raw-world lake by default.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No Terraform bucket is designated for external content; adding one must fail an acceptance scan."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8013",
+    "domain": "DATA",
+    "title": "Source manifest records the full re-fetch descriptor",
+    "statement": "Each ingested source must have a manifest recording canonical URI/provider ID, retrieval time, version/etag, content hash, entitlement, cursor, freshness, parser lineage and re-fetch instructions.",
+    "rationale": "Without the descriptor a discarded payload cannot be re-fetched or proven unchanged.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Constructing a manifest without any of the nine fields is refused; dropping a field from the type must fail a round-trip test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8014",
+    "domain": "DATA",
+    "title": "Source Manifest Registry persisted in Spanner/AlloyDB",
+    "statement": "Source manifests must be held in a queryable Source Manifest Registry backed by Spanner or AlloyDB.",
+    "rationale": "A manifest only embedded in events cannot be queried to drive re-fetch or freshness.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "2",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A registry write and lookup by canonical URI round-trips through the Spanner/AlloyDB adapter."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8015",
+    "domain": "DATA",
+    "title": "Knowledge graph holds entities, edges, beliefs — never copied documents",
+    "statement": "The knowledge graph (Spanner Graph, tier K1) must store entities, relationships, temporal facts, causal edges, source references, beliefs, confidence and contradictions, and never copied documents.",
+    "rationale": "Durable knowledge must be Algorik's interpretation, not a corpus copy.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Graph node/edge schema has no document-body field and a write of a copied document is refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "WORLD"
+    ],
+    "notes": "Merges §2.1 'Knowledge Graph' bullet and §9.2 Tier K1."
+  },
+  {
+    "id": "R12-DATA-8016",
+    "domain": "DATA",
+    "title": "Bigtable holds fast derived knowledge state",
+    "statement": "High-rate derived features, entity/event state, ambient-model state and time-indexed knowledge deltas must be stored in Bigtable.",
+    "rationale": "Hot derived state needs a wide-column store distinct from the ledger and the graph.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Feature/state deltas written via a Bigtable adapter are read back by time index."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8017",
+    "domain": "DATA",
+    "title": "Knowledge packs in GCS with lifecycle tiers",
+    "statement": "Compact Algorik-derived knowledge packs (protobuf/Parquet snapshots, embeddings, summaries, world-model deltas, model artifacts) must be stored in GCS under Standard/Nearline/Coldline lifecycle tiers (tier K2).",
+    "rationale": "Derived packs are far smaller than source corpora and can be tiered cheaply.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows a pack bucket with lifecycle transitions; a pack writer stores only derived artifacts."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "Parquet/protobuf encoders would need new crates (ADR 0002)."
+  },
+  {
+    "id": "R12-DATA-8018",
+    "domain": "DATA",
+    "title": "Historical world analysis re-fetches via manifest, never copies",
+    "statement": "Historical world analysis must re-fetch from the authoritative source/provider using the manifest and process transiently; licensed historical APIs are queried on demand instead of copying corpora.",
+    "rationale": "Copying a provider corpus breaches licence and recreates the raw lake.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A replay of a past document triggers a manifest-driven re-fetch whose hash is compared with the manifest; a cached copy path must not exist."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8019",
+    "domain": "DATA",
+    "title": "Tick and internal financial data are separate retained classes (Tier T)",
+    "statement": "Tick/order-book data and Algorik-owned financial/execution data must be distinct retention classes, archived (GCS/Tick Lake) under entitlements when rights/policy require replay, accounting, audit or training.",
+    "rationale": "Retained classes must not be confused with transient world data or each other.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2.1 World Data Pass-Through / Knowledge Persistence Invariant"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each topic maps to exactly one retention class; tick and financial classes differ and archive with entitlement labels."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": "Merges §2.1 tick bullet and §9.2 Tier T."
+  },
+  {
+    "id": "R12-REFLEX-8020",
+    "domain": "REFLEX",
+    "title": "Hot path owns its dependencies: tick to order is local only",
+    "statement": "Between tick and order only local process memory, local deterministic risk, local session state and the venue adapter may be used — no GKE, Spanner, Bigtable, Redis, AI endpoint or fabric acknowledgement.",
+    "rationale": "Any remote dependency in the decision loop turns its outage or latency into an execution failure.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Dependency-graph tests show no edge crate reaches storage, LM, solver or transport for lane-0 stages; adding qip-storage to qip-edge must fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "ARCH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-8021",
+    "domain": "ARCH",
+    "title": "Durable async work runs after or beside the reflex decision",
+    "statement": "Control, outcomes, journals and telemetry must be durable where required but executed after or beside the reflex decision, never in front of it.",
+    "rationale": "Async does not mean unimportant, but it must not gate the decision.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stalled journal destination does not delay a pass; removing the async boundary must fail the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX",
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8022",
+    "domain": "FABRIC",
+    "title": "One internal event model with mandatory envelope fields",
+    "statement": "Every asynchronous event must carry event_id, producer_epoch, schema_id/version, region, logical timestamp, source timestamp, trace_id, ordering key, integrity checksum and provenance metadata.",
+    "rationale": "Without these fields events cannot be deduplicated, ordered, traced or attributed after the fact.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Encoding then decoding an event preserves all ten fields; building one with any field empty is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "CONTRACT",
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8023",
+    "domain": "FABRIC",
+    "title": "At-least-once with idempotency; no exactly-once claim",
+    "statement": "The platform must not claim global exactly-once delivery; consumers must deduplicate using event IDs, partition sequence and fencing epochs.",
+    "rationale": "Claimed exactly-once hides duplicate effects when a retry crosses a failure.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Under random lost acks, retries and restarts each sequence is appended once; a consumer replaying from an offset produces no duplicate effect."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8024",
+    "domain": "LEDGER",
+    "title": "Financial writers enforce uniqueness transactionally",
+    "statement": "Financial writers must enforce event uniqueness inside the same transaction that applies the effect.",
+    "rationale": "An offset committed apart from its postings loses or doubles a fill across a crash.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For any duplication/redelivery/crash schedule, balances equal one clean delivery; splitting the write batch must fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8025",
+    "domain": "RES",
+    "title": "Loss of global cognition or another region cannot stop a healthy cell",
+    "statement": "A healthy Reflex Cell must keep operating when global cognition or any other region is lost.",
+    "rationale": "Regions fail independently; a central outage must not become a global trading stop.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A cell with its mesh link severed keeps placing paper orders within its envelope; making the pass require the centre must fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8026",
+    "domain": "RES",
+    "title": "Every dependency has a degradation envelope",
+    "statement": "Each dependency of a Reflex Cell must have a declared degradation envelope stating how the cell behaves as that input ages or disappears.",
+    "rationale": "An undeclared dependency fails in an undeclared way.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each capability in the degradation table has a freshness bound and multiplier; a capability with no row must be refused at configuration."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8027",
+    "domain": "FABRIC",
+    "title": "Durability is declared per topic class",
+    "statement": "Control and outcome topics must get quorum durability, telemetry may be sampled/dropped, and research streams optimise throughput, each declared per topic.",
+    "rationale": "One durability for all topics either over-pays for telemetry or under-protects money.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Declaring a P0/P1 stream with an ack profile below Quorum is refused; P4 admits None."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-8028",
+    "domain": "ARCH",
+    "title": "Caches own nothing authoritative",
+    "statement": "Caches (including Memorystore Redis) must never hold authoritative state; loss of a cache causes rebuild or degraded latency, never lost financial state.",
+    "rationale": "A cache treated as truth loses money silently when evicted.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      },
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every composition root resolving a storage target refuses a cache as store of record; resolving Memorystore as key_value must fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": "Merges rule 7's cache clause and §9.2 Memorystore row."
+  },
+  {
+    "id": "R12-ARCH-8029",
+    "domain": "ARCH",
+    "title": "Explicit state ownership across Spanner, Fabric, GCS, Bigtable",
+    "statement": "State ownership must be explicit: Spanner owns financial truth; the Fabric owns event history/offsets; GCS owns retained archives and derived knowledge artifacts; Bigtable owns hot derived features; external payloads are transient.",
+    "rationale": "Two owners of one fact disagree and the louder is wrong.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each fact class maps to one store in code; a second writer of the same class must fail an architecture test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "DATA",
+      "LEDGER"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8030",
+    "domain": "CICD",
+    "title": "Deployments by signed immutable digests only",
+    "statement": "Git and signed image digests must be deployment truth: no mutable tags are deployed.",
+    "rationale": "A policy that trusts a tag trusts whoever can push it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Binary Authorization requires an attestation and workflows deploy by digest; a tag-only reference must be refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8031",
+    "domain": "CICD",
+    "title": "No secret values in Git",
+    "statement": "No secret value may be committed to Git.",
+    "rationale": "A committed secret is a leaked secret for the life of the history.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "check-secrets.sh over the tree and history reports nothing; committing a key fixture must fail CI."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8032",
+    "domain": "CICD",
+    "title": "No console-only changes or hand-copied models",
+    "statement": "Production state must not be changed through console-only actions, and models must not be hand-copied into production.",
+    "rationale": "Out-of-band changes are not reproducible from Git.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Drift detection (plan) shows no unmanaged change; model activation requires a registry-signed artifact."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8033",
+    "domain": "CICD",
+    "title": "Autonomous agents obey the same production pipeline",
+    "statement": "Autonomous agents may create PRs, run experiments and diagnose incidents, but any production change they cause must pass tests, attestations, promotion policy and rollback like any other change.",
+    "rationale": "An agent with a side door to production bypasses every control.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Agent identities hold no deploy permission outside the pipeline; a direct deploy by the agent identity is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8034",
+    "domain": "GCP",
+    "title": "Execution region and topology chosen by venue benchmarks",
+    "statement": "Region and topology must be determined by venue-specific latency benchmarks; GCP regional execution must not be represented as exchange colocation.",
+    "rationale": "Cloud latency has physics; an unmeasured region choice is a guess.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "3",
+        "section": "§2 Non-Negotiable Architecture Rules"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each declared execution region cites a measured venue RTT; a cross-region arrangement without a measured RTT is refused."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8035",
+    "domain": "GCP",
+    "title": "Three execution regions chosen by measurement",
+    "statement": "Production must start with three execution regions (Americas, Europe, APAC), selected by venue RTT, market-data RTT, legal residency, machine series, Interconnect options and counterparty proximity.",
+    "rationale": "Hard-coded regions ignore where venues and law actually are.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "A prod plan declares execution nodes in three regions with recorded selection rationale."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8036",
+    "domain": "GCP",
+    "title": "Per-region Reflex, Fabric and Service networks with collectors and egress",
+    "statement": "Each execution region must have its own Reflex VPC, Fabric VPC, Service VPC/cluster, regional landing storage, regional observability collectors and controlled egress.",
+    "rationale": "Per-region separation bounds blast radius.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan per region shows the three networks, landing bucket, collector and NAT."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": "'Service VPC/GKE cluster' — KUBERNETES conflicts with ADR 0024; Cloud Run serves the service plane."
+  },
+  {
+    "id": "R12-GCP-8037",
+    "domain": "GCP",
+    "title": "Global shared plane: build, ledger, research, registry, catalog, identity",
+    "statement": "Management/build plane, multi-region ledger, global research data, model registry, Knowledge Catalog and identity/security services must be global/shared rather than per region.",
+    "rationale": "Shared concerns duplicated per region drift.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows these as single global resources."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8038",
+    "domain": "RES",
+    "title": "Zonal failure tolerated by standby, cross-zone replicas, multi-zone plane",
+    "statement": "A single-zone loss must be survived through a Reflex standby in another zone, Fabric RF3 partition replicas across zones, and a regional multi-zone service plane.",
+    "rationale": "A zone outage is routine and must not stop trading or lose the journal.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Killing one zone leaves the cell, fabric quorum and warm services serving."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "REFLEX",
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8039",
+    "domain": "RES",
+    "title": "Regional failure: healthy regions continue, critical topics mirrored",
+    "statement": "On regional failure healthy regions must continue, critical Fabric topics must have selective cross-region mirrors, and ledger/data services stay available per their managed topology.",
+    "rationale": "One region's loss must not lose control or outcome history.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "Disabling a region leaves other cells trading and mirrored P0/P1 topics readable elsewhere."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-8040",
+    "domain": "FINOPS",
+    "title": "Hot Reflex capacity reserved",
+    "statement": "Hot Reflex capacity must be reserved with reservations/commitments.",
+    "rationale": "A replacement VM that cannot be scheduled leaves a venue unserved.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy"
+      },
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Each execution IGM consumes a specific reservation sized to its target; removing reservation_affinity must fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP",
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-8041",
+    "domain": "FINOPS",
+    "title": "Warm, data and AI components autoscale",
+    "statement": "Warm, data and AI components must autoscale where scaling time is compatible with workload behaviour.",
+    "rationale": "Fixed capacity is wasted on quiet days and short on volatile ones.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§3 Global Region and Failure-Domain Strategy"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows autoscaling bounds for Cloud Run services and data stores."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8042",
+    "domain": "GCP",
+    "title": "Platform-foundation guardrails project",
+    "statement": "An org/platform-foundation boundary must hold Org Policy, IAM/PAM patterns, audit sinks, SCC and billing exports, independent of applications.",
+    "rationale": "Central guardrails must not be editable by application deployers.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8043",
+    "domain": "GCP",
+    "title": "Network-core project",
+    "statement": "A prod/network-core project must hold NCC hubs, shared DNS, hybrid connectivity, firewall policy and PSC endpoints, separate from workloads.",
+    "rationale": "Network authority separated from workloads.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8044",
+    "domain": "GCP",
+    "title": "Per-region execution project",
+    "statement": "Each region must have a prod/exec-<region> project containing the Reflex VPC and Reflex VMs only.",
+    "rationale": "Smallest blast radius for latency-critical execution.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8045",
+    "domain": "GCP",
+    "title": "Per-region fabric project",
+    "statement": "Each region must have a prod/fabric-<region> project holding the Fabric VPC, broker VMs, journal disks and archiver identities, so messaging failure cannot reconfigure trading compute.",
+    "rationale": "Messaging compromise must not reach trading compute.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8046",
+    "domain": "GCP",
+    "title": "Per-region services project",
+    "statement": "Each region must have a prod/services-<region> project for regional GKE Standard, Redis and regional APIs/sinks.",
+    "rationale": "Warm services scale independently of Reflex and Fabric.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "KUBERNETES conflicts with ADR 0024; the intent applies to the Cloud Run service plane."
+  },
+  {
+    "id": "R12-GCP-8047",
+    "domain": "GCP",
+    "title": "Ledger project with its KMS keys",
+    "statement": "A prod/ledger project must isolate the Spanner ledger/accounting/capital databases and their KMS keys.",
+    "rationale": "Financial truth isolated from noisy analytics.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8048",
+    "domain": "GCP",
+    "title": "World-model project",
+    "statement": "A prod/world-model project must hold Spanner Graph/world-model stores, isolated from the ledger.",
+    "rationale": "Graph query load must not affect the ledger.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8049",
+    "domain": "GCP",
+    "title": "Data project",
+    "statement": "A prod/data project must hold the GCS archive and knowledge packs, Bigtable, BigQuery and Knowledge Catalog.",
+    "rationale": "Data governance and analytics boundary.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8050",
+    "domain": "GCP",
+    "title": "AI project",
+    "statement": "A prod/ai project must hold Vertex/Agent Platform training, registry, agent runtime and GPU/TPU jobs.",
+    "rationale": "AI permissions and quota separated from financial state.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8051",
+    "domain": "GCP",
+    "title": "Engineering project",
+    "statement": "A prod/engineering project must hold Cloud Build private pools, Artifact Registry, signing/attestation and the GitOps management cluster.",
+    "rationale": "Software supply-chain boundary.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8052",
+    "domain": "GCP",
+    "title": "Non-prod mirrors production boundaries",
+    "statement": "Every nonprod environment must mirror the same logical project/network boundaries at lower scale.",
+    "rationale": "Architecture parity without production access.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows the named project under the right folder holding only the listed resources."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8053",
+    "domain": "GCP",
+    "title": "No single giant Shared VPC; separated VPCs joined by NCC",
+    "statement": "The platform must not use one Shared VPC across domains; intentionally separated VPCs are connected through NCC, and Reflex and Fabric networks stay independently governable.",
+    "rationale": "A single Shared VPC broadens routing and change blast radius.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "4",
+        "section": "§4 GCP Organization, Folder and Project Model"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No shared-VPC host/service project resource exists; Reflex and Fabric are distinct networks joined only via NCC spokes."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-API-8054",
+    "domain": "API",
+    "title": "Public entry via DNS, global LB, Cloud Armor, CDN, Certificate Manager",
+    "statement": "User traffic to portal/API must enter through Cloud DNS → Global External Application LB → Cloud Armor → Cloud CDN/Certificate Manager → Cloud Run (or GKE Gateway), with no direct access to internal planes.",
+    "rationale": "Anycast edge with WAF/DDoS and TLS keeps internal planes unreachable.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan with public_edge set shows the LB chain with security policy and CDN; a Cloud Run service with public ingress must be refused."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8055",
+    "domain": "GCP",
+    "title": "Regional warm services via internal LB/mesh with mTLS, never in Reflex path",
+    "statement": "Regional warm services must be reached through GKE Gateway/regional internal Application LB with Cloud Service Mesh (mTLS, policy, retries/timeouts), and this layer must never be inserted in the Reflex path.",
+    "rationale": "Mesh policy helps warm services but adds jitter to execution.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No execution node sits behind an LB or mesh; warm-service calls use mTLS."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "GKE Gateway/Cloud Service Mesh conflict with ADR 0024."
+  },
+  {
+    "id": "R12-GCP-8056",
+    "domain": "GCP",
+    "title": "VPC-to-VPC via NCC spokes with route filters",
+    "statement": "VPCs must be connected through Network Connectivity Center VPC spokes with route filters.",
+    "rationale": "Central route orchestration without flattening networks.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows NCC hub and spokes with include/exclude filters."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8057",
+    "domain": "GCP",
+    "title": "Dedicated NCC latency mesh hub for Reflex/Fabric",
+    "statement": "A dedicated NCC mesh hub must export only Reflex/Fabric peer endpoints/ports (narrow prefixes) for cross-region Reflex and Fabric mirror traffic.",
+    "rationale": "Latency traffic must not share inspection paths.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      },
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows a mesh-topology hub with only narrow prefixes exported."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8058",
+    "domain": "GCP",
+    "title": "Service/data NCC star hub with central inspection",
+    "statement": "GKE/data/AI/management connectivity must go through an NCC star/hybrid-inspection hub with stronger centralised inspection.",
+    "rationale": "Non-latency traffic gains inspection.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows a star-topology hub with center/edge groups."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8059",
+    "domain": "GCP",
+    "title": "Market/custody connectivity via direct path, Interconnect, HA VPN fallback",
+    "statement": "Venue traffic must use a direct internet path where necessary, Dedicated/Partner Interconnect with Cloud Router for private providers, and HA VPN as fallback — avoiding generic proxies for latency-sensitive venue traffic.",
+    "rationale": "A generic proxy adds latency and a shared failure for venue traffic.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows interconnect attachment, router and HA VPN; venue egress bypasses the egress proxy."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION",
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8060",
+    "domain": "GCP",
+    "title": "Google APIs reached privately (PGA / PSC)",
+    "statement": "Spanner, GCS, Bigtable, Artifact Registry and other Google API traffic must stay private via Private Google Access / Private Service Connect where supported.",
+    "rationale": "Public API paths widen exfiltration and dependency on NAT.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Subnets have private_ip_google_access and DNS resolves googleapis to the restricted VIP."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8061",
+    "domain": "GCP",
+    "title": "Controlled internet egress with static identities, audit, domain controls",
+    "statement": "Crawler, agent and builder internet egress must go through Cloud NAT or Secure Web Proxy with static egress identities, audit and domain controls; Reflex venue egress is governed separately.",
+    "rationale": "Uncontrolled egress is an exfiltration and licensing risk.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every NAT uses reserved addresses with logging; egress proxy enforces an allow-list; venue egress has its own rules."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC",
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-8062",
+    "domain": "SEC",
+    "title": "Admin access only via IAP/workforce identity/PAM",
+    "statement": "Administrative access must use IAP, workforce identity and PAM: no public SSH/RDP, and privileged access must be temporary and audited.",
+    "rationale": "Standing public admin access is the commonest breach path.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "5",
+        "section": "§5 Network and Connectivity Architecture"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No machine has an external IP; SSH ingress only from the IAP range; privileged roles granted via PAM entitlements."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8063",
+    "domain": "REFLEX",
+    "title": "Reflex compute: C4D/C4, gVNIC/Tier-1, reservations",
+    "statement": "Reflex VMs must be C4D/C4-class sized by venue/instrument shard, use gVNIC/Tier-1 networking where benchmarked beneficial, and use capacity reservations in production.",
+    "rationale": "Jitter and replacement capacity decide fill quality.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows c4/c4d, GVNIC, TIER_1 and reservation affinity."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8064",
+    "domain": "REFLEX",
+    "title": "Reflex binary under systemd on hardened image, no Kubernetes",
+    "statement": "The Rust Reflex binary must run directly under systemd on a hardened minimal image, with no Kubernetes or service mesh in the decision loop.",
+    "rationale": "Orchestrator and sidecar jitter enter the decision loop.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Node template has no container runtime; boot image bake installs exactly the required binaries; shielded VM on."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP",
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8065",
+    "domain": "REFLEX",
+    "title": "OS tuning: isolated CPUs, huge pages, mlockall, IRQ/RPS/XPS",
+    "statement": "Reflex hosts must apply isolated CPU sets, CPU affinity, huge pages, mlockall, tuned IRQ/RPS/XPS, bounded background services, local scratch SSD and deterministic allocator choices.",
+    "rationale": "Untuned hosts produce latency outliers nobody can explain.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Startup refuses a host lacking isolcpus/hugepages/no-swap; the binary locks memory; IRQ affinity is set."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8066",
+    "domain": "REFLEX",
+    "title": "Every OS tuning validated under replay",
+    "statement": "Each host tuning choice must be validated under replay before adoption.",
+    "rationale": "An unvalidated tuning can regress latency silently.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "A replay benchmark comparing tuned vs untuned latency distributions is recorded per change."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8067",
+    "domain": "REFLEX",
+    "title": "Reflex state in memory; journal asynchronously to Fabric",
+    "statement": "Order books, features, compact models, active risk envelope, session/inventory cache, instrument metadata and sequence state must be held in memory, and the journal shipped asynchronously to the Fabric.",
+    "rationale": "Remote state reads in the loop add latency; a synchronous journal blocks the loop.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Cell decides from in-memory state; journal batches reach a fabric partition without blocking a pass."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-8068",
+    "domain": "EXEC",
+    "title": "Direct venue sessions with pooled, pre-allocated adapters",
+    "statement": "Reflex must hold direct FIX/WebSocket/native venue sessions with per-venue connection pools and pre-allocated buffers, with no generic HTTP service between Reflex and venue.",
+    "rationale": "An intermediary service adds latency and a failure domain to every order.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A venue adapter session is opened from the node and orders traverse it without an intermediate HTTP hop."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION",
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": "Real venue sessions conflict with ADR 0003 (paper only) unless against a provider sandbox."
+  },
+  {
+    "id": "R12-REFLEX-8069",
+    "domain": "REFLEX",
+    "title": "Fenced warm standby; never two active owners",
+    "statement": "A fenced warm standby must run in another zone; activation requires liveness failure plus fencing-epoch and venue-session ownership checks, so two active owners never exist.",
+    "rationale": "Two active owners double-place orders.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "For any interleaving of primary/standby liveness, at most one holds the fencing epoch; removing the epoch check must fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8070",
+    "domain": "REFLEX",
+    "title": "Signed bundle package manager with staged epoch activation",
+    "statement": "A package manager must download signed model/policy bundles outside the hot loop, verify manifest/KMS signature, stage, health-check, then atomically activate at an epoch boundary.",
+    "rationale": "A half-applied or unsigned bundle changes behaviour mid-decision.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A tampered bundle is refused; a valid one activates only at a pass boundary; activation is atomic."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "MODEL",
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8071",
+    "domain": "REFLEX",
+    "title": "Instant local rollback of activated bundles",
+    "statement": "The cell must retain the previous bundle locally and roll back instantly without a fetch.",
+    "rationale": "Waiting for the centre to re-ship prolongs a bad deployment.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A rollback restores the previous payload without a fetch and is reachable from an operator/control path."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8072",
+    "domain": "REFLEX",
+    "title": "Degraded mode narrows exposure then halts on freshness expiry",
+    "statement": "On loss of Fabric/service plane/global AI the cell must continue under its last valid envelope, progressively narrow exposure per local policy, and exit/halt when freshness limits expire.",
+    "rationale": "Halting immediately on any outage is fragile; trading unbounded on stale inputs is dangerous.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "6",
+        "section": "§6 Regional Reflex Cell"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Cut-off cell's order size falls a step per aged input and stops at envelope expiry with a named refusal."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RES",
+      "RISK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8073",
+    "domain": "FABRIC",
+    "title": "fabricd broker: ingress, routing, replication, fetch",
+    "statement": "fabricd must provide ingress, partition routing, journal replication and consumer fetch.",
+    "rationale": "The broker is the single native contract for durable messaging.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Produce/fetch round-trip through a real listener; a replica holds every acknowledged record."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": "Spec says Tokio async runtime and QUIC/mTLS — conflicts with ADR 0001/0011 (no async runtime) and ADR 0002/0009."
+  },
+  {
+    "id": "R12-FABRIC-8074",
+    "domain": "FABRIC",
+    "title": "Broker uses bounded memory",
+    "statement": "The broker must use bounded memory pools for requests and buffers.",
+    "rationale": "Unbounded buffering converts overload into an out-of-memory crash.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A request over the bound is refused; concurrent connections are capped."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8075",
+    "domain": "FABRIC",
+    "title": "fabric-meta: replicated metadata quorum separate from data log",
+    "statement": "Cluster membership, partition maps, epochs, consumer leases and quotas must be held in a small replicated (Raft) metadata quorum, separated from the data log.",
+    "rationale": "Metadata on one node is a single point of failure for the cluster.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Metadata survives loss of a minority of meta nodes; partition leadership is assigned from it."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "'Mature Raft implementation' is a crate — ADR 0002/0009."
+  },
+  {
+    "id": "R12-FABRIC-8076",
+    "domain": "FABRIC",
+    "title": "fabric-client SDK: idempotent producer, batching, ack profile",
+    "statement": "The producer/consumer SDK must provide an idempotent producer sequence, batching and an explicit acknowledgement profile.",
+    "rationale": "Clients without sequence/ack semantics silently duplicate or lose records.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "SDK producer against fabricd never duplicates on retry and reports quorum only when durable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8077",
+    "domain": "FABRIC",
+    "title": "fabric-schema: registry with immutable IDs and compatibility gates",
+    "statement": "A schema registry must assign immutable schema IDs and gate compatibility, generating typed Rust bindings.",
+    "rationale": "Silent schema drift breaks consumers in production.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Changing a field without a version bump changes the schema ID and is refused by the gate."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "Protobuf/prost would be a new dependency (ADR 0002); in-tree JSON schema shape is used instead."
+  },
+  {
+    "id": "R12-FABRIC-8078",
+    "domain": "FABRIC",
+    "title": "fabric-mirror: selective inter-region replication",
+    "statement": "fabric-mirror must replicate only configured topics/partitions between regions, with an independent lag budget, never blocking local commit.",
+    "rationale": "Mirroring that blocks local commit couples regions.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A mirrored partition appears in the peer region; stopping the peer does not delay local produce."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8079",
+    "domain": "FABRIC",
+    "title": "fabric-archive: immutable segments with manifest, hydrate replay",
+    "statement": "Closed immutable segments must be archived with manifest/checksum, and replay must be able to hydrate from the archive.",
+    "rationale": "Without archive hydration history is bounded by broker disk.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "7",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An archived segment is read back byte-identically; a tampered archive object is refused."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8080",
+    "domain": "FABRIC",
+    "title": "fabric-sink-*: destination consumers isolating backpressure",
+    "statement": "Sinks to Bigtable, BigQuery, Spanner and GCS must isolate destination backpressure from brokers and restart/replay by offset.",
+    "rationale": "A slow destination must not back up the broker.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A stalled sink accumulates lag without slowing produce and resumes from its committed offset."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8081",
+    "domain": "FABRIC",
+    "title": "fabric-admin: internal control API/CLI",
+    "statement": "An mTLS and IAM-bound admin API/CLI must create topics, set quotas and retention, move partitions, drain, and run diagnostics.",
+    "rationale": "Hand-composed requests during an incident cause incidents.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each admin operation is available, attributed and refused to an unauthorised identity."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "SEC",
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-8082",
+    "domain": "OBS",
+    "title": "fabric-observe: metrics/traces/health independent of own topics",
+    "statement": "The fabric must expose native metrics, traces and health whose liveness does not depend on its own event topics.",
+    "rationale": "A broker that reports health through itself goes silent exactly when it fails.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7 Algorik Rust Event & Control Fabric"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Health and metrics keep answering when the data plane stops."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8083",
+    "domain": "FABRIC",
+    "title": "Fabric transport is QUIC with TLS 1.3/mTLS by default",
+    "statement": "Producer/consumer and inter-broker sessions must use QUIC over gVNIC with TLS 1.3/mTLS by default (TCP only where benchmarked for bulk mirror flows).",
+    "rationale": "Plaintext transport lets anything on the path read and replay tokens and records.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A plaintext connection is refused; peer identity is proven by certificate."
+    },
+    "policy_flags": [
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "ADR 0009 prohibits an in-tree TLS stack; QUIC/TLS crates need an ADR."
+  },
+  {
+    "id": "R12-FABRIC-8084",
+    "domain": "FABRIC",
+    "title": "Fabric frame header fields with CRC32C",
+    "statement": "Each frame header must carry magic/version, message type, schema ID/version, flags, partition, producer ID/epoch, sequence, event ID, source timestamp, logical timestamp, trace ID, payload length and CRC32C.",
+    "rationale": "Missing header facts force consumers to decode payloads to route, dedupe or verify.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Round-trip preserves every field; a bit flip anywhere is detected as corruption."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8085",
+    "domain": "FABRIC",
+    "title": "Explicit ordering key, rendezvous leaders, cross-zone followers",
+    "statement": "Records must be partitioned by an explicit ordering key, partitions assigned to leaders by rendezvous/consistent hashing, and leaders replicate to followers in other zones.",
+    "rationale": "Implicit ordering loses per-key order; same-zone replicas share a failure.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Same key → same partition in produce order; leader assignment stable under broker list order; follower holds every committed batch."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8086",
+    "domain": "FABRIC",
+    "title": "RF3 across zones; quorum ack means majority of replicas",
+    "statement": "Durable profiles must replicate RF3 across zones and a quorum acknowledgement must mean the record survived on a majority of replicas; cross-region mirroring is asynchronous.",
+    "rationale": "An acknowledgement backed by one disk loses records with that disk.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A quorum ack is returned only after ≥2 of 3 replicas fsync; killing any one replica loses no acknowledged record."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8087",
+    "domain": "FABRIC",
+    "title": "At-least-once delivery, producer fencing, per-partition replay",
+    "statement": "Delivery to consumers must be at-least-once; producer epoch/sequence must prevent stale duplicate producers; per-partition offsets must permit replay.",
+    "rationale": "Without fencing a zombie producer writes after its successor.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Superseded producer never appends after successor's first append; replay from any offset returns identical batches."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8088",
+    "domain": "FABRIC",
+    "title": "Atomic batches within a partition; sagas across partitions",
+    "statement": "Append batches must be atomic within one partition, and cross-partition business transactions must be sagas/commands rather than broker transactions.",
+    "rationale": "Hidden broker transactions couple partitions and fail opaquely.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "A segment cut at any byte recovers whole batches only; no API appends to two partitions atomically."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8089",
+    "domain": "FABRIC",
+    "title": "Backpressure: credit windows, quotas, bounded queues, priority shedding",
+    "statement": "The fabric must apply credit/window flow control, per-producer quotas, bounded queues and topic priority, sampling/dropping low-priority telemetry before control/outcome traffic is starved.",
+    "rationale": "Telemetry floods must not starve control and outcomes.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Under overload P4 is shed while P0/P1 still commit; quota excess is refused with back-off."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8090",
+    "domain": "FABRIC",
+    "title": "Schema compatibility enforced at CI and runtime registration",
+    "statement": "Backward/forward schema compatibility must be enforced at CI and at runtime registration, so incompatible schemas never reach production topics.",
+    "rationale": "An incompatible schema in production breaks every consumer at once.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.1 Wire, ordering and delivery semantics"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "CI fails on an incompatible lock change; broker refuses an unregistered schema before append."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8091",
+    "domain": "FABRIC",
+    "title": "P0 Critical Control class",
+    "statement": "P0 topics (risk envelope, model activation, kill/fence, capital grant) must be RF3 quorum, signed, producer-fenced, long-retained with GCS archive, and never intentionally dropped.",
+    "rationale": "Losing a kill or a grant is a capital-protection failure.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.2 Fabric topic classes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A P0 stream refuses a weaker ack, refuses stale-epoch writers, archives, and never sheds."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8092",
+    "domain": "FABRIC",
+    "title": "P1 Financial Outcomes class",
+    "statement": "P1 topics (fills, cancels, position deltas, settlement) must be RF3 quorum with idempotent IDs, long hot retention, immutable archive, and a ledger sink that retries indefinitely.",
+    "rationale": "A dropped fill is a ledger short for ever.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.2 Fabric topic classes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "P1 batches are deduplicated, archived, and the ledger consumer retries until applied."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8093",
+    "domain": "FABRIC",
+    "title": "P2 Market Journal class",
+    "statement": "P2 topics (ticks/books/features/decision traces) must be RF3 regional quorum with batch producers, hours/days hot retention by instrument tier, archive to GCS, and throttle mirroring before local ingest.",
+    "rationale": "Journal overload must degrade mirroring first, not local capture.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.2 Fabric topic classes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Under pressure mirror lag grows while local ingest continues."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8094",
+    "domain": "FABRIC",
+    "title": "P3 Intelligence/Research class",
+    "statement": "P3 topics (evidence deltas, episodes, training candidates) must be RF2/3 configurable with throughput batching, replayable, backlog allowed and consumers scaled.",
+    "rationale": "Research must not be refused for lag.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.2 Fabric topic classes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A lagging P3 group is not refused; records remain replayable."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8095",
+    "domain": "FABRIC",
+    "title": "P4 Telemetry class",
+    "statement": "P4 topics must be best-effort or RF2, sampling/dropping oldest under pressure, with direct OTel remaining the primary health path.",
+    "rationale": "Telemetry must never be the reason control stalls.",
+    "kind": "contract",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.2 Fabric topic classes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Under pressure P4 drops oldest; health stays on the direct path."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "OBS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8096",
+    "domain": "FABRIC",
+    "title": "Five brokers per production region across three zones",
+    "statement": "Each production region must start with five C4D/C4 broker VMs spread across three zones (three minimum).",
+    "rationale": "Five gives maintenance headroom and reduces correlated quorum pressure.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Prod plan shows five broker instances in three zones."
+    },
+    "policy_flags": [
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8097",
+    "domain": "FABRIC",
+    "title": "Broker journals on persistent Hyperdisk; local SSD transient only",
+    "statement": "Broker journals must be on persistent Hyperdisk sized for sustained append/read throughput, with local SSD/page cache only for transient acceleration.",
+    "rationale": "Durability must come from replicated journals, not one local device.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows a separate Hyperdisk journal disk with provisioned throughput."
+    },
+    "policy_flags": [
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8098",
+    "domain": "FABRIC",
+    "title": "Discovery via Cloud DNS SRV; live map from metadata",
+    "statement": "Clients must bootstrap from Cloud DNS SRV records (optionally Service Directory) and obtain the live broker/partition map from Fabric metadata.",
+    "rationale": "Static broker lists break on any change.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "SRV record resolves; client fetches the partition map before producing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8099",
+    "domain": "FABRIC",
+    "title": "Stable internal broker addresses; no public endpoint",
+    "statement": "Brokers must have stable internal addresses and no public endpoint; cross-region mirror prefixes are exported only through the latency NCC hub.",
+    "rationale": "A public broker is an attack surface for control and outcomes.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "8",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Template has no access_config; addresses are reserved internal; no public forwarding rule."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-8100",
+    "domain": "SEC",
+    "title": "Short-lived workload certificates via CAS; KMS/HSM roots; IAM-mapped identities",
+    "statement": "Certificate Authority Service must issue short-lived workload certificates, Cloud KMS/HSM must protect signing roots/policy keys, and broker identities must map to GCP service accounts/IAM.",
+    "rationale": "Long-lived shared secrets cannot be revoked per workload.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A broker refuses a client without a valid CAS-issued cert; policy keys are KMS-held."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8101",
+    "domain": "FABRIC",
+    "title": "Content-addressed segments to regional GCS landing buckets",
+    "statement": "Closed segments must be content-addressed and written to regional GCS landing buckets, then lifecycled/copied to durable archive locations per residency policy.",
+    "rationale": "An archive name that proves content makes tampering visible.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An archived object's key is its hash in the regional bucket; lifecycle copies it to the archive bucket."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8102",
+    "domain": "FABRIC",
+    "title": "Scale by adding brokers and rebalancing, not reactive autoscale",
+    "statement": "Brokers must be scaled by adding brokers and rebalancing partitions ahead of peak, never by reactive autoscaling like stateless pods.",
+    "rationale": "Reactive broker autoscale moves partitions during peak load.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Adding a broker triggers a rebalance with no lost record."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8103",
+    "domain": "RES",
+    "title": "Rolling broker upgrade never loses quorum",
+    "statement": "Broker upgrades must proceed one broker at a time — drain leadership, verify replica health, replace image, rejoin — never upgrading enough replicas to lose quorum.",
+    "rationale": "Parallel upgrades lose quorum and stop control.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§7.3 Fabric placement on GCP"
+      }
+    ],
+    "verification": {
+      "method": "game-day",
+      "check": "An upgrade run keeps P0/P1 produce available throughout."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8104",
+    "domain": "GCP",
+    "title": "Asset/Portfolio brain as autoscaled warm service",
+    "statement": "The Asset/Portfolio brain must run as a regional warm service backed by Spanner/Bigtable and autoscaled on CPU/custom metrics (HPA).",
+    "rationale": "Portfolio reasoning scales with load independently of execution.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-GCP-8105",
+    "domain": "GCP",
+    "title": "Capital/Treasury brain writes through controlled services",
+    "statement": "The Capital/Treasury brain must run as a warm service issuing recommendations/grants and writing authoritative state only through controlled services.",
+    "rationale": "A brain writing truth directly bypasses the ledger's controls.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "CAPITAL"
+    ],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-GCP-8106",
+    "domain": "GCP",
+    "title": "Risk brain generates scenarios and envelopes as warm service",
+    "statement": "The Risk brain must run as a warm regional service producing scenario/stress analysis and risk envelopes.",
+    "rationale": "Envelope generation needs elastic compute away from the hot path.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "RISK"
+    ],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-RISK-8107",
+    "domain": "RISK",
+    "title": "Hard pre-trade veto remains local to Reflex",
+    "statement": "The hard pre-trade risk veto must execute locally inside the Reflex cell; the warm Risk brain only supplies envelopes.",
+    "rationale": "A remote veto fails open or adds latency when the service plane is degraded.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An order exceeding the envelope is refused by the cell with no remote call; removing the local gate must fail the test."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-8108",
+    "domain": "EVID",
+    "title": "Evidence/Provenance service with continuous scoring",
+    "statement": "An Evidence/Provenance warm service (with Spanner Graph/BigQuery) must continuously score sources and handle contradictions.",
+    "rationale": "Sources degrade; unscored evidence misleads cognition.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-FABRIC-8109",
+    "domain": "FABRIC",
+    "title": "Fabric sinks on dedicated, lag-scaled pools",
+    "statement": "Fabric consumers/sinks must run on dedicated node pools scaled from consumer lag with destination-specific failure isolation.",
+    "rationale": "Sink failure must not affect other warm services.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-TICK-8110",
+    "domain": "TICK",
+    "title": "Replay/simulation controllers as batch jobs",
+    "statement": "Replay/simulation controllers must launch replay shards as batch jobs and compare live vs counterfactual models.",
+    "rationale": "Replay at scale needs batch compute outside the service plane.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-REASON-8111",
+    "domain": "REASON",
+    "title": "Symbolic reasoners/solvers with no hot-path dependency",
+    "statement": "Symbolic reasoners and solvers (Z3/OR-Tools/custom Rust) must run on compute-optimised warm capacity with no hot-path dependency.",
+    "rationale": "A solver in the hot path makes execution latency unbounded.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "NON_RUST",
+      "NEW_DEPENDENCY"
+    ],
+    "secondary_domains": [],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-DATA-8112",
+    "domain": "DATA",
+    "title": "Crawler/scout workers isolated from trading",
+    "statement": "Crawler/scout workers must run in isolated pools or Cloud Run jobs with egress, quotas and security posture separate from trading.",
+    "rationale": "A compromised crawler must not reach trading identities.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Scouts run under their own identity and egress path; that identity holds no trading permission."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": "Cloud Run jobs are an allowed placement, so ADR 0024 is not a blocker."
+  },
+  {
+    "id": "R12-API-8113",
+    "domain": "API",
+    "title": "Internal APIs behind internal LB with mTLS/service policy",
+    "statement": "Regional internal APIs must be entered through an internal Application LB/GKE Gateway with mTLS and service policy.",
+    "rationale": "Unauthenticated east-west calls let any workload impersonate any other.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows internal LB; calls without client identity are refused."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8114",
+    "domain": "GCP",
+    "title": "Cloud Run only for burst stateless endpoints, never venue execution",
+    "statement": "Cloud Run must be used for webhooks/control APIs whose cold-start profile is acceptable and never for venue execution.",
+    "rationale": "Cold starts in the order path are unbounded latency.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No Cloud Run workload can read the venue credential or place orders; only the execution node can."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8115",
+    "domain": "GCP",
+    "title": "GKE Standard regional clusters spanning zones",
+    "statement": "Service-plane clusters must be GKE Standard regional clusters with a regional control plane and multi-zone node pools.",
+    "rationale": "Survives a single-zone loss.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-GCP-8116",
+    "domain": "GCP",
+    "title": "Separated node pools; research cannot starve control",
+    "statement": "Node pools must be separated (general, compute, memory, GPU, batch/Spot) with taints/tolerations and PriorityClasses so research jobs cannot starve control workloads.",
+    "rationale": "Shared capacity lets research starve control.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan places the workload in the stated GKE pool."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [],
+    "notes": "KUBERNETES: GKE placement conflicts with ADR 0024; assess the intent on Cloud Run/Compute Engine."
+  },
+  {
+    "id": "R12-CICD-8117",
+    "domain": "CICD",
+    "title": "GitOps split: Config Sync, Argo CD, Kargo, Argo Rollouts",
+    "statement": "Config Sync must own cluster baseline/policy/CRDs, Argo CD applications, Kargo environment promotion, and Argo Rollouts progressive rollout.",
+    "rationale": "Overlapping controllers fight over the same objects.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Each controller is installed and owns only its layer."
+    },
+    "policy_flags": [
+      "KUBERNETES",
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": "ADR 0036 permits the GitOps cluster."
+  },
+  {
+    "id": "R12-SEC-8118",
+    "domain": "SEC",
+    "title": "Workload Identity + Secret Manager; no long-lived credentials stored",
+    "statement": "Workloads must authenticate via Workload Identity and read secrets via Secret Manager/CSI mounts; long-lived cloud credentials must not be persisted (e.g. in Kubernetes Secrets).",
+    "rationale": "A stored long-lived key is a key in every backup and crash dump.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Every Cloud Run service mounts secrets as files; SA key creation/upload is refused by org policy."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8119",
+    "domain": "GCP",
+    "title": "Service mesh only for warm services; never Fabric/Reflex",
+    "statement": "A service mesh may be used only for warm services with strict timeouts/retries/circuit breaking and mTLS; Fabric and Reflex traffic must never route through mesh sidecars.",
+    "rationale": "Sidecars add jitter and a failure domain to execution and messaging.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§8 Regional GKE Service Plane"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No execution/broker machine is in a mesh; warm-service clients enforce timeouts and breakers."
+    },
+    "policy_flags": [
+      "KUBERNETES"
+    ],
+    "secondary_domains": [
+      "FABRIC",
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8120",
+    "domain": "DATA",
+    "title": "World sensing pipeline: egress → scout → parse → evidence → delta",
+    "statement": "World sensing must flow external source → secure egress → transient scout worker → parse/extract → evidence/provenance → knowledge delta, recording manifest/hash/cursor and writing to graph/Bigtable/memory, with the raw payload discarded.",
+    "rationale": "Skipping evidence/provenance turns unverified text into knowledge.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "9",
+        "section": "§9.1 Pass-Through World Sensing Pipeline"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fixture source traverses every stage; the output delta carries manifest and provenance and no payload."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8121",
+    "domain": "DATA",
+    "title": "No general-purpose raw-world-data lake",
+    "statement": "There must be no general-purpose raw-world-data lake; the durable plane stores only Algorik's compact interpretation plus re-visit metadata.",
+    "rationale": "A lake raises cost, licensing and privacy exposure.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.1 Pass-Through World Sensing Pipeline"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No store holds raw external payloads; a lake-shaped resource fails review."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8122",
+    "domain": "DATA",
+    "title": "Tier K0 live ambient state",
+    "statement": "Tier K0 must hold seconds-to-hours of compact derived state in memory/caches and Bigtable.",
+    "rationale": "Ambient state must be fast and bounded.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Derived state is retained in memory with a bounded horizon and spilled to Bigtable."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "AMBIENT"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8123",
+    "domain": "DATA",
+    "title": "Tier K3 BigQuery holds derived facts, not copied documents",
+    "statement": "Tier K3 BigQuery tables must contain derived facts/features/outcomes and research datasets, never copied external documents.",
+    "rationale": "A warehouse of copied documents is a raw lake by another name.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Warehouse rows schema has no document-body column."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8124",
+    "domain": "DATA",
+    "title": "GCS regional landing for tick/internal segments via private APIs",
+    "statement": "A regional GCS landing store must hold retained tick/internal replay segments and knowledge packs (never raw external corpus), written by fabric-archive over private Google APIs.",
+    "rationale": "Cheap durable replay foundation without public paths.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows a regional landing bucket; fabricd writes to it via PGA."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8125",
+    "domain": "DATA",
+    "title": "Durable research/archive with Bucket Lock and versioning",
+    "statement": "The durable research/archive bucket must receive data by lifecycle from landing and use Bucket Lock/versioning where retention must be immutable.",
+    "rationale": "Retention that automation can shorten deletes the record an investigation needs.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows locked retention and versioning on the archive bucket."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8126",
+    "domain": "DATA",
+    "title": "Bigtable multi-cluster with routing app profiles",
+    "statement": "Bigtable must be multi-cluster with multi-cluster routing for read resilience and app profiles chosen by consistency need, fed by fabric-sink-bigtable.",
+    "rationale": "A single cluster is a single failure for features and replay indexes.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows ≥2 clusters and app profiles."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8127",
+    "domain": "DATA",
+    "title": "BigQuery fed by sinks/batch loads, isolated from hot path",
+    "statement": "BigQuery must be fed via fabric-sink-bigquery or batch loads from GCS and stay isolated from the hot path.",
+    "rationale": "A warehouse in the hot path makes execution depend on analytics.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No edge crate reaches the warehouse; loads come from the fabric/GCS."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8128",
+    "domain": "DATA",
+    "title": "Knowledge Catalog registers lineage and evidence contracts",
+    "statement": "Knowledge Catalog must register GCS/BigQuery/Spanner/AI lineage, quality and evidence contracts to ground agents in governed context.",
+    "rationale": "Agents without governed context act on unknown data.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Catalog entries exist for each data product with lineage."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-8129",
+    "domain": "WORLD",
+    "title": "Spanner Graph written by world-model workers, serves cognition only",
+    "statement": "Evidence/world-model workers must write normalised entities/edges into Spanner Graph, whose queries serve cognition and never hot execution.",
+    "rationale": "Graph queries in execution add unbounded latency.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "Graph writer exists; no edge crate can reach the graph."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "DATA"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8130",
+    "domain": "DATA",
+    "title": "AlloyDB for non-financial operational metadata",
+    "statement": "AlloyDB must hold operational relational metadata/workflow state (admin/research workflow, agent jobs, config history) that is not financial truth.",
+    "rationale": "Workflow state in the ledger couples it to noisy writes.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Workflow state persists via an AlloyDB adapter; ledger tables are absent from it."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8131",
+    "domain": "DATA",
+    "title": "Dataflow/Dataproc for batch reprocessing only",
+    "statement": "Dataflow/Dataproc Serverless must be used for large batch reprocessing from durable GCS/BigQuery sources and must not be the primary live fabric consumer path.",
+    "rationale": "A batch engine as live consumer couples freshness to job scheduling.",
+    "kind": "constraint",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§9.2 Durable Knowledge Tiers"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Batch jobs read GCS/BQ only; no live fabric subscription."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "NON_RUST"
+    ],
+    "secondary_domains": [],
+    "notes": "Dataflow/Dataproc pipelines are JVM/Python — conflicts with ADR 0001/0011 (Rust everywhere)."
+  },
+  {
+    "id": "R12-LEDGER-8132",
+    "domain": "LEDGER",
+    "title": "Spanner Enterprise Plus multi-region with external consistency",
+    "statement": "The authoritative ledger/accounting database must be Spanner Enterprise Plus in a multi-region configuration with external consistency.",
+    "rationale": "Financial truth must survive a region and stay externally consistent.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows edition ENTERPRISE_PLUS and a multi-region config."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION",
+      "COST"
+    ],
+    "secondary_domains": [
+      "GCP"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8133",
+    "domain": "LEDGER",
+    "title": "Separate instances for ledger and world graph",
+    "statement": "Ledger and world-graph databases must be on separate Spanner instances/databases to avoid noisy-neighbour coupling.",
+    "rationale": "Graph load must not slow ledger commits.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows distinct instances for ledger and graph."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8134",
+    "domain": "LEDGER",
+    "title": "Ledger writer consumes P1 transactionally keyed by event_id",
+    "statement": "A regional ledger-writer must consume P1 outcome partitions and, in one transaction keyed by event_id, update double-entry postings/positions/cash and record the processed event ID so duplicate delivery is a no-op.",
+    "rationale": "Non-transactional application loses or doubles fills across a crash.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Any redelivery/crash schedule yields balances equal to one clean delivery; process reaches apply from main."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8135",
+    "domain": "LEDGER",
+    "title": "Ledger is asynchronous to order placement",
+    "statement": "The ledger must be asynchronous to order placement so global consistency never slows the hot path.",
+    "rationale": "A synchronous ledger write puts a multi-region commit in front of every order.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "No edge crate reaches the storage/ledger crates; the cell places without a ledger call."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8136",
+    "domain": "LEDGER",
+    "title": "Spanner leader region chosen by write origin and residency",
+    "statement": "The Spanner configuration/leader region must be chosen by write origin and legal residency.",
+    "rationale": "A distant leader adds commit latency; a wrong one breaches residency.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "10",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan sets default_leader with recorded rationale."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8137",
+    "domain": "LEDGER",
+    "title": "Spanner managed autoscaling with high minimum; hotspot-safe keys",
+    "statement": "Spanner must use managed autoscaling with a deliberately high minimum sized for peak close/reconciliation, and keys must be hotspot-safe.",
+    "rationale": "Autoscaling cannot rescue monotonically increasing keys.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows autoscaling_config with min ≥ sized floor; schema keys not monotonic."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE",
+      "COST"
+    ],
+    "secondary_domains": [
+      "FINOPS"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8138",
+    "domain": "LEDGER",
+    "title": "Change streams feed analytics only, never the system of record",
+    "statement": "Spanner change streams/Dataflow may feed BigQuery/reporting and derived caches, which must remain downstream analytics and never the system of record.",
+    "rationale": "Derived copies treated as truth diverge from the ledger.",
+    "kind": "constraint",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "No component reads balances from a derived copy for a decision."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8139",
+    "domain": "LEDGER",
+    "title": "Continuous venue/custody vs ledger reconciliation halts deterministically",
+    "statement": "Venue/custody truth must be continuously compared with the ledger; discrepancies must raise a P0/P1 Fabric event and can narrow or stop local execution under deterministic policy.",
+    "rationale": "An unreconciled break compounds with every fill.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An injected break emits a fabric event and halts/narrows the cell; removing the trip must fail."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "RISK",
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8140",
+    "domain": "LEDGER",
+    "title": "Scheduled Spanner backups and PITR",
+    "statement": "The ledger must have scheduled Spanner backups and point-in-time recovery.",
+    "rationale": "Without backups a logical corruption is permanent.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "plan",
+      "check": "Plan shows a backup schedule and version_retention_period."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "RES"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8141",
+    "domain": "LEDGER",
+    "title": "Immutable ledger exports and audit manifests to locked GCS",
+    "statement": "Immutable ledger exports and audit manifests must be written to locked GCS for independent reconstruction.",
+    "rationale": "Reconstruction evidence must not depend on the database it audits.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "G",
+        "page": "11",
+        "section": "§10 Ledger, Capital and Financial State"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An export lands in a retention-locked bucket and replays to the same balances."
+    },
+    "policy_flags": [
+      "MANAGED_SERVICE"
+    ],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  }
+]

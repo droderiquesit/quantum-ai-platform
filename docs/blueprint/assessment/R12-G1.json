@@ -1,0 +1,3092 @@
+[
+  {
+    "id": "R12-ARCH-8001",
+    "status": "COMPLETE",
+    "current": "Dependency-graph acceptance tests forbid any edge crate from reaching language-model, historical-reader and quantum-solver crates; the reflex cell ships as its own binary qip-edge-node separate from the brains.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:716 no_edge_cell_can_reach_a_language_model",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:758 no_edge_cell_can_reach_a_historical_data_reader",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1430 no_edge_cell_can_reach_a_quantum_solver",
+      "backend/crates/apps/qip-edge-node/Cargo.toml dependencies list no cognition crate"
+    ],
+    "gap": "None for the structural property; not deployed (execution_nodes = {} in every environment tfvars).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture",
+    "work_item": "",
+    "size": "S",
+    "notes": "Structural (dependency graph) guarantee, not a deployment claim."
+  },
+  {
+    "id": "R12-REFLEX-8002",
+    "status": "PARTIAL",
+    "current": "modules/execution-node provisions a reservation-backed instance template + zonal IGM, gVNIC, TIER_1, no external IP, shielded; machine_type validation admits C4/C4D but also C3/C3D shapes. Not instantiated: execution_nodes = {} in every environment tfvars.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/variables.tf:118-150 machine_type allows c3/c3d as well as c4/c4d",
+      "infrastructure/terraform/modules/execution-node/main.tf:351 instance template; :411 nic_type GVNIC; :493 instance group manager",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277 no_machine_the_repository_defines_sits_behind_a_load_balancer_or_inside_a_mesh",
+      "infrastructure/environments/dev/terraform.tfvars:234 execution_nodes = {}"
+    ],
+    "gap": "Restrict machine_type to C4/C4D (or record why C3 stays); declare at least one node in an environment and show the plan.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan with a populated execution_nodes map; cargo test -p qip-acceptance --test gcp_placement",
+    "work_item": "",
+    "size": "S",
+    "notes": "Validation message cites §41.4 of an older blueprint allowing C3; v3.0 says C4D/C4."
+  },
+  {
+    "id": "R12-MESH-8003",
+    "status": "PARTIAL",
+    "current": "An in-tree mesh exists (qip-transport mesh over blocking HTTP/1.1 TCP; qip-mesh peer/spine; qip-edge mesh); cells exchange with the centre and peers but not over QUIC.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/mesh.rs (HTTP/1.1 over TcpStream via http.rs:1139-1154)",
+      "backend/crates/services/qip-mesh/src/peer.rs",
+      "backend/crates/libs/qip-transport/tests/mesh.rs"
+    ],
+    "gap": "QUIC transport; a 2–20-leg peer coordination protocol bounded by deadline; proof of cross-region exchange.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "QUIC requires a new dependency (ADR 0002/0009) or an ADR authorising one",
+    "verification": "cargo test -p qip-transport --test mesh",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8004",
+    "status": "PARTIAL",
+    "current": "qip-fabricd is a working single-node broker (composition root starts it; real-listener tests). modules/event-fabric-broker defines one template + DNS records but is not instantiated by infrastructure/terraform/main.tf, and caps broker_count at 1.",
+    "evidence": [
+      "backend/crates/apps/qip-fabricd/src/main.rs:24-40 composition root",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:338-356 start_with_archive",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:573 the_sdk_and_the_served_broker_agree_on_sequences_and_offsets_for_multi_record_batches",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 broker_count = enabled ? 1 : 0",
+      "infrastructure/terraform/main.tf (no module \"event_fabric_broker\" block)"
+    ],
+    "gap": "Instantiate the broker module per region, multi-broker replication, an image matrix entry for qip-fabricd.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8086",
+      "R12-FABRIC-8096"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan showing broker instances; cargo test -p qip-fabricd --test broker",
+    "work_item": "",
+    "size": "L",
+    "notes": "fabricd's own doc says it is not deployed and is kept out of the image matrix (ADR 0010)."
+  },
+  {
+    "id": "R12-GCP-8005",
+    "status": "BLOCKED",
+    "current": "Warm binaries (api, fastbrain, deepbrain, web) are Cloud Run services from the workload catalogue; the only GKE cluster is the GitOps Autopilot control plane, which runs no qip binary.",
+    "evidence": [
+      "infrastructure/terraform/catalogue.tf:694 module \"cloud_run\" for_each over the catalogue",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf:1-20 Autopilot cluster for controllers only",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569 every_cloud_run_service_is_internal_and_mounts_secrets_as_files_never_as_environment"
+    ],
+    "gap": "Intent met on Cloud Run for api/brains; evidence, replay, sinks and package distribution have no warm service at all.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf against the warm-service list",
+    "work_item": "",
+    "size": "M",
+    "notes": "Recorded conflict: GCP v3.0 GKE vs ADR 0024."
+  },
+  {
+    "id": "R12-DATA-8006",
+    "status": "PARTIAL",
+    "current": "modules/data declares BigQuery, GCS archive, AlloyDB, Bigtable, Memorystore and Spanner, all gated false in every tfvars. Rust adapters exist for Cloud Storage, BigQuery and Memorystore; Spanner, Bigtable and AlloyDB are refused by name. No Knowledge Catalog or Spanner Graph anywhere.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:85,117,268,322,349,380 gated resources",
+      "infrastructure/environments/dev/terraform.tfvars:279-285 every enable_* = false",
+      "backend/crates/libs/qip-storage/src/provider.rs:379,441 refusal of unimplemented targets",
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs:388 CloudStorageBlobStore"
+    ],
+    "gap": "Spanner Graph, Bigtable and AlloyDB adapters (blocked on no TLS client without a new ADR), Knowledge Catalog, enable flags with evidence an adapter uses them.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan with enable_* true plus adapter integration tests",
+    "work_item": "",
+    "size": "XL",
+    "notes": "qip_transport::http has no TLS; provider.rs states https to Google APIs is refused, so GCS/BigQuery adapters need the egress proxy."
+  },
+  {
+    "id": "R12-LEDGER-8007",
+    "status": "PARTIAL",
+    "current": "qip-ledgerd keeps balances, chain tails and offsets in the in-tree DurableStore (local WAL); Terraform declares a gated Spanner instance with no edition set and no Rust adapter exists.",
+    "evidence": [
+      "backend/crates/apps/qip-ledgerd/src/store.rs:352-372 LedgerStore::open/apply on qip_storage::DurableStore",
+      "infrastructure/terraform/modules/data/main.tf:380-395 google_spanner_instance, processing_units = 100, no edition",
+      "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner refused"
+    ],
+    "gap": "Spanner adapter, ENTERPRISE_PLUS edition, migration of ledger state, positions/obligations/capital-grant schemas.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8134"
+    ],
+    "blocked_by": "",
+    "verification": "integration test against Spanner emulator or instance",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8008",
+    "status": "PARTIAL",
+    "current": "GitHub Actions builds/signs/attests; Artifact Registry module; Binary Authorization; Argo CD and Kargo bootstrapped on the Autopilot GitOps cluster (gitops_enabled = true in dev). No Cloud Build private pool, no Config Sync, no Argo Rollouts.",
+    "evidence": [
+      "infrastructure/terraform/modules/registry/main.tf",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf",
+      "infrastructure/terraform/main.tf:974-976 module gitops_control_plane count = gitops_enabled",
+      "infrastructure/environments/dev/terraform.tfvars:145 gitops_enabled = true",
+      "infrastructure/gitops/bootstrap/argocd, infrastructure/gitops/bootstrap/kargo"
+    ],
+    "gap": "Cloud Build private pool (or ADR keeping GitHub-hosted builds), Config Sync, Argo Rollouts.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "inspection of modules/cicd and gitops bootstrap; deploy.yml run",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8009",
+    "status": "PARTIAL",
+    "current": "Acceptance scan refuses Kafka/Pub/Sub client crates; qip-streaming's PubSub TransportKind refuses to build. But modules/trust-zones still declares Pub/Sub publisher/subscriber grants on a \"control_fabric_topic\" (passed null today).",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:123 no_workspace_crate_declares_a_kafka_or_pub_sub_client_or_depends_on_the_bridge",
+      "backend/crates/services/qip-streaming/src/registry.rs:217,228 PubSub -> unreachable_transport",
+      "infrastructure/terraform/modules/trust-zones/main.tf:624-647 google_pubsub_topic_iam_member fabric_publish/fabric_attach",
+      "infrastructure/terraform/main.tf:500 control_fabric_topic = null"
+    ],
+    "gap": "Remove the Pub/Sub control-fabric grant path from trust-zones and the PubSub TransportKind, and extend the scan to Terraform.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary",
+    "work_item": "",
+    "size": "S",
+    "notes": "The trust-zones Pub/Sub 'control fabric' contradicts §1. The secret-rotation Pub/Sub topic in modules/secrets is a Secret Manager notification, not runtime messaging."
+  },
+  {
+    "id": "R12-FABRIC-8010",
+    "status": "COMPLETE",
+    "current": "No bridge exists; an acceptance scan refuses durable-state types in a bridge crate and any dependency on it.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:153 a_bridge_crate_if_one_exists_holds_no_durable_state",
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_bridge_boundary.rs:193 the_scan_refuses_a_client_outside_the_bridge_and_a_dependency_on_it"
+    ],
+    "gap": "None while no bridge exists.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test event_fabric_bridge_boundary",
+    "work_item": "",
+    "size": "S",
+    "notes": "Vacuously satisfied: the durable-state check only bites once a bridge crate exists; the self-test at :193 proves the scanner fires."
+  },
+  {
+    "id": "R12-DATA-8011",
+    "status": "PARTIAL",
+    "current": "NewsItem carries a SourceManifest (hash, locator) and no text field, so news text cannot be persisted; other connectors (market-ingestion) persist derived ticks/events. No general transient scout worker with an explicit discard step.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/intelligence.rs:182-201 NewsItem.manifest, no text field",
+      "backend/crates/libs/qip-financial/src/manifest.rs:63 SourceManifest",
+      "backend/crates/libs/qip-financial/src/manifest.rs:191 the_hash_is_of_the_bytes_that_were_read (unit test)"
+    ],
+    "gap": "Pipeline-level guarantee for every connector (not only news), evidence scoring before persistence, and a test that fails if a connector writes a raw payload.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial manifest",
+    "work_item": "",
+    "size": "M",
+    "notes": "Structural for NewsItem only; no test asserts the absence of a text field."
+  },
+  {
+    "id": "R12-DATA-8012",
+    "status": "PARTIAL",
+    "current": "No Terraform bucket is designated for external-world content (buckets: data archive/artifacts, evidence, ai training, egress bootstrap, image-bake payload, cloudrun config, public-edge shell). HTTP client buffers in memory. No test enforces the absence.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:117,219",
+      "infrastructure/terraform/modules/evidence/main.tf:58",
+      "infrastructure/terraform/modules/ai/main.tf:52",
+      "backend/crates/libs/qip-transport/src/http.rs:1191 read_response into memory"
+    ],
+    "gap": "An acceptance check that refuses a bucket labelled/used for external payloads; encrypted ephemeral disk policy for workers.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "new acceptance scan over google_storage_bucket purposes",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8013",
+    "status": "PARTIAL",
+    "current": "SourceManifest holds source, locator, byte length, sha256 and retrieved_at, refusing empty inputs. Missing version/etag, entitlement, cursor, freshness, parser lineage and re-fetch instructions (entitlement/freshness live separately in qip-data-finder).",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/manifest.rs:63-78 fields",
+      "backend/crates/libs/qip-financial/src/manifest.rs:216,232 refusal tests"
+    ],
+    "gap": "Add etag/version, entitlement, cursor, freshness, parser lineage and re-fetch instruction fields with refusal tests.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-financial manifest",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8014",
+    "status": "MISSING",
+    "current": "Manifests exist only embedded in NewsItem events; no registry type or store. Spanner/AlloyDB adapters are refused.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/provider.rs:379 Spanner/AlloyDB refused"
+    ],
+    "gap": "Registry service + store adapter, lookup by URI/provider ID.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-DATA-8013"
+    ],
+    "blocked_by": "",
+    "verification": "integration test of the registry against an emulator",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8015",
+    "status": "PARTIAL",
+    "current": "qip-world-model and kernel central plane hold in-memory belief/causal structures; no Spanner Graph store.",
+    "evidence": [
+      "backend/crates/services/qip-world-model/src",
+      "backend/crates/runtime/qip-kernel/src/central/causal.rs",
+      "backend/crates/runtime/qip-kernel/src/central/belief.rs"
+    ],
+    "gap": "Durable graph store (Spanner Graph adapter), schema with contradiction/confidence fields, test refusing document bodies.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "integration test against Spanner Graph",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8016",
+    "status": "MISSING",
+    "current": "Bigtable is a gated Terraform resource; the Rust provider refuses the Bigtable target. Derived features live in-memory (qip-feature-dag).",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:322 google_bigtable_instance (enable_bigtable=false)",
+      "backend/crates/libs/qip-storage/src/provider.rs:441 Bigtable refused"
+    ],
+    "gap": "Bigtable adapter (needs TLS path), schema for features/deltas, sink from the fabric.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "integration test against Bigtable emulator",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8017",
+    "status": "PARTIAL",
+    "current": "Data archive bucket defines STANDARD→NEARLINE→COLDLINE lifecycle rules and locked retention but is gated off; CloudStorageBlobStore exists; no pack writer or pack format.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:117-215 archive bucket lifecycle rules",
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs:388 CloudStorageBlobStore"
+    ],
+    "gap": "Pack format/writer, dedicated pack prefix or bucket, enable_cloud_storage in an environment.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan; unit tests for pack writer",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8018",
+    "status": "MISSING",
+    "current": "No re-fetch path exists; manifest.rs states re-reading the original is the caller's business.",
+    "evidence": [
+      "backend/crates/libs/qip-financial/src/manifest.rs:31-38 module doc (no fetch)"
+    ],
+    "gap": "Re-fetch service using manifest locator + hash verification.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-DATA-8013",
+      "R12-DATA-8014"
+    ],
+    "blocked_by": "",
+    "verification": "integration test with a fixture provider",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8019",
+    "status": "PARTIAL",
+    "current": "qip-events RetentionClass classifies topics (replaceable vs irreplaceable); fabric archive attaches entitlement labels; GCS archive bucket gated off.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/retention.rs",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:874-905 archive_sealed with entitlements",
+      "infrastructure/terraform/modules/data/main.tf:117 archive bucket (enable_cloud_storage=false)"
+    ],
+    "gap": "Enable the archive store and wire fabricd to GCS; explicit tick vs financial retention policies.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events retention",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8020",
+    "status": "PARTIAL",
+    "current": "Structural tests forbid edge crates reaching qip-storage (which holds Redis/BigQuery/Bigtable adapters), LM, solvers and history readers, and require lane-0 stages linked in-process. The edge-node main loop still runs the halt poll, journal flush and mesh exchange on the decision thread between passes (control.rs moves them off-thread but is not yet wired in main).",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:849 every_lane_0_stage_is_linked_into_the_node_and_none_is_reached_through_a_transport",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:967 no_edge_cell_can_hold_a_handle_to_the_warehouse_or_the_wide_column_store",
+      "backend/crates/apps/qip-edge-node/src/control.rs:1-40 off-thread control, 'until SLICE-36 switches fabric mode over'",
+      "backend/crates/apps/qip-edge-node/src/main.rs:880-990 main loop polls halt and exchanges before run_pass"
+    ],
+    "gap": "Wire control::Handoff/Poller into main so no blocking I/O shares the decision thread; latency proof under replay.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture; cargo test -p qip-edge-node --test control",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-8021",
+    "status": "PARTIAL",
+    "current": "Cell journals in memory and the node ships it to a StoreMirror between passes; journal pressure narrows rather than blocks. The fabric spool/drain (edge-node event_fabric) is tested but not wired into main.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/mirror.rs StoreMirror",
+      "backend/crates/edge/qip-edge/tests/journal_pressure.rs",
+      "backend/crates/apps/qip-edge-node/tests/event_fabric_outbox.rs",
+      "backend/crates/apps/qip-edge-node/src/lib.rs:140-200 assemble (no event_fabric)"
+    ],
+    "gap": "Wire the event_fabric writer/drain into main so journals go to the fabric off the decision thread.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-REFLEX-8067"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8022",
+    "status": "PARTIAL",
+    "current": "Wire Batch/Record carry event_id, trace_id, source ts, schema id/version, producer id/epoch/sequence, logical (HLC) ts and CRC32C. Region, ordering key and provenance are in qip-events FabricEnvelope (and a second FabricEnvelope in qip-contracts), neither used on any production path.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/codec.rs:267-339 Record/Batch fields",
+      "backend/crates/libs/qip-events/src/event_fabric/envelope.rs:62-96 FabricFacts/FabricEnvelope",
+      "backend/crates/libs/qip-contracts/src/fabric_envelope.rs:19 duplicate FabricEnvelope",
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs"
+    ],
+    "gap": "One envelope type on the wire carrying region, ordering key and provenance; remove the duplicate contract type.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test event_fabric_codec",
+    "work_item": "",
+    "size": "M",
+    "notes": "Two FabricEnvelope types exist (qip-events and qip-contracts) — a second source of truth for one contract."
+  },
+  {
+    "id": "R12-FABRIC-8023",
+    "status": "PARTIAL",
+    "current": "Broker producer table deduplicates by producer epoch/sequence and fences stale epochs (property-tested); consumers commit offsets. The only financial consumer (qip-ledgerd) dedups by chain continuity but is not wired to the fabric.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs:175 for_any_interleaving_of_sends_lost_acks_retries_and_producer_restarts_each_sequence_is_appended_once_in_order",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:820 a_batch_retried_after_a_broker_restart_appears_once_and_a_stale_epoch_is_still_fenced",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:36-42 start() returns unavailable (placeholder)"
+    ],
+    "gap": "Wire a real consumer into qip-ledgerd and other financial consumers.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8134"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-streaming --test event_fabric_producer",
+    "work_item": "",
+    "size": "M",
+    "notes": "event_fabric_delivery_semantics.rs:10 asserts a locally defined fixture enum, not the fabric — it tests nothing."
+  },
+  {
+    "id": "R12-LEDGER-8024",
+    "status": "PARTIAL",
+    "current": "LedgerStore::apply writes postings, balances, chain tail and consumed offset in one WAL batch; property test covers duplication and crash. qip-ledgerd's main never applies a delivery (consumer placeholder; read API serve() errors so the process exits).",
+    "evidence": [
+      "backend/crates/apps/qip-ledgerd/src/store.rs:372 apply (single WriteBatch)",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337 for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery",
+      "backend/crates/apps/qip-ledgerd/src/main.rs:57-70 placeholder consumer, hard-coded 127.0.0.1:9090",
+      "backend/crates/apps/qip-ledgerd/src/read_api.rs:38-43 serve() always Err"
+    ],
+    "gap": "Wire the fabric consumer and read API in qip-ledgerd so apply is reached from main.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-ledgerd --test store",
+    "work_item": "",
+    "size": "M",
+    "notes": "qip-ledgerd cannot start: main returns serve()'s unavailable error. ADR 0100 describes it as the ledger's sole writer."
+  },
+  {
+    "id": "R12-RES-8025",
+    "status": "COMPLETE",
+    "current": "Edge-node test assembles a cell, severs the mesh link and proves it keeps placing paper orders within its envelope and journals degraded state; run_pass is reached from main.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245 a_cell_cut_off_from_everything_keeps_placing_paper_orders_inside_its_envelope_and_journals_that_it_is_degraded",
+      "backend/crates/apps/qip-edge-node/src/pass.rs run_pass (called from main.rs loop)"
+    ],
+    "gap": "None in code; no deployment proves it (execution_nodes = {} in every environment tfvars).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test degraded",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8026",
+    "status": "PARTIAL",
+    "current": "Cell::narrowing computes a DegradationState over policy-fed capabilities (beliefs, causal, etc.) with sizing multipliers; ingestion and counterfactual_scoring are not measured by the cell.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:2543 narrowing",
+      "backend/crates/edge/qip-edge/src/telemetry.rs:700 narrowing gauge",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380"
+    ],
+    "gap": "Envelopes for every dependency (feed, venue session, fabric, ingestion), enumerated and tested.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test degraded",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8027",
+    "status": "PARTIAL",
+    "current": "QosClass::ack_floor sets Quorum for P0/P1, LeaderOnly for P2/P3, None for P4; the broker enforces the declared policy. 'Quorum' is implemented as archived-through on a single broker, not replica majority.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:76 ack_floor",
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:700 a_quorum_ack_profile_is_not_reported_until_a_metadata_poll_shows_the_batch_archived",
+      "backend/crates/libs/qip-events/tests/event_fabric_policy.rs"
+    ],
+    "gap": "Replicated quorum (see R12-FABRIC-8086).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8086"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test event_fabric_policy",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-8028",
+    "status": "COMPLETE",
+    "current": "An acceptance test checks every composition root refuses a cache as store of record; StorageProvider::key_value refuses Memorystore.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1046 every_composition_root_that_resolves_a_storage_target_refuses_a_cache_as_the_store_of_record",
+      "backend/crates/libs/qip-storage/src/provider.rs:405 Memorystore refused as key-value store"
+    ],
+    "gap": "None.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-ARCH-8029",
+    "status": "PARTIAL",
+    "current": "Fabric owns history/offsets (fabricd broker). Financial truth is in qip-ledgerd's local DurableStore and the kernel ledger, not Spanner; GCS archive unwired; Bigtable absent.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1001 commit_offset",
+      "backend/crates/apps/qip-ledgerd/src/store.rs:352",
+      "backend/crates/libs/qip-storage/src/provider.rs:379"
+    ],
+    "gap": "Spanner ledger, GCS archive, Bigtable features, plus a single-owner check.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8007"
+    ],
+    "blocked_by": "",
+    "verification": "inspection + architecture test",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8030",
+    "status": "PARTIAL",
+    "current": "Binary Authorization module with attestor note; deploy.yml resolves image digests; Kargo promotes digests. Not verified end to end in this slice.",
+    "evidence": [
+      "infrastructure/terraform/modules/binaryauthorization/main.tf",
+      ".github/workflows/deploy.yml:414-417 digest resolution",
+      "backend/crates/tests/qip-acceptance/tests/cicd_102_attestation_check.rs"
+    ],
+    "gap": "End-to-end proof (run URL) that a tag-only image is refused at deploy.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "deploy.yml run with an unattested image showing refusal",
+    "work_item": "",
+    "size": "S",
+    "notes": "Detailed CICD assessment belongs to the CICD slice; evidence here is spot-checked."
+  },
+  {
+    "id": "R12-CICD-8031",
+    "status": "COMPLETE",
+    "current": "CI runs scripts/check-secrets.sh over tree and history; an acceptance test refuses secret values in Terraform.",
+    "evidence": [
+      ".github/workflows/ci.yml:455-456 check-secrets.sh and --history",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:49 no_secret_value_appears_in_the_terraform"
+    ],
+    "gap": "None.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "./scripts/check-secrets.sh --history",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8032",
+    "status": "PARTIAL",
+    "current": "Infrastructure is Terraform via infra.yml; GitOps on the control-plane cluster. No drift detection job found in this slice's inspection; no model registry/activation pipeline for reflex models.",
+    "evidence": [
+      ".github/workflows/infra.yml",
+      "infrastructure/gitops/argocd"
+    ],
+    "gap": "Scheduled drift plan with alert; signed model activation path.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "scheduled terraform plan showing no diff",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8033",
+    "status": "PARTIAL",
+    "current": "An agent service account exists in Terraform; deploy is gated by workflows and Binary Authorization. No test shows the agent identity lacks direct deploy rights.",
+    "evidence": [
+      "infrastructure/terraform/main.tf:1309 google_service_account.agent_identity",
+      ".github/workflows/deploy.yml"
+    ],
+    "gap": "Acceptance test asserting the agent identity has no run.admin/deploy role.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "acceptance scan of IAM bindings for agent_identity",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8034",
+    "status": "PARTIAL",
+    "current": "Cross-region mirror arrangements are refused without a measured round trip; venue measurement exists in the kernel. Environment regions are literals in tfvars.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/cross_region.rs CrossRegionMirror::read",
+      "backend/crates/runtime/qip-kernel/src/venue_measurement.rs",
+      "infrastructure/environments/prod/terraform.tfvars:20 region literal"
+    ],
+    "gap": "Benchmark artefact per chosen region; no live venue benchmark is possible under paper trading.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "inspection of benchmark records",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8035",
+    "status": "MISSING",
+    "current": "Each environment has a single region; no execution node declared anywhere.",
+    "evidence": [
+      "infrastructure/environments/prod/terraform.tfvars:20 region = europe-west2",
+      "infrastructure/environments/prod/terraform.tfvars:51 execution_nodes = {}"
+    ],
+    "gap": "Multi-region root (per-region module instantiation) and three declared regions.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan for prod",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8036",
+    "status": "PARTIAL",
+    "current": "network module creates reflex/fabric/service VPCs per environment (global VPCs, regional routing); Cloud NAT per zone/node; Ops Agent receiver on the node. No landing storage; single region.",
+    "evidence": [
+      "infrastructure/terraform/modules/network/main.tf:26-41 three VPCs",
+      "infrastructure/terraform/modules/network/tests/three-networks.tftest.hcl",
+      "infrastructure/terraform/modules/execution-node/main.tf:172 router_nat"
+    ],
+    "gap": "Per-region instantiation, regional landing bucket, regional collectors for Cloud Run.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform test in modules/network",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8037",
+    "status": "PARTIAL",
+    "current": "Identity Platform, Artifact Registry, multi-region Spanner config (gated), BigQuery dataset (gated). No model registry or Knowledge Catalog.",
+    "evidence": [
+      "infrastructure/terraform/modules/identity/main.tf:33",
+      "infrastructure/terraform/modules/registry/main.tf",
+      "infrastructure/terraform/modules/data/main.tf:385 config = nam-eur-asea"
+    ],
+    "gap": "Model registry, Knowledge Catalog, enabling the ledger and research stores.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8038",
+    "status": "PARTIAL",
+    "current": "Execution-node standby template/subnet/health check exist (no fencing logic); fabric is RF1; Cloud Run is regional.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/main.tf:738-800 standby resources",
+      "infrastructure/terraform/modules/execution-node/tests/standby.tftest.hcl",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 RF1"
+    ],
+    "gap": "Fencing/activation logic, replicated fabric, game-day evidence.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-REFLEX-8069",
+      "R12-FABRIC-8086"
+    ],
+    "blocked_by": "",
+    "verification": "game day",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8039",
+    "status": "PARTIAL",
+    "current": "Cells decide alone (degraded tests); Mirroring is a declared stream-policy field only — no mirror process.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:143 Mirroring enum",
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:245"
+    ],
+    "gap": "fabric-mirror implementation and multi-region deployment.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8078",
+      "R12-GCP-8035"
+    ],
+    "blocked_by": "",
+    "verification": "game day",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-8040",
+    "status": "PARTIAL",
+    "current": "Specific reservation sized to the group's target with reservation_affinity; acceptance test enforces it. No committed-use commitment; no node declared.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/main.tf:331-372 reservation + affinity",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:373 every_machine_group_the_repository_defines_consumes_a_specific_reservation_sized_to_its_target"
+    ],
+    "gap": "Declare a node; commitments decision.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-FINOPS-8041",
+    "status": "PARTIAL",
+    "current": "Cloud Run services scale by instance bounds in modules/cloudrun; Bigtable cluster has autoscaling_config (gated); Spanner fixed at 100 PU.",
+    "evidence": [
+      "infrastructure/terraform/modules/cloudrun/main.tf",
+      "infrastructure/terraform/modules/data/main.tf:322-345 bigtable autoscaling_config",
+      "infrastructure/terraform/modules/data/main.tf:391 processing_units = 100"
+    ],
+    "gap": "Spanner autoscaling; AI component scaling.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8042",
+    "status": "PARTIAL",
+    "current": "Project-level org policies refuse SA key creation/upload; SCC custom modules (gated); billing budget. No org/folder scope, audit sinks or PAM.",
+    "evidence": [
+      "infrastructure/terraform/main.tf:1327,1342 google_org_policy_policy at projects/ scope",
+      "infrastructure/terraform/modules/scc/main.tf:41",
+      "infrastructure/terraform/modules/observability/budget.tf"
+    ],
+    "gap": "Organisation/folder-level policies, audit log sinks, PAM entitlements, billing export.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8043",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8044",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8045",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8046",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8047",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8048",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8049",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8050",
+    "status": "MISSING",
+    "current": "Single project per environment (var.project_id); no folder or per-domain project resources.",
+    "evidence": [
+      "infrastructure/terraform/main.tf data \"google_project\" \"this\" (one project)",
+      "infrastructure/environments/prod/terraform.tfvars project_id"
+    ],
+    "gap": "Folder/project hierarchy as code and resource placement into it.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8051",
+    "status": "PARTIAL",
+    "current": "Artifact Registry, Binary Authorization attestor and the GitOps Autopilot cluster exist, but in the single environment project, not a separate engineering project.",
+    "evidence": [
+      "infrastructure/terraform/modules/registry/main.tf",
+      "infrastructure/terraform/modules/binaryauthorization/main.tf",
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf"
+    ],
+    "gap": "Separate engineering project; Cloud Build private pool.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8052",
+    "status": "PARTIAL",
+    "current": "dev/stage/test/prod share one root module with per-environment tfvars, so module shape is identical; the boundaries themselves (projects/folders) do not exist.",
+    "evidence": [
+      "infrastructure/environments/dev/terraform.tfvars",
+      "infrastructure/environments/test/terraform.tfvars",
+      "infrastructure/terraform/main.tf"
+    ],
+    "gap": "Folder/project model replicated per environment.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8053",
+    "status": "PARTIAL",
+    "current": "Acceptance test refuses any Shared VPC declaration; reflex/fabric/service (plus data/engineering) VPCs are separate. No NCC resources exist, so the networks are not joined at all.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:505 no_shared_vpc_is_declared_so_no_host_project_lends_a_subnet_across_a_folder",
+      "infrastructure/terraform/modules/network/main.tf:33-41,73,134"
+    ],
+    "gap": "NCC hub/spokes with route filters.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [
+      "R12-GCP-8056"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "work_item": "",
+    "size": "M",
+    "notes": "network/main.tf comments say the data/engineering VPCs 'join others only through NCC spokes'; no google_network_connectivity_* resource exists in the tree."
+  },
+  {
+    "id": "R12-API-8054",
+    "status": "PARTIAL",
+    "current": "public-edge module builds global forwarding rule, Cloud Armor policies, CDN backend bucket, Certificate Manager map and a serverless NEG to Cloud Run; iap-edge for the portal. public_edge is unset in dev (commented) so nothing is created; Cloud Run services are internal-only (tested).",
+    "evidence": [
+      "infrastructure/terraform/modules/public-edge/main.tf:241-315 backend bucket CDN + serverless NEG",
+      "infrastructure/terraform/main.tf:1080 module public_edge",
+      "infrastructure/environments/dev/terraform.tfvars:514 public_edge commented out",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:535 every_backend_bucket_is_served_through_cloud_cdn_with_an_explicit_cache_mode_and_no_backend_service_is"
+    ],
+    "gap": "Enable in an environment with a delegated domain.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan with public_edge set",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8055",
+    "status": "PARTIAL",
+    "current": "Execution nodes are refused behind any LB/mesh (tested). Warm services are internal Cloud Run without an internal ALB, mesh or mTLS; the in-tree HTTP client has timeouts and a breaker.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277",
+      "backend/crates/libs/qip-transport/src/breaker.rs",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569"
+    ],
+    "gap": "Service-to-service mTLS (blocked: no in-tree TLS, ADR 0009) or internal ALB with IAM-authenticated Cloud Run.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "mTLS needs a TLS stack (ADR 0009) or a managed proxy decision",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8056",
+    "status": "MISSING",
+    "current": "No google_network_connectivity_* resource in the tree.",
+    "evidence": [
+      "infrastructure/terraform/modules/network/main.tf (no NCC)"
+    ],
+    "gap": "NCC hub/spoke module.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8057",
+    "status": "MISSING",
+    "current": "No NCC resources.",
+    "evidence": [
+      "infrastructure/terraform/modules/edge-mesh/main.tf:47 PSC endpoint only"
+    ],
+    "gap": "Latency hub module.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-GCP-8056"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8058",
+    "status": "MISSING",
+    "current": "No NCC resources.",
+    "evidence": [
+      "infrastructure/terraform/modules/network/main.tf"
+    ],
+    "gap": "Star hub module.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-GCP-8056"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8059",
+    "status": "PARTIAL",
+    "current": "connectivity module defines Cloud Router, Partner Interconnect attachment and HA VPN fallback (enable_partner_interconnect = true in dev); execution node has a separate venue firewall path.",
+    "evidence": [
+      "infrastructure/terraform/modules/connectivity/main.tf:59,92,191,204",
+      "infrastructure/environments/dev/terraform.tfvars:265",
+      "infrastructure/terraform/modules/execution-node/main.tf:628 venue firewall"
+    ],
+    "gap": "An ordered circuit (external action) and a venue that supports private connectivity.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "Ordering an Interconnect circuit and contracting a venue are external actions",
+    "verification": "terraform test in modules/connectivity",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8060",
+    "status": "PARTIAL",
+    "current": "Restricted-VIP private DNS zones on the networks; subnets set private_ip_google_access; PSC endpoint for Google APIs exists but gated off.",
+    "evidence": [
+      "infrastructure/terraform/modules/network/main.tf:213-241 restricted VIP zone",
+      "infrastructure/terraform/modules/execution-node/main.tf:122 subnet",
+      "infrastructure/terraform/modules/connectivity/main.tf:133-149 PSC google_apis"
+    ],
+    "gap": "Enable PSC; prove archiver/fabric reach GCS privately once wired.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8061",
+    "status": "PARTIAL",
+    "current": "Every Cloud NAT translates named subnets to reserved addresses with logging (tested); Envoy egress proxy sidecar for api/deepbrain; execution node has its own NAT and venue firewall. No Secure Web Proxy; no separate crawler identity.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:163 every_cloud_nat_translates_named_subnets_to_a_reserved_address_in_its_own_region_and_logs_it",
+      "infrastructure/egress/envoy.yaml",
+      "backend/crates/tests/qip-acceptance/tests/egress.rs"
+    ],
+    "gap": "Dedicated crawler/agent egress identity and domain policy evidence.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement --test egress",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-8062",
+    "status": "PARTIAL",
+    "current": "Execution node has no external address (tested) and SSH ingress only from the IAP range; no PAM entitlements or workforce identity pool in Terraform.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:662 the_execution_node_has_no_external_address_and_no_container_runtime",
+      "infrastructure/terraform/modules/execution-node/main.tf:683 iap_ssh firewall"
+    ],
+    "gap": "PAM entitlements / temporary grants and audit.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8063",
+    "status": "PARTIAL",
+    "current": "Template sets GVNIC and TIER_1 and consumes a specific reservation; machine_type also admits C3/C3D; no node declared.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/main.tf:411,424 GVNIC/TIER_1",
+      "infrastructure/terraform/modules/execution-node/variables.tf:138-150"
+    ],
+    "gap": "Restrict to C4/C4D; shard-sizing record; declare a node.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform test modules/execution-node",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8064",
+    "status": "PARTIAL",
+    "current": "Startup template writes a systemd unit; acceptance tests prove no container runtime, exact bake contents and shielded boot. Not deployed.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:41 systemd unit",
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:662,823",
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:460"
+    ],
+    "gap": "Deployment (execution_nodes = {} in every environment tfvars).",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8065",
+    "status": "PARTIAL",
+    "current": "Startup script refuses to start without isolcpus, with swap, or short of huge pages; unit sets CPUAffinity and LimitMEMLOCK=infinity. The binary never calls mlockall (no libc); no IRQ/RPS/XPS tuning; no local SSD.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:67,74,84 refusals",
+      "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl:352,367 CPUAffinity, LimitMEMLOCK"
+    ],
+    "gap": "mlockall (needs a syscall path: libc is a new dependency, or an ADR), IRQ/RPS/XPS, scratch SSD.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "mlockall without libc needs an ADR (ADR 0002)",
+    "verification": "inspection of startup template + node boot log",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8066",
+    "status": "MISSING",
+    "current": "No replay-based host tuning benchmark found.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/replay.rs (cell replay, not host tuning)"
+    ],
+    "gap": "Replay benchmark harness on the node image.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "benchmark record",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8067",
+    "status": "PARTIAL",
+    "current": "Cell holds books, features, envelope and sequence in memory. The node ships the journal to a qip-storage StoreMirror; the edge-node event_fabric spool/drain/writer exists and is tested but assemble/main never construct it.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs",
+      "backend/crates/apps/qip-edge-node/src/mirror.rs",
+      "backend/crates/apps/qip-edge-node/src/event_fabric/writer.rs",
+      "backend/crates/apps/qip-edge-node/src/lib.rs:140-200 assemble without event_fabric"
+    ],
+    "gap": "Construct the fabric writer/drain in main and ship to qip-fabricd.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8004"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test event_fabric_outbox",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-8068",
+    "status": "BLOCKED",
+    "current": "The node places through NodeGateway onto the simulated exchange (qip-brokers); QIP_VENUE_FEED other than simulated stops the process.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/src/gateway.rs",
+      "backend/crates/apps/qip-edge-node/src/feed.rs (simulated feed only)"
+    ],
+    "gap": "Sandbox FIX/WebSocket adapter with pre-allocated buffers.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0003 paper-trading only; venue sessions are external actions",
+    "verification": "sandbox integration test",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8069",
+    "status": "PARTIAL",
+    "current": "Terraform declares a standby template, subnet, placement and health check (tested). No Rust fencing-epoch or session-ownership logic exists for node takeover.",
+    "evidence": [
+      "infrastructure/terraform/modules/execution-node/main.tf:726-800 standby",
+      "infrastructure/terraform/modules/execution-node/tests/standby.tftest.hcl"
+    ],
+    "gap": "Fencing token/lease implementation in qip-edge-node with property test; activation procedure.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "property test over takeover interleavings",
+    "work_item": "",
+    "size": "L",
+    "notes": "Terraform comment says the standby 'monitors the primary's liveness via a fencing token'; no code implements a fencing token."
+  },
+  {
+    "id": "R12-REFLEX-8070",
+    "status": "PARTIAL",
+    "current": "Policy payloads are HMAC-verified (VerifiedPolicy) and applied by atomic swap with sequence discipline; strategy plans compile off-thread and activate at a pass boundary via Handoff. No bundle download, KMS signature, staging or health-check of model bundles.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:2636 apply_policy",
+      "backend/crates/apps/qip-edge-node/src/control.rs:1-40,311-356 PlanCompiler/activate",
+      "backend/crates/tests/qip-acceptance/tests/fabric_package_announcements.rs"
+    ],
+    "gap": "Bundle fetch + manifest verify (KMS-backed key), staging and health-check before activation.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test policy_rollback; new bundle activation test",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8071",
+    "status": "PARTIAL",
+    "current": "Cell::roll_back_policy keeps the previous payload and is tested, but no production caller (node control path) invokes it.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:2773 roll_back_policy",
+      "backend/crates/edge/qip-edge/tests/policy_rollback.rs:63 a_rollback_restores_the_previous_payload_without_a_fetch_and_the_rolled_away_one_cannot_return"
+    ],
+    "gap": "Wire a rollback control (halt-wire-like) in qip-edge-node.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test policy_rollback",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-8072",
+    "status": "COMPLETE",
+    "current": "Narrowing multipliers step down as inputs age and the cell refuses under envelope_expiry; tested through assemble + run_pass, which main calls.",
+    "evidence": [
+      "backend/crates/apps/qip-edge-node/tests/degraded.rs:380 a_cut_off_cells_orders_shrink_a_step_as_each_input_ages_and_stop_when_its_envelope_expires",
+      "backend/crates/edge/qip-edge/src/cell.rs:2543 narrowing"
+    ],
+    "gap": "None in code; not deployed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge-node --test degraded",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8073",
+    "status": "PARTIAL",
+    "current": "qip-fabricd serves produce/fetch/metadata/admin routes over blocking HTTP/1.1, with keyed partition routing; no replication.",
+    "evidence": [
+      "backend/crates/apps/qip-fabricd/src/lib.rs:331-356",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:479-503 produce/produce_to",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:655 a_restarted_broker_replays_every_durable_class_byte_for_byte_and_a_restarted_producer_continues"
+    ],
+    "gap": "Journal replication to followers.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8086"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-fabricd --test broker",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8074",
+    "status": "PARTIAL",
+    "current": "Fixed per-request ceiling (8 MiB + 4 KiB) and server connection limits; catalogue read bounded. No pooled allocator and no test of the request ceiling found in this slice.",
+    "evidence": [
+      "backend/crates/apps/qip-fabricd/src/lib.rs:70-75 MAXIMUM_REQUEST_BYTES",
+      "backend/crates/libs/qip-transport/src/server.rs ServerLimits"
+    ],
+    "gap": "Test that an oversize request is refused and memory stays bounded under load.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-fabricd",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8075",
+    "status": "MISSING",
+    "current": "Leader epoch persisted locally per broker; no membership, partition map service or leases. leader_for (rendezvous) is called only from tests.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:69 next_leader_epoch",
+      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:140 leader_for (tests only)"
+    ],
+    "gap": "Metadata service and quorum.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "Raft crate needs an ADR (ADR 0002/0009); ADR 0100 C2",
+    "verification": "property test over meta node loss",
+    "work_item": "",
+    "size": "XL",
+    "notes": "event_fabric_infrastructure.rs:9 fabric_065 is a fixture-only test."
+  },
+  {
+    "id": "R12-FABRIC-8076",
+    "status": "PARTIAL",
+    "current": "qip-transport event_fabric Producer/Consumer: epoch init, sequenced sends, ack-profile wait, credit-bounded fetch, breaker; tested against fabricd. No production process uses it (edge-node fabric writer unwired; ledgerd consumer is a placeholder).",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:291-396",
+      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:112 fetch_credit_bytes",
+      "backend/crates/libs/qip-transport/tests/event_fabric_client.rs"
+    ],
+    "gap": "A production caller; zero-copy buffers.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-transport --test event_fabric_client",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8077",
+    "status": "PARTIAL",
+    "current": "SchemaId is a content fingerprint of a type's shape; compatibility test refuses unbumped changes; broker refuses unregistered schemas; CI runs the schema-gate lock diff.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/schema_id.rs:124 SchemaId",
+      "backend/crates/libs/qip-events/tests/schema_compat.rs:54 removing_renaming_or_retyping_a_field_without_a_version_bump_is_refused_and_a_defaulted_addition_is_admitted",
+      ".github/workflows/ci.yml:94 event-fabric schema-gate",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:318"
+    ],
+    "gap": "Protobuf wire schema (blocked) — otherwise registry is per-broker and per-batch class, not per topic body.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "prost/protobuf requires an ADR (ADR 0002/0009)",
+    "verification": "cargo test -p qip-events --test schema_compat",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8078",
+    "status": "MISSING",
+    "current": "Mirroring is a declared stream policy value; no mirror process.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:143 Mirroring"
+    ],
+    "gap": "Mirror worker.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "integration test with two brokers",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8079",
+    "status": "PARTIAL",
+    "current": "Archiver writes content-addressed segments with manifest and verifies round-trip; ArchiveReader hydrates and verifies — but only tests construct ArchiveReader, and fabricd archives to a local FileBlobStore.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/segment/archive.rs:355 archive, :540-578 ArchiveReader/hydrate",
+      "backend/crates/libs/qip-storage/tests/segment_archive.rs:507 manifest-verify mutation test",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1057 sealed_segments_are_archived_exactly_once_and_a_stalled_archive_never_delays_an_append"
+    ],
+    "gap": "Fetch path that hydrates from the archive; GCS archive target.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-storage --test segment_archive",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8080",
+    "status": "MISSING",
+    "current": "No fabric sink exists; consumer groups and offsets are available in the broker.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1001 commit_offset"
+    ],
+    "gap": "Sink workers per destination.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-DATA-8016"
+    ],
+    "blocked_by": "",
+    "verification": "integration test",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8081",
+    "status": "PARTIAL",
+    "current": "qip CLI 'event-fabric isolate/release/inspect/grant/schema-gate' with operator attribution over a bearer token, loopback only; topics come from the catalogue file. No quota/retention change, partition move or drain; no mTLS/IAM.",
+    "evidence": [
+      "backend/crates/apps/qip-cli/src/event_fabric/admin.rs:1-28",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:699,735 isolate/release",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:939 an_operator_isolates_one_partition_and_only_that_partition_refuses_produce_until_released"
+    ],
+    "gap": "Remaining admin verbs; mTLS/IAM binding.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "mTLS blocked (ADR 0009, ADR 0100 C2)",
+    "verification": "cargo test -p qip-fabricd --test broker",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-OBS-8082",
+    "status": "PARTIAL",
+    "current": "fabricd serves health and Prometheus metrics on a separate listener; a test stops the data plane and health still reports. No traces; not OTel.",
+    "evidence": [
+      "backend/crates/apps/qip-fabricd/src/health.rs",
+      "backend/crates/apps/qip-fabricd/src/telemetry.rs",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1184 health_and_metrics_keep_answering_and_report_the_outage_when_the_data_plane_stops"
+    ],
+    "gap": "Traces; OTel export; a deployed scraper.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-fabricd --test broker",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8083",
+    "status": "BLOCKED",
+    "current": "Fabric speaks plaintext HTTP/1.1 over TCP with bearer tokens; FabricTransport is a swap seam.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/event_fabric/transport.rs:1-10 HttpTransport is the only implementation",
+      "backend/crates/libs/qip-transport/src/event_fabric/auth.rs:11 'The fabric runs over plaintext TCP'"
+    ],
+    "gap": "QUIC/TLS transport behind the FabricTransport seam.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0002/0009 (no TLS/QUIC crate), ADR 0100 conflict C2",
+    "verification": "integration test refusing plaintext",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8084",
+    "status": "PARTIAL",
+    "current": "Batch header carries magic, version, message type, schema id/version, flags, producer id/epoch, base sequence, base offset, leader epoch, logical timestamp, previous-batch hash; records carry event id, trace id, source ts, length, CRC32C. Partition is not in the frame.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/codec.rs:12-24 field table, :324-339 Batch",
+      "backend/crates/libs/qip-events/src/event_fabric/crc32c.rs:47",
+      "backend/crates/libs/qip-events/tests/event_fabric_codec.rs"
+    ],
+    "gap": "Partition field in the header (or ADR stating the route carries it).",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-events --test event_fabric_codec",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8085",
+    "status": "PARTIAL",
+    "current": "Keyed partitioning is used by Broker::produce and property-tested; rendezvous leader_for exists but only tests call it; no followers.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/event_fabric/partition.rs:109 partition_for, :140 leader_for",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:480 for_any_interleaving_of_keys_every_key_stays_in_one_partition_and_in_produce_order",
+      "backend/crates/services/qip-streaming/tests/event_fabric_leader.rs"
+    ],
+    "gap": "Leader placement in a multi-broker cluster; replication.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8075"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-streaming --test event_fabric_broker",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8086",
+    "status": "INCORRECT",
+    "current": "Single broker, RF1. AckProfile::Quorum is implemented as 'the batch's segment has been archived' (archived_through) — and fabricd archives to a local directory — so a 'quorum' ack can be returned with one copy on one machine's disks.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/event_fabric/producer.rs:396 await_ack_profile; :700 test equating quorum with archived",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:354 FileBlobStore archive",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16 RF1"
+    ],
+    "gap": "Replication with majority acknowledgement; rename or redefine the current profile until then.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0100 §3 RF1 decision pending conflict C2",
+    "verification": "property test killing replicas",
+    "work_item": "",
+    "size": "XL",
+    "notes": "The 'Quorum' name contradicts the blueprint's definition; acceptance tests event_fabric_stream_classes.rs and event_fabric_delivery_semantics.rs:156 assert on local fixture structs and would pass with no fabric at all."
+  },
+  {
+    "id": "R12-FABRIC-8087",
+    "status": "COMPLETE",
+    "current": "Producer table fences stale epochs and dedupes sequences (property tests); committed offsets survive restart and replay is byte-identical; exercised through fabricd's composition root.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/tests/event_fabric_producer.rs:265 for_any_schedule_a_resumed_superseded_producer_never_appends_after_its_successors_first_append",
+      "backend/crates/services/qip-streaming/tests/event_fabric_broker.rs:583,764",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1338 random_produce_fetch_and_restart_sequences_keep_offsets_dense_and_fetches_in_append_order"
+    ],
+    "gap": "None for the fabric semantics; not deployed. Financial consumer idempotency tracked in R12-LEDGER-8024.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-streaming; cargo test -p qip-fabricd --test broker",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8088",
+    "status": "COMPLETE",
+    "current": "A batch is one CRC-protected frame appended whole; recovery truncates torn tails to whole batches (property test); the broker exposes no multi-partition append.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/tests/segment.rs:243 a_segment_truncated_at_every_byte_of_its_last_batch_recovers_whole_batches_only",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:503 produce_to (single partition)"
+    ],
+    "gap": "None.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-storage --test segment",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8089",
+    "status": "PARTIAL",
+    "current": "Consumer fetch credit, per-producer byte/message quotas, lag-limit refusal and per-class overload policy exist in the broker. No cross-class priority scheduler proving P4 is shed before P0/P1 starve.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1074 refuse_when_a_group_lags, :1105 charge_quota",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:153 OverloadPolicy",
+      "backend/crates/libs/qip-transport/src/event_fabric/consumer.rs:112"
+    ],
+    "gap": "Priority-aware admission and an overload test across classes.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "new overload integration test against fabricd",
+    "work_item": "",
+    "size": "M",
+    "notes": "event_fabric_infrastructure.rs:170 fabric_080 is a fixture test."
+  },
+  {
+    "id": "R12-FABRIC-8090",
+    "status": "PARTIAL",
+    "current": "CI runs the schema-gate lock diff; broker refuses unregistered schema ids. Runtime registration registers only the per-class batch schema, not per-topic body schemas.",
+    "evidence": [
+      ".github/workflows/ci.yml:94",
+      "backend/crates/apps/qip-cli/src/event_fabric/schema_gate.rs:124 judge",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:870 an_unregistered_schema_is_refused_before_any_consumer_can_fetch_it"
+    ],
+    "gap": "Per-topic body schema registration at runtime.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-fabricd --test broker",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8091",
+    "status": "PARTIAL",
+    "current": "P0 ack floor Quorum; control stream accepts no write below latest epoch (property test); edge verifies HMAC-signed policy/halt payloads. RF1 and local archive only.",
+    "evidence": [
+      "backend/crates/services/qip-streaming/tests/event_fabric_control_fencing.rs:286",
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:76",
+      "backend/crates/edge/qip-edge/src/cell.rs:2636"
+    ],
+    "gap": "RF3 quorum; GCS archive.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8086"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-streaming --test event_fabric_control_fencing",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8092",
+    "status": "PARTIAL",
+    "current": "P1 ack floor Quorum and producer dedupe exist; ledgerd's consumer is a placeholder so no ledger sink retries anything.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:23-36",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:36-42"
+    ],
+    "gap": "Ledger sink with indefinite retry; RF3; immutable GCS archive.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8134",
+      "R12-FABRIC-8086"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-ledgerd",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8093",
+    "status": "PARTIAL",
+    "current": "Class declared (LeaderOnly floor, explicit Gap if shed); RF1; no mirror; local archive.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:30-31,82"
+    ],
+    "gap": "RF3, tiered retention, GCS archive, mirror throttling.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8078"
+    ],
+    "blocked_by": "",
+    "verification": "integration test",
+    "work_item": "",
+    "size": "L",
+    "notes": "Blueprint asks RF3 regional quorum for P2; code floor is LeaderOnly."
+  },
+  {
+    "id": "R12-FABRIC-8094",
+    "status": "PARTIAL",
+    "current": "Class declared with LeaderOnly floor and backlog-by-declaration (lag refusal skips it); RF1.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:32-33",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:1067-1074"
+    ],
+    "gap": "Configurable RF; consumer scaling.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-streaming",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8095",
+    "status": "PARTIAL",
+    "current": "P4 ack floor None and shed-first declared; fabricd health served directly. No drop-oldest proof.",
+    "evidence": [
+      "backend/crates/libs/qip-events/src/event_fabric/policy.rs:34-35,84",
+      "backend/crates/apps/qip-fabricd/tests/broker.rs:1184"
+    ],
+    "gap": "Drop-oldest behaviour under pressure, tested.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "new pressure test",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8096",
+    "status": "PARTIAL",
+    "current": "Broker module caps broker_count at 1 and is not instantiated by the root module.",
+    "evidence": [
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16-20"
+    ],
+    "gap": "Multi-broker group across zones; root instantiation.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8086"
+    ],
+    "blocked_by": "RF3 blocked on ADR 0100 C2",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8097",
+    "status": "PARTIAL",
+    "current": "Boot disk type defaults to hyperdisk-balanced; a journal device variable is passed to the startup script; no separate journal disk resource; module not instantiated.",
+    "evidence": [
+      "infrastructure/terraform/modules/event-fabric-broker/variables.tf (disk_type default hyperdisk-balanced)",
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:37-47"
+    ],
+    "gap": "Dedicated Hyperdisk journal with throughput sizing.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": "event_fabric_infrastructure.rs:218 fabric_085 asserts a hand-built struct, not Terraform."
+  },
+  {
+    "id": "R12-FABRIC-8098",
+    "status": "PARTIAL",
+    "current": "Module declares A and SRV records; broker answers per-partition metadata but no cluster map; module not instantiated.",
+    "evidence": [
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:86-112",
+      "backend/crates/services/qip-streaming/src/event_fabric/broker.rs:976 metadata"
+    ],
+    "gap": "Partition/broker map; client bootstrap from SRV.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8075"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan + client test",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8099",
+    "status": "PARTIAL",
+    "current": "Template has no access_config and internal-only tag; addresses are an input variable, not reserved resources; no NCC.",
+    "evidence": [
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:48-56,66"
+    ],
+    "gap": "Reserved internal addresses; NCC export.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-GCP-8057"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-8100",
+    "status": "MISSING",
+    "current": "Fabric identity is a bearer token from an identities file; policy/envelope keys are HMAC secrets mounted from Secret Manager; KMS used for data-at-rest keys only.",
+    "evidence": [
+      "backend/crates/libs/qip-transport/src/event_fabric/auth.rs:1-79",
+      "infrastructure/terraform/modules/execution-node/main.tf:228 capital_envelope_key secret"
+    ],
+    "gap": "CAS issuance, mTLS verification, KMS-backed signing.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "mTLS needs a TLS stack (ADR 0009); asymmetric signing is an ADR 0043 gap",
+    "verification": "integration test",
+    "work_item": "",
+    "size": "XL",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8101",
+    "status": "PARTIAL",
+    "current": "Content-addressed keys (blob_key) and manifest exist; fabricd always archives to a local FileBlobStore; CloudStorageBlobStore exists but is not wired; no landing bucket.",
+    "evidence": [
+      "backend/crates/libs/qip-storage/src/segment/archive.rs:87 blob_key",
+      "backend/crates/apps/qip-fabricd/src/lib.rs:354",
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs:388"
+    ],
+    "gap": "GCS archive configuration in fabricd; landing bucket + lifecycle.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-storage --test segment_archive",
+    "work_item": "",
+    "size": "M",
+    "notes": "event_fabric_infrastructure.rs:263 fabric_090 uses DefaultHasher labelled 'blake3' on a literal — it tests nothing."
+  },
+  {
+    "id": "R12-FABRIC-8102",
+    "status": "MISSING",
+    "current": "Single broker; no rebalance.",
+    "evidence": [
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:16"
+    ],
+    "gap": "Partition move tooling.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8075"
+    ],
+    "blocked_by": "",
+    "verification": "integration test",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-RES-8103",
+    "status": "MISSING",
+    "current": "Single broker; template uses create_before_destroy only.",
+    "evidence": [
+      "infrastructure/terraform/modules/event-fabric-broker/main.tf:83-85"
+    ],
+    "gap": "Drain/leadership transfer and upgrade runbook automation.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8086"
+    ],
+    "blocked_by": "",
+    "verification": "game day",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8104",
+    "status": "BLOCKED",
+    "current": "Portfolio logic runs inside qip-kernel composed in Cloud Run binaries (api/fastbrain/deepbrain); Cloud Run autoscaling; no Spanner/Bigtable backing.",
+    "evidence": [
+      "infrastructure/terraform/catalogue.tf:694",
+      "backend/crates/services/qip-portfolio-engine/src"
+    ],
+    "gap": "Intent partly met on Cloud Run; managed-store backing missing.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8105",
+    "status": "BLOCKED",
+    "current": "qip-capital and the kernel issue signed envelopes/grants carried to cells; authoritative capital state in kernel ledger; runs in Cloud Run binaries.",
+    "evidence": [
+      "backend/crates/services/qip-capital/src",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1138 no_edge_cell_can_issue_its_own_capital_or_promote_its_own_strategy"
+    ],
+    "gap": "Placement per ADR 0024; authoritative store per R12-LEDGER-8007.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8106",
+    "status": "BLOCKED",
+    "current": "Kernel central plane builds policy payloads/envelopes; qip-risk-engine computes stress; composed in Cloud Run brains.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs",
+      "backend/crates/services/qip-risk-engine/src"
+    ],
+    "gap": "Placement per ADR 0024.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-8107",
+    "status": "COMPLETE",
+    "current": "Cell::work refuses an order exceeding its verified envelope under the capital gate, in process; edge crates cannot reach a model or remote risk service.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/tests/cell.rs:241 a_strategy_order_larger_than_its_envelope_allows_sends_nothing_and_is_refused_under_the_capital_gate",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:716",
+      "backend/crates/apps/qip-edge-node/src/pass.rs run_pass"
+    ],
+    "gap": "None; not deployed.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test cell",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-EVID-8108",
+    "status": "BLOCKED",
+    "current": "Source quality/legal/freshness scoring lives in qip-data-finder and kernel source_lifecycle in-process; no Spanner Graph/BigQuery backing.",
+    "evidence": [
+      "backend/crates/services/qip-data-finder/src/freshness.rs",
+      "backend/crates/runtime/qip-kernel/src/source_lifecycle.rs"
+    ],
+    "gap": "Persistent store; continuous service.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-FABRIC-8109",
+    "status": "BLOCKED",
+    "current": "No sinks exist.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/event_fabric_infrastructure.rs:332 fabric_095 (fixture-only)"
+    ],
+    "gap": "Sinks (R12-FABRIC-8080) and a placement (e.g. dedicated Cloud Run services or VMs).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": "fabric_095 asserts hand-built structs; it tests nothing."
+  },
+  {
+    "id": "R12-TICK-8110",
+    "status": "BLOCKED",
+    "current": "Replay and counterfactual scoring run in-process (kernel session_replay, score_declined/score_filled; edge-node replay.rs); no batch sharding.",
+    "evidence": [
+      "backend/crates/runtime/qip-kernel/src/session_replay.rs",
+      "backend/crates/apps/qip-edge-node/src/replay.rs"
+    ],
+    "gap": "Batch job runner (Cloud Run jobs would satisfy intent).",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-REASON-8111",
+    "status": "BLOCKED",
+    "current": "qip-reasoning-engine/qip-quantum exist in-process; edge crates are structurally barred from reaching solvers.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1430 no_edge_cell_can_reach_a_quantum_solver",
+      "backend/crates/services/qip-reasoning-engine/src"
+    ],
+    "gap": "Placement per ADR 0024; Z3/OR-Tools would be non-Rust dependencies.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": "The no-hot-path half is met structurally."
+  },
+  {
+    "id": "R12-DATA-8112",
+    "status": "PARTIAL",
+    "current": "Ingestion runs inside the deepbrain/api Cloud Run services behind an Envoy egress sidecar; trading runs only on the execution node with a distinct identity. No dedicated scout job/identity.",
+    "evidence": [
+      "infrastructure/terraform/modules/egress-proxy/main.tf",
+      "infrastructure/terraform/modules/execution-node/main.tf:202 node service account"
+    ],
+    "gap": "Separate scout Cloud Run job with own SA and quotas.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-API-8113",
+    "status": "PARTIAL",
+    "current": "Cloud Run services are internal-ingress only (tested); no internal ALB or mTLS.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569"
+    ],
+    "gap": "Internal ALB or IAM-authenticated invocation between services.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "mTLS needs a TLS stack (ADR 0009)",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8114",
+    "status": "COMPLETE",
+    "current": "Venue credential is readable only by the execution node and only where the ceiling allows; Cloud Run services are internal and hold no venue path; order placement exists only in the edge cell.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:258 the_venue_credential_is_unreadable_where_live_trading_is_impossible",
+      "infrastructure/terraform/modules/execution-node/main.tf:238 venue_credential IAM",
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1103 only_the_edge_cell_itself_holds_an_order_manager"
+    ],
+    "gap": "None.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure --test architecture",
+    "work_item": "",
+    "size": "S",
+    "notes": "Warm plane on Cloud Run is broader than 'burst endpoints' — ADR 0024 puts every warm binary there."
+  },
+  {
+    "id": "R12-GCP-8115",
+    "status": "BLOCKED",
+    "current": "Only the GitOps Autopilot cluster exists (regional location, Autopilot not Standard).",
+    "evidence": [
+      "infrastructure/terraform/modules/gitops-control-plane/main.tf (location = var.region, enable_autopilot = true)"
+    ],
+    "gap": "Per ADR 0024 Cloud Run is regional; intent met for warm services.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8116",
+    "status": "BLOCKED",
+    "current": "No service-plane cluster; Cloud Run services have per-service limits.",
+    "evidence": [
+      "infrastructure/terraform/modules/cloudrun/main.tf"
+    ],
+    "gap": "Per ADR 0024: per-service concurrency/max-instance budgets as the equivalent.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "ADR 0024 (Cloud Run + one Compute Engine node per region; no Kubernetes runtime)",
+    "verification": "inspection of catalogue.tf and the binary's composition",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-CICD-8117",
+    "status": "PARTIAL",
+    "current": "Argo CD and Kargo are vendored and bootstrapped with per-environment overlays; Config Connector instead of Config Sync; no Argo Rollouts.",
+    "evidence": [
+      "infrastructure/gitops/bootstrap/argocd/upstream/install.yaml",
+      "infrastructure/gitops/bootstrap/kargo/upstream/install.yaml",
+      "infrastructure/gitops/kargo/overlays"
+    ],
+    "gap": "Config Sync (or ADR for Config Connector), Argo Rollouts or Cloud Run traffic-split equivalent.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "inspection of gitops bootstrap",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-SEC-8118",
+    "status": "COMPLETE",
+    "current": "Cloud Run services mount secrets as files, never env (tested); org policies refuse SA key creation and upload; WIF for CI.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/infrastructure.rs:569",
+      "infrastructure/terraform/main.tf:1327,1342"
+    ],
+    "gap": "None for Cloud Run; GKE half moot under ADR 0024.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test infrastructure",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-GCP-8119",
+    "status": "PARTIAL",
+    "current": "No mesh anywhere; execution nodes refused behind LB/mesh; in-tree client has explicit timeouts and breaker. No mTLS.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/gcp_placement.rs:277",
+      "backend/crates/libs/qip-transport/src/breaker.rs",
+      "backend/crates/libs/qip-transport/tests/breaker.rs"
+    ],
+    "gap": "mTLS between warm services.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "mTLS needs a TLS stack (ADR 0009)",
+    "verification": "cargo test -p qip-acceptance --test gcp_placement",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8120",
+    "status": "PARTIAL",
+    "current": "Egress proxy, ingestion connectors, provenance/quality on records and manifests exist; no transient scout worker stage, cursor tracking, or graph/Bigtable write.",
+    "evidence": [
+      "backend/crates/services/qip-market-ingestion/src/connector/manifest.rs:798",
+      "backend/crates/libs/qip-financial/src/manifest.rs:63",
+      "backend/crates/services/qip-streaming/src/provenance.rs"
+    ],
+    "gap": "End-to-end pipeline with cursor and knowledge-delta output.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-DATA-8013",
+      "R12-DATA-8015"
+    ],
+    "blocked_by": "",
+    "verification": "integration test with fixture source",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8121",
+    "status": "PARTIAL",
+    "current": "No raw-lake resource exists in Terraform; no automated check refuses one.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:117 archive (tick/internal)"
+    ],
+    "gap": "Acceptance guard.",
+    "implemented": true,
+    "tested": false,
+    "integrated": true,
+    "deployable": true,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "acceptance scan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8122",
+    "status": "PARTIAL",
+    "current": "In-memory bounded state (feature DAG, kernel) exists; Bigtable absent.",
+    "evidence": [
+      "backend/crates/edge/qip-feature-dag/src",
+      "backend/crates/libs/qip-storage/src/provider.rs:441"
+    ],
+    "gap": "Bigtable tier.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-DATA-8016"
+    ],
+    "blocked_by": "",
+    "verification": "integration test",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8123",
+    "status": "PARTIAL",
+    "current": "qip-mesh BigQueryWarehouse writes derived rows; dataset gated off; no schema check against document bodies.",
+    "evidence": [
+      "backend/crates/services/qip-mesh/src/bigquery.rs",
+      "backend/crates/services/qip-mesh/tests/bigquery.rs",
+      "infrastructure/terraform/modules/data/main.tf:85"
+    ],
+    "gap": "Enable dataset; schema guard.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-mesh --test bigquery",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8124",
+    "status": "PARTIAL",
+    "current": "No landing bucket; fabric archives to local disk; CloudStorageBlobStore unwired.",
+    "evidence": [
+      "backend/crates/apps/qip-fabricd/src/lib.rs:354",
+      "backend/crates/libs/qip-storage/src/gcp/storage.rs:388"
+    ],
+    "gap": "Bucket + fabricd GCS config.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8101"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan + fabricd integration",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8125",
+    "status": "PARTIAL",
+    "current": "Archive and evidence buckets declare locked retention and versioning; archive gated off, evidence module instantiated.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:130-146 versioning + retention_policy is_locked",
+      "infrastructure/terraform/modules/evidence/main.tf:58"
+    ],
+    "gap": "Enable archive; lifecycle copy from landing.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8126",
+    "status": "PARTIAL",
+    "current": "One autoscaled cluster declared (gated); no app profile; no sink.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:322-347"
+    ],
+    "gap": "Second cluster, app profiles, sink.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8080"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8127",
+    "status": "PARTIAL",
+    "current": "Edge crates cannot reach the BigQuery adapter (tested); no fabric sink or batch load.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:967"
+    ],
+    "gap": "Sink/batch loader.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-FABRIC-8080"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8128",
+    "status": "MISSING",
+    "current": "No Dataplex/Knowledge Catalog resources or code.",
+    "evidence": [
+      "infrastructure/terraform (no google_dataplex_*)"
+    ],
+    "gap": "Catalog registration.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-WORLD-8129",
+    "status": "PARTIAL",
+    "current": "World model in-process; edge crates barred from history/world-model crates (tested). No Spanner Graph writer.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:758 (qip-world-model in READERS)",
+      "backend/crates/services/qip-world-model/src"
+    ],
+    "gap": "Spanner Graph writer.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-DATA-8015"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8130",
+    "status": "PARTIAL",
+    "current": "AlloyDB cluster declared (gated); Rust provider refuses AlloyDB.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:268-320",
+      "backend/crates/libs/qip-storage/src/provider.rs:379"
+    ],
+    "gap": "Adapter (needs Postgres wire + TLS) and workflow schema.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "integration test",
+    "work_item": "",
+    "size": "L",
+    "notes": ""
+  },
+  {
+    "id": "R12-DATA-8131",
+    "status": "MISSING",
+    "current": "No Dataflow/Dataproc resources or jobs.",
+    "evidence": [
+      "infrastructure/terraform (no google_dataflow_*)"
+    ],
+    "gap": "Batch reprocessing approach (Rust batch on Cloud Run jobs would meet intent).",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "inspection",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8132",
+    "status": "PARTIAL",
+    "current": "google_spanner_instance with multi-region config nam-eur-asea, 100 PU, no edition attribute; gated off.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:380-395"
+    ],
+    "gap": "edition = ENTERPRISE_PLUS, enable, adapter.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8133",
+    "status": "PARTIAL",
+    "current": "One Spanner instance 'global' with a 'positions' database; no graph database.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:380,397"
+    ],
+    "gap": "Ledger instance + separate graph instance.",
+    "implemented": true,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8134",
+    "status": "PARTIAL",
+    "current": "LedgerStore::apply does one atomic batch with double-entry postings and the consumed offset, deduplicating by per-cell chain continuity (sequence + digest) rather than event_id; storage is local DurableStore; qip-ledgerd main never consumes (placeholder) and exits on read-API serve error.",
+    "evidence": [
+      "backend/crates/apps/qip-ledgerd/src/store.rs:1-60 module doc, :372 apply",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:337,430",
+      "backend/crates/apps/qip-ledgerd/src/main.rs:57-70",
+      "backend/crates/apps/qip-ledgerd/src/consumer.rs:36-42"
+    ],
+    "gap": "Real fabric consumer, running read API, Spanner transaction.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8007",
+      "R12-FABRIC-8076"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-ledgerd --test store; process-level test of qip-ledgerd",
+    "work_item": "",
+    "size": "L",
+    "notes": "Dedup by chain continuity is a deliberate deviation from 'keyed by event_id' (red-team M3); record as a design difference."
+  },
+  {
+    "id": "R12-LEDGER-8135",
+    "status": "COMPLETE",
+    "current": "Edge crates cannot reach qip-storage or the ledger; the ledger consumes outcomes downstream.",
+    "evidence": [
+      "backend/crates/tests/qip-acceptance/tests/architecture.rs:967",
+      "backend/crates/edge/qip-edge/Cargo.toml (no qip-storage, no ledger crate)"
+    ],
+    "gap": "None.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-acceptance --test architecture",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8136",
+    "status": "MISSING",
+    "current": "Config literal nam-eur-asea; no default_leader.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:385"
+    ],
+    "gap": "Leader choice + rationale.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8137",
+    "status": "MISSING",
+    "current": "Fixed processing_units = 100; no schema.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf:391"
+    ],
+    "gap": "autoscaling_config; key design.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8138",
+    "status": "MISSING",
+    "current": "No change streams exist; nothing to assess.",
+    "evidence": [
+      "infrastructure/terraform/modules/data/main.tf (no change stream)"
+    ],
+    "gap": "Not applicable until Spanner is used.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8007"
+    ],
+    "blocked_by": "",
+    "verification": "inspection",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8139",
+    "status": "PARTIAL",
+    "current": "Cell::reconcile compares the venue's view with the cell's own book each pass (called from run_pass) and a break trips the kill switch; the centre records breaks/halts from cell reports. Comparison is cell-vs-venue, not ledger-vs-venue, and no fabric event is emitted.",
+    "evidence": [
+      "backend/crates/edge/qip-edge/src/cell.rs:9776 reconcile",
+      "backend/crates/apps/qip-edge-node/src/pass.rs:359",
+      "backend/crates/edge/qip-edge/tests/telemetry.rs:856 a_reconciliation_break_is_counted_and_raises_the_kill_switch_gauge",
+      "backend/crates/runtime/qip-kernel/src/central/plane.rs record_halt"
+    ],
+    "gap": "Ledger-vs-venue reconciliation and P0/P1 break event on the fabric.",
+    "implemented": true,
+    "tested": true,
+    "integrated": true,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8134"
+    ],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-edge --test telemetry",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8140",
+    "status": "MISSING",
+    "current": "No google_spanner_backup_schedule or version_retention_period; backup module covers journal disk snapshots only.",
+    "evidence": [
+      "infrastructure/terraform/modules/backup/main.tf:66 journal_snapshots",
+      "infrastructure/terraform/modules/data/main.tf:397-411"
+    ],
+    "gap": "Backup schedule + PITR.",
+    "implemented": false,
+    "tested": false,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [
+      "R12-LEDGER-8132"
+    ],
+    "blocked_by": "",
+    "verification": "terraform plan",
+    "work_item": "",
+    "size": "S",
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-8141",
+    "status": "PARTIAL",
+    "current": "LedgerStore exports state and signs watermarks (tested); locked buckets exist in Terraform (evidence instantiated, archive gated); nothing writes ledger exports to GCS.",
+    "evidence": [
+      "backend/crates/apps/qip-ledgerd/src/store.rs:864-907 record_watermark/export_state",
+      "backend/crates/apps/qip-ledgerd/tests/store.rs:925,1014",
+      "infrastructure/terraform/modules/evidence/main.tf:58"
+    ],
+    "gap": "Export job to a locked bucket; reconstruction test from export.",
+    "implemented": true,
+    "tested": true,
+    "integrated": false,
+    "deployable": false,
+    "e2e": false,
+    "depends_on": [],
+    "blocked_by": "",
+    "verification": "cargo test -p qip-ledgerd --test store",
+    "work_item": "",
+    "size": "M",
+    "notes": ""
+  }
+]
