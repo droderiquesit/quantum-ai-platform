@@ -7,7 +7,6 @@
 //! Each test asserts its premise first — that the platform holds the state
 //! the detector reads — so an empty platform cannot pass for a quiet one.
 
-use qip_contracts::ambient::AcquisitionStatus;
 use qip_core::{Clock, Context, Decimal, Duration, ManualClock, ObjectId, Timestamp};
 use qip_deepbrain::config::DeepBrainConfig;
 use qip_deepbrain::node::{self, Loops};
@@ -124,13 +123,22 @@ fn an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_att
         1,
         "the mesh's output is an advisory"
     );
-    // Full uncertainty, no economic value, against a 2000 bp acquisition:
-    // 4000 - 2000 clears the 1000 bp floor, so the request launches.
-    assert_eq!(round.info_launched, 1);
-    assert!(
-        loop_
-            .info_requests()
-            .all(|r| r.status() == AcquisitionStatus::InProgress)
+    // Full uncertainty and no economic value: the coverage detector measures
+    // no money and states zero. This asserted one launch until lane H made
+    // the Curiosity Engine's rank §9.10's product (R12-AMBIENT-3106,
+    // "zeroing any multiplicative factor zeroes the score"); under the
+    // additive rank it replaced, 4000 - 2000 cleared the floor, so the loop
+    // would pay 2000 bp to resolve an uncertainty no decision's value rides
+    // on. The gap is still research — queued above — and asks for nothing.
+    // `research::tests::a_gap_with_economic_value_launches_on_the_product_rank`
+    // proves a gap that does carry economic value launches, so this zero is
+    // the rank and not a dead path.
+    assert_eq!(round.info_launched, 0, "{round:?}");
+    assert_eq!(round.info_halted, 0, "{round:?}");
+    assert_eq!(
+        loop_.info_requests().count(),
+        0,
+        "a request was recorded for a gap of no economic significance"
     );
     let snapshot = metrics.snapshot();
     assert_eq!(
@@ -173,8 +181,11 @@ fn a_gap_worth_less_than_its_cheapest_observation_launches_no_information_reques
     let round = loop_
         .sweep(&weak, start(), &set(&[]), &set(&["US"]))
         .unwrap_or_else(|e| panic!("{e}"));
-    // Severity 2/3: 6667 bp of uncertainty is worth 2667 against a 2000 bp
-    // acquisition, below the 1000 bp floor once the cost is paid.
+    // Severity 2/3 and, as for every coverage gap, no economic value: the
+    // §9.10 product ranks it zero, below the 1000 bp floor. (Under the
+    // additive rank this read "6667 bp of uncertainty is worth 2667 against a
+    // 2000 bp acquisition"; the arithmetic changed with lane H, the outcome
+    // did not.)
     assert_eq!(round.admissions.get("queued"), Some(&1), "{round:?}");
     assert_eq!(round.info_launched, 0, "{round:?}");
 }

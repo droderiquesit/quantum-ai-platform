@@ -72,6 +72,22 @@ pub const PERSIST_SWEEPS: u32 = 3;
 pub const COVERAGE_FLOOR: f64 = 0.5;
 /// Lowest net value, in basis points, an information request may launch at.
 pub const MIN_VIABLE_BP: u32 = 1_000;
+/// The urgency a gap's information request is ranked at, which this loop
+/// does not measure: no detector here knows a decision's deadline.
+///
+/// The rank is §9.10's product (R12-AMBIENT-3106, `net_value_bp`), so an
+/// unmeasured factor must enter as the product's identity, the full scale,
+/// and not as zero. Zero annihilates: this loop stated urgency as `0` when
+/// the rank was an additive 40/40/20 sum, in which zero is the neutral
+/// contribution, and once the rank became the product that same `0` scored
+/// every request at nothing, so no gap — however significant — could launch
+/// one, and the value-of-information path this file exists to give a caller
+/// had none again. Full scale claims no urgency: it removes time from the
+/// ranking, leaving significance, uncertainty and cost to decide, and the
+/// request's deadline is what still stops an acquisition that runs too long.
+/// A stated zero elsewhere — a detector's economic value — stays zero and
+/// ranks nothing, which is the product working.
+pub const UNMEASURED_URGENCY_BP: u32 = qip_contracts::ambient::MAX_SEVERITY_BP;
 /// The cost of the cheapest discriminating observation the loop has: reading
 /// the next sweep's prices again. Basis points of the decision's value.
 pub const RESWEEP_COST_BP: u32 = 500;
@@ -207,6 +223,29 @@ const fn campaign_str(trigger: TickCampaignTrigger) -> &'static str {
 /// A fraction in `[0, 1]` as basis points. The input is validated upstream
 /// (`GapSignal::validate` refuses a severity outside it); a value outside is
 /// refused here too rather than clamped.
+/// The cheapest observation worth launching for a gap, and the criteria it
+/// is ranked on: re-reading the next sweep when an anomaly raised the gap,
+/// then the class's declared acquisition, each kept only if its §9.10 rank
+/// clears [`MIN_VIABLE_BP`]. `None` is a gap no observation is worth paying
+/// for — including every gap whose economic significance is a stated zero.
+fn cheapest_viable(
+    economic_bp: u32,
+    uncertainty_bp: u32,
+    anomaly_origin: bool,
+    acquisition_bp: u32,
+) -> Option<(&'static str, AcquisitionCriteria)> {
+    let mut options = vec![("acquisition", acquisition_bp)];
+    if anomaly_origin {
+        options.insert(0, ("resweep", RESWEEP_COST_BP));
+    }
+    options.into_iter().find_map(|(source, cost)| {
+        AcquisitionCriteria::new(economic_bp, uncertainty_bp, UNMEASURED_URGENCY_BP, cost)
+            .ok()
+            .filter(|c| c.net_value_bp() >= MIN_VIABLE_BP)
+            .map(|c| (source, c))
+    })
+}
+
 fn basis_points(fraction: f64) -> Result<u32> {
     if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) {
         return Err(Error::invalid(format!(
@@ -718,16 +757,7 @@ impl ResearchLoop {
                 .unwrap_or(u32::MAX)
                 .saturating_mul(1_000)
                 .min(qip_contracts::ambient::MAX_SEVERITY_BP);
-        let mut options = vec![("acquisition", acquisition_bp)];
-        if anomaly_origin {
-            options.insert(0, ("resweep", RESWEEP_COST_BP));
-        }
-        let chosen = options.into_iter().find_map(|(source, cost)| {
-            AcquisitionCriteria::new(economic_bp, severity, 0, cost)
-                .ok()
-                .filter(|c| c.net_value_bp() >= MIN_VIABLE_BP)
-                .map(|c| (source, c))
-        });
+        let chosen = cheapest_viable(economic_bp, severity, anomaly_origin, acquisition_bp);
         let Some((source, criteria)) = chosen else {
             return Ok(());
         };
@@ -771,5 +801,38 @@ const fn class_str(class: qip_contracts::expansion::GapClass) -> &'static str {
         GapClass::Specialist => "specialist",
         GapClass::Execution => "execution",
         GapClass::ComputeQuantumResearch => "compute_quantum_research",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The failure this prevents has happened: the loop stated urgency as
+    /// zero, which was harmless under the additive rank and, once the rank
+    /// became §9.10's product, scored every request at zero — the
+    /// value-of-information path had a caller and could launch nothing. A
+    /// gap with half the decision's value at stake and 80% uncertainty is
+    /// worth the 500 bp re-sweep: 0.5 × 0.8 × 1 × 0.95 = 3800 bp.
+    #[test]
+    fn a_gap_with_economic_value_launches_on_the_product_rank() {
+        let chosen = cheapest_viable(5_000, 8_000, true, 2_000);
+        let (source, criteria) = chosen.expect("a significant, uncertain gap is worth a re-sweep");
+        assert_eq!(
+            source, "resweep",
+            "the cheapest viable observation is the re-sweep"
+        );
+        assert_eq!(criteria.net_value_bp(), 3_800);
+        assert!(criteria.net_value_bp() >= MIN_VIABLE_BP);
+    }
+
+    /// The other half, so the test above is not passing on a rank that
+    /// launches everything: the same gap with no economic significance — what
+    /// every detector that measures no money states — is worth no
+    /// observation at any cost, and neither is one the loop is certain of.
+    #[test]
+    fn a_gap_with_a_zero_factor_launches_nothing_at_any_cost() {
+        assert!(cheapest_viable(0, qip_contracts::ambient::MAX_SEVERITY_BP, true, 0).is_none());
+        assert!(cheapest_viable(qip_contracts::ambient::MAX_SEVERITY_BP, 0, true, 0).is_none());
     }
 }

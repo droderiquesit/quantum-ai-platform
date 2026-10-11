@@ -751,3 +751,76 @@ fn the_regime_fit_work_per_instrument_is_bounded_by_its_stated_budget() {
         RegimeDetector::EM_MAX_ITERATIONS * detector.fit_window
     );
 }
+
+/// Opportunities of exactly equal value are ordered by subject, whatever ids
+/// the context happens to draw.
+///
+/// The failure this prevents has happened: the tie was broken on the
+/// opportunity id, a ULID whose low bits are a draw from the context's
+/// generator, so which of two equally valuable instruments REASON worked first
+/// depended on how many ids earlier stages had drawn that cycle. Journaling
+/// one more record in UNDERSTAND swapped two instruments in the kernel's
+/// queue, and an episode test that relied on the order reasoned about the
+/// wrong one. Several identical series, scanned under two seeds, so an
+/// id-ordered queue would have to match subject order by chance twice.
+#[test]
+fn equally_valuable_opportunities_are_ordered_by_subject_not_by_the_ids_drawn_for_them() {
+    let subjects = ["OBJ-A", "OBJ-B", "OBJ-C", "OBJ-D", "OBJ-E", "OBJ-F"];
+    let mut prices = calm_prices(300, 250);
+    let last = prices[prices.len() - 1];
+    prices.push(last * 0.80);
+    let mut detection = DetectionContext::new(now());
+    for subject in subjects {
+        detection.prices.insert(subject.to_string(), prices.clone());
+    }
+
+    for seed in [11, 9_001] {
+        let (context, _clock) = Context::deterministic(now(), seed);
+        let mut engine = OpportunityEngine::new(
+            DetectorRegistry::standard(),
+            EngineConfig {
+                max_per_cycle: 10,
+                ..EngineConfig::default()
+            },
+        );
+        let opportunities = engine.scan(&detection, &context);
+        // The premise: every subject surfaced and all of them tie exactly,
+        // so nothing but the tie-break can order them.
+        assert_eq!(opportunities.len(), subjects.len(), "seed {seed}");
+        let value = opportunities[0].rank.value_per_cost();
+        assert!(
+            opportunities
+                .iter()
+                .all(|o| o.rank.value_per_cost().to_bits() == value.to_bits()),
+            "seed {seed}: identical series did not rank identically"
+        );
+        // And the ids drawn, read in subject order, are not already sorted:
+        // otherwise an id-ordered queue would equal the subject order and
+        // this seed could not tell the two tie-breaks apart.
+        let ids_by_subject: Vec<_> = subjects
+            .iter()
+            .map(|subject| {
+                opportunities
+                    .iter()
+                    .find(|o| o.affected_entities[0] == *subject)
+                    .map(|o| o.opportunity_id.clone())
+                    .unwrap_or_else(|| panic!("seed {seed}: {subject} did not surface"))
+            })
+            .collect();
+        let mut sorted_ids = ids_by_subject.clone();
+        sorted_ids.sort();
+        assert_ne!(
+            ids_by_subject, sorted_ids,
+            "seed {seed}: the ids were drawn in subject order, so this seed cannot tell the two \
+             tie-breaks apart"
+        );
+        let order: Vec<&str> = opportunities
+            .iter()
+            .map(|o| o.affected_entities[0].as_str())
+            .collect();
+        assert_eq!(
+            order, subjects,
+            "seed {seed}: ties were not broken on subject"
+        );
+    }
+}

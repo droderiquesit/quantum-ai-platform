@@ -3198,31 +3198,77 @@ fn with_the_journal_store_and_the_centre_unreachable_a_node_still_sends_cancels_
     Ok(())
 }
 
+/// The text of `source` from `signature` to the next item at the same
+/// indent — one method's body, so a fragment found in it is in that method
+/// and not merely somewhere in the file.
+fn body_of<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("`{signature}` is not in the scanned file"));
+    let rest = &source[start + signature.len()..];
+    let end = ["\n    fn ", "\n    pub fn ", "\n}\n"]
+        .iter()
+        .filter_map(|next| rest.find(next))
+        .min()
+        .unwrap_or(rest.len());
+    &source[start..start + signature.len() + end]
+}
+
+fn node_source(relative: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+    std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// The signature of the one function that runs the node's pass in
+/// production. Until `670e94c7` that was the serve loop in `main.rs`; the
+/// commit moved it to `scheduler::DecisionLoop::turn` on a thread of its own,
+/// and the source scans below read it there.
+const TURN: &str = "pub fn turn(&mut self, now: Timestamp) -> Result<Turn>";
+
 #[test]
 fn the_binary_reports_a_failed_flush_and_keeps_serving_rather_than_stopping_on_it() {
-    // `main.rs` is a binary no test can call, so this is the narrow claim a
-    // source check can honestly make: the loop that runs the pass takes the
-    // flush's failure as a value and logs it, and does not propagate it. It
-    // cannot prove the pass still runs afterwards; the test above proves that
-    // on the same three calls in the same order.
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
-    let source = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    // The loop is a binary's, so this is the narrow claim a source check can
+    // honestly make: the turn that runs the pass takes the flush's failure as
+    // a value and reports it, and the binary's loop does not stop on a failed
+    // turn. What changed: until `670e94c7` the pass and the flush shared the
+    // serve loop in `main.rs` (`if let Err(error) = cell.flush(mirror, now)`);
+    // that commit moved both into `DecisionLoop::turn`, flushing through the
+    // non-blocking `FabricMirror`, and left `main.rs` a timer around `turn`.
+    // The property is the same and is scanned in both places it now spans.
+    // `tests/decision_loop.rs::a_stalled_journal_store_never_holds_the_decision_thread`
+    // proves the behaviour; this guards the wiring that test cannot reach.
+    let scheduler = node_source("src/scheduler.rs");
+    let turn = body_of(&scheduler, TURN);
     assert!(
-        source.contains("if let Err(error) = cell.flush(mirror, now) {"),
-        "main.rs no longer takes a failed flush as a value to report; a `?` here turns a \
-         storage outage into a trading outage"
+        turn.contains("run_pass("),
+        "the premise: the scan is not reading the turn that runs the pass"
     );
     assert!(
-        !source.contains("cell.flush(mirror, now)?"),
-        "main.rs propagates a failed flush out of the loop that runs the pass"
+        turn.contains("let flushed = match self.cell.flush(&mut self.outbox.mirror, now) {"),
+        "DecisionLoop::turn no longer takes a failed flush as a value to report; a `?` here \
+         turns a storage outage into a trading outage"
+    );
+    assert!(
+        turn.contains("self.refused_flushes = self.refused_flushes.saturating_add(1);"),
+        "a refused flush is no longer counted, so a store outage is invisible to the health body"
+    );
+    assert!(
+        !turn.contains("self.cell.flush(&mut self.outbox.mirror, now)?"),
+        "DecisionLoop::turn propagates a failed flush out of the turn"
+    );
+    let main = node_source("src/main.rs");
+    assert!(
+        main.contains("if let Err(error) = decisions.turn(clock.now()) {"),
+        "main.rs no longer takes a failed turn as a value; a `?` on the loop's turn stops the \
+         node on the first error"
     );
 }
 
 // --- OBS-021: the pass loop's stderr is sampled, not per event --------------
 
 /// Lines the sampler lets through per window in the storm below — the figure
-/// `main.rs` passes to [`PassLog::new`].
+/// `scheduler::DecisionLoop::new` passes to [`PassLog::new`] (it was
+/// `main.rs` until `670e94c7` moved the loop).
 const LINES_PER_WINDOW: u32 = 5;
 
 /// Run `passes` passes inside one nine-second span with the touch walking
@@ -3337,21 +3383,34 @@ fn the_stderr_a_node_writes_in_one_window_is_the_sample_rate_whether_it_held_eig
 /// and matches the two fragments that would each mint a line per event.
 #[test]
 fn the_node_binary_writes_its_per_pass_lines_only_through_the_sampled_pass_log() {
-    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("the node's main.rs is readable");
+    // What changed: until `670e94c7` the loop that ran the pass was
+    // `main.rs`'s serve loop and this scanned that file; the commit moved the
+    // pass into `scheduler::DecisionLoop::turn`. The scan reads the turn, and
+    // the per-event fragments are refused in both files, since either one
+    // could mint a line per event beside the sampled log.
+    let scheduler = node_source("src/scheduler.rs");
+    let turn = body_of(&scheduler, TURN);
     assert!(
-        main.contains("run_pass(") && main.contains("fn serve("),
-        "the scan is not reading the serve loop"
+        turn.contains("run_pass("),
+        "the scan is not reading the loop that runs the pass"
     );
     assert!(
-        main.contains("pass_log.write(now, &outcome, &mut std::io::stderr())"),
-        "the serve loop no longer hands its pass outcome to PassLog"
+        turn.contains("self.pass_log.write(now, &outcome, &mut std::io::stderr());"),
+        "the decision loop no longer hands its pass outcome to PassLog"
     );
-    for per_event in ["requote.describe()", "reconciliation break:"] {
-        assert!(
-            !main.contains(per_event),
-            "main.rs formats `{per_event}` itself: a per-event line beside the sampled log"
-        );
+    assert!(
+        scheduler.contains(&format!("PassLog::new({LINES_PER_WINDOW}, ")),
+        "the decision loop's PassLog no longer lets {LINES_PER_WINDOW} lines through per window, \
+         so the storm test above measures a figure the binary does not use"
+    );
+    let main = node_source("src/main.rs");
+    for (file, source) in [("main.rs", &main), ("scheduler.rs", &scheduler)] {
+        for per_event in ["requote.describe()", "reconciliation break:"] {
+            assert!(
+                !source.contains(per_event),
+                "{file} formats `{per_event}` itself: a per-event line beside the sampled log"
+            );
+        }
     }
 }
 
@@ -3452,23 +3511,39 @@ fn a_pass_meter_with_no_request_allowance_is_refused_before_the_loop_starts() ->
 /// reason as the log's: `main.rs` is a binary and its loop cannot be called.
 #[test]
 fn the_node_binary_runs_its_pass_inside_the_golden_signal_meter() {
-    let main = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("the node's main.rs is readable");
+    // What changed: until `670e94c7` the serve loop in `main.rs` ran the pass
+    // inside a meter whose allowance was the health surface's
+    // `REQUEST_TIMEOUT`, because a pass ran per request. That commit put the
+    // pass on the decision thread's own timer, so the allowance became
+    // `PASS_INTERVAL` — the share of the turn a pass consumed is the
+    // saturation that means something now (`PassMeter::new`'s doc says so) —
+    // and the call moved into `DecisionLoop::turn`. The binary must still
+    // install the meter, the turn must run the pass through it, and there
+    // must still be exactly one production call to `run_pass`.
+    let scheduler = node_source("src/scheduler.rs");
+    let turn = body_of(&scheduler, TURN);
+    let main = node_source("src/main.rs");
     assert!(
-        main.contains("fn serve(") && main.contains("run_pass("),
-        "the scan is not reading the serve loop"
+        turn.contains("run_pass(") && main.contains("DecisionLoop::new("),
+        "the scan is not reading the loop that runs the pass"
     );
     assert!(
-        main.contains("PassMeter::new(Arc::clone(context.metrics), REQUEST_TIMEOUT)?"),
-        "the meter is no longer built on the scraped registry and the request allowance"
+        main.contains(".with_meter(PassMeter::new(Arc::clone(metrics), PASS_INTERVAL)?);"),
+        "the binary no longer builds the meter on the scraped registry and the loop's period"
     );
     assert!(
-        main.contains("pass_meter.measure(|| {\n                        run_pass("),
-        "the serve loop calls run_pass outside the meter"
+        turn.contains("let pass = || run_pass(")
+            && turn.contains("Some(meter) => meter.measure(pass),"),
+        "the decision loop calls run_pass outside the meter"
+    );
+    assert_eq!(
+        scheduler.matches("run_pass(").count(),
+        1,
+        "a second call to run_pass in the decision loop would be a pass nothing times"
     );
     assert_eq!(
         main.matches("run_pass(").count(),
-        1,
-        "a second call to run_pass would be a pass nothing times"
+        0,
+        "main.rs runs a pass of its own beside the decision loop's, which nothing times"
     );
 }
