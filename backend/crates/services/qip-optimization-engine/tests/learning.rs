@@ -279,6 +279,16 @@ fn a_replayed_router_holds_the_live_routers_learning_and_a_losing_substrate_stay
         live_record.calibration_brier().is_some(),
         "the outcomes scored the router's own estimates"
     );
+    // R12-QUANT-4053's latency half. Every QPU answer here was harvested by
+    // a later solve than the one that submitted it, so each took at least a
+    // cycle; the baseline test above only ever sees a latency of zero, which
+    // a fold that dropped latency entirely would also report.
+    assert!(
+        live_record
+            .mean_latency_cycles()
+            .is_some_and(|cycles| cycles >= 1.0),
+        "a harvested answer's latency was not learned: {live_record:?}"
+    );
 
     let restarted = ComputeRouter::classical(1)
         .with_policy(policy)?

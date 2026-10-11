@@ -323,6 +323,13 @@ fn a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdic
     assert!(derivation.lifecycle.derived().is_some());
     assert!(derivation.posterior.derived().is_some());
     assert!(derivation.acting.derived().is_some());
+    // Premise for the `all` below: anomaly -> hypothesis -> deadline is
+    // always posed, so an empty list would mean the timeline never ran.
+    assert!(
+        derivation.temporal.links.len() >= 2,
+        "{:?}",
+        derivation.temporal.links
+    );
     assert!(
         derivation
             .temporal
@@ -332,5 +339,191 @@ fn a_formed_hypothesis_is_journaled_with_a_symbolic_derivation_whose_rule_verdic
         "{:?}",
         derivation.temporal.links
     );
+    // R12-REASON-1133: the timeline orders the anomaly before the hypothesis
+    // it gave rise to. In the cycle the two can share an instant, and then
+    // only the admitted causal link orders them — so a link posed backwards
+    // is admitted just the same and only this ordering tells the difference.
+    assert_eq!(
+        derivation.temporal.anomaly_to_hypothesis,
+        qip_reasoning_engine::temporal::Order::Before,
+        "{:?}",
+        derivation.temporal
+    );
+    // R12-REASON-1136: the constraint solver's answer follows the rule
+    // pack's eligibility — acting is satisfiable exactly when the pack
+    // derived eligibility, and otherwise the conflict names the rule that
+    // blocks it. An answer that ignored either is not a derivation.
+    let eligible = matches!(
+        &derivation.rules.verdict,
+        Step::Derived(v) if v.facts.get("eligible") == Some(&qip_reasoning_engine::rules::Value::Bool(true))
+    );
+    match derivation.acting.derived().expect("acting was derived") {
+        qip_reasoning_engine::constraint::Answer::Satisfied(_) => {
+            assert!(
+                eligible,
+                "acting was satisfiable for an ineligible hypothesis"
+            )
+        }
+        qip_reasoning_engine::constraint::Answer::Unsatisfiable { conflict } => {
+            assert!(!eligible, "acting was blocked for an eligible hypothesis");
+            assert!(
+                conflict.iter().any(|c| c == "acting-requires-eligibility"),
+                "{conflict:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// `count` deterministic daily bars ending the day before `end`, with a 2%
+/// jump every seventeenth bar so momentum and reversion have a real move to
+/// disagree about rather than `bars`' single late jump.
+fn tape(symbol: &str, count: usize, end: Timestamp) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i % 17 == 0 { 0.02 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = end.saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect()
+}
+
+#[test]
+fn competing_world_models_are_scored_against_reality_and_a_material_disagreement_reaches_the_log_as_a_research_task()
+-> Result<()> {
+    // R12-WORLD-9004, -1003, -1023, -1129, -1130, -3039, -3040 and -1181,
+    // read from the hash-chained log a shipped binary's Platform writes.
+    //
+    // The failure this guards is the federation that exists and decides
+    // nothing: the three-cycle test above sees only unscored members asking
+    // for more information, which is also exactly what a federation whose
+    // forecasts were never scored, or whose disagreements were averaged,
+    // would journal. Here reality answers every pass, so members carry a
+    // Brier record, arbitration weighs all four dimensions, and a spread over
+    // the material threshold must become a research task citing the record.
+    let cycles: u64 = 14;
+    let mut platform = platform()?;
+    let total = 120 + cycles as usize;
+    let end = start().saturating_add(Duration::from_days(cycles as i64));
+    let mut aaa = tape("AAA", total, end);
+    let mut bbb = tape("BBB", total, end);
+    let later_aaa = aaa.split_off(120);
+    let later_bbb = bbb.split_off(120);
+    aaa.extend(bbb);
+    platform.observe(aaa);
+    for (step, (a, b)) in later_aaa.into_iter().zip(later_bbb).enumerate() {
+        // One new close per instrument per pass, so the previous pass's
+        // forecasts are answered by an observation that did not exist when
+        // they were made.
+        platform.observe(vec![a, b]);
+        let at = start().saturating_add(Duration::from_days(step as i64 + 1));
+        platform.run_cycle(at);
+    }
+
+    let reviews = federation_stage::replay(&platform)?;
+    assert_eq!(reviews.len() as u64, cycles, "one review per cycle");
+
+    // More than one model, with distinct scopes, live in the cycle (1003,
+    // 1129): five tape members on every instrument proposition.
+    let last = reviews.last().expect("reviews");
+    let scopes: std::collections::BTreeSet<String> = last
+        .population
+        .iter()
+        .map(|m| format!("{:?}", m.scope))
+        .collect();
+    assert_eq!(
+        scopes.len(),
+        last.population.len(),
+        "two members share a scope"
+    );
+    assert!(last.population.len() >= 5, "{:?}", last.population);
+
+    // Reality answered: forecasts were resolved, and members are scored.
+    let resolved: usize = reviews.iter().map(|r| r.resolved.len()).sum();
+    assert!(
+        resolved > 0,
+        "no forecast was ever resolved against a later close"
+    );
+    let scored: Vec<_> = reviews
+        .iter()
+        .flat_map(|r| &r.arbitrations)
+        .filter(|a| a.proposition.contains(":next-close-up@"))
+        .filter(|a| {
+            a.disagreement
+                .views
+                .iter()
+                .all(|v| v.predictive_performance.is_some())
+        })
+        .collect();
+    assert!(
+        !scored.is_empty(),
+        "no instrument arbitration ever weighed scored members"
+    );
+    for a in &scored {
+        // Every view kept, minority included, on all four dimensions, with
+        // the composite present only because performance is (1130, 3040).
+        assert_eq!(a.disagreement.views.len(), 5, "{a:?}");
+        for v in &a.disagreement.views {
+            assert!(v.evidence_fit.is_finite() && v.causal_coherence.is_finite());
+            assert!(v.uncertainty.is_finite() && v.composite.is_some(), "{v:?}");
+        }
+        // A scored arbitration is a decision, not a request for scores.
+        assert!(
+            !matches!(a.decision, Decision::RequestMoreInformation(_)),
+            "scored members still asked for more information: {a:?}"
+        );
+        // An arbitrated number exists only beside its disagreement (3039).
+        if a.arbitrated_probability.is_some() {
+            assert!(matches!(a.decision, Decision::Merge), "{a:?}");
+        }
+    }
+
+    // A material disagreement becomes research, citing the record (9004).
+    let material: Vec<_> = reviews
+        .iter()
+        .flat_map(|r| r.arbitrations.iter().map(move |a| (r, a)))
+        .filter(|(_, a)| a.research.is_some())
+        .collect();
+    assert!(
+        !material.is_empty(),
+        "no arbitration raised a research task; spreads seen: {:?}",
+        reviews
+            .iter()
+            .flat_map(|r| &r.arbitrations)
+            .map(|a| a.disagreement.spread)
+            .collect::<Vec<_>>()
+    );
+    for (review, a) in &material {
+        let task = a.research.as_ref().expect("filtered");
+        assert!(
+            task.spread >= qip_world_model::federation::MATERIAL_DISAGREEMENT_SPREAD,
+            "{task:?}"
+        );
+        assert_eq!(task.spread.to_bits(), a.disagreement.spread.to_bits());
+        assert_eq!(task.models.len(), a.disagreement.views.len());
+        // The task reached the log in the federation's own journal, and the
+        // record it cites is the decision it came from.
+        let raised = review.events.iter().any(
+            |e| matches!(e, qip_world_model::federation::Event::ResearchRaised(t) if t == task),
+        );
+        assert!(raised, "the research task is not in the journaled events");
+        let cited = task
+            .cites
+            .checked_sub(review.journal_base)
+            .and_then(|i| review.events.get(i));
+        assert!(
+            matches!(
+                cited,
+                Some(qip_world_model::federation::Event::Decided { proposition, .. })
+                    if *proposition == task.proposition
+            ),
+            "the task cites {:?}, not its decision",
+            cited
+        );
+    }
     Ok(())
 }

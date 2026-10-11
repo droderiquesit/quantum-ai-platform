@@ -1528,6 +1528,37 @@ fn no_edge_cell_can_reach_a_quantum_solver() {
 }
 
 #[test]
+fn the_agency_authorisation_path_cannot_reach_a_quantum_solver() {
+    // R12-QUANT-7209: quantum search may explore candidate action spaces but
+    // may never authorise an intervention. `qip-agency` owns the conduct gate
+    // and the guarded act stage, so a solver it could link is a solver whose
+    // answer could become the approval. Nothing asserted this: the absence was
+    // a fact about today's Cargo.toml that one added line would undo, with
+    // every other test still green — the solver tests above guard the edge
+    // cells and the money crates, and agency is neither.
+    let graph = dependency_graph();
+    let reachable = reachable_from(&graph, "qip-agency");
+    for solver in ["qip-quantum", "qip-optimization-engine"] {
+        assert!(
+            !reachable.contains(solver),
+            "qip-agency can reach {solver}, so a quantum search answer could reach the \
+             authorisation of an intervention: {reachable:?}"
+        );
+    }
+    // Anchors: the crate is in the graph and reaches something, so the absences
+    // above are not true of an empty walk or a renamed crate.
+    assert!(
+        reachable.contains("qip-contracts"),
+        "qip-agency reaches nothing it is known to depend on, so this test proves nothing: \
+         {reachable:?}"
+    );
+    assert!(
+        graph.contains_key("qip-quantum") && graph.contains_key("qip-optimization-engine"),
+        "a solver crate was renamed, so every absence asserted here is trivially true"
+    );
+}
+
+#[test]
 fn a_quantum_solver_cannot_reach_anything_that_vetoes_executes_or_moves_money() {
     // The other direction, and arguably the more literal reading of "no model
     // has decision authority": the two tests above stop authority reaching the
