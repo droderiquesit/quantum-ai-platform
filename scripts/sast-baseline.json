@@ -11,7 +11,7 @@
     "rust/cleartext-logging backend/crates/apps/qip-deepbrain/src/campaign.rs": 1,
     "rust/cleartext-logging backend/crates/apps/qip-deepbrain/src/evolution.rs": 6,
     "rust/cleartext-logging backend/crates/apps/qip-deepbrain/src/main.rs": 5,
-    "rust/cleartext-logging backend/crates/apps/qip-deepbrain/tests/research.rs": 12,
+    "rust/cleartext-logging backend/crates/apps/qip-deepbrain/tests/research.rs": 11,
     "rust/cleartext-logging backend/crates/apps/qip-deepbrain/tests/research_market.rs": 10,
     "rust/cleartext-logging backend/crates/apps/qip-edge-node/src/event_fabric/control.rs": 1,
     "rust/cleartext-logging backend/crates/apps/qip-edge-node/src/event_fabric/inputs.rs": 4,
