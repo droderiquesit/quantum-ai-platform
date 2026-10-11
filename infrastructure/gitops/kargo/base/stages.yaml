@@ -48,9 +48,9 @@ spec:
     spec:
       vars:
         - name: registry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
         - name: warehouseRegistry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
         - name: argocdApplication
           value: ""
       steps:
@@ -82,9 +82,9 @@ spec:
     spec:
       vars:
         - name: registry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
         - name: warehouseRegistry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
         - name: argocdApplication
           value: ""
       steps:
@@ -116,7 +116,7 @@ spec:
     spec:
       vars:
         - name: warehouseRegistry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
       steps:
         - task:
             name: record-gate
@@ -142,7 +142,7 @@ spec:
     spec:
       vars:
         - name: warehouseRegistry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
       steps:
         - task:
             name: record-gate
@@ -168,9 +168,9 @@ spec:
     spec:
       vars:
         - name: registry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
         - name: warehouseRegistry
-          value: us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev
+          value: us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev
         - name: argocdApplication
           value: ""
       steps:

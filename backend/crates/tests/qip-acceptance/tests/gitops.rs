@@ -80,7 +80,7 @@ const GATES: [&str; 2] = ["replay", "paper"];
 /// the digest it built (R12 CICD-9097, CICD-9112). It is dev's repository
 /// because dev is the environment the automatic path builds for; the
 /// vendored images are still mirrored per environment.
-const BUILD_REGISTRY: &str = "us-east4-docker.pkg.dev/algorik-platform-dev/qip-dev";
+const BUILD_REGISTRY: &str = "us-east4-docker.pkg.dev/algorik-qip-dev/qip-dev";
 
 /// The binaries the workspace builds. None may be the image of a Kubernetes
 /// workload anywhere under `infrastructure/gitops`; three of them are the

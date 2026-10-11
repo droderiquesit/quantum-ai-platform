@@ -9795,20 +9795,64 @@ fn the_infrastructure_workflows_marker_refusal_is_an_equality_and_admits_a_proje
 
     // 2. A provisioned environment is admitted. Without this half, a step that
     //    refused everything would pass.
-    let (code, printed, written) = run("provisioned", "dev", &root);
+    //
+    //    Driven against a fixture rather than dev's committed tfvars since
+    //    ADR 0118: dev now names a project whose number is not recorded until
+    //    the owner's bootstrap runs, so the committed file is case 4's input,
+    //    and a provisioned environment has to be written out here to prove the
+    //    step still admits one.
+    let provisioned_tree = workspace.join("provisioned");
+    let provisioned_dev = provisioned_tree.join("infrastructure/environments/dev");
+    std::fs::create_dir_all(&provisioned_dev).expect("the fixture tree is creatable");
+    std::fs::write(
+        provisioned_dev.join("terraform.tfvars"),
+        "project_id     = \"algorik-qip-dev\"\nproject_number = 123456789012\n",
+    )
+    .expect("the fixture tfvars are writable");
+    let (code, printed, written) = run("provisioned", "dev", &provisioned_tree);
     assert_eq!(
         code, 0,
-        "the identity step exited {code} for `dev`, the one provisioned environment. A guard \
-         that refuses everything is not a guard, and this workflow is the tool for recovering a \
-         broken bootstrap. It printed: {printed}"
+        "the identity step exited {code} for a provisioned `dev`. A guard that refuses \
+         everything is not a guard, and this workflow is the tool for recovering a broken \
+         bootstrap. It printed: {printed}"
     );
     assert!(
-        written
-            .lines()
-            .any(|line| line == "project=algorik-platform-dev"),
-        "the identity step admitted `dev` and wrote no `project=` output naming dev's project; \
-         it exited 0 without reaching its end, which is the failure the four steps that read \
-         `steps.identity.outputs.project` cannot see"
+        written.lines().any(|line| line == "project=algorik-qip-dev")
+            && written.lines().any(|line| line
+                == "provider=projects/123456789012/locations/global/workloadIdentityPools/qip-github-dev/providers/github"),
+        "the identity step admitted `dev` and did not write the project and the provider built \
+         from its number; it exited 0 without reaching its end, which is the failure the steps \
+         that read `steps.identity.outputs` cannot see. It wrote: {written}"
+    );
+
+    // 4. A real project id whose number is still the `0` marker (ADR 0118) is
+    //    refused, naming the bootstrap that records it. dev's committed tfvars
+    //    are in exactly this state until the owner runs it, but the case is a
+    //    fixture so that it keeps testing the refusal after the number is
+    //    recorded. Before the refusal the step emitted `provider=projects/0/…`
+    //    and the run died at the OIDC exchange talking about an audience.
+    let unrecorded_tree = workspace.join("unrecorded");
+    let unrecorded_dev = unrecorded_tree.join("infrastructure/environments/dev");
+    std::fs::create_dir_all(&unrecorded_dev).expect("the fixture tree is creatable");
+    std::fs::write(
+        unrecorded_dev.join("terraform.tfvars"),
+        "project_id     = \"algorik-qip-dev\"\nproject_number = 0\n",
+    )
+    .expect("the fixture tfvars are writable");
+    let (code, printed, written) = run("number-unrecorded", "dev", &unrecorded_tree);
+    assert_ne!(
+        code, 0,
+        "the identity step exited 0 for a project whose tfvars record project_number = 0. It \
+         would authenticate against `projects/0/…`. It wrote: {written}"
+    );
+    assert!(
+        printed.contains("project_number = 0") && printed.contains("scripts/bootstrap-foundation.sh"),
+        "the identity step refused the unrecorded number without naming it and the script that \
+         records it: {printed}"
+    );
+    assert!(
+        written.is_empty(),
+        "the identity step refused the unrecorded number and still wrote outputs: {written}"
     );
 
     // 3. The near miss. A real project id containing the marker as a substring
@@ -9935,7 +9979,7 @@ fn the_bootstrap_script_refuses_a_malformed_project_and_the_marker_and_admits_wh
     //    stops. The project id it echoes is printed only after both guards.
     let (code, printed) = run(&real, "dev");
     assert!(
-        printed.contains("project:") && printed.contains("algorik-platform-dev"),
+        printed.contains("project:") && printed.contains("algorik-qip-dev"),
         "scripts/bootstrap-deploy.sh did not get past its own guards for `dev`, the one \
          provisioned environment: it never echoed the project it would act on. A guard that \
          refuses everything is not a guard. It exited {code} and printed: {printed}"

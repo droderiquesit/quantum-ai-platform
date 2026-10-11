@@ -909,6 +909,18 @@ variable "project_number" {
   EOT
   type        = number
   default     = null
+
+  # 0 is the value a tfvars carries while its project does not exist yet, or
+  # before `scripts/bootstrap-foundation.sh` has recorded the number Google
+  # assigned (ADR 0118). Planned through, it names `service-0@…` as every
+  # service agent and `…-0.<region>.run.app` as every service URL: grants to
+  # principals that do not exist, failing one by one partway through an apply.
+  # Refused here instead, naming the act that is missing. Null — look it up —
+  # is still admitted.
+  validation {
+    condition     = var.project_number == null || try(var.project_number > 0 && floor(var.project_number) == var.project_number, false)
+    error_message = "project_number is 0 or not a whole positive number: the project's number has not been recorded. Run scripts/bootstrap-foundation.sh (or read it with `gcloud projects describe <project_id> --format='value(projectNumber)'`) and record it in infrastructure/environments/<env>/terraform.tfvars — or set it null to have it looked up."
+  }
 }
 
 # --- Managed data services --------------------------------------------------

@@ -10,7 +10,7 @@ metadata:
   name: qip-dev-api
   annotations:
     cnrm.cloud.google.com/deletion-policy: abandon
-    cnrm.cloud.google.com/project-id: algorik-platform-dev
+    cnrm.cloud.google.com/project-id: algorik-qip-dev
   labels:
     platform: qip
     environment: dev
@@ -22,21 +22,21 @@ metadata:
     qip-workload: api
 spec:
   projectRef:
-    external: projects/algorik-platform-dev
+    external: projects/algorik-qip-dev
   location: us-east4
   ingress: INGRESS_TRAFFIC_INTERNAL_ONLY
   binaryAuthorization:
     useDefault: true
   template:
     serviceAccountRef:
-      external: qip-api-dev@algorik-platform-dev.iam.gserviceaccount.com
+      external: qip-api-dev@algorik-qip-dev.iam.gserviceaccount.com
     vpcAccess:
       egress: ALL_TRAFFIC
       networkInterfaces:
       - networkRef:
-          external: projects/algorik-platform-dev/global/networks/qip-dev
+          external: projects/algorik-qip-dev/global/networks/qip-dev
         subnetworkRef:
-          external: projects/algorik-platform-dev/regions/us-east4/subnetworks/qip-dev-tz-application-identity
+          external: projects/algorik-qip-dev/regions/us-east4/subnetworks/qip-dev-tz-application-identity
         tags:
         - qip-dev-tz-application-identity
     scaling:
@@ -212,11 +212,11 @@ spec:
             external: latest
     - name: egress-bootstrap
       gcs:
-        bucket: qip-egress-dev-algorik-platform-dev
+        bucket: qip-egress-dev-algorik-qip-dev
         readOnly: true
     - name: config-files
       gcs:
-        bucket: qip-config-dev-api-algorik-platform-dev
+        bucket: qip-config-dev-api-algorik-qip-dev
         readOnly: true
   traffic:
   - type: TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST

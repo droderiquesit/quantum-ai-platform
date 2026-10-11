@@ -242,3 +242,21 @@ run "an_empty_repository_stops_the_plan" {
 
   expect_failures = [var.github_repository]
 }
+
+# --- the project number's marker (ADR 0118) -----------------------------------
+#
+# A tfvars records `project_number = 0` until the project exists and the
+# bootstrap writes the number Google assigned. Planned through, every service
+# agent grant names `service-0@…`. The admitting half is every run above,
+# which plans 123456789012 to the end.
+
+run "a_project_number_still_at_its_zero_marker_stops_the_plan" {
+  command = plan
+
+  variables {
+    project_number    = 0
+    github_repository = "droderiquesit/quantum-ai-platform"
+  }
+
+  expect_failures = [var.project_number]
+}
