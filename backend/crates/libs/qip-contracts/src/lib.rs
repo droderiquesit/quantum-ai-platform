@@ -45,6 +45,10 @@ pub mod ledger;
 pub mod market_event;
 pub mod market_state;
 pub mod message;
+/// The peer half of the Reflex Mesh: what regional cells say to each other
+/// (moved from `qip-mesh` so the edge node, which may not link that crate,
+/// can speak it).
+pub mod peer;
 pub mod policy;
 pub mod quantum;
 pub mod reflex;

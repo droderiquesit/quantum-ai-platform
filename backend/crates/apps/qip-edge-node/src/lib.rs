@@ -41,6 +41,9 @@ pub mod mirror;
 pub mod outbox;
 /// One pass of the node: feed, decide, act, reconcile.
 pub mod pass;
+/// The peer Reflex Mesh on a socket: this cell's edge states and the
+/// distributed-cycle protocol, to and from the other cells.
+pub mod peer;
 /// Each venue's own message limits, as the deployment states them.
 pub mod quote_limits;
 pub mod replay;

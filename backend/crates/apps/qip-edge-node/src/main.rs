@@ -77,6 +77,7 @@ use qip_edge_node::outbox::{
     read_fabric, spool_dir, spool_survives_the_machine,
 };
 use qip_edge_node::pass::PassMeter;
+use qip_edge_node::peer::{LISTEN_VARIABLE, PEERS_VARIABLE, PeerSession, PeerSettings};
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::risk::{CellRiskLimits, RISK_LIMITS_VARIABLE};
@@ -244,6 +245,10 @@ struct NodeConfig {
     /// as one of a primary/standby pair. `None` is a node with no standby,
     /// announced — see `qip_edge_node::standby`.
     standby: Option<StandbySettings>,
+    /// The peer Reflex Mesh, when this cell has peers. `None` is a cell that
+    /// coordinates with no other cell directly, announced — see
+    /// `qip_edge_node::peer`.
+    peers: Option<PeerSettings>,
 }
 
 impl NodeConfig {
@@ -376,6 +381,11 @@ impl NodeConfig {
         }
 
         let fabric = read_fabric(&|name| std::env::var(name).ok())?;
+        let peers = PeerSettings::read(
+            &cell_id,
+            std::env::var(LISTEN_VARIABLE).ok().as_deref(),
+            std::env::var(PEERS_VARIABLE).ok().as_deref(),
+        )?;
         let standby = StandbySettings::read(
             std::env::var(LEASE_VARIABLE).ok().as_deref(),
             std::env::var(ROLE_VARIABLE).ok().as_deref(),
@@ -408,6 +418,7 @@ impl NodeConfig {
             fabric,
             risk_limits,
             standby,
+            peers,
         })
     }
 }
@@ -958,6 +969,25 @@ fn run() -> Result<()> {
     }
     if let Some(installer) = installer {
         decisions = decisions.with_desk(installer);
+    }
+    // The peer mesh: its own thread owns the sockets, and the decision loop
+    // meets it at two bounded queues after the flush.
+    match &config.peers {
+        Some(settings) => {
+            let session = PeerSession::new(settings)?;
+            println!(
+                "qip-edge-node: peer mesh listening on {} for {} peer(s), plaintext on loopback \
+                 only until the mTLS transport of ADR 0112 is built",
+                session.link().local_addr(),
+                settings.peers.len()
+            );
+            decisions = decisions.with_peers(session);
+        }
+        None => println!(
+            "qip-edge-node: no peer mesh ({LISTEN_VARIABLE} and {PEERS_VARIABLE} unset): this \
+             cell coordinates with no other cell directly, and a cross-region cycle reaches it \
+             only through the centre"
+        ),
     }
     let plans = match config.plan_path.clone() {
         Some(path) => {

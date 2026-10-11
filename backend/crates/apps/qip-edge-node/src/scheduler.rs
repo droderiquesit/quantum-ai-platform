@@ -22,7 +22,11 @@
 //! 7. flushes the journal through `FabricMirror`, which offers and never
 //!    waits; a refusal leaves the entries unshipped and in memory;
 //! 8. leaves a state delta for the mesh worker and a body for the health
-//!    thread, each with `try_lock`.
+//!    thread, each with `try_lock`;
+//! 9. applies what peer cells sent and offers this cell's executable edge
+//!    state to them (`peer::PeerSession`) — `try_recv` and `try_send` only,
+//!    after the flush, so a peer outage can hold neither the journal nor the
+//!    centre's downlink (MESH-5050).
 //!
 //! Until this loop existed every one of those steps ran on the thread that
 //! accepted health probes, in the order a probe arrived: the store write
@@ -60,6 +64,7 @@ use crate::gateway::NodeGateway;
 use crate::health::HealthSnapshot;
 use crate::mesh::{MeshHealth, MeshWorker, apply_inbound};
 use crate::pass::{PassLog, PassMeter, PassOutcome, PassStats, run_pass};
+use crate::peer::{PeerSession, PeerTurn};
 use crate::reprice::Requoter;
 use crate::share::RegionShareStatus;
 use crate::strategies::StrategyInstaller;
@@ -252,6 +257,9 @@ pub struct DecisionLoop {
     poller: Option<Poller>,
     mesh: Option<MeshWorker>,
     mesh_health: Option<MeshHealth>,
+    peers: Option<PeerSession>,
+    last_peer_turn: Option<PeerTurn>,
+    peer_failures: u64,
     health: Option<(HealthSnapshot, HealthFacts)>,
     relay: Option<JournalRelay>,
     drain: Option<DrainThread>,
@@ -310,6 +318,9 @@ impl DecisionLoop {
             poller: None,
             mesh: None,
             mesh_health: None,
+            peers: None,
+            last_peer_turn: None,
+            peer_failures: 0,
             health: None,
             relay: None,
             drain: None,
@@ -365,6 +376,26 @@ impl DecisionLoop {
     pub fn with_mesh(mut self, worker: MeshWorker) -> Self {
         self.mesh = Some(worker);
         self
+    }
+
+    /// Speak the peer Reflex Mesh through `session` every turn.
+    #[must_use]
+    pub fn with_peers(mut self, session: PeerSession) -> Self {
+        self.peers = Some(session);
+        self
+    }
+
+    pub fn peers(&self) -> Option<&PeerSession> {
+        self.peers.as_ref()
+    }
+
+    pub fn peers_mut(&mut self) -> Option<&mut PeerSession> {
+        self.peers.as_mut()
+    }
+
+    /// What the peer session did on the last turn, if the node has one.
+    pub fn last_peer_turn(&self) -> Option<&PeerTurn> {
+        self.last_peer_turn.as_ref()
     }
 
     #[must_use]
@@ -497,6 +528,23 @@ impl DecisionLoop {
             mesh.offer_delta(self.cell.state_delta(&self.last_report, now));
             if let Some(health) = mesh.health() {
                 self.mesh_health = Some(health);
+            }
+        }
+        // The peer mesh, last: after the flush and the centre's delta, so
+        // nothing a peer does — or fails to do — stands in front of either.
+        if let Some(peers) = self.peers.as_mut() {
+            match peers.turn(&self.cell, now) {
+                Ok(turn) => self.last_peer_turn = Some(turn),
+                Err(error) => {
+                    self.peer_failures = self.peer_failures.saturating_add(1);
+                    if self.peer_failures % 100 == 1 {
+                        eprintln!(
+                            "qip-edge-node: the peer mesh could not publish this cell's edge \
+                             state: {}",
+                            error.message()
+                        );
+                    }
+                }
             }
         }
         if let Some((snapshot, facts)) = &self.health {
@@ -695,6 +743,23 @@ impl DecisionLoop {
             ),
             None => "null".to_string(),
         };
+        let peer_mesh = match &self.peers {
+            Some(peers) => {
+                let wire = peers.link().stats();
+                format!(
+                    r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{}}}"#,
+                    peers.endpoint().edge_peers().len(),
+                    peers.refusals().len(),
+                    wire.sent,
+                    wire.send_failures,
+                    wire.queued_drops,
+                    wire.received,
+                    wire.inbound_drops,
+                    self.peer_failures,
+                )
+            }
+            None => "null".to_string(),
+        };
         let pass = match &self.feed {
             Some(feed) => format!(
                 r#"{{"feed":"{}","instruments":{},"instruments_omitted":{},"passes":{},"halted_turns":{},"refusals":{},"signals":{},"orders":{},"fills":{},"expired":{},"repriced":{},"breaks":{},"edges_repriced":{},"edges_unchanged":{},"capture_failures":{}}}"#,
@@ -730,7 +795,7 @@ impl DecisionLoop {
         };
         let drain_running = self.drain.as_ref().is_some_and(DrainThread::is_running);
         format!(
-            r#"{{"cell":"{}","region":"{}","halted":{},"fence":{fence},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_retained":{retained},"journal_shipped":{shipped},"journal_pressure":"{}","journal_handoffs_refused":{},"store_failures":{store_failures},"relay_running":{relay_running},"drain_running":{drain_running},"turns":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
+            r#"{{"cell":"{}","region":"{}","halted":{},"fence":{fence},"peer_mesh":{peer_mesh},"halt_flag":{halt_flag},"arbitrage_desk":{},"live_capable":{},"venues":{},"region_allocation_free":{region_allocation_free},"region_share":{region_share},"strategies":{},"journal_entries":{},"journal_retained":{retained},"journal_shipped":{shipped},"journal_pressure":"{}","journal_handoffs_refused":{},"store_failures":{store_failures},"relay_running":{relay_running},"drain_running":{drain_running},"turns":{},"storage":"{}","durable":{},"gateway":{{"class":"{}","venue":"{}","submitted":{},"rejected":{},"reaches_a_socket":{},"unknown_orders":{}}},"pass":{pass},"mesh":{mesh},"started_at":{}}}"#,
             facts.cell,
             facts.region,
             cell.is_halted(),
