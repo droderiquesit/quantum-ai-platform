@@ -236,14 +236,21 @@ mod tests {
     }
 
     /// Mutation: make `verify` return `Ok(())` without calling `ring`, or
-    /// verify against the message without the class, and the altered-bytes
-    /// and wrong-class arms here fail.
+    /// take the class from the bundle entry the signature names instead of
+    /// from the caller, and the altered-bytes and wrong-class arms here fail.
+    ///
+    /// The wrong-class arm was promised by this comment and absent until the
+    /// round-2 mutation pass: a verifier that trusted the key's own class
+    /// (so a policy signature checked as a halt verified as a policy) passed
+    /// this test, because every arm asked for the class the key was
+    /// published for.
     #[test]
     fn a_signature_verifies_only_over_its_own_bytes_class_and_key() {
         let now = Timestamp::from_secs(1_800_000_000);
         let policy = LocalSigner::generate(ArtefactClass::Policy, "test/policy/1").expect("key");
         let other = LocalSigner::generate(ArtefactClass::Policy, "test/policy/2").expect("key");
-        let verifier = BundleVerifier::new(bundle_for(&[&policy, &other]));
+        let halt = LocalSigner::generate(ArtefactClass::Halt, "test/halt/1").expect("key");
+        let verifier = BundleVerifier::new(bundle_for(&[&policy, &other, &halt]));
         let signature =
             sign_artefact(&policy, ArtefactClass::Policy, b"sequence=7").expect("signs");
         // Premise: the genuine signature verifies.
@@ -255,6 +262,14 @@ mod tests {
             verifier
                 .verify(ArtefactClass::Policy, b"sequence=8", &signature, now)
                 .is_err()
+        );
+        // The genuine policy signature, presented as a halt: the bundle holds
+        // a halt key, so the refusal is the class, not a missing class.
+        assert!(
+            verifier
+                .verify(ArtefactClass::Halt, b"sequence=7", &signature, now)
+                .is_err(),
+            "a policy signature verified as a halt"
         );
         // The same DER re-attributed to a different trusted key version.
         let parsed = ArtefactSignature::parse(&signature).expect("parses");
@@ -268,9 +283,16 @@ mod tests {
         );
     }
 
-    /// Mutation: let a bundle verifier accept a key from outside the bundle
-    /// (e.g. skip `key_for`) and a self-generated attacker key passes; this
-    /// fails.
+    /// Mutation: make `verify` return `Ok(())` without calling `ring` and
+    /// both forgeries pass; this fails.
+    ///
+    /// This comment used to name "skip `key_for`" as the mutation. That is
+    /// not a mutation the verifier can make: a signature carries a key
+    /// version, never a public key, so the only point a verifier has to
+    /// check against is one the bundle supplies. The round-2 mutation pass
+    /// substituted the bundle's first key for an unknown version and the
+    /// test held, because `ring` refused the attacker's signature under it —
+    /// which is the property this test actually pins.
     #[test]
     fn a_signature_under_a_key_outside_the_bundle_is_refused() {
         let now = Timestamp::from_secs(1_800_000_000);
