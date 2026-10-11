@@ -7,7 +7,12 @@
 //! the fabric was empty before the forward, so a test that passes because
 //! the fabric was seeded some other way is not possible.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)] // integration tests may unwrap: a panic is the failure report
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic_in_result_fn,
+    clippy::float_cmp
+)] // integration tests may unwrap: a panic is the failure report; the float comparisons are against the exact constant the fabric assigns an unsigned claim
 
 use qip_core::{Context, Timestamp};
 use qip_financial::universe::Universe;
