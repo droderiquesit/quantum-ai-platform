@@ -1,0 +1,2518 @@
+[
+  {
+    "id": "R12-LEDGER-5001",
+    "domain": "LEDGER",
+    "title": "Ledger is append-only and event-sourced",
+    "statement": "The ledger accepts only appends of immutable events; no posting or balance can be updated or deleted, and balances are a fold of the event stream.",
+    "rationale": "Market data can disappear and models can be retrained; the ledger cannot be reconstructed from guesses, so its history must be immutable.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Re-folding the stored event stream from its first record equals stored balances; mutation: add an update path or skip an event in the fold and the refold test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "The store is real and tested; the composition root is a stub whose doc comments describe steps (bind, consume) it does not perform."
+  },
+  {
+    "id": "R12-LEDGER-5002",
+    "domain": "LEDGER",
+    "title": "Every ledger event balances per unit",
+    "statement": "Each ledger event is double-entry: at least two positive postings whose debits equal credits exactly in every unit, refused otherwise (never plugged).",
+    "rationale": "An unbalanced entry or a suspense plug hides an error the ledger exists to expose.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Constructing or deserialising an unbalanced event is refused; mutation: remove the per-unit sum check and the refusal test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Type-level invariant; integrated wherever a LedgerEvent is built, including qip-ledgerd's store."
+  },
+  {
+    "id": "R12-LEDGER-5003",
+    "domain": "LEDGER",
+    "title": "Ledger is multi-asset",
+    "statement": "The ledger holds balances per account per unit for any asset (currencies, instruments, physical units), not a single currency.",
+    "rationale": "A single-currency book cannot be authoritative for multi-asset positions.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Postings in two units for one event are balanced independently and both balances are readable; mutation: key balances by account only and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5004",
+    "domain": "LEDGER",
+    "title": "Ledger authoritative for cash and positions",
+    "statement": "Cash and instrument positions are booked in the ledger from fills and the ledger, not a model or cache, is the authority for them.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Principle 6 ('two independent claims about the same fact will disagree') applies: kernel positions and ledger balances have no reconciliation."
+  },
+  {
+    "id": "R12-LEDGER-5005",
+    "domain": "LEDGER",
+    "title": "Ledger authoritative for inventory",
+    "statement": "Inventory (trading inventory and reservations against it) is held as ledger state.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5006",
+    "domain": "LEDGER",
+    "title": "Ledger authoritative for obligations and commitments",
+    "statement": "Obligations and commitments (e.g. unfunded private commitments, pending payables) are recorded as ledger state.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5007",
+    "domain": "LEDGER",
+    "title": "Ledger records venue-reported fees",
+    "statement": "Fees are booked in the ledger to a fees account equal to the venue-reported fee, and no fee is booked when the venue did not report one.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5008",
+    "domain": "LEDGER",
+    "title": "Ledger tracks tax lots",
+    "statement": "Tax lots are ledger state, so cost basis and holding period per lot are derivable from the ledger.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5009",
+    "domain": "LEDGER",
+    "title": "Ledger tracks collateral and margin",
+    "statement": "Collateral pledged and margin requirements are recorded as ledger state.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5010",
+    "domain": "LEDGER",
+    "title": "Ledger records transfers",
+    "statement": "Transfers of cash or assets between accounts, venues or regions are ledger events.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5011",
+    "domain": "LEDGER",
+    "title": "Ledger records settlement state",
+    "statement": "Each ledger event carries its settlement state through to settlement.",
+    "rationale": "The ledger is authoritative for this state; any other source is a guess (§15).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The state is readable from ledger events after the producing event is applied; mutation: drop the posting and the balance check fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Live settlement is BLOCKED by ADR 0003; a simulated lifecycle is not."
+  },
+  {
+    "id": "R12-LEDGER-5012",
+    "domain": "LEDGER",
+    "title": "Every posting cites the observed fact that caused it",
+    "statement": "Ledger state is never inferred: every event names the cell, session, journal sequence/digest and order that produced it, and an event without a source is refused.",
+    "rationale": "The ledger cannot be reconstructed from guesses; an unattributed posting cannot be reproduced.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An event with an empty source field is refused; mutation: remove refuse_unnamed for the digest and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5013",
+    "domain": "LEDGER",
+    "title": "Global journal with idempotent event IDs",
+    "statement": "One global journal applies each event exactly once: redelivery of the same event ID changes nothing, and the same ID with different content is an integrity break.",
+    "rationale": "Duplicated or replayed fills would double-book cash and positions.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "property",
+      "check": "Any duplication/redelivery/crash sequence yields balances equal to one clean delivery; mutation: apply duplicates and the property fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5014",
+    "domain": "LEDGER",
+    "title": "Immutable lineage from intent to cash impact",
+    "statement": "Each ledger event carries an immutable lineage intent -> order -> fill -> settlement -> position/cash impact that can be walked in both directions.",
+    "rationale": "Without lineage, a cash movement cannot be explained back to the decision that caused it.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Given a balance change, a reader recovers the order, journal entry and originating intent; mutation: drop order_id from SourceEvent and the walk fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5015",
+    "domain": "LEDGER",
+    "title": "Ledger has a trading subledger",
+    "statement": "The ledger maintains a trading subledger whose postings roll up into the global double-entry journal.",
+    "rationale": "Subledgers let each domain be reconciled independently while the global journal stays the single authority.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A trading event posts to the trading subledger and the global trial balance still balances; mutation: route it elsewhere and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5016",
+    "domain": "LEDGER",
+    "title": "Ledger has a treasury subledger",
+    "statement": "The ledger maintains a treasury subledger whose postings roll up into the global double-entry journal.",
+    "rationale": "Subledgers let each domain be reconciled independently while the global journal stays the single authority.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A treasury event posts to the treasury subledger and the global trial balance still balances; mutation: route it elsewhere and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5017",
+    "domain": "LEDGER",
+    "title": "Ledger has a custody subledger",
+    "statement": "The ledger maintains a custody subledger whose postings roll up into the global double-entry journal.",
+    "rationale": "Subledgers let each domain be reconciled independently while the global journal stays the single authority.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A custody event posts to the custody subledger and the global trial balance still balances; mutation: route it elsewhere and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5018",
+    "domain": "LEDGER",
+    "title": "Ledger has a physical inventory/commerce subledger",
+    "statement": "The ledger maintains a physical inventory/commerce subledger whose postings roll up into the global double-entry journal.",
+    "rationale": "Subledgers let each domain be reconciled independently while the global journal stays the single authority.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A physical inventory/commerce event posts to the physical inventory/commerce subledger and the global trial balance still balances; mutation: route it elsewhere and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5019",
+    "domain": "LEDGER",
+    "title": "Ledger has a fees/taxes subledger",
+    "statement": "The ledger maintains a fees/taxes subledger whose postings roll up into the global double-entry journal.",
+    "rationale": "Subledgers let each domain be reconciled independently while the global journal stays the single authority.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A fees/taxes event posts to the fees/taxes subledger and the global trial balance still balances; mutation: route it elsewhere and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5020",
+    "domain": "LEDGER",
+    "title": "Ledger has a private commitments subledger",
+    "statement": "The ledger maintains a private commitments subledger whose postings roll up into the global double-entry journal.",
+    "rationale": "Subledgers let each domain be reconciled independently while the global journal stays the single authority.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A private commitments event posts to the private commitments subledger and the global trial balance still balances; mutation: route it elsewhere and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5021",
+    "domain": "LEDGER",
+    "title": "Ledger has a user/mandate ownership subledger",
+    "statement": "The ledger maintains a user/mandate ownership subledger whose postings roll up into the global double-entry journal.",
+    "rationale": "Subledgers let each domain be reconciled independently while the global journal stays the single authority.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A user/mandate ownership event posts to the user/mandate ownership subledger and the global trial balance still balances; mutation: route it elsewhere and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5022",
+    "domain": "LEDGER",
+    "title": "Continuous external reconciliation with venues",
+    "statement": "The ledger is continuously reconciled against venues' own records and every break is recorded and acted on.",
+    "rationale": "An internal ledger never checked against the counterparty's record can drift silently.",
+    "kind": "process",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A seeded difference between ledger and venues record produces a recorded break; mutation: disable the comparison and no break is recorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5023",
+    "domain": "LEDGER",
+    "title": "Continuous external reconciliation with banks",
+    "statement": "The ledger is continuously reconciled against banks' own records and every break is recorded and acted on.",
+    "rationale": "An internal ledger never checked against the counterparty's record can drift silently.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A seeded difference between ledger and banks record produces a recorded break; mutation: disable the comparison and no break is recorded."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5024",
+    "domain": "LEDGER",
+    "title": "Continuous external reconciliation with custodians",
+    "statement": "The ledger is continuously reconciled against custodians' own records and every break is recorded and acted on.",
+    "rationale": "An internal ledger never checked against the counterparty's record can drift silently.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A seeded difference between ledger and custodians record produces a recorded break; mutation: disable the comparison and no break is recorded."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5025",
+    "domain": "LEDGER",
+    "title": "Continuous external reconciliation with wallets",
+    "statement": "The ledger is continuously reconciled against wallets' own records and every break is recorded and acted on.",
+    "rationale": "An internal ledger never checked against the counterparty's record can drift silently.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A seeded difference between ledger and wallets record produces a recorded break; mutation: disable the comparison and no break is recorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5026",
+    "domain": "LEDGER",
+    "title": "Continuous external reconciliation with warehouses/marketplaces",
+    "statement": "The ledger is continuously reconciled against warehouses/marketplaces' own records and every break is recorded and acted on.",
+    "rationale": "An internal ledger never checked against the counterparty's record can drift silently.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A seeded difference between ledger and warehouses/marketplaces record produces a recorded break; mutation: disable the comparison and no break is recorded."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5027",
+    "domain": "LEDGER",
+    "title": "Continuous external reconciliation with settlement agents",
+    "statement": "The ledger is continuously reconciled against settlement agents' own records and every break is recorded and acted on.",
+    "rationale": "An internal ledger never checked against the counterparty's record can drift silently.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A seeded difference between ledger and settlement agents record produces a recorded break; mutation: disable the comparison and no break is recorded."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-LEDGER-5028",
+    "domain": "LEDGER",
+    "title": "Decisions store their version identifiers",
+    "statement": "Every model, strategy, capital and risk decision records the version identifiers (model, strategy plan, policy/grant, risk limits) in force, so it can be explained and replayed.",
+    "rationale": "A decision whose versions are unknown cannot be replayed or explained.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§15 Ledger, Accounting & State of Truth"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Replaying a journal reconstructs which policy/plan/model versions governed each order; mutation: drop the PolicyApplied record and replay cannot name the version."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EVID"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5029",
+    "domain": "REFLEX",
+    "title": "Reflex node never waits on the global brain",
+    "statement": "A regional reflex node takes every hot-path decision from its local package and state without waiting on the global brain or any central call.",
+    "rationale": "A cell that blocks on the centre turns a partition into an outage and adds round-trip latency to every decision.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§16 Regional Reflex Nodes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the centre unreachable, the node runs the same passes and sends the same orders; mutation: make the pass call the mesh and the test hangs or diverges."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Passes are driven by health-probe connections, not a scheduler (main.rs:878-1003; scheduler.rs is a 2-line stub)."
+  },
+  {
+    "id": "R12-REFLEX-5030",
+    "domain": "REFLEX",
+    "title": "Reflex node runs a signed package",
+    "statement": "The node runs a signed package containing models, strategies, beliefs, feasibility rules, capital grants, risk limits, target inventory and opportunity definitions, verified before use and combined with live local state.",
+    "rationale": "An unsigned or partially verified package lets anyone who can reach the node change what it trades.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§16 Regional Reflex Nodes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A payload with a bad signature or wrong cell is refused and changes nothing; each slot is consumed by the cell; mutation: skip verification and the refusal test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "SEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5031",
+    "domain": "REFLEX",
+    "title": "Node embeds a non-blocking fabric client",
+    "statement": "Each reflex node embeds a non-blocking Rust event-fabric client that forwards to the regional fabric.",
+    "rationale": "Without a client the node's outcomes never reach the durable fabric.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§16 Regional Reflex Nodes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The deployed node writes journal records to a spool and a drain ships them to qip-fabricd; mutation: remove the mirror and no record arrives."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5032",
+    "domain": "REFLEX",
+    "title": "Node keeps a local append-only event journal",
+    "statement": "Each reflex node keeps a local append-only, hash-chained event journal of every decision and refusal.",
+    "rationale": "The journal is the only account of what a cell decided alone.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§16 Regional Reflex Nodes"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Entries chain by digest; a tampered or dropped entry breaks verification; mutation: skip chaining and the chain test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Bounded-retention rule: the deployed node keeps every entry in memory for the session (journal.rs default retention)."
+  },
+  {
+    "id": "R12-REFLEX-5033",
+    "domain": "REFLEX",
+    "title": "Decision thread never waits on the fabric",
+    "statement": "The decision thread writes to preallocated bounded lock-free queues/journals and continues; it never blocks on the fabric or disk.",
+    "rationale": "A decision loop that blocks on a disk or broker inherits that system's latency and outages.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§16 Regional Reflex Nodes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the writer stalled, ship returns immediately and entries stay unshipped; mutation: use a blocking send and the test times out."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5034",
+    "domain": "REFLEX",
+    "title": "Outcomes, telemetry and acks drained asynchronously",
+    "statement": "Durable outcomes, telemetry and policy/model acknowledgments are drained asynchronously from the node to the regional fabric.",
+    "rationale": "Synchronous draining couples the hot path to fabric health.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§16 Regional Reflex Nodes"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Outcome and ack records appear on the fabric after the pass returns; mutation: drop the drain and none arrive."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5035",
+    "domain": "MESH",
+    "title": "Latency-sensitive cross-region arbitrage is direct peer-to-peer",
+    "statement": "Truly latency-sensitive cross-region arbitrage coordination travels as direct peer-to-peer Reflex Mesh traffic, not via the broker-mediated fabric.",
+    "rationale": "Broker mediation adds hops and couples coordination to durable-log health.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "28",
+        "section": "§16 Regional Reflex Nodes"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Peer messages are sent node-to-node over the mesh transport; mutation: route them through qip-fabricd and the placement test fails."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5036",
+    "domain": "REFLEX",
+    "title": "Native venue feed adapters with normalization",
+    "statement": "Feed adapters consume native venue feeds and normalise them into the platform's market message form.",
+    "rationale": "Without native adapters the cell trades only what a simulator shows it.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Captured native bytes decode into normalised book events applied by the cell; mutation: break a decoder field and the decode test fails."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5037",
+    "domain": "REFLEX",
+    "title": "Sequence and gap detection with timestamping",
+    "statement": "Feed handling detects sequence gaps, marks the affected book stale until resynchronised, and timestamps every message.",
+    "rationale": "A price from before a gap reaching an order is a trade on a book that no longer exists.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A skipped sequence marks the book stale and no order is priced from it until resync; mutation: ignore the gap event and an order is sent."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "COMPLETE as code behaviour on the simulated feed path; not deployed."
+  },
+  {
+    "id": "R12-REFLEX-5038",
+    "domain": "REFLEX",
+    "title": "Local books and state",
+    "statement": "The node holds local order books, trades, funding, borrow, venue health, inventory and reservations.",
+    "rationale": "Every local decision must read local state, not ask the centre.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each state element updates from its input and is read by the pass; mutation: stop updating venue health and quarantine never fires."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5039",
+    "domain": "REFLEX",
+    "title": "Incremental bounded-cost feature engine",
+    "statement": "Features are computed incrementally (dirty-marking on ingest) at a bounded cost per message.",
+    "rationale": "Recomputing every feature on every tick makes latency proportional to feature count.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Ingesting one message recomputes only dependants; mutation: mark everything dirty and the recompute-count test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5040",
+    "domain": "REFLEX",
+    "title": "Tiny local models with calibrated scores",
+    "statement": "Reflex inference runs tiny local models producing calibrated scores, only models promoted by the centre.",
+    "rationale": "An unpromoted or uncalibrated model trading at the edge is unreviewed risk.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A plan's inline model runs only when the manifest names it at its digest, and its score is calibrated; mutation: skip the manifest check and the refusal test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MODEL"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5041",
+    "domain": "REFLEX",
+    "title": "Compiled strategy runtime and opportunity detectors",
+    "statement": "The node runs compiled strategy predicates and opportunity detectors from the signed plan.",
+    "rationale": "Interpreting unreviewed strategy code at the edge is unbounded risk.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A plan named by digest compiles and its signals reach the pass; mutation: a digest mismatch deploys nothing."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5042",
+    "domain": "MESH",
+    "title": "Arbitrage scanner over whitelisted and discovered cycles",
+    "statement": "The node's arbitrage scanner evaluates whitelisted and discovered graph cycles, for both local and distributed opportunities.",
+    "rationale": "A scanner limited to a fixed list misses new cycles; one with no list trades unreviewed paths.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A whitelisted triangle with dislocated books becomes an opportunity; a discovered cycle outside the whitelist is reported; mutation: drop the whitelist edges and no opportunity is found."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5043",
+    "domain": "REFLEX",
+    "title": "Cross-strategy intent netting and internal crossing",
+    "statement": "Intents from different strategies are netted and opposing interest is crossed internally before reaching a venue, with attribution preserved.",
+    "rationale": "Sending both sides of offsetting intents pays two spreads and two fees for no exposure change.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two opposing intents within the window cross at the mid and move both lots; mutation: disable cross_internally and both reach the venue."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-RISK-5044",
+    "domain": "RISK",
+    "title": "Local risk and feasibility gate",
+    "statement": "Before an order exists, a local deterministic gate enforces hard constraints, capacity, inventory, limits and expected edge after costs.",
+    "rationale": "A limit checked after the order exists is a report, not a control.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An infeasible intent never reaches the venue adapter; mutation: bypass the gate and the no-order test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "REFLEX"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5045",
+    "domain": "EXEC",
+    "title": "Router with order types, venue selection, leg sequencing, quoting, cancel/replace",
+    "statement": "The node's router supports order types, venue selection, leg sequencing, a quote engine and cancel/replace.",
+    "rationale": "Without these the cell can only send one shape of order to one place.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Each function is exercised through Cell::work and a pass; mutation: remove requote and the cancel/replace test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5046",
+    "domain": "MESH",
+    "title": "Peer mesh client for summaries, tokens, reservations, sagas",
+    "statement": "The node's peer mesh client exchanges fast state summaries, opportunity tokens, reservations and saga messages with peers.",
+    "rationale": "Distributed cycles cannot be coordinated without a peer client.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Two nodes exchange token, reserved, fire, fill and unwind messages over a transport; mutation: drop a message kind and the protocol test fails."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-REFLEX-5047",
+    "domain": "REFLEX",
+    "title": "Journal forwarded to ledger and learning asynchronously",
+    "statement": "The node's durable local event stream is forwarded asynchronously to the ledger and to learning.",
+    "rationale": "Fills that never reach the ledger are trades nobody booked.",
+    "kind": "capability",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§16 Regional Reflex Nodes (module table)"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A fill journaled at the node is booked by qip-ledgerd; mutation: drop the forward and the balance does not move."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER",
+      "FABRIC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5048",
+    "domain": "MESH",
+    "title": "Reflex Mesh and Event & Control Fabric are separate",
+    "statement": "Mesh messages (short-lived, latency-sensitive peer state) and fabric messages (durable, replayable control, journal and outcome records) travel on separate paths.",
+    "rationale": "Mixing them makes coordination latency depend on durable-log health, and durable records depend on ephemeral peers.",
+    "kind": "constraint",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "Peer message kinds cannot carry durable pack/policy/grant records and vice versa; mutation: decode a policy from a peer frame and the refusal test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5049",
+    "domain": "MESH",
+    "title": "Fabric outage does not stall local decisions",
+    "statement": "A fabric (or central plane) outage never stalls a live local decision.",
+    "rationale": "A cell that stops when the fabric stops turns a broker outage into a trading outage.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With the store/fabric failing, passes continue and orders are still decided; mutation: return the flush error from the loop and the node stops."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5050",
+    "domain": "MESH",
+    "title": "Mesh outage does not prevent journaling or control distribution",
+    "statement": "A Reflex Mesh (peer) outage never prevents durable journaling or control/policy distribution.",
+    "rationale": "Coupling durability to peer health loses the record exactly when coordination fails.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "With peers unreachable, the journal still ships and policies still apply; mutation: gate flush on mesh health and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5051",
+    "domain": "MESH",
+    "title": "No remote dependency on a local hot-path decision",
+    "statement": "No remote dependency (centre or peer) is required for a local hot-path decision; peers may exchange latency-sensitive state but the local decision never waits on it.",
+    "rationale": "The corrected v12 rule: physics forbids a round trip on the reflex path.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "inspection",
+      "check": "qip-edge's hot path (on_bytes, work) performs no I/O and qip-edge does not depend on a socket-owning crate in those paths; mutation: add a transport call in work and the architecture test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5052",
+    "domain": "MESH",
+    "title": "Distant legs handled with prepositioning, epochs, TTLs, sagas",
+    "statement": "Cross-region cycles use pre-positioned capital/inventory, synchronized opportunity epochs, bounded TTLs and saga-style recovery instead of assuming distant legs are atomic.",
+    "rationale": "Treating distant legs as atomic strands a leg when another fails.",
+    "kind": "constraint",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17 Global Reflex Mesh & 3-20-Leg Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An epoch without TTL or unwind policy is refused; nothing fires after expiry; recovery loss is bounded; mutation: allow ttl=0 and the refusal test fails."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5053",
+    "domain": "MESH",
+    "title": "Graph node identity includes representation, settlement stage and region",
+    "statement": "Each arbitrage graph node is (asset, venue, representation, settlement stage, region).",
+    "rationale": "Two holdings of the same asset at different settlement stages or regions are not interchangeable; collapsing them prices impossible conversions.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17.1 Arbitrage Graph"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Two nodes differing only in settlement stage or region are distinct and no zero-cost edge joins them; mutation: drop region from the key and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5054",
+    "domain": "MESH",
+    "title": "Edges carry rate, fees and size-dependent slippage",
+    "statement": "Each conversion edge carries price/rate, fees and size-dependent slippage, and the cycle is priced by walking real depth at size.",
+    "rationale": "A spread that omits a cost is theoretical, not executable (§17.1).",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17.1 Arbitrage Graph"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The net edge falls by exactly the named cost when it is introduced; mutation: omit the deduction and the hand-computed net differs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§17.1's ten edge attributes are grouped into four requirements."
+  },
+  {
+    "id": "R12-MESH-5055",
+    "domain": "MESH",
+    "title": "Edges carry carry/funding and borrow cost",
+    "statement": "Each edge's net value includes carry/funding and borrow cost over the time capital is committed.",
+    "rationale": "A spread that omits a cost is theoretical, not executable (§17.1).",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17.1 Arbitrage Graph"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The net edge falls by exactly the named cost when it is introduced; mutation: omit the deduction and the hand-computed net differs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§17.1's ten edge attributes are grouped into four requirements."
+  },
+  {
+    "id": "R12-MESH-5056",
+    "domain": "MESH",
+    "title": "Edges carry transfer/bridge/logistics cost and tax/duty",
+    "statement": "Each edge includes transfer, bridge or logistics cost and a tax/duty estimate where applicable.",
+    "rationale": "A spread that omits a cost is theoretical, not executable (§17.1).",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17.1 Arbitrage Graph"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The net edge falls by exactly the named cost when it is introduced; mutation: omit the deduction and the hand-computed net differs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§17.1's ten edge attributes are grouped into four requirements."
+  },
+  {
+    "id": "R12-MESH-5057",
+    "domain": "MESH",
+    "title": "Edges carry settlement risk, fill probability and time",
+    "statement": "Each edge includes settlement risk, probability of fill and time.",
+    "rationale": "A spread that omits a cost is theoretical, not executable (§17.1).",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17.1 Arbitrage Graph"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The net edge falls by exactly the named cost when it is introduced; mutation: omit the deduction and the hand-computed net differs."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "§17.1's ten edge attributes are grouped into four requirements."
+  },
+  {
+    "id": "R12-MESH-5058",
+    "domain": "MESH",
+    "title": "Cycles of 2-20 legs evaluated for executable expected value",
+    "statement": "Cycles of 2 to 20 legs are evaluated for executable expected value after all costs, not theoretical spread; longer or shorter cycles are refused.",
+    "rationale": "A spread on mid prices that does not survive the book is the default failure of arbitrage systems.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17.1 Arbitrage Graph"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A 21-leg cycle and a configured maximum are refused naming the limit; a cycle profitable on mids but not at size is refused; mutation: widen MAX_CYCLE_EDGES and the leg-limit test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5059",
+    "domain": "MESH",
+    "title": "Global arbitrage brain discovers templates and prepositions capital",
+    "statement": "A global/warm arbitrage brain continuously discovers candidate cycle templates and prepositions inventory/capital for them.",
+    "rationale": "Distant cycles cannot be executed in time unless capital and inventory are already in place.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "29",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The centre publishes a cycle whitelist from discovery and capital grants/inventory targets for the regions it names; mutation: stop discovery and the whitelist is empty."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5060",
+    "domain": "MESH",
+    "title": "Nodes publish compressed executable edge states",
+    "statement": "Reflex nodes publish compressed executable edge states, not raw books, to peers or regional coordinators.",
+    "rationale": "Shipping raw books across regions is too slow and too large for coordination.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A node emits a bounded edge-state summary per edge; mutation: send the raw book and the size bound fails."
+    },
+    "policy_flags": [
+      "MULTI_REGION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5061",
+    "domain": "MESH",
+    "title": "Opportunity epoch names cycle, legs, size, edge, versions, TTL, unwind",
+    "statement": "An opportunity epoch identifies the cycle, legs, size, minimum edge, model versions, TTL and unwind policy, and an epoch missing any is refused.",
+    "rationale": "A token with no unwind policy is a cycle with no loss bound.",
+    "kind": "contract",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An epoch missing any of the seven fields is refused naming it; mutation: default a missing field and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5062",
+    "domain": "MESH",
+    "title": "Local feasibility then atomic in-region reservation",
+    "statement": "Each participating node runs local feasibility and then reserves the required inventory/capital atomically inside its region before declaring readiness.",
+    "rationale": "Reserving before the gate holds capital for a leg that will never be sent.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A gate refusal reserves nothing and the decline reaches the coordinator; a book that cannot hold every leg holds none; mutation: reserve before gating and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5063",
+    "domain": "MESH",
+    "title": "FIRE only when the reservation condition is met",
+    "statement": "The coordinator or deterministic rule declares FIRE only when the configured reservation condition is met, and no leg precedes FIRE.",
+    "rationale": "Firing on partial reservations strands legs.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "FIRE is declared exactly when every leg is reserved; an unmet condition within TTL is rejected by name and sends no leg; mutation: fire on one missing reservation and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5064",
+    "domain": "MESH",
+    "title": "Legs execute concurrently or risk-ordered per cycle policy",
+    "statement": "After FIRE, legs execute concurrently or in risk-ordered sequence according to the cycle's policy.",
+    "rationale": "Sending the most reversible leg first leaves the irreversible one exposed.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A policy selecting risk order sends the least reversible leg first; a concurrent policy sends all; mutation: reverse order and the plan test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5065",
+    "domain": "MESH",
+    "title": "Partial fills drive resize, hedge, reroute or unwind",
+    "statement": "Fills are streamed peer-to-peer and a partial fill triggers a resize, hedge, reroute or unwind state transition.",
+    "rationale": "A cycle that ignores a short fill carries the unmatched remainder as unhedged exposure.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A first leg filling 75% sends later legs at 75%; under the minimum viable fraction no further leg is sent; mutation: ignore the fill fraction and the decomposition test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5066",
+    "domain": "MESH",
+    "title": "Cycle completion recorded to the global ledger",
+    "statement": "Cycle completion is recorded to the global ledger.",
+    "rationale": "A completed cycle absent from the ledger is unbooked P&L.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Every filled leg of a completed cycle appears as a balanced ledger event; mutation: drop one leg's posting and the cycle's cash does not net."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "LEDGER"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-5067",
+    "domain": "CAPITAL",
+    "title": "Inventory drift becomes a rebalancing task",
+    "statement": "Inventory drift after a cycle becomes a treasury/capital rebalancing task.",
+    "rationale": "Drift left unaddressed slowly removes the prepositioned inventory future cycles depend on.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Drift beyond tolerance yields one task per place citing the epoch; mutation: ignore tolerance and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "MESH"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5068",
+    "domain": "MESH",
+    "title": "Failed, declined and partial cycles counterfactually scored",
+    "statement": "Every failed, declined or partial cycle is counterfactually scored to learn whether the coordination rule was too conservative.",
+    "rationale": "Without counterfactuals the system cannot tell caution from correctness.",
+    "kind": "process",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A declined cycle is marked against later prices and the scored result is recorded; mutation: skip declined cycles and no score is produced."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "TICK"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5069",
+    "domain": "MESH",
+    "title": "Coordination latency, leg risk and unwind cost priced in",
+    "statement": "The opportunity's value is net of coordination latency, leg risk and unwind cost.",
+    "rationale": "A distant multi-leg cycle priced as atomic overstates its edge.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Raising coordination latency or unwind cost lowers net edge until the cycle is refused; mutation: zero the latency deduction and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-MESH-5070",
+    "domain": "MESH",
+    "title": "Cycles without achievable guarantees are rejected",
+    "statement": "When required guarantees cannot be achieved, the cycle is rejected, never treated as riskless arbitrage.",
+    "rationale": "Treating a non-atomic cycle as riskless is how a strand becomes a loss.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§17.2 Cross-Region Execution Protocol"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "A cycle whose loss bound cannot be established is rejected by name and sends no leg; mutation: allow fire without the bound and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5071",
+    "domain": "EXEC",
+    "title": "Common venue capability contract retaining native features",
+    "statement": "Venue adapters expose a common capability contract while retaining venue-native features.",
+    "rationale": "A lowest-common-denominator adapter loses the features that make a venue worth using.",
+    "kind": "contract",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18 Execution, Market Making & Market Creation"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each adapter implements the common trait and exposes its native extension; mutation: remove an extension and the venue's native test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5072",
+    "domain": "EXEC",
+    "title": "Execution modes only where legally and operationally supported",
+    "statement": "Order taking, market making, liquidity provision, cross-venue routing, derivatives, event contracts, decentralized venues and physical marketplaces are each enabled per venue only where legally and operationally supported.",
+    "rationale": "An execution mode enabled without legal and operational support is an unlicensed activity.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18 Execution, Market Making & Market Creation"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A mode not recorded as supported is refused at send; mutation: enable all modes by default and the refusal test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": "'paper' is recorded as the jurisdiction for the two enabled modes."
+  },
+  {
+    "id": "R12-EXEC-5073",
+    "domain": "EXEC",
+    "title": "Dynamic fair value, spread, skew and size",
+    "statement": "Market-making quotes derive fair value, spread, skew and size from volatility, inventory, queue value, adverse selection and confidence.",
+    "rationale": "Static quotes are picked off when volatility or toxicity rises.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.1 Market Making"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Each input moves its component in the stated direction; mutation: ignore inventory and the skew test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Deliberately structurally unable to submit (acceptance test asserts it)."
+  },
+  {
+    "id": "R12-EXEC-5074",
+    "domain": "EXEC",
+    "title": "Portfolio-aware quoting",
+    "statement": "Hedges and correlated exposure affect quote size before a fill occurs.",
+    "rationale": "Quoting each instrument in isolation accumulates correlated exposure.",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.1 Market Making"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Correlated exposure in the inputs shrinks quote size; mutation: ignore it and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5075",
+    "domain": "EXEC",
+    "title": "Quote-rate and message-ratio controls",
+    "statement": "Per-venue quote-rate and message-to-trade ratio limits refuse messages before the gateway is called.",
+    "rationale": "Breaching a venue's message limits gets the participant throttled or expelled.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.1 Market Making"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "Quotes past a venue's rate or below its trade ratio are refused before the gateway; mutation: skip the budget and the gateway is called."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5076",
+    "domain": "EXEC",
+    "title": "Cancel/replace budgets",
+    "statement": "Cancels and replaces are charged against a budget with a reserve kept for mass cancel.",
+    "rationale": "A requote storm that exhausts the budget leaves nothing to withdraw orders on a halt.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.1 Market Making"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A requote the budget cannot fund whole withdraws nothing; a requote is refused rather than funded from the mass-cancel reserve; mutation: charge one message and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5077",
+    "domain": "EXEC",
+    "title": "Venue-specific microstructure models",
+    "statement": "Quoting uses venue-specific microstructure models.",
+    "rationale": "One model for every venue misprices queue and toxicity at most of them.",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.1 Market Making"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Two venues with different policies produce different quotes for the same inputs; mutation: return the default policy for all and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-CAPITAL-5078",
+    "domain": "CAPITAL",
+    "title": "Market making and arbitrage share one reservation fabric",
+    "statement": "Capital and inventory used by market making and arbitrage are reserved through one reservation fabric so neither can spend what the other holds.",
+    "rationale": "Two reservation books over one capital pool each pass a check the other has already spent.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.1 Market Making"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A quote and an arbitrage leg drawing on the same capital cannot both reserve it; mutation: give quoting a separate ledger and both pass."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5079",
+    "domain": "EXEC",
+    "title": "Market creation is a governed workflow",
+    "statement": "Market creation, listing or seeding happens only through a governed product workflow with recorded venue, product and jurisdiction approval; no model action may create one.",
+    "rationale": "An unrestricted model creating markets is an unlicensed product launch.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.2 Market Creation / Market Factory"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "An admission cannot be obtained without all three recorded permissions nor built/decoded elsewhere; mutation: admit with two and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EXEC-5080",
+    "domain": "EXEC",
+    "title": "Market factory creates, lists, seeds and prices markets",
+    "statement": "Where venue and jurisdiction allow, the platform can create/list a market or instrument, seed initial liquidity, publish pricing rules and manage its inventory.",
+    "rationale": "Stated as an obligation in the source without a named failure.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.2 Market Creation / Market Factory"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "An approved creation lists an instrument at the simulated venue, seeds resting liquidity and publishes its pricing rule; mutation: make seed a no-op and the venue shows no liquidity."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": "market_creation.rs doc claims it 'journals the creation for auditability'; the function body does nothing."
+  },
+  {
+    "id": "R12-EXEC-5081",
+    "domain": "EXEC",
+    "title": "Created markets continuously checked for economic and legal validity",
+    "statement": "A created market is continuously measured for whether it remains economically and legally valid.",
+    "rationale": "A market that stopped being valid keeps attracting flow and liability.",
+    "kind": "process",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§18.2 Market Creation / Market Factory"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "A created market whose permission lapses or whose economics fail is flagged and withdrawn; mutation: skip the check and it stays listed."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5082",
+    "domain": "EVENT",
+    "title": "Ingest event definitions",
+    "statement": "The platform ingests event-market definitions into a store.",
+    "rationale": "Prediction markets convert world beliefs into tradable probability (§19).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The crate test for this function passes and a mutation of its core arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5083",
+    "domain": "EVENT",
+    "title": "Resolve source-of-truth rules",
+    "statement": "Resolution criteria are structured data evaluated against named observations from a named source; resolved is not settled until final.",
+    "rationale": "Prediction markets convert world beliefs into tradable probability (§19).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The crate test for this function passes and a mutation of its core arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5084",
+    "domain": "EVENT",
+    "title": "Estimate outcome distributions",
+    "statement": "Outcome distributions are estimated from evidence, refusing distributions not summing to one and leakage.",
+    "rationale": "Prediction markets convert world beliefs into tradable probability (§19).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The crate test for this function passes and a mutation of its core arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5085",
+    "domain": "EVENT",
+    "title": "Price event contracts",
+    "statement": "Contracts are priced from beliefs, with implied probability bands after fee and spread.",
+    "rationale": "Prediction markets convert world beliefs into tradable probability (§19).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The crate test for this function passes and a mutation of its core arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5086",
+    "domain": "EVENT",
+    "title": "Trade and market-make event contracts",
+    "statement": "The platform trades and market-makes event contracts (paper).",
+    "rationale": "Prediction markets convert world beliefs into tradable probability (§19).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The crate test for this function passes and a mutation of its core arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5087",
+    "domain": "EVENT",
+    "title": "Create new event markets where permitted",
+    "statement": "The platform may create new event markets only where permitted.",
+    "rationale": "Stated as an obligation in the source without a named failure.",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "Creation is admitted only with a permitting jurisdiction record; mutation: admit on empty book and the test fails."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION"
+    ],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5088",
+    "domain": "EVENT",
+    "title": "Wagering venues are a separate regulated type",
+    "statement": "Sports/wagering venues are a separate regulated venue type with jurisdiction, age/eligibility and product controls; event-contract and wagering paths cannot cross.",
+    "rationale": "Wagering law differs from event-contract law; routing one as the other is an unlicensed activity.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "An event order to a wagering venue is refused, as is an underage or out-of-jurisdiction entity; mutation: route by venue id only and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "GOV"
+    ],
+    "notes": ""
+  },
+  {
+    "id": "R12-EVENT-5089",
+    "domain": "EVENT",
+    "title": "Event pricing independent of venue availability",
+    "statement": "Core cognition prices events without assuming every venue is legally available to every entity/user.",
+    "rationale": "Pricing tied to availability would change a belief because of a permission.",
+    "kind": "invariant",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "30",
+        "section": "§19 Prediction, Event & Regulated Wagering Markets"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The price is identical whether every venue or none is available to the entity; mutation: read AccessBook in fair_values and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": ""
+  },
+  {
+    "id": "R12-COMMERCE-5090",
+    "domain": "COMMERCE",
+    "title": "Commerce layer tracks the full physical unit record",
+    "statement": "For each physical unit the commerce layer tracks SKU identity, condition, location, inventory, shipping, insurance, customs/duties, tax, marketplace fees, payment/chargeback risk, storage and returns.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COMMERCE-5091",
+    "domain": "COMMERCE",
+    "title": "Product Scout finds price and availability differences",
+    "statement": "Product Scout finds price/availability differences, auctions, liquidations, wholesale listings and supply shocks.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COMMERCE-5092",
+    "domain": "COMMERCE",
+    "title": "SKU resolver maps equivalents and detects variants and counterfeits",
+    "statement": "The SKU/entity resolver maps equivalent products across retailers, marketplaces and regions and detects variants and counterfeits.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COMMERCE-5093",
+    "domain": "COMMERCE",
+    "title": "Commerce feasibility computes all-in economics",
+    "statement": "Commerce feasibility computes all-in landed cost, expected resale, time-to-sale, return risk, inventory carry and capital lockup, refusing a candidate missing any input.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COMMERCE-5094",
+    "domain": "COMMERCE",
+    "title": "Purchase executor enforces limits, account controls and fraud safeguards",
+    "statement": "Purchases go only through merchant/marketplace adapters behind per-account and global limits, account/credential controls and fraud safeguards, refused before any merchant call.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [
+      "EXTERNAL_ACTION",
+      "LIVE_CAPITAL"
+    ],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COMMERCE-5095",
+    "domain": "COMMERCE",
+    "title": "Logistics brain plans route, carrier, warehouse, customs, insurance",
+    "statement": "The logistics brain plans route, carrier, consolidation, warehouse, customs, insurance and delivery risk.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COMMERCE-5096",
+    "domain": "COMMERCE",
+    "title": "Inventory ledger holds units, condition, location, basis, reservations, ownership",
+    "statement": "The physical inventory ledger records units, condition, location, cost basis, reservations and ownership, event-sourced and replayable.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COMMERCE-5097",
+    "domain": "COMMERCE",
+    "title": "Resale router chooses venue and prices and reprices",
+    "statement": "The resale router chooses marketplace/auction/direct venue by net proceeds and prices and reprices listed inventory.",
+    "rationale": "A system that buys and resells products needs a commerce operating layer, not a valuation class (§20).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§20 Physical Commerce & Product Arbitrage"
+      }
+    ],
+    "verification": {
+      "method": "unit",
+      "check": "The named crate test passes; mutating the function's core refusal or arithmetic fails it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "Library-complete simulated pipeline (one end-to-end test at commerce_resale.rs:314) with no production caller."
+  },
+  {
+    "id": "R12-COVERAGE-5098",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Cash / FX",
+    "statement": "Fiat, spot/forward FX, cash equivalents, funding and currency conversion are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5099",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Equities / ETFs / indices",
+    "statement": "Listed equities, ETFs, baskets, indices and corporate actions are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5100",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Rates / fixed income / credit",
+    "statement": "Government/corporate debt, yield curves, credit and repo/funding interfaces where available are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5101",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Commodities",
+    "statement": "Energy, metals, agriculture, futures, spot/physical links and shipping/storage economics are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5102",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Derivatives",
+    "statement": "Options, futures, perpetuals and other permitted derivatives are supported with margin, greeks and settlement models.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P1",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5103",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Crypto / tokenized",
+    "statement": "Spot, derivatives, tokenized representations, DEX/CEX venues, bridges and on-chain settlement are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5104",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Prediction/event",
+    "statement": "Event contracts and probability markets are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "31",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5105",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Private/illiquid",
+    "statement": "Private equity/credit/funds, real assets and other non-continuously priced investments are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P3",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "32",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5106",
+    "domain": "COVERAGE",
+    "title": "Asset coverage: Physical products",
+    "statement": "SKU-level commerce, auctions, collectibles, wholesale/retail arbitrage and inventory are supported.",
+    "rationale": "Coverage is a capability claim until a class has valuation, settlement and an eligible family (§21).",
+    "kind": "capability",
+    "priority": "P2",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "32",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "integration",
+      "check": "The class is registered and an instrument of it assembles and trades on paper; mutation: remove the record and assembly refuses it."
+    },
+    "policy_flags": [],
+    "secondary_domains": [],
+    "notes": "asset_class_registry.rs module doc (lines ~33-50) says 'Nine of AssetClass's thirteen variants' are registered and lists Commodity as absent; the code registers twelve of fifteen including Commodity (test at :759). The doc is stale."
+  },
+  {
+    "id": "R12-COVERAGE-5107",
+    "domain": "COVERAGE",
+    "title": "Created markets only where governance supports them",
+    "statement": "Created markets/instruments are supported only where venue, product and legal governance support them.",
+    "rationale": "A created instrument outside governance is an unlicensed product.",
+    "kind": "invariant",
+    "priority": "P0",
+    "sources": [
+      {
+        "doc": "M",
+        "page": "32",
+        "section": "§21 Asset & Market Coverage"
+      }
+    ],
+    "verification": {
+      "method": "acceptance",
+      "check": "A created instrument without all three permissions cannot be admitted; mutation: drop a permission check and the test fails."
+    },
+    "policy_flags": [],
+    "secondary_domains": [
+      "EXEC",
+      "GOV"
+    ],
+    "notes": ""
+  }
+]
