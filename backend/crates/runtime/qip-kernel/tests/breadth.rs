@@ -139,6 +139,21 @@ fn a_planned_market_is_created_listed_and_seeded_on_the_simulated_venue_and_jour
     assert_eq!(market.stage, MarketStage::Seeded);
     assert_eq!(market.inventory, dec!("30"));
 
+    // The venue's own book, not the factory's account of it. This test's
+    // mutation note claimed it read the venue's book until 2026-10-11 and it
+    // never did (the audit's EXEC-5080 finding): every assertion above is on
+    // the factory's record, which says "seeded" whether or not the venue
+    // holds a single order.
+    let book = platform
+        .listed_book(PRODUCT)
+        .expect("the venue lists the created instrument");
+    assert!(
+        book.total_depth().is_positive(),
+        "the venue lists an empty book for a seeded market: {book:?}"
+    );
+    assert_eq!(book.mid(), Some(dec!("100")), "{book:?}");
+    assert_eq!(book.spread(), Some(dec!("1")), "{book:?}");
+
     let records = factory_records(&platform)?;
     let actions: Vec<FactoryAction> = records.iter().map(|r| r.record.action).collect();
     assert_eq!(

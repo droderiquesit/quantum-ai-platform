@@ -282,6 +282,18 @@ impl Platform {
         self.breadth.factory.as_mut()
     }
 
+    /// The book the desk's simulated venue lists for `object_id`, as the
+    /// venue holds it, not as the factory computed it (R12-EXEC-5080).
+    ///
+    /// A copy, and `&mut self` only because the broker exposes its listing
+    /// venue mutably. A test of seeding that read the factory's own record
+    /// passed with the venue holding nothing.
+    pub fn listed_book(&mut self, object_id: &str) -> Option<qip_market::book::OrderBook> {
+        self.broker
+            .listing_venue()
+            .and_then(|venue| venue.listed_book(object_id).cloned())
+    }
+
     /// Replace the Market Factory's permission register with `entries`, as
     /// the deep brain does each cycle from its plan file (R12-EXEC-5081).
     ///
